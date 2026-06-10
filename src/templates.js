@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const CONFIG_YML = `columns: [Review, Plan, Planned, Assigned, Build, Verify, Needs Human, Done]
 # mode: launcher — the todomd server spawns headless agent runs (instant,
@@ -114,8 +115,9 @@ You are running inside the task's git worktree containing the candidate implemen
 2. Run the project's verify command and inspect the relevant code with fresh eyes.
 3. Check EVERY acceptance criterion individually and skeptically — do not take the implementation's word for anything.
 4. Modify nothing. You are read-only except for running tests.
+5. If the verify command **cannot run at all** — a missing dependency or module, command-not-found, or a required env var / service that isn't present (as opposed to a test *assertion* failing) — report verdict=fail and set a short \`setup_error\` naming the cause. That signals the worktree is missing a gitignored file the build needs, not that the code is wrong, so it can be fixed by configuration rather than another build attempt.
 
-Your final response must report: a boolean verdict (pass only if ALL criteria are met and tests pass), a per-criterion result, and — if failing — specific, actionable findings the build agent can fix.
+Your final response must report: a boolean verdict (pass only if ALL criteria are met and tests pass), a per-criterion result, a \`setup_error\` if the command couldn't run, and — if failing on the merits — specific, actionable findings the build agent can fix.
 `;
 
 const WELCOME_CARD = `---
@@ -214,9 +216,10 @@ For each card in \`.todomd/tasks/*.md\` with \`status: Plan\` and no fresh lease
 2. **Coordination** (only if config \`coordination.enabled\`): read \`.todomd/ACTIVE.md\` (see format below). Work out the files this card touches from its \`## Implementation Plan\`. If another worker's claim (a line whose \`worker\` differs from yours) lists any of the same files: append \`  - ⚠ file overlap: <who/which files>\` to the Run Log, and if config \`coordination.block\` is true set \`status: Needs Human\`, \`needs_human_reason: work_conflict\`, commit, **UNLOCK**, and stop. Otherwise add your claim to \`.todomd/ACTIVE.md\` (remove any existing line for this card first) and commit it, then continue.
 3. Set \`status: Build\` and verification.attempts, commit. **UNLOCK.** Then create the worktree if missing: \`git worktree add <worktree_dir>/<id> -b <branch_prefix><id>\`.
 4. Inside the worktree follow \`.claude/commands/todomd-build.md\` for the card (UNLOCKED — this is the long part). Never touch \`.todomd/\` inside the worktree.
-5. **LOCK**, set \`status: Verify\`, commit, **UNLOCK**. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings.
-6. **pass** → **LOCK**, then: confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering, commit, release claim step C, **UNLOCK**); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit; **release your coordination claim (step C)**; **UNLOCK**.
-   **fail** → if attempts < max_attempts: fix the findings in the worktree (UNLOCKED), re-run step 5. Else **LOCK**, Needs Human as in step 1 with the findings quoted in the Run Log, **release your coordination claim (step C)**, **UNLOCK**.
+5. **LOCK**, set \`status: Verify\`, commit, **UNLOCK**. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings, and a \`setup_error\` if the verify command couldn't run at all (missing dep/file/env/service, not a test assertion).
+6. **setup_error** (the verify command couldn't even run) → **LOCK**, set \`status: Needs Human\`, \`needs_human_reason: worktree_env\`, quote the cause in the Run Log with the hint "add the missing gitignored file/dep to \`worktree_link\` in .todomd/config.yml, then move the card back to Assigned", commit, **release your coordination claim (step C)**, **UNLOCK**. (Don't retry — another build won't fix a missing env file.)
+   **pass** → **LOCK**, then: confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering, commit, release claim step C, **UNLOCK**); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit; **release your coordination claim (step C)**; **UNLOCK**.
+   **fail** (on the merits) → if attempts < max_attempts: fix the findings in the worktree (UNLOCKED), re-run step 5. Else **LOCK**, Needs Human as in step 1 with the findings quoted in the Run Log, **release your coordination claim (step C)**, **UNLOCK**.
 
 ### Coordination manifest — \`.todomd/ACTIVE.md\` (only if \`coordination.enabled\`)
 
@@ -241,9 +244,32 @@ Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assi
 - Nothing to do → reply "board idle" and finish.
 `;
 
+// Gitignored runtime deps the build worktree needs symlinked so the verify
+// command can actually run. node_modules is the near-universal case (kept even
+// if absent, since it appears after `npm install`); we additionally detect any
+// present-AND-gitignored env/dep files so a user whose tests read `.env` doesn't
+// hit a wall of "Needs Human" caused purely by a missing worktree file.
+const WORKTREE_LINK_CANDIDATES = [
+  '.env', '.env.local', '.env.development', '.env.production', '.env.test',
+  '.npmrc', '.venv', 'venv', 'vendor',
+];
+export function detectWorktreeLinks(repoPath) {
+  const links = ['node_modules'];
+  for (const name of WORKTREE_LINK_CANDIDATES) {
+    if (!fs.existsSync(path.join(repoPath, name))) continue;
+    try {
+      execFileSync('git', ['check-ignore', '-q', name], { cwd: repoPath, stdio: 'ignore' });
+      links.push(name); // present and gitignored → the worktree won't have it
+    } catch { /* tracked (committed) → already in the worktree; nothing to link */ }
+  }
+  return links;
+}
+
 export function initProject(repoPath) {
+  const links = detectWorktreeLinks(repoPath);
+  const configYml = CONFIG_YML.replace('worktree_link: [node_modules]', `worktree_link: [${links.join(', ')}]`);
   const writes = [
-    ['.todomd/config.yml', CONFIG_YML],
+    ['.todomd/config.yml', configYml],
     ['.todomd/tasks/task-0001-welcome.md', WELCOME_CARD],
     ['.claude/commands/todomd-plan.md', CMD_PLAN],
     ['.claude/commands/todomd-build.md', CMD_BUILD],
@@ -268,5 +294,9 @@ export function initProject(repoPath) {
     }
   }
   fs.writeFileSync(gi, cur);
+  const extra = links.filter((l) => l !== 'node_modules');
+  if (extra.length && created.includes('.todomd/config.yml')) {
+    created.push(`config worktree_link: ${links.join(', ')} (auto-linked gitignored deps so the worktree can run tests)`);
+  }
   return created;
 }

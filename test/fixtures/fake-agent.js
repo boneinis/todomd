@@ -92,14 +92,14 @@ if (stage === 'build') {
 if (stage === 'verify') {
   // buffered mode (--json-schema): emit one envelope with structured_output
   const verdict = process.env.FAKE_VERDICT || 'pass';
-  const env = resultEnvelope({
-    structured_output: {
-      verdict,
-      criteria: [{ criterion: 'works', met: verdict === 'pass' }],
-      findings: verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
-    },
-  });
-  process.stdout.write(JSON.stringify(env));
+  const structured = {
+    verdict,
+    criteria: [{ criterion: 'works', met: verdict === 'pass' }],
+    findings: verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
+  };
+  // simulate "the verify command couldn't even run" (missing gitignored dep/env)
+  if (process.env.FAKE_SETUP_ERROR) structured.setup_error = process.env.FAKE_SETUP_ERROR;
+  process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: structured })));
   process.exit(0);
 }
 

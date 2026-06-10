@@ -22,6 +22,9 @@ const VERDICT_SCHEMA = {
       },
     },
     findings: { type: 'string' },
+    // set ONLY when the verify command couldn't run at all (missing dep/file/env
+    // var/service) — a worktree-environment problem, not a test-assertion failure
+    setup_error: { type: 'string' },
   },
 };
 
@@ -604,6 +607,16 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     return sendState(project, id, 'idle');
   }
 
+  // a setup error means the verify command couldn't even RUN — retrying the
+  // build won't fix a missing gitignored dep/env file, so escalate distinctly
+  // (and immediately, not after burning every attempt) with a remediation hint
+  if (verdict.setup_error) {
+    return toNeedsHuman(project, id, 'Verify', 'worktree_env',
+      `verify command couldn't run in the worktree: ${verdict.setup_error}. ` +
+      `The worktree lacks a gitignored file/dep the tests need — add it to ` +
+      `worktree_link in .todomd/config.yml (e.g. .env), then drag the card back to Assigned.`);
+  }
+
   // fail → retry loop or escalation
   const findings = `${verdict.findings}\n${unmet.map((c) => `- unmet: ${c}`).join('\n')}`;
   if (attempt >= maxAttempts) {
@@ -716,8 +729,24 @@ export async function reconcileOnBoot() {
   for (const project of (await import('./registry.js')).listProjects()) {
     try {
       // budget-mode boards belong to the dispatcher session, which self-heals
-      // its own interrupted cards — the server must not orphan-sweep them
-      if ((loadConfig(project.path).mode || 'launcher') === 'budget') continue;
+      // its own interrupted cards — the server must not orphan-sweep them. But
+      // the server has no signal that the dispatcher is alive, so if cards sit
+      // in Build/Verify with no file progress for 30+ min, nudge (don't act):
+      // that's the common budget failure (no /loop running → cards stuck silent).
+      if ((loadConfig(project.path).mode || 'launcher') === 'budget') {
+        try {
+          const tdir = path.join(project.path, '.todomd', 'tasks');
+          const stuck = loadBoard(project.path).cards.filter((c) =>
+            IN_FLIGHT.has(c.status) && c.file &&
+            (Date.now() - fs.statSync(path.join(tdir, c.file)).mtimeMs) > 30 * 60 * 1000);
+          if (stuck.length) {
+            setBanner(`budget:${project.name}`, 'warn',
+              `${project.name}: ${stuck.length} card(s) stuck in Build/Verify for 30+ min — ` +
+              `if no \`/loop /todomd-dispatch\` is running, start it or drag them back to Assigned.`);
+          }
+        } catch { /* nudge is best-effort */ }
+        continue;
+      }
       const config = loadConfig(project.path);
       const wtDir = config.worktree_dir || '.todomd/worktrees';
       const branchPrefix = config.branch_prefix || 'todomd/';

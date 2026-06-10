@@ -75,6 +75,27 @@ test('attempt cap: persistent fail → Needs Human with a reason, attempts not e
   clearFakeAgent();
 });
 
+test('worktree env: a verify setup_error → Needs Human (worktree_env) on attempt 1, no wasted retries', async () => {
+  isolateHome();
+  // the verify command "can't even run" — should escalate distinctly and at once,
+  // not burn all attempts ending in a generic attempts_exhausted
+  useFakeAgent({ verdict: 'fail', build: 'good', setup_error: 'Cannot find module "dotenv"' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0003');
+
+  await pipeline.humanMove(p, 'task-0003', 'Plan');
+  await until(() => status(repo, 'task-0003') === 'Planned');
+  await pipeline.humanMove(p, 'task-0003', 'Assigned');
+  await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: 25000 });
+
+  const card = readCard(repo, 'task-0003');
+  assert.equal(card.data.needs_human_reason, 'worktree_env');
+  assert.equal(card.data.verification.attempts, 1, 'escalates on the first verify, not after the attempt cap');
+  clearFakeAgent();
+});
+
 test('agent error → Needs Human (agent_error)', async () => {
   isolateHome();
   useFakeAgent({ fail: 1 });

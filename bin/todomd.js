@@ -70,11 +70,11 @@ if (cmd === 'init') {
 
 if (cmd === 'revoke') {
   // cut off mobile/viewer links without touching the desktop session;
-  // new tokens are minted on the next server start
-  const dir = path.join(process.env.HOME || process.env.USERPROFILE, '.todomd');
+  // new tokens are minted on the next server start. Use TODOMD_DIR so a
+  // TODOMD_HOME override is honored (the server writes tokens there too).
   let n = 0;
   for (const f of ['token-mobile', 'token-viewer']) {
-    try { fs.unlinkSync(path.join(dir, f)); n++; } catch {}
+    try { fs.unlinkSync(path.join(TODOMD_DIR, f)); n++; } catch {}
   }
   console.log(n ? `revoked ${n} device token(s) — restart todomd; old QR links are now dead.` : 'no device tokens to revoke');
   process.exit(0);
