@@ -7,6 +7,21 @@ import { withFileLock } from './lockfile.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Assigned', 'Build', 'Verify', 'Needs Human', 'Done'];
 
+// gray-matter (v4) caches parse results keyed by the input string — AND caches
+// an empty result even after the first parse THREW. So once loadBoard hits a
+// card with malformed frontmatter (throws, caught → "(unparseable)"), a later
+// matter() on that same string returns {data:{}, content:<entire raw>} without
+// throwing — silently losing the card's id/status. Detect that poisoned shape
+// (a frontmatter block that wasn't consumed and yielded no keys) and re-throw,
+// so every read path treats the bad card consistently as a parse failure.
+function parseCard(raw) {
+  const parsed = matter(raw);
+  if (/^---\r?\n/.test(raw) && parsed.content === raw && Object.keys(parsed.data).length === 0) {
+    throw new Error('frontmatter failed to parse');
+  }
+  return parsed;
+}
+
 export function loadConfig(repoPath) {
   try {
     const raw = fs.readFileSync(path.join(repoPath, '.todomd', 'config.yml'), 'utf8');
@@ -42,7 +57,7 @@ export function loadBoard(repoPath) {
   if (fs.existsSync(dir)) {
     for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort()) {
       try {
-        const parsed = matter(fs.readFileSync(path.join(dir, file), 'utf8'));
+        const parsed = parseCard(fs.readFileSync(path.join(dir, file), 'utf8'));
         cards.push({
           file,
           ...parsed.data,
@@ -63,7 +78,7 @@ export function readCard(repoPath, id) {
   if (!file) return null;
   const raw = fs.readFileSync(path.join(dir, file), 'utf8');
   try {
-    const parsed = matter(raw);
+    const parsed = parseCard(raw);
     return { file, raw, data: parsed.data, body: parsed.content };
   } catch (e) {
     return { file, raw, data: {}, body: raw, parseError: String(e.message || e) };
@@ -304,11 +319,13 @@ export function appendRunLog(repoPath, id, line) {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
     let raw = card.raw;
-    const heading = raw.indexOf('## Run Log');
-    if (heading < 0) {
+    // anchor to a real heading line — a body that merely mentions "## Run Log"
+    // (e.g. a todomd-about-todomd card) must not capture the insert point
+    const m = raw.match(/^## Run Log\b.*$/m);
+    if (!m) {
       raw = raw.replace(/\n*$/, '') + `\n\n## Run Log\n\n${line}\n`;
     } else {
-      const afterHeading = heading + '## Run Log'.length;
+      const afterHeading = m.index + m[0].length;
       const next = raw.indexOf('\n## ', afterHeading);
       const insertAt = next < 0 ? raw.length : next;
       const before = raw.slice(0, insertAt).replace(/\n*$/, '') + '\n';

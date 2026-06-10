@@ -21,7 +21,9 @@ export function workerName(config) {
   if (c.worker) return String(c.worker);
   let user = 'someone';
   try { user = os.userInfo().username; } catch {}
-  return `${user}@${os.hostname()}`;
+  // short hostname, matching the dispatcher's `hostname -s` and lockfile's
+  // whoami() — otherwise the same machine looks like two different workers
+  return `${user}@${os.hostname().split('.')[0]}`;
 }
 
 // Extract file paths the plan says it will touch (backtick-quoted, with an

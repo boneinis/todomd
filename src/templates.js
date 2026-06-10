@@ -182,7 +182,7 @@ Another dispatcher (or the server's launcher) may run on this repo at the same t
 
 - **LOCK** — run this and wait for it to return before any git commit that writes under \`.todomd/\` (and before *selecting* the build card in step 2):
   \`\`\`
-  until mkdir .todomd/.lock 2>/dev/null; do o=$(cut -d' ' -f1 .todomd/.lock/owner 2>/dev/null); if [ -n "$o" ] && [ $(( $(date +%s) - o )) -gt 300 ]; then rm -rf .todomd/.lock; else sleep 1; fi; done; printf '%s %s\\n' "$(date +%s)" "$(whoami)@$(hostname -s)" > .todomd/.lock/owner
+  until mkdir .todomd/.lock 2>/dev/null; do o=$(cut -d' ' -f1 .todomd/.lock/owner 2>/dev/null); if [ -n "$o" ] && [ $(( $(date +%s) - o )) -gt 300 ]; then d=.todomd/.lock.dead.$$.$(date +%s); mv .todomd/.lock "$d" 2>/dev/null && rm -rf "$d"; else sleep 1; fi; done; printf '%s %s %s\\n' "$(date +%s)" "$(whoami)@$(hostname -s)" "$$-$(date +%s)" > .todomd/.lock/owner
   \`\`\`
 - **UNLOCK** — run immediately after that commit: \`rm -rf .todomd/.lock\`
 
@@ -194,7 +194,7 @@ Build *selection* is already safe (status flips to \`Build\` under the lock, so 
 
 - \`<worker>\` = config \`coordination.worker\` if set, else the output of \`echo "$(whoami)@$(hostname -s)"\` (same identity as a coordination claim; used even when coordination is off).
 - **Claim** — right after you select a card and BEFORE its long run: **LOCK**, re-check the card is still eligible and has no fresh lease, set \`lease: "<epoch-seconds> <worker>"\` (e.g. \`lease: "1781123013 alice@host"\`), commit, **UNLOCK**.
-- **Skip on select** — ignore any card whose \`lease\` is set and **fresh** (age ≤ 1800s) — it's already being worked. A lease older than 1800s is stale (that dispatcher crashed); ignore it and reclaim.
+- **Skip on select** — ignore any card whose \`lease\` is set and **fresh** (age ≤ 900s) — it's already being worked. A lease older than 900s is stale (that dispatcher crashed); ignore it and reclaim. (900s comfortably exceeds a plan/triage run; it's the max time a crashed dispatcher can freeze a card.)
 - **Clear** — in the same **LOCK** where you record the result (set \`triaged\`/\`status\`), also clear the lease (set \`lease:\` empty), in that one commit.
 
 ## 0. Triage (all pending)

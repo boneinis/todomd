@@ -95,12 +95,30 @@ test('unparseable card is surfaced, not fatal', () => {
   fs.writeFileSync(file, `---\ntitle: "unterminated\nstatus: Review\n---\nbody\n`);
   const { cards } = loadBoard(repo);
   assert.match(cards[0].title, /unparseable/);
-  // readCard must not crash and must not surface the malformed frontmatter as
-  // real data (it degrades to parseError or empty data — gray-matter caches,
-  // so which one depends on call order; both are non-fatal)
+  // readCard on the SAME malformed string AFTER loadBoard already parsed it must
+  // still surface a parseError — gray-matter caches an empty result even after
+  // the first parse threw, which would otherwise make readCard silently return
+  // {data:{}, body:<raw incl. frontmatter>} and lose id/status (cache poisoning).
   const rc = readCard(repo, 'task-0001');
   assert.ok(rc, 'readCard returns an object, never crashes');
-  assert.ok(rc.parseError || Object.keys(rc.data).length === 0, 'malformed frontmatter not surfaced as data');
+  assert.ok(rc.parseError, 'malformed frontmatter surfaces parseError even after loadBoard cached the failed parse');
+  assert.equal(Object.keys(rc.data).length, 0, 'no bogus data leaks through');
+});
+
+test('appendRunLog anchors on the heading line, not a body mention of "## Run Log"', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  // a todomd-about-todomd card whose Description quotes the literal heading text
+  fs.writeFileSync(file,
+    `---\nid: task-0001\nstatus: Review\n---\n\n` +
+    `## Description\n\nWe insert into the ## Run Log section.\n\n` +
+    `## Run Log\n\n- existing\n`);
+  await appendRunLog(repo, 'task-0001', '- line one');
+  const raw = fs.readFileSync(file, 'utf8');
+  // the new line lands in the real Run Log section, after the existing entry —
+  // not spliced into the Description that merely mentions the text
+  assert.match(raw, /## Run Log\n\n- existing\n- line one/);
+  assert.match(raw, /We insert into the ## Run Log section\.\n\n## Run Log/, 'Description left intact');
 });
 
 test('attachCard stores under attachments/<id>, references in card, sanitizes name, avoids clobber', async () => {

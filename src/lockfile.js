@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 // A cross-PROCESS lock for a repo's `.todomd` writes. board.js's withRepoLock
 // only serializes writers inside one process; it can't see a separate
@@ -10,8 +11,10 @@ import path from 'node:path';
 // `.todomd/.lock` from the shell. Atomic `mkdir` is the primitive; a held lock
 // older than STALE_SEC is assumed crashed and stolen.
 //
-// owner file format (must match the dispatch prompt's shell exactly so either
-// side can read/steal the other's lock): "<epoch-seconds> <who>\n".
+// owner file format (the dispatch prompt's shell writes the same shape so either
+// side can read/steal the other's lock): "<epoch-seconds> <who> <nonce>\n".
+// Only field 1 (the timestamp) is read cross-side for staleness; the nonce is a
+// per-acquisition fence so a holder never deletes a lock that was stolen from it.
 const STALE_SEC = 300;        // a lock is held only for quick git ops; older = crashed owner
 const POLL_MS = 100;
 const MAX_WAIT_MS = 360_000;  // safety valve; stale-steal guarantees progress well before this
@@ -26,14 +29,16 @@ function lockDir(repoPath) {
 function whoami() {
   let user = 'todomd';
   try { user = os.userInfo().username; } catch {}
-  return `${user}@${os.hostname()}`;
+  // short hostname, matching the dispatcher's `hostname -s` and coordination's
+  // workerName() — so the same machine isn't seen as two different workers
+  return `${user}@${os.hostname().split('.')[0]}`;
 }
 
-// Atomic create-or-fail. Returns true if we now hold the lock.
-function tryAcquire(dir) {
+// Atomic create-or-fail. Returns true if we now hold the lock (with our nonce).
+function tryAcquire(dir, nonce) {
   try {
     fs.mkdirSync(dir);
-    fs.writeFileSync(path.join(dir, 'owner'), `${nowSec()} ${whoami()}\n`);
+    fs.writeFileSync(path.join(dir, 'owner'), `${nowSec()} ${whoami()} ${nonce}\n`);
     return true;
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
@@ -41,37 +46,50 @@ function tryAcquire(dir) {
   }
 }
 
-// Remove the lock only if its owner timestamp is older than STALE_SEC. A
+// Steal a stale lock (owner older than STALE_SEC) ATOMICALLY: rename the dir
+// aside, and only the one racer whose rename succeeds gets to remove it — so two
+// processes can't both `rm` and then both `mkdir` into a double-acquire. A
 // missing owner means the holder is mid-creation (not stale) — leave it.
 function stealIfStale(dir) {
   let raw;
   try { raw = fs.readFileSync(path.join(dir, 'owner'), 'utf8'); }
   catch { return; }
   const ts = parseInt(raw.split(' ')[0], 10);
-  if (Number.isFinite(ts) && nowSec() - ts > STALE_SEC) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
-  }
+  if (!Number.isFinite(ts) || nowSec() - ts <= STALE_SEC) return;
+  const dead = `${dir}.dead.${process.pid}.${nowSec()}`;
+  try { fs.renameSync(dir, dead); } catch { return; } // lost the race — another stealer moved it
+  try { fs.rmSync(dead, { recursive: true, force: true }); } catch {}
 }
 
 export async function acquireFileLock(repoPath) {
   const dir = lockDir(repoPath);
   fs.mkdirSync(path.dirname(dir), { recursive: true }); // ensure .todomd exists
+  const nonce = crypto.randomUUID();
   const deadline = Date.now() + MAX_WAIT_MS;
-  while (!tryAcquire(dir)) {
+  while (!tryAcquire(dir, nonce)) {
     stealIfStale(dir);
     if (Date.now() > deadline) throw new Error(`todomd: could not acquire ${dir} (held too long)`);
     await sleep(POLL_MS);
   }
-  return dir;
+  return { dir, nonce };
 }
 
-export function releaseFileLock(dir) {
-  try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+// Remove the lock only if it's still ours (the owner nonce matches) — so if our
+// lock was stolen while we held it (only possible on a >STALE_SEC hold), we
+// don't delete the new holder's lock.
+export function releaseFileLock(dir, nonce) {
+  try {
+    if (nonce) {
+      const owner = fs.readFileSync(path.join(dir, 'owner'), 'utf8');
+      if ((owner.split(/\s+/)[2] || '') !== nonce) return; // not ours anymore
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch { /* already gone */ }
 }
 
 // Run fn while holding the on-disk lock; always release, even on throw.
 export async function withFileLock(repoPath, fn) {
-  const dir = await acquireFileLock(repoPath);
+  const { dir, nonce } = await acquireFileLock(repoPath);
   try { return await fn(); }
-  finally { releaseFileLock(dir); }
+  finally { releaseFileLock(dir, nonce); }
 }

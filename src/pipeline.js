@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
-import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges } from './board.js';
+import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock } from './board.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
@@ -276,7 +276,9 @@ export async function humanMove(project, id, to) {
     // discard the rejected worktree so the fresh attempt doesn't build on top of it
     if (card.data.worktree) {
       const wtDir = config.worktree_dir || '.todomd/worktrees';
-      await removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree);
+      // serialize shared-index git ops (worktree add/remove/merge/prune) so two
+      // cards finishing at concurrency>1 can't race the .git index
+      await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
     }
     await patchFrontmatter(project.path, id, {
       needs_human_reason: '',
@@ -452,7 +454,7 @@ async function buildChain(project, id, retry = null) {
 
   // worktree exists across retries; create on first attempt
   if (!fs.existsSync(worktreeAbs)) {
-    const wt = await addWorktree(project.path, worktreeAbs, branch);
+    const wt = await withRepoLock(project.path, () => addWorktree(project.path, worktreeAbs, branch));
     if (!wt.ok) return toNeedsHuman(project, id, fromStatus, 'worktree_failed', wt.reason);
     // make the worktree runnable: link gitignored runtime deps from the repo
     linkIntoWorktree(project.path, worktreeAbs, config.worktree_link || ['node_modules']);
@@ -593,9 +595,9 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     if (forbidden) {
       return toNeedsHuman(project, id, 'Verify', 'committed_dependency', `branch added ${forbidden}`);
     }
-    const merged = await mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`);
+    const merged = await withRepoLock(project.path, () => mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`));
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
-    await removeWorktree(project.path, worktreeAbs, branch);
+    await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
     await patchFrontmatter(project.path, id, { worktree: '' });
     await releaseCoordination(project, id);
     await orchMove(project, id, 'Done', `verdict: pass, attempt ${attempt}`);
@@ -707,7 +709,7 @@ export async function reconcileOnBoot() {
   // editing worktrees behind our back. Kill any still-alive PIDs, but only if
   // the PID is still one of OUR agent CLIs (guard against PID reuse).
   for (const prev of readPriorRuns()) {
-    if (prev.pid && isOurAgentProcess(prev.pid)) {
+    if (prev.pid && isOurAgentProcess(prev.pid, prev.startedAt)) {
       try { process.kill(prev.pid, 'SIGKILL'); } catch { /* gone already */ }
     }
   }
@@ -724,13 +726,13 @@ export async function reconcileOnBoot() {
         if (IN_FLIGHT.has(card.status) && !children.has(runKey(project.name, card.id))) {
           await toNeedsHuman(project, card.id, card.status, 'orphaned_run', 'server restarted during a run');
           // a fresh retry must not build on the abandoned worktree's rejected commits
-          await removeWorktree(project.path, path.join(project.path, wtDir, card.id), `${branchPrefix}${card.id}`);
+          await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, card.id), `${branchPrefix}${card.id}`));
         }
         if (card.triaged === 'running') {
           await patchFrontmatter(project.path, card.id, { triaged: '' }); // interrupted triage — retry via sweep
         }
       }
-      await git(project.path, ['worktree', 'prune']);
+      await withRepoLock(project.path, () => git(project.path, ['worktree', 'prune']));
       // Assigned cards (quota-parked, or approved just before a restart) have
       // no live run and no in-memory queue entry — re-drive them.
       enqueueAssigned(project);
@@ -746,19 +748,38 @@ export async function reconcileOnBoot() {
   }
 }
 
-// Only kill a persisted PID if it still looks like our claude/codex child —
-// guards against the OS having reassigned that PID after a crash.
-function isOurAgentProcess(pid) {
+// `ps` lstart is the fixed 24-char ctime prefix ("Www Mmm dd hh:mm:ss yyyy");
+// the command follows it. Returns { exe, startMs } or null.
+function processInfo(pid) {
   try {
-    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
-    // Only the EXECUTABLE basename — never a substring elsewhere in argv (so
-    // `grep claude file` can't be matched). Erring toward not-killing is safe:
-    // an un-killed orphan is still handled by the card → Needs Human path.
-    const exe = path.basename((out.trim().split(/\s+/)[0] || ''));
-    return exe === 'claude' || exe === 'codex';
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart=,command='], { encoding: 'utf8' });
+    const line = out.replace(/\n+$/, '');
+    if (!line.trim()) return null;
+    const exe = path.basename((line.slice(24).trim().split(/\s+/)[0] || ''));
+    return { exe, startMs: new Date(line.slice(0, 24)).getTime() };
   } catch {
-    return false; // no such process, or ps unavailable → don't kill
+    return null; // no such process, or ps unavailable
   }
+}
+
+// Only kill a persisted PID if it still looks like OUR specific agent child.
+// Two guards against the OS having reassigned the PID after a crash:
+//  - the executable basename is still claude/codex (never a substring of argv);
+//  - the process did NOT start after our run began — a reused PID belongs to a
+//    later process (e.g. the user's own interactive `claude`), so we spare it.
+// Erring toward not-killing is safe: an un-killed orphan is still caught by the
+// card → Needs Human sweep on this same boot.
+function isOurAgentProcess(pid, startedAtIso) {
+  const info = processInfo(pid);
+  if (!info) return false;
+  if (info.exe !== 'claude' && info.exe !== 'codex') return false;
+  const ourStart = startedAtIso ? new Date(startedAtIso).getTime() : NaN;
+  // lstart is second-resolution; a 2s margin still kills a genuine orphan
+  // (started at/just-before our run) but spares a clearly-later PID reuse.
+  if (Number.isFinite(info.startMs) && Number.isFinite(ourStart) && info.startMs > ourStart + 2000) {
+    return false;
+  }
+  return true;
 }
 
 export function getRunStates(projectName) {

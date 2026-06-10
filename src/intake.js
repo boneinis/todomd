@@ -84,7 +84,16 @@ export function recipientAddresses(parsed) {
   if (headers && typeof headers.get === 'function') {
     for (const h of ['delivered-to', 'x-forwarded-to', 'x-original-to', 'envelope-to', 'x-forwarded-for', 'x-rcpt-to']) {
       const v = headers.get(h);
-      if (v) (Array.isArray(v) ? v : [v]).forEach((x) => out.push(String(x?.text ?? x).toLowerCase()));
+      if (!v) continue;
+      for (const x of (Array.isArray(v) ? v : [v])) {
+        // a structured address header is { value: [{address}], text }; without a
+        // .text field, String(x) would yield "[object Object]" and never match
+        if (x && typeof x === 'object' && Array.isArray(x.value)) {
+          for (const a of x.value) if (a.address) out.push(a.address.toLowerCase());
+        } else {
+          out.push(String(x?.text ?? x).toLowerCase());
+        }
+      }
     }
   }
   return out;
@@ -230,19 +239,22 @@ async function pollSource(source, getProject) {
 // Start a poll loop per source (board or routed inbox). Returns stop().
 let lastOpts = null;
 let stopCurrent = () => {};
+// labels currently mid-poll — module-scoped (not per-closure) so a restart()
+// can't begin an overlapping poll of the same source while the old one runs,
+// which would race two createCard()s past the seenMessageIds dedup window
+const inFlight = new Set();
 
 function _startIntake({ getProject, onCard: onCardCb = () => {}, log: logFn = () => {} }) {
   onCard = onCardCb;
   log = logFn;
   const timers = [];
   for (const source of intakeSources()) {
-    let busy = false; // skip a tick if the previous poll is still running (no overlap → no dup fetch)
     const tick = async () => {
-      if (busy) return;
-      busy = true;
+      if (inFlight.has(source.label)) return; // previous poll (this run or a pre-restart one) still going
+      inFlight.add(source.label);
       try { await pollSource(source, getProject); }
       catch (e) { log(`intake: "${source.label}" poll error: ${e.message}`); }
-      finally { busy = false; }
+      finally { inFlight.delete(source.label); }
     };
     tick(); // poll immediately on boot
     const t = setInterval(tick, Math.max(30, source.conf.pollSeconds || 300) * 1000);

@@ -16,7 +16,11 @@ function readRegistry() {
 
 function writeRegistry(reg) {
   fs.mkdirSync(regDir(), { recursive: true });
-  fs.writeFileSync(regFile(), JSON.stringify(reg, null, 2) + '\n');
+  // atomic write (tmp + rename) so a crash mid-write can't truncate projects.json
+  // and drop the whole project list
+  const tmp = `${regFile()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(reg, null, 2) + '\n');
+  fs.renameSync(tmp, regFile());
 }
 
 export function listProjects() {

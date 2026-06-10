@@ -33,15 +33,15 @@ test('withFileLock serializes concurrent critical sections (no interleave)', asy
 
 test('a held lock blocks a second acquirer until released', async () => {
   const repo = repoWithTodomd();
-  const dir = await acquireFileLock(repo);
+  const a = await acquireFileLock(repo);
   let got = false;
-  const waiter = acquireFileLock(repo).then((d) => { got = true; return d; });
+  const waiter = acquireFileLock(repo).then((r) => { got = true; return r; });
   await sleep(120);
   assert.equal(got, false, 'second acquire must wait while the lock is held');
-  releaseFileLock(dir);
-  const d2 = await waiter;
+  releaseFileLock(a.dir, a.nonce);
+  const b = await waiter;
   assert.equal(got, true);
-  releaseFileLock(d2);
+  releaseFileLock(b.dir, b.nonce);
 });
 
 test('a stale lock (owner timestamp older than 5 min) is stolen', async () => {
@@ -49,21 +49,35 @@ test('a stale lock (owner timestamp older than 5 min) is stolen', async () => {
   const lock = path.join(repo, '.todomd', '.lock');
   fs.mkdirSync(lock, { recursive: true });
   const oldEpoch = Math.floor(Date.now() / 1000) - 400; // > 300s STALE_SEC
-  fs.writeFileSync(path.join(lock, 'owner'), `${oldEpoch} ghost@crashed\n`);
+  fs.writeFileSync(path.join(lock, 'owner'), `${oldEpoch} ghost@crashed ghost-nonce\n`);
   // Should steal the stale lock promptly rather than block.
-  const dir = await acquireFileLock(repo);
+  const a = await acquireFileLock(repo);
   const owner = fs.readFileSync(path.join(lock, 'owner'), 'utf8');
   assert.ok(!owner.includes('ghost@crashed'), 'stale owner replaced');
-  releaseFileLock(dir);
+  releaseFileLock(a.dir, a.nonce);
 });
 
-test('owner format matches the dispatch shell protocol: "<epoch-seconds> <who>"', async () => {
+test('release is nonce-fenced: a foreign nonce will NOT delete the held lock', async () => {
   const repo = repoWithTodomd();
-  const dir = await acquireFileLock(repo);
-  const owner = fs.readFileSync(path.join(dir, 'owner'), 'utf8').trim();
-  const [ts, who] = owner.split(' ');
+  const a = await acquireFileLock(repo);
+  // simulate "my lock was stolen and re-taken by someone else": a release with
+  // the wrong nonce must be a no-op (must not delete the current holder's lock)
+  releaseFileLock(a.dir, 'some-other-nonce');
+  assert.equal(fs.existsSync(a.dir), true, 'lock not deleted by a non-owner release');
+  // the true owner can still release it
+  releaseFileLock(a.dir, a.nonce);
+  assert.equal(fs.existsSync(a.dir), false, 'owner release removes it');
+});
+
+test('owner format matches the dispatch shell protocol: "<epoch-seconds> <who> <nonce>"', async () => {
+  const repo = repoWithTodomd();
+  const a = await acquireFileLock(repo);
+  const owner = fs.readFileSync(path.join(a.dir, 'owner'), 'utf8').trim();
+  const [ts, who, nonce] = owner.split(' ');
   assert.match(ts, /^\d+$/, 'first field is epoch seconds (cut -d" " -f1 readable)');
   assert.ok(Number(ts) > 1_000_000_000 && Number(ts) < 10_000_000_000, 'plausible epoch seconds, not ms');
   assert.ok(who && who.includes('@'), 'second field is <user>@<host>');
-  releaseFileLock(dir);
+  assert.ok(who && !who.includes('.'), 'host is short (no FQDN dots), matching `hostname -s`');
+  assert.equal(nonce, a.nonce, 'third field is the acquisition nonce');
+  releaseFileLock(a.dir, a.nonce);
 });
