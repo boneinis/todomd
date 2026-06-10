@@ -121,10 +121,10 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
 function flowScalar(value) {
   if (value === null || value === undefined || value === '') return '';
   const s = String(value);
-  // quote anything that isn't an obviously-safe bare scalar, so a value with
-  // ':', '#', '$', quotes, etc. can't corrupt the frontmatter or wedge the card
   if (/^[\w./@+-]+$/.test(s)) return s;
-  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  // delegate to js-yaml for anything else: it escapes control chars, quotes,
+  // colons, newlines — so a hostile value can't wedge the card or inject a key
+  return yaml.dump(s, { flowLevel: 0, lineWidth: -1 }).trim();
 }
 
 function flowYaml(value) {

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog } from './board.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
@@ -33,15 +33,39 @@ const queues = new Map();            // project name → [cardId]
 const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
-const pausedResumes = new Map();      // project name → [() => Promise] continuations
+const retryFindings = new Map();      // runKey → verifier findings to carry into a resumed build
 
-function pauseForQuota(project, thunk) {
+// On a usage limit the card is parked back in Assigned with its attempt rolled
+// back; resume (or boot) re-enqueues it through the normal queue, so accounting
+// and dedup guards always apply. No continuations run outside the queue.
+function pauseForQuota(project) {
   quotaPaused.add(project.name);
-  setBanner('quota', 'warn', 'usage limit reached — queue paused; resume when your usage resets');
-  if (thunk) {
-    if (!pausedResumes.has(project.name)) pausedResumes.set(project.name, []);
-    pausedResumes.get(project.name).push(thunk);
-  }
+  setBanner('quota', 'warn', 'usage limit reached — paused; resume when your usage resets');
+}
+
+async function parkForQuota(project, id, attempt, maxAttempts, findings) {
+  const card = readCard(project.path, id);
+  const lastVerdict = card?.data?.verification?.last_verdict || '';
+  await patchFrontmatter(project.path, id, {
+    verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict },
+  });
+  if (findings) retryFindings.set(runKey(project.name, id), findings);
+  else retryFindings.delete(runKey(project.name, id));
+  await orchMove(project, id, 'Assigned', 'usage limit; will resume');
+  pauseForQuota(project);
+  sendState(project, id, 'idle');
+}
+
+// Re-enqueue every Assigned card that has no live run (used by resume and boot).
+// enqueueBuild dedupes, so this is safe to call repeatedly.
+function enqueueAssigned(project) {
+  try {
+    for (const card of loadBoard(project.path).cards) {
+      if (card.status === 'Assigned' && card.id && !children.has(runKey(project.name, card.id))) {
+        enqueueBuild(project, card.id);
+      }
+    }
+  } catch { /* never fatal */ }
 }
 
 export function init(opts) {
@@ -348,8 +372,8 @@ async function handleRunFailure(project, id, stageName, result, revertTo) {
     await orchMove(project, id, revertTo, failure.kind);
   } else if (failure.kind === 'quota') {
     // trigger stages (Plan/skill) are human-initiated — revert and pause the
-    // project; no continuation to preserve (the human re-drags to retry)
-    pauseForQuota(project, null);
+    // project; the human re-drags to retry
+    pauseForQuota(project);
     await orchMove(project, id, revertTo, 'usage limit');
   } else {
     await toNeedsHuman(project, id, stageName, failure.kind === 'agent' ? failure.detail : 'agent_error', result.stderr);
@@ -391,6 +415,9 @@ async function buildChain(project, id, retry = null) {
   const config = loadConfig(project.path);
   const card = readCard(project.path, id);
   if (!card) return;
+  // carry findings from a verify-fail build that was then quota-parked
+  const key = runKey(project.name, id);
+  if (!retry && retryFindings.has(key)) { retry = { findings: retryFindings.get(key) }; retryFindings.delete(key); }
   const ver = card.data.verification || {};
   const attempt = (Number(ver.attempts) || 0) + 1;
   const maxAttempts = Number(ver.max_attempts) || config.max_attempts || 3;
@@ -446,14 +473,8 @@ async function buildChain(project, id, retry = null) {
     const failure = classifyFailure(result);
     await recordRun(project, id, 'Build', attempt, result, `failed: ${failure.kind}`);
     if (failure.kind === 'quota') {
-      // roll back this attempt so the resume re-runs it without burning one,
-      // and preserve any verify-fail retry context (session/findings)
-      await patchFrontmatter(project.path, id, {
-        verification: { attempts: attempt - 1, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
-      });
-      await orchMove(project, id, 'Assigned', 'usage limit; will resume');
-      pauseForQuota(project, () => buildChain(project, id, retry));
-      return sendState(project, id, 'idle');
+      // park back in Assigned (attempt rolled back); resume re-enqueues it
+      return parkForQuota(project, id, attempt, maxAttempts, retry?.findings);
     }
     return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? failure.detail : failure.kind, result.stderr);
   }
@@ -490,11 +511,10 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (!result.envelope || result.envelope.is_error || !verdict || !verdict.verdict) {
     const failure = classifyFailure(result);
     if (failure.kind === 'quota') {
-      // resume the SAME verify (session, worktree, attempt all preserved) —
-      // never rebuild from scratch and never burn an attempt on a quota blip
+      // park back in Assigned; resume re-enters the build→verify chain (the
+      // existing worktree is reused). Attempt rolled back so none is burned.
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
-      pauseForQuota(project, () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun));
-      return sendState(project, id, 'idle');
+      return parkForQuota(project, id, attempt, maxAttempts, null);
     }
     if (!isRerun && failure.kind === 'agent') {
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · malformed verdict, re-running once`);
@@ -577,7 +597,10 @@ async function runTriage(project, id, config, t, vendor) {
     prompt,
     model: t.model,
     maxTurns: t.max_turns || 15,
-    allowedTools: ['Read', 'Glob', 'Grep', 'Edit'],
+    // triage auto-fires on cards that may arrive from outside the UI (git pull,
+    // email). It runs in the main checkout, so confine its writes to the board:
+    // a poisoned card can't make it edit source via prompt injection.
+    allowedTools: vendor === 'codex' ? ['Read', 'Glob', 'Grep', 'Edit'] : ['Read', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'],
     logFile: runLogFile(project, id, 'Triage'),
   });
 
@@ -620,9 +643,12 @@ function preflight() {
 
 export async function reconcileOnBoot() {
   // A prior server's agent children were reparented to init and keep running —
-  // editing worktrees behind our back. Kill any still-alive PIDs first.
+  // editing worktrees behind our back. Kill any still-alive PIDs, but only if
+  // the PID is still one of OUR agent CLIs (guard against PID reuse).
   for (const prev of readPriorRuns()) {
-    if (prev.pid) { try { process.kill(prev.pid, 'SIGKILL'); } catch { /* gone already */ } }
+    if (prev.pid && isOurAgentProcess(prev.pid)) {
+      try { process.kill(prev.pid, 'SIGKILL'); } catch { /* gone already */ }
+    }
   }
   for (const project of (await import('./registry.js')).listProjects()) {
     try {
@@ -644,7 +670,21 @@ export async function reconcileOnBoot() {
         }
       }
       await git(project.path, ['worktree', 'prune']);
+      // Assigned cards (quota-parked, or approved just before a restart) have
+      // no live run and no in-memory queue entry — re-drive them.
+      enqueueAssigned(project);
     } catch { /* per-project, never fatal */ }
+  }
+}
+
+// Only kill a persisted PID if it still looks like our claude/codex child —
+// guards against the OS having reassigned that PID after a crash.
+function isOurAgentProcess(pid) {
+  try {
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    return /(^|\/|\s)(claude|codex)(\s|$)/.test(out);
+  } catch {
+    return false; // no such process, or ps unavailable → don't kill
   }
 }
 
@@ -671,9 +711,7 @@ export function resumeQueues(projects) {
   for (const p of projects) {
     if (!quotaPaused.has(p.name)) continue;
     quotaPaused.delete(p.name);
-    const thunks = pausedResumes.get(p.name) || [];
-    pausedResumes.set(p.name, []);
-    for (const t of thunks) t().catch(() => {}); // re-run preserved continuations
+    enqueueAssigned(p); // re-enqueue parked cards through the normal queue
     processQueue(p);
   }
   if (quotaPaused.size === 0) setBanner('quota', null, null);
