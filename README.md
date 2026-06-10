@@ -30,6 +30,7 @@ npx todomd         # localhost server + browser board (per-run token)
 ```
 
 - **+ card** in the UI (or any editor — cards are just files; agents and humans coexist via the file watcher).
+- **Attach files** to a card (＋ file in the drawer, or drag-drop): images render inline, docs become links. Stored in `.todomd/attachments/<id>/` and committed — so a screenshot or spec travels with the card, and plan/build agents can **read** it (e.g. attach a bug screenshot and the agent sees it).
 - One server, many repos: every `init`'d repo appears in the project switcher.
 - Per-column **model/skill routing** in `.todomd/config.yml` (`stages:` block): which command each column invokes, on which model, with which tools. Per-card overrides via `agent:` / `model:` frontmatter.
 - Safety: localhost-only + token; humans can't drop cards into orchestrator-only columns; agents can't touch the board from worktrees (tampering guard); failing tests block agent completion (generated Stop hook); attempt cap then **Needs Human** with a recorded reason; reconcile-on-boot catches orphaned runs.

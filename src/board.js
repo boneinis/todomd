@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
-import { commitCard } from './git.js';
+import { commitCard, commitPaths } from './git.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Assigned', 'Build', 'Verify', 'Needs Human', 'Done'];
 
@@ -209,6 +209,52 @@ ${criteria.length ? criteria.map((c) => `- [ ] ${c}`).join('\n') : '- [ ] Implem
     const relFile = path.join('.todomd', 'tasks', file);
     const commit = await commitCard(repoPath, relFile, `chore(todomd): ${id} created (${fields.source || 'ui'})`);
     return { ok: true, id, file, commit };
+  });
+}
+
+const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
+const MAX_ATTACHMENT = 25 * 1024 * 1024; // 25 MB
+
+// Save an uploaded file under .todomd/attachments/<id>/, reference it in the
+// card's ## Attachments section, and commit both. Filenames are sanitized to a
+// basename so they can never escape the attachments dir.
+export function attachCard(repoPath, id, filename, buffer) {
+  return withRepoLock(repoPath, async () => {
+    if (!buffer || !buffer.length) return { ok: false, error: 'empty file' };
+    if (buffer.length > MAX_ATTACHMENT) return { ok: false, error: 'file too large (25 MB max)' };
+    const card = readCard(repoPath, id);
+    if (!card) return { ok: false, error: `card not found: ${id}` };
+
+    // no spaces/special chars — keep attachment names URL-safe for markdown links
+    let safe = path.basename(String(filename || 'file')).replace(/[^\w.\-]/g, '_').replace(/^\.+/, '');
+    if (!safe) safe = 'file';
+    const relDir = path.join('.todomd', 'attachments', id);
+    const absDir = path.join(repoPath, relDir);
+    fs.mkdirSync(absDir, { recursive: true });
+    // never clobber an existing attachment
+    let name = safe;
+    for (let n = 1; fs.existsSync(path.join(absDir, name)); n++) {
+      const ext = path.extname(safe);
+      name = `${path.basename(safe, ext)}-${n}${ext}`;
+    }
+    fs.writeFileSync(path.join(absDir, name), buffer);
+
+    const relPosix = `${relDir.split(path.sep).join('/')}/${name}`;
+    const isImg = IMG_EXT.has(path.extname(name).toLowerCase());
+    const ref = isImg ? `![${name}](${relPosix})` : `[${name}](${relPosix})`;
+
+    let raw = card.raw;
+    if (/^## Attachments\s*$/m.test(raw)) {
+      raw = raw.replace(/^## Attachments[^\n]*\n/m, (m) => `${m}\n${ref}\n`);
+    } else {
+      raw = raw.replace(/\n*$/, '') + `\n\n## Attachments\n\n${ref}\n`;
+    }
+    fs.writeFileSync(path.join(repoPath, '.todomd', 'tasks', card.file), raw);
+
+    const relCard = path.join('.todomd', 'tasks', card.file);
+    const relAtt = path.join(relDir, name);
+    const commit = await commitPaths(repoPath, [relCard, relAtt], `chore(todomd): ${id} attach ${name}`);
+    return { ok: true, name, path: relPosix, isImg, commit };
   });
 }
 

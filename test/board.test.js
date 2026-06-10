@@ -102,3 +102,32 @@ test('unparseable card is surfaced, not fatal', () => {
   assert.ok(rc, 'readCard returns an object, never crashes');
   assert.ok(rc.parseError || Object.keys(rc.data).length === 0, 'malformed frontmatter not surfaced as data');
 });
+
+test('attachCard stores under attachments/<id>, references in card, sanitizes name, avoids clobber', async () => {
+  const { attachCard } = await import('../src/board.js');
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001');
+  const img = Buffer.from('PNGDATA');
+  const r1 = await attachCard(repo, 'task-0001', '../../evil name!.png', img);
+  assert.equal(r1.ok, true);
+  assert.equal(r1.isImg, true);
+  // sanitized to a basename inside the attachments dir
+  assert.match(r1.path, /^\.todomd\/attachments\/task-0001\/evil_name_\.png$/);
+  assert.ok(fs.existsSync(path.join(repo, r1.path)));
+  // referenced as a markdown image in the card body
+  const card = readCard(repo, 'task-0001');
+  assert.match(card.body, /## Attachments/);
+  assert.match(card.body, /!\[evil_name_\.png\]\(\.todomd\/attachments\/task-0001\/evil_name_\.png\)/);
+  // a doc (non-image) is referenced as a link, and a same-name upload doesn't clobber
+  const r2 = await attachCard(repo, 'task-0001', 'evil name!.png', Buffer.from('OTHER'));
+  assert.match(r2.path, /evil_name_-1\.png$/);
+  assert.equal(fs.readFileSync(path.join(repo, r1.path), 'utf8'), 'PNGDATA');
+});
+
+test('attachCard rejects empty and oversized files', async () => {
+  const { attachCard } = await import('../src/board.js');
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001');
+  assert.equal((await attachCard(repo, 'task-0001', 'x.png', Buffer.alloc(0))).ok, false);
+  assert.equal((await attachCard(repo, 'task-0001', 'big.bin', Buffer.alloc(26 * 1024 * 1024))).ok, false);
+});

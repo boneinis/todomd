@@ -106,12 +106,16 @@ export async function mergeBranch(repoPath, branch, message) {
 // --no-verify: board commits are tool-generated metadata touching only
 // .todomd/; the repo's commit hooks (commitlint subject-case, lint-staged,
 // secret-scan) are for human code commits and must not block board automation.
-export async function commitCard(repoPath, relFile, message) {
+export async function commitPaths(repoPath, relPaths, message) {
   if (!(await isGitRepo(repoPath))) return { committed: false, reason: 'not a git repo' };
   if (midOperation(repoPath)) return { committed: false, reason: 'repo is mid merge/rebase' };
-  const add = await git(repoPath, ['add', '--', relFile]);
+  const add = await git(repoPath, ['add', '--', ...relPaths]);
   if (!add.ok) return { committed: false, reason: add.stderr };
-  const commit = await git(repoPath, ['commit', '--no-verify', '-m', message, '--only', '--', relFile]);
+  const commit = await git(repoPath, ['commit', '--no-verify', '-m', message, '--only', '--', ...relPaths]);
   if (!commit.ok) return { committed: false, reason: commit.stderr || 'nothing to commit' };
   return { committed: true };
+}
+
+export async function commitCard(repoPath, relFile, message) {
+  return commitPaths(repoPath, [relFile], message);
 }

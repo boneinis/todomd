@@ -8,7 +8,15 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard } from './board.js';
+
+const FILE_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp', '.avif': 'image/avif',
+  '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8',
+  '.csv': 'text/csv', '.json': 'application/json',
+};
+const INLINE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif', '.pdf', '.txt', '.md']);
 import * as pipeline from './pipeline.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -128,10 +136,42 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (result.ok) pipeline.maybeTriage(project, result.id).catch(() => {});
       return json(res, result.ok ? 200 : 400, result);
     }
+    // serve an attachment — STRICTLY confined to .todomd/attachments/ so a
+    // viewer-token holder can't read arbitrary repo files (source, secrets)
+    if (url.pathname === '/api/file' && req.method === 'GET') {
+      const rel = url.searchParams.get('p') || '';
+      const attRoot = path.join(project.path, '.todomd', 'attachments') + path.sep;
+      const abs = path.resolve(project.path, rel);
+      if (!abs.startsWith(attRoot) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+        return json(res, 404, { error: 'not found' });
+      }
+      const ext = path.extname(abs).toLowerCase();
+      res.writeHead(200, {
+        'content-type': FILE_MIME[ext] || 'application/octet-stream',
+        'content-disposition': `${INLINE_EXT.has(ext) ? 'inline' : 'attachment'}; filename="${path.basename(abs).replace(/"/g, '')}"`,
+        'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+        'x-content-type-options': 'nosniff',
+      });
+      return res.end(fs.readFileSync(abs));
+    }
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
     if (cardMatch && req.method === 'GET') {
       const card = readCard(project.path, cardMatch[1]);
       return card ? json(res, 200, card) : json(res, 404, { error: 'card not found' });
+    }
+    const attachMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/attach$/);
+    if (attachMatch && req.method === 'POST') {
+      let name = req.headers['x-filename'] || url.searchParams.get('name') || 'file';
+      try { name = decodeURIComponent(name); } catch { /* keep raw — attachCard sanitizes */ }
+      const chunks = [];
+      let size = 0;
+      for await (const c of req) {
+        size += c.length;
+        if (size > 25 * 1024 * 1024) return json(res, 413, { error: 'file too large (25 MB max)' });
+        chunks.push(c);
+      }
+      const result = await attachCard(project.path, attachMatch[1], name, Buffer.concat(chunks));
+      return json(res, result.ok ? 200 : 400, result);
     }
     const moveMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/move$/);
     if (moveMatch && req.method === 'POST') {

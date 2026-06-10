@@ -224,6 +224,34 @@ $('#route-save').addEventListener('click', async () => {
     toast('server unreachable');
   }
 });
+/* ── attachments: upload via button or drag-drop onto the drawer ── */
+async function uploadFiles(files) {
+  if (!drawerCard || !files?.length) return;
+  for (const file of files) {
+    try {
+      const res = await fetch(`/api/cards/${drawerCard}/attach?project=${encodeURIComponent(currentProject)}`, {
+        method: 'POST',
+        headers: { ...headers, 'x-filename': encodeURIComponent(file.name) },
+        body: file,
+      });
+      const out = await res.json();
+      if (!res.ok) { toast(out.error || 'upload failed'); continue; }
+      toast(`attached ${out.name}`);
+    } catch { toast('server unreachable'); }
+  }
+  openDrawer(drawerCard); // re-render with the new attachment
+}
+$('#drawer-attach').addEventListener('click', () => $('#attach-input').click());
+$('#attach-input').addEventListener('change', (e) => { uploadFiles(e.target.files); e.target.value = ''; });
+const drawerEl = $('#drawer');
+drawerEl.addEventListener('dragover', (e) => { e.preventDefault(); drawerEl.classList.add('drag-file'); });
+drawerEl.addEventListener('dragleave', () => drawerEl.classList.remove('drag-file'));
+drawerEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  drawerEl.classList.remove('drag-file');
+  if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
+});
+
 $('#drawer-close').addEventListener('click', () => { $('#drawer').hidden = true; drawerCard = null; });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#drawer').hidden = true; drawerCard = null; } });
 $('#drawer-cancel').addEventListener('click', async () => {
@@ -257,8 +285,30 @@ function appendRunEvent(event) {
 function esc(s) {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
+// only attachment paths and http(s) are renderable; everything else (e.g.
+// javascript:) is dropped to plain text — no XSS via card-authored links
+function safeUrl(rawUrl) {
+  const u = rawUrl.replace(/&amp;/g, '&').trim();
+  if (u.startsWith('.todomd/attachments/')) {
+    return `/api/file?project=${encodeURIComponent(currentProject)}&p=${encodeURIComponent(u)}&token=${encodeURIComponent(token)}`;
+  }
+  if (/^https?:\/\//i.test(u)) return u;
+  return null;
+}
 function inline(s) {
   return esc(s)
+    // images: ![alt](url) — alt is already escaped; url sanitized
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+      const href = safeUrl(url);
+      return href ? `<img class="card-img" alt="${alt}" src="${href}" loading="lazy" />` : esc(m);
+    })
+    // links: [text](url)
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) => {
+      const href = safeUrl(url);
+      if (!href) return text;
+      const ext = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : '';
+      return `<a href="${href}"${ext}>${text}</a>`;
+    })
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
 }
