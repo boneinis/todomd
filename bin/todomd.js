@@ -8,7 +8,7 @@ import { initProject } from '../src/templates.js';
 import { startServer } from '../src/server.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const USAGE = 'usage: todomd [init|serve|revoke] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|intake-test <project>] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
 const VALUE_FLAGS = new Set(['--port']);
@@ -75,6 +75,16 @@ if (cmd === 'revoke') {
   }
   console.log(n ? `revoked ${n} device token(s) — restart todomd; old QR links are now dead.` : 'no device tokens to revoke');
   process.exit(0);
+}
+
+if (cmd === 'intake-test') {
+  const name = positional[1];
+  if (!name) { console.error('usage: todomd intake-test <project-name>'); process.exit(1); }
+  const { testIntake } = await import('../src/intake.js');
+  const r = await testIntake(name);
+  if (r.ok) console.log(`✓ connected to ${name}: folder "${r.folder}", ${r.unseen} unseen message(s)`);
+  else console.error(`✗ ${r.error}`);
+  process.exit(r.ok ? 0 : 1);
 }
 
 if (cmd === 'serve') {

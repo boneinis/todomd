@@ -18,6 +18,7 @@ const FILE_MIME = {
 };
 const INLINE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif', '.pdf', '.txt', '.md']);
 import * as pipeline from './pipeline.js';
+import { startIntake } from './intake.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
@@ -299,6 +300,13 @@ export function startServer({ port = 7337, lan = false } = {}) {
 
   pipeline.init({ broadcast });
   pipeline.reconcileOnBoot().catch(() => {});
+
+  // IMAP email intake: poll configured mailboxes → cards in Review → triage
+  startIntake({
+    getProject: (name) => listProjects().find((p) => p.name === name),
+    onCard: (project, id) => pipeline.maybeTriage(project, id).catch(() => {}),
+    log: (m) => console.log(m),
+  });
 
   return new Promise((resolve) => {
     server.listen(port, lan ? '0.0.0.0' : '127.0.0.1', () => {

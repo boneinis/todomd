@@ -23,7 +23,9 @@
   "dependencies": {
     "chokidar": "^4.0.3",
     "gray-matter": "^4.0.3",
+    "imapflow": "^1.4.0",
     "js-yaml": "^4.1.0",
+    "mailparser": "^3.9.9",
     "qrcode": "^1.5.4",
     "ws": "^8.18.0"
   },
