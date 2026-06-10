@@ -17,7 +17,7 @@ const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript
 // Tokens persisted per machine so restarts don't invalidate open tabs.
 // `token` = full access; `viewer` = read-only (the QR/mobile monitor link).
 function loadToken(name) {
-  const file = path.join(os.homedir(), '.todomd', name);
+  const file = path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', name);
   try {
     const t = fs.readFileSync(file, 'utf8').trim();
     if (/^[a-f0-9]{32}$/.test(t)) return t;

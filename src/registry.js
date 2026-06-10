@@ -2,20 +2,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const REG_DIR = path.join(os.homedir(), '.todomd');
-const REG_FILE = path.join(REG_DIR, 'projects.json');
+// resolved lazily so TODOMD_HOME set after import (and in tests) is honored
+const regDir = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd');
+const regFile = () => path.join(regDir(), 'projects.json');
 
 function readRegistry() {
   try {
-    return JSON.parse(fs.readFileSync(REG_FILE, 'utf8'));
+    return JSON.parse(fs.readFileSync(regFile(), 'utf8'));
   } catch {
     return { projects: [] };
   }
 }
 
 function writeRegistry(reg) {
-  fs.mkdirSync(REG_DIR, { recursive: true });
-  fs.writeFileSync(REG_FILE, JSON.stringify(reg, null, 2) + '\n');
+  fs.mkdirSync(regDir(), { recursive: true });
+  fs.writeFileSync(regFile(), JSON.stringify(reg, null, 2) + '\n');
 }
 
 export function listProjects() {

@@ -73,4 +73,8 @@ todomd commits use a `chore(todomd):` prefix so they pass commitlint/Conventiona
 
 > **Network exposure:** the server binds `127.0.0.1` by default. `todomd --lan` exposes a read-only/QR monitor to your local network over plain **HTTP** — use only on trusted networks; for remote access put it behind a VPN/Tailscale. Revoke device links with `todomd revoke`.
 
+## Development
+
+`npm test` runs the suite (Node's built-in runner, no deps): unit tests for the board/frontmatter, git, registry, and run-output parsing layers, plus an integration test that drives a card through the real state machine (happy path, verification-retry loop, attempt-cap escalation, transition-table guards) using a deterministic fake agent — no LLM or network. Tests isolate to a temp `TODOMD_HOME` and temp git repos; they never touch your real boards.
+
 Design + phase-2 spec: `RECOMMENDATIONS.md`.

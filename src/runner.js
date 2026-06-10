@@ -50,7 +50,7 @@ function runClaude({
     args.push('--settings', settingsFile);
   }
 
-  const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let log;
   if (streaming && logFile) {
@@ -150,7 +150,7 @@ function runCodex({
   }
   args.push(prompt);
 
-  const child = spawn('codex', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.env.TODOMD_CODEX_BIN || 'codex', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let log;
   if (logFile) {
