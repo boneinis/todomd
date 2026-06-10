@@ -54,7 +54,8 @@ async function loadBoard() {
   runStates = boardData.runStates || {};
   renderBanners(boardData.banners || []);
   const usage = boardData.usage || {};
-  $('#usage').textContent = usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '';
+  const modeTag = boardData.mode === 'budget' ? ' · budget' : '';
+  $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag;
   renderBoard();
 }
 

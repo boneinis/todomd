@@ -2,6 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const CONFIG_YML = `columns: [Review, Plan, Planned, Assigned, Build, Verify, Needs Human, Done]
+# mode: launcher — the todomd server spawns headless agent runs (instant,
+#   bills the included headless credit pool).
+# mode: budget — the server only manages the board; you run a dispatcher
+#   inside an interactive session (\`/loop 2m /todomd-dispatch\`), so work
+#   bills the interactive subscription pool instead.
+mode: launcher
 verify_command: npm test
 max_attempts: 3
 concurrency: 1
@@ -139,6 +145,42 @@ This card is a markdown file at \`.todomd/tasks/task-0001-welcome.md\`. Drag it 
 ## Run Log
 `;
 
+const CMD_DISPATCH = `---
+description: Budget-mode dispatcher — process pending todomd cards in this session
+---
+
+You are the todomd budget-mode dispatcher. Process the board in \`.todomd/\` of the current repo. All work happens in THIS session (or its subagents) so it bills to the interactive subscription pool. First read \`.todomd/config.yml\` (verify_command, max_attempts, worktree_dir, branch_prefix).
+
+Skip any card whose frontmatter \`agent:\` is not claude — the launcher handles those vendors.
+
+## 1. Plan work (all pending)
+
+For each card in \`.todomd/tasks/*.md\` with \`status: Plan\`:
+- If it has \`skill: <name>\`: invoke /<name> with the card id, save output worth keeping under \`## Findings\` in the card, set \`status: Review\`, append a Run Log line, commit.
+- Otherwise follow \`.claude/commands/todomd-plan.md\` for it, then set \`status: Planned\`, Run Log line, commit.
+
+## 2. Build work (ONE card per tick)
+
+Take the oldest card with \`status: Assigned\` (none → skip):
+1. attempts = verification.attempts + 1. If attempts > max_attempts → \`status: Needs Human\`, \`needs_human_reason: attempts_exhausted\`, commit, stop.
+2. Set \`status: Build\` and verification.attempts, commit. Create the worktree if missing: \`git worktree add <worktree_dir>/<id> -b <branch_prefix><id>\`.
+3. Inside the worktree follow \`.claude/commands/todomd-build.md\` for the card. Never touch \`.todomd/\` inside the worktree.
+4. Set \`status: Verify\`, commit. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings.
+5. **pass** → confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit.
+   **fail** → if attempts < max_attempts: fix the findings in the worktree, re-run step 4. Else Needs Human as in step 1, with the findings quoted in the Run Log.
+
+## 3. Self-heal
+
+Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assigned and re-enter step 2.
+
+## Rules
+
+- Frontmatter: you may change only \`status\`, \`verification\`, \`needs_human_reason\`, \`session_id\`.
+- Run Log: one line per action — \`- <UTC time> · <stage> attempt N (budget) · <result>\`.
+- Board commits are path-scoped to the card file: \`git commit -m "chore(todomd): <id> <from> -> <to> (<reason>)" -- .todomd/tasks/<file>\`. Code commits happen on the task branch per the build command.
+- Nothing to do → reply "board idle" and finish.
+`;
+
 export function initProject(repoPath) {
   const writes = [
     ['.todomd/config.yml', CONFIG_YML],
@@ -147,6 +189,7 @@ export function initProject(repoPath) {
     ['.claude/commands/todomd-plan.md', CMD_PLAN],
     ['.claude/commands/todomd-build.md', CMD_BUILD],
     ['.claude/commands/todomd-verify.md', CMD_VERIFY],
+    ['.claude/commands/todomd-dispatch.md', CMD_DISPATCH],
   ];
   const created = [];
   for (const [rel, content] of writes) {

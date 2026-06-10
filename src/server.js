@@ -52,8 +52,10 @@ export function startServer({ port = 7337 } = {}) {
     if (!project) return json(res, 404, { error: 'unknown project' });
 
     if (url.pathname === '/api/board') {
+      const board = loadBoard(project.path);
       return json(res, 200, {
-        ...loadBoard(project.path),
+        ...board,
+        mode: board.config.mode || 'launcher',
         runStates: pipeline.getRunStates(project.name),
         banners: pipeline.getBanners(),
         usage: pipeline.usage(),

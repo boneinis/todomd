@@ -211,7 +211,8 @@ export async function humanMove(project, id, to) {
     const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
     if (blocked.length) return { ok: false, error: `blocked by: ${blocked.join(', ')}` };
     const moved = await moveCard(project.path, id, 'Assigned', { reason: 'approved' });
-    if (moved.ok) enqueueBuild(project, id);
+    // budget mode: the /todomd-dispatch session picks the card up from here
+    if (moved.ok && (config.mode || 'launcher') !== 'budget') enqueueBuild(project, id);
     return moved;
   }
 
@@ -235,7 +236,9 @@ export async function humanMove(project, id, to) {
     if (IN_FLIGHT.has(from)) return { ok: false, error: `cannot leave ${from} while a stage may be active` };
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
     const moved = await moveCard(project.path, id, to, { reason: 'queued by human' });
-    if (moved.ok) runTriggerStage(project, id, to).catch(() => {});
+    if (moved.ok && (config.mode || 'launcher') !== 'budget') {
+      runTriggerStage(project, id, to).catch(() => {});
+    }
     return moved;
   }
 
@@ -512,6 +515,9 @@ function preflight() {
 export async function reconcileOnBoot() {
   for (const project of (await import('./registry.js')).listProjects()) {
     try {
+      // budget-mode boards belong to the dispatcher session, which self-heals
+      // its own interrupted cards — the server must not orphan-sweep them
+      if ((loadConfig(project.path).mode || 'launcher') === 'budget') continue;
       const board = loadBoard(project.path);
       for (const card of board.cards) {
         if (IN_FLIGHT.has(card.status) && !children.has(runKey(project.name, card.id))) {
