@@ -127,3 +127,24 @@ test('routeProject accepts an array of toMatches', async () => {
   const routes = [{ project: 'repo-a', toMatches: ['a@x.com', 'a-alt@x.com'] }];
   assert.equal(routeProject(routes, null, { to: { value: [{ address: 'a-alt@x.com' }] } }), 'repo-a');
 });
+
+test('intake auto-assigns: inbox route assignee, board assignee, inbox default', async () => {
+  const { intakeSources } = await import('../src/intake.js');
+  const home = isolateHome();
+  const fs = await import('node:fs'); const path = await import('node:path');
+  fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.todomd/intake.json'), JSON.stringify({
+    accounts: { hub: { host: 'h', user: 'u', pass: 'p' } },
+    boards: { 'repo-a': { account: 'hub', folder: 'A', assignee: 'bob' } },
+    inboxes: { main: { account: 'hub', folder: 'INBOX', assignee: 'lead',
+      routes: [{ project: 'repo-x', toMatches: 'x@co.com', assignee: 'carol' },
+               { project: 'repo-y', toMatches: 'y@co.com' }] } },
+  }));
+  const sources = intakeSources();
+  const board = sources.find((s) => s.label === 'repo-a');
+  const inbox = sources.find((s) => s.label === 'main');
+  assert.equal(board.assigneeOf(), 'bob');                                                  // board default
+  assert.equal(inbox.assigneeOf({ to: { value: [{ address: 'x@co.com' }] } }), 'carol');    // route assignee
+  assert.equal(inbox.assigneeOf({ to: { value: [{ address: 'y@co.com' }] } }), 'lead');     // inbox default (route has none)
+  assert.equal(inbox.assigneeOf({ to: { value: [{ address: 'z@co.com' }] } }), 'lead');     // unmatched → inbox default
+});

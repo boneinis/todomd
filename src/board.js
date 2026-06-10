@@ -187,6 +187,7 @@ labels: [${labels.join(', ')}]
 dependencies: []
 created_date: ${new Date().toISOString().slice(0, 10)}
 source: ${fields.source || 'ui'}
+assignee: ${fields.assignee ? String(fields.assignee).replace(/[^\w.@ -]/g, '').trim() : ''}
 agent: ${fields.agent === 'codex' ? 'codex' : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}
 session_id:
 worktree:

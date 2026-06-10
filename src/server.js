@@ -248,6 +248,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       }
       if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
       if ('skill' in fields) updates.skill = String(fields.skill || '').replace(/[^\w:-]/g, '');
+      if ('assignee' in fields) updates.assignee = String(fields.assignee || '').replace(/[^\w.@ -]/g, '').trim();
       if (!Object.keys(updates).length) return json(res, 400, { error: 'nothing to set' });
       const result = await patchFrontmatter(project.path, setMatch[1], updates);
       return json(res, result.ok ? 200 : 400, result);

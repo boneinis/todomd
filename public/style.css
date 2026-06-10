@@ -204,10 +204,11 @@ body {
 .meta-chip b { color: var(--ink); font-weight: 500; }
 
 .drawer-routing {
-  display: grid; grid-template-columns: 1fr 1.2fr 1.2fr auto; gap: 8px;
+  display: grid; grid-template-columns: 0.8fr 1fr 1fr 1fr auto; gap: 8px;
   align-items: end; margin-bottom: 18px; padding: 10px 12px;
   border: 1px solid var(--line); background: var(--panel-2);
 }
+.card-assignee { color: var(--cyan); font-size: 10px; letter-spacing: .04em; }
 .drawer-routing label { color: var(--dim); font-size: 10.5px; letter-spacing: .1em; }
 .drawer-routing input, .drawer-routing select {
   display: block; width: 100%; margin-top: 4px;

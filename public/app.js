@@ -85,7 +85,7 @@ function renderBoard() {
     const color = COL_COLORS[col] || 'var(--dim)';
     const cards = boardData.cards.filter(
       (c) => c.status === col &&
-        (!filter || `${c.id} ${c.title} ${(c.labels || []).join(' ')}`.toLowerCase().includes(filter))
+        (!filter || `${c.id} ${c.title} ${(c.labels || []).join(' ')} ${c.assignee || ''}`.toLowerCase().includes(filter))
     );
     const colEl = document.createElement('section');
     colEl.className = 'column';
@@ -115,6 +115,12 @@ function renderCard(card, color, i) {
   el.querySelector('.card-title').textContent = card.title || card.file;
   el.querySelector('.card-chips').textContent =
     [card.type, ...(card.labels || [])].filter(Boolean).join(' · ');
+  if (card.assignee) {
+    const a = document.createElement('span');
+    a.className = 'card-assignee';
+    a.textContent = `@${card.assignee}`;
+    el.querySelector('header').appendChild(a);
+  }
   const crit = el.querySelector('.card-criteria');
   if (card.criteria) {
     crit.textContent = `☑ ${card.criteria.done}/${card.criteria.total}`;
@@ -183,6 +189,7 @@ async function openDrawer(id) {
   $('#route-agent').value = card.data.agent || 'claude';
   $('#route-model').value = card.data.model || '';
   $('#route-skill').value = card.data.skill || '';
+  $('#route-assignee').value = card.data.assignee || '';
   const cols = boardData?.config?.columns || [];
   $('#move-select').innerHTML = cols
     .filter((c) => c !== card.data.status)
@@ -219,6 +226,7 @@ $('#route-save').addEventListener('click', async () => {
         agent: $('#route-agent').value,
         model: $('#route-model').value.trim(),
         skill: $('#route-skill').value.trim(),
+        assignee: $('#route-assignee').value.trim(),
       }),
     });
     const out = await res.json();
@@ -470,6 +478,7 @@ $('#card-form').addEventListener('submit', async (e) => {
     agent: f.get('agent'),
     model: (f.get('model') || '').trim() || undefined,
     skill: (f.get('skill') || '').trim() || undefined,
+    assignee: (f.get('assignee') || '').trim() || undefined,
     labels: String(f.get('labels') || '').split(',').map((s) => s.trim()).filter(Boolean),
     description: f.get('description'),
     criteria: String(f.get('criteria') || '').split('\n').map((s) => s.trim()).filter(Boolean),

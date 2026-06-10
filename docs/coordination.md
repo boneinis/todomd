@@ -42,3 +42,27 @@ Notes on `sync`:
 - It needs an `origin` remote and push access. Cloud-routine intake (which clones fresh) doesn't participate in `sync`.
 
 Coordination is **advisory by design** — any error in fetching/pushing/parsing never blocks the pipeline; at worst you lose the cross-machine view for that run and fall back to local claims.
+
+## Assigning incoming work to a developer
+
+Cards carry an **`assignee`** (a developer name, distinct from `agent`/vendor and the build `worker`). It shows as an `@name` chip on the card and is searchable in the filter box, so each developer can type their name to see their queue.
+
+Set it:
+- **On any card** — the assignee field in the new-card modal or the card drawer's routing panel.
+- **Automatically on incoming email** — give an intake board or route an `assignee` in `~/.todomd/intake.json`, so mail routed to a project (or to a specific address) is assigned to the right developer as it arrives:
+
+```json
+{
+  "inboxes": {
+    "main": {
+      "account": "hub", "folder": "INBOX", "assignee": "lead",
+      "routes": [
+        { "project": "repo-a", "toMatches": "frontend@you.com", "assignee": "alice" },
+        { "project": "repo-b", "toMatches": "api@you.com",      "assignee": "bob" }
+      ]
+    }
+  }
+}
+```
+
+A route's `assignee` wins; otherwise the inbox/board `assignee` applies; otherwise the card is unassigned. The card still lands in **Review** (the human gate holds) — assignment just tells everyone whose card it is. Combined with `ACTIVE.md`, that's the full picture: **assignee** says who should pick it up, the manifest prevents two people building the same files at once.

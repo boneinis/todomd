@@ -131,3 +131,13 @@ test('attachCard rejects empty and oversized files', async () => {
   assert.equal((await attachCard(repo, 'task-0001', 'x.png', Buffer.alloc(0))).ok, false);
   assert.equal((await attachCard(repo, 'task-0001', 'big.bin', Buffer.alloc(26 * 1024 * 1024))).ok, false);
 });
+
+test('createCard records an assignee (sanitized) and it round-trips', async () => {
+  const repo = makeRepo();
+  const r = await createCard(repo, { title: 'Assigned task', assignee: 'alice@team ' });
+  assert.equal(r.ok, true);
+  assert.equal(readCard(repo, r.id).data.assignee, 'alice@team');
+  // a card with no assignee parses to a falsy field (empty/null)
+  const r2 = await createCard(repo, { title: 'Unassigned' });
+  assert.ok(!readCard(repo, r2.id).data.assignee);
+});

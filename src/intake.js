@@ -51,15 +51,20 @@ export function recipientAddresses(parsed) {
   return out;
 }
 
-// Pick the target project for a routed inbox message (or the default / null).
-export function routeProject(routes, fallback, parsed) {
+// The route whose toMatches matches one of the message's recipient addresses.
+export function matchRoute(routes, parsed) {
   const addrs = recipientAddresses(parsed);
   for (const r of routes || []) {
     // toMatches may be a string or a list of addresses
     const needles = [].concat(r.toMatches || []).map((s) => String(s).toLowerCase().trim()).filter(Boolean);
-    if (needles.some((n) => addrs.some((a) => a.includes(n)))) return r.project;
+    if (needles.some((n) => addrs.some((a) => a.includes(n)))) return r;
   }
-  return fallback || null;
+  return null;
+}
+
+// Pick the target project for a routed inbox message (or the default / null).
+export function routeProject(routes, fallback, parsed) {
+  return matchRoute(routes, parsed)?.project || fallback || null;
 }
 
 // Normalize the config into poll sources. A `board` maps 1 folder → 1 project;
@@ -72,7 +77,8 @@ export function intakeSources() {
   const sources = [];
   const boards = structured ? (raw.boards || {}) : raw; // legacy flat = boards
   for (const [name, b] of Object.entries(boards)) {
-    sources.push({ kind: 'board', label: name, conf: merge(b), resolve: () => name });
+    const conf = merge(b);
+    sources.push({ kind: 'board', label: name, conf, resolve: () => name, assigneeOf: () => conf.assignee || null });
   }
   for (const [name, inbox] of Object.entries(raw.inboxes || {})) {
     const conf = merge(inbox);
@@ -80,6 +86,8 @@ export function intakeSources() {
       kind: 'inbox', label: name, conf,
       routes: inbox.routes || [],
       resolve: (parsed) => routeProject(inbox.routes, inbox.default, parsed),
+      // per-route assignee, else the inbox default — assign incoming work to a developer
+      assigneeOf: (parsed) => matchRoute(inbox.routes, parsed)?.assignee || inbox.assignee || null,
     });
   }
   return sources;
@@ -117,7 +125,7 @@ let log = () => {};
 const seenMessageIds = new Map(); // label → Set
 
 async function pollSource(source, getProject) {
-  const { conf, resolve, label } = source;
+  const { conf, resolve, assigneeOf, label } = source;
   if (!conf.host || !conf.user || !conf.pass) { log(`intake: "${label}" missing host/user/pass`); return; }
   if (!seenMessageIds.has(label)) seenMessageIds.set(label, new Set());
   const handled = seenMessageIds.get(label);
@@ -154,7 +162,8 @@ async function pollSource(source, getProject) {
             ? `project "${targetName}" not registered`
             : `no route matched (to: ${recipientAddresses(parsed).join(', ') || 'none'})`}`);
         } else {
-          const card = await createCard(project.path, emailToCardFields(parsed));
+          const assignee = assigneeOf ? assigneeOf(parsed) : null; // auto-assign incoming work
+          const card = await createCard(project.path, { ...emailToCardFields(parsed), assignee });
           if (card.ok) {
             created++;
             if (mid) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
