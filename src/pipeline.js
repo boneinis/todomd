@@ -4,6 +4,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges } from './board.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
+import { claim as coordClaim, release as coordRelease, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
 
 const VERDICT_SCHEMA = {
@@ -169,10 +170,16 @@ async function recordRun(project, id, stage, attempt, result, note) {
 
 async function toNeedsHuman(project, id, from, reason, detail = '') {
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
+  await releaseCoordination(project, id);
   await patchFrontmatter(project.path, id, { needs_human_reason: reason });
   if (detail) await appendRunLog(project.path, id, `  - ${reason}: ${detail.slice(0, 400)}`);
   await orchMove(project, id, 'Needs Human', reason);
   sendState(project, id, 'idle');
+}
+
+async function releaseCoordination(project, id) {
+  const coord = loadConfig(project.path).coordination || {};
+  if (coord.enabled) { try { await coordRelease(project.path, id, { sync: coord.sync }); } catch {} }
 }
 
 function runLogFile(project, id, stage, attempt) {
@@ -454,6 +461,27 @@ async function buildChain(project, id, retry = null) {
   });
   await orchMove(project, id, 'Build', `attempt ${attempt}`);
 
+  // multi-developer coordination: claim the files this card touches, surface
+  // (or block on) overlap with another worker's active work
+  const coord = config.coordination || {};
+  if (coord.enabled && attempt === 1) {
+    try {
+      const files = coordPlanFiles(card.body);
+      const conflicts = await coordClaim(project.path,
+        { card: id, title: card.data.title || id, branch, worker: coordWorker(config), files },
+        { sync: coord.sync });
+      if (conflicts.length) {
+        const detail = conflicts.map((c) => `${c.card} by ${c.worker} (${c.files.join(', ')})`).join('; ');
+        await appendRunLog(project.path, id, `  - ⚠ file overlap with active work: ${detail}`);
+        setBanner('overlap', 'warn', `${id} overlaps active work: ${detail}`);
+        if (coord.block) {
+          await coordRelease(project.path, id, { sync: coord.sync });
+          return toNeedsHuman(project, id, 'Build', 'work_conflict', detail);
+        }
+      }
+    } catch { /* coordination is advisory — never block the pipeline on its errors */ }
+  }
+
   const stage = stageConfig(config, 'Build', card);
   const vendor = cardVendor(config, card);
   const buildOpts = {
@@ -481,6 +509,7 @@ async function buildChain(project, id, retry = null) {
 
   if (run?.cancelled) {
     await recordRun(project, id, 'Build', attempt, result, 'cancelled');
+    await releaseCoordination(project, id);
     await orchMove(project, id, run.revertTo, 'cancelled');
     return sendState(project, id, 'idle');
   }
@@ -521,6 +550,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
   if (run?.cancelled) {
     await recordRun(project, id, 'Verify', attempt, result, 'cancelled');
+    await releaseCoordination(project, id);
     await orchMove(project, id, run.revertTo, 'cancelled');
     return sendState(project, id, 'idle');
   }
@@ -564,6 +594,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
     await removeWorktree(project.path, worktreeAbs, branch);
     await patchFrontmatter(project.path, id, { worktree: '' });
+    await releaseCoordination(project, id);
     await orchMove(project, id, 'Done', `verdict: pass, attempt ${attempt}`);
     return sendState(project, id, 'idle');
   }

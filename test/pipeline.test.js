@@ -161,3 +161,34 @@ test('forgetProject + projectHasLiveRun', async () => {
   assert.equal(pipeline.projectHasLiveRun('nope'), false);
   pipeline.forgetProject('nope'); // no-op, must not throw
 });
+
+test('coordination: a card claims ACTIVE.md while building and releases it on Done', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  // enable coordination in this repo's config
+  const cfgPath = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfgPath, fs.readFileSync(cfgPath, 'utf8') + '\ncoordination:\n  enabled: true\n');
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  let claimedDuringBuild = false;
+  // poll the manifest while the card runs
+  const watch = setInterval(() => {
+    try {
+      const md = fs.readFileSync(path.join(repo, '.todomd/ACTIVE.md'), 'utf8');
+      if (/task-0001/.test(md)) claimedDuringBuild = true;
+    } catch {}
+  }, 50);
+
+  await pipeline.humanMove(p, 'task-0001', 'Assigned');
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  clearInterval(watch);
+
+  assert.ok(claimedDuringBuild, 'card should appear in ACTIVE.md while building');
+  // released on Done — manifest no longer lists it
+  const final = fs.readFileSync(path.join(repo, '.todomd/ACTIVE.md'), 'utf8');
+  assert.doesNotMatch(final, /task-0001/, 'claim must be released on Done');
+  clearFakeAgent();
+});

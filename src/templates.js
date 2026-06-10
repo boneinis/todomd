@@ -19,6 +19,15 @@ worktree_link: [node_modules]
 branch_prefix: todomd/
 default_agent: claude
 
+# Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
+# in-flight work (which card/files each worker is building), so several people
+# on this repo don't overlap. Off by default.
+coordination:
+  enabled: false
+  block: false      # true = refuse a card whose files overlap another worker's active work
+  sync: false       # true = git fetch others' claims + git push your own (needs a remote)
+  worker: ""        # optional name; defaults to <user>@<host>
+
 # Auto-triage: when a card arrives in Review (UI, API, or email push), an
 # agent annotates it with codebase insight + a proposed plan of action.
 # The card stays in Review — the human still decides. Set enabled: false
