@@ -420,6 +420,39 @@ $('#theme-btn').addEventListener('click', () => {
   localStorage.setItem('todomd-theme', light ? 'light' : 'dark');
 });
 
+/* ── edit column prompts ── */
+let promptCommands = [];
+async function loadPromptCommand(command) {
+  const out = await api(`commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`);
+  $('#prompt-text').value = out.content;
+  const item = promptCommands.find((c) => c.command === command);
+  $('#prompt-meta').textContent = item ? `${item.command}.md${item.model ? ` · model ${item.model}` : ''}${item.exists ? '' : ' · (new)'}` : '';
+}
+$('#prompts-btn').addEventListener('click', async () => {
+  if (!currentProject) return;
+  try {
+    const { commands } = await api(`commands?project=${encodeURIComponent(currentProject)}`);
+    promptCommands = commands;
+    $('#prompt-select').innerHTML = commands.map((c) => `<option value="${esc(c.command)}">${esc(c.column)} — ${esc(c.command)}</option>`).join('');
+    if (commands.length) await loadPromptCommand(commands[0].command);
+    $('#prompts-backdrop').hidden = false;
+  } catch (e) { toast(e.message); }
+});
+$('#prompt-select').addEventListener('change', (e) => loadPromptCommand(e.target.value).catch((x) => toast(x.message)));
+$('#prompts-close').addEventListener('click', () => { $('#prompts-backdrop').hidden = true; });
+$('#prompts-backdrop').addEventListener('click', (e) => { if (e.target.id === 'prompts-backdrop') $('#prompts-backdrop').hidden = true; });
+$('#prompt-save').addEventListener('click', async () => {
+  const command = $('#prompt-select').value;
+  try {
+    const res = await fetch(`/api/commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ content: $('#prompt-text').value }),
+    });
+    const out = await res.json();
+    toast(res.ok ? `saved ${command}` : (out.error || 'save failed'));
+    if (res.ok) { const it = promptCommands.find((c) => c.command === command); if (it) it.exists = true; }
+  } catch { toast('server unreachable'); }
+});
+
 /* ── email intake (IMAP) settings ── */
 const intakeForm = $('#intake-form');
 $('#intake-btn').addEventListener('click', async () => {

@@ -223,6 +223,26 @@ export function commitCardChanges(repoPath, id, message) {
   });
 }
 
+// Read/write a column's prompt = its .claude/commands/<name>.md file. The name
+// is constrained to [\w-] so it can never escape the commands dir.
+export function readCommandFile(repoPath, name) {
+  if (!/^[\w-]+$/.test(name)) return null;
+  try { return fs.readFileSync(path.join(repoPath, '.claude', 'commands', `${name}.md`), 'utf8'); }
+  catch { return ''; } // not yet created → empty
+}
+
+export function writeCommandFile(repoPath, name, content) {
+  if (!/^[\w-]+$/.test(name)) return Promise.resolve({ ok: false, error: 'invalid command name' });
+  return withRepoLock(repoPath, async () => {
+    const dir = path.join(repoPath, '.claude', 'commands');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${name}.md`), String(content ?? ''));
+    const commit = await commitPaths(repoPath, [path.join('.claude', 'commands', `${name}.md`)],
+      `chore(todomd): edit ${name} prompt`);
+    return { ok: true, commit };
+  });
+}
+
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
 const MAX_ATTACHMENT = 25 * 1024 * 1024; // 25 MB
 

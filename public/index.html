@@ -25,6 +25,7 @@
     <select id="project" title="project"></select>
     <button id="manage-projects" class="qr-btn" title="add / remove projects">⊕</button>
     <button id="intake-btn" class="qr-btn" title="email intake (IMAP) settings">✉</button>
+    <button id="prompts-btn" class="qr-btn" title="edit column prompts">⚙</button>
     <span class="usage" id="usage" title="model spend this month"></span>
     <span class="conn" id="conn" title="live connection"><span class="conn-dot"></span><span id="conn-label">SYNC</span></span>
   </div>
@@ -120,6 +121,22 @@
       <button type="submit" class="modal-submit">create in Review</button>
     </div>
   </form>
+</div>
+
+<div id="prompts-backdrop" class="modal-backdrop" hidden>
+  <div class="modal prompts-modal">
+    <h2>column prompts</h2>
+    <p class="qr-note">Each pipeline column runs a command — its <code>.claude/commands/*.md</code> file is the prompt the agent executes (<code>$ARGUMENTS</code> = the task id). Edit and save; it's committed to the repo.</p>
+    <div class="prompts-row">
+      <select id="prompt-select"></select>
+      <span id="prompt-meta" class="qr-note"></span>
+    </div>
+    <textarea id="prompt-text" class="prompt-text" spellcheck="false"></textarea>
+    <div class="modal-actions">
+      <button type="button" id="prompts-close" class="drawer-close">close</button>
+      <button type="button" id="prompt-save" class="modal-submit">save</button>
+    </div>
+  </div>
 </div>
 
 <div id="intake-backdrop" class="modal-backdrop" hidden>

@@ -8,7 +8,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig } from './board.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 
@@ -178,6 +178,36 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     const project = findProject(url.searchParams.get('project') || '');
     if (!project) return json(res, 404, { error: 'unknown project' });
+
+    // column prompts = the .claude/commands/*.md files. Full token only (editing repo files).
+    if (url.pathname === '/api/commands' && req.method === 'GET') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const cfg = loadConfig(project.path);
+      const list = [];
+      for (const [col, s] of Object.entries(cfg.stages || {})) {
+        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '' });
+      }
+      if (cfg.triage) list.push({ column: 'Triage (auto)', command: cfg.triage.command || 'todomd-triage', model: cfg.triage.model || '' });
+      list.push({ column: 'Dispatch (budget mode)', command: 'todomd-dispatch', model: '' });
+      for (const it of list) it.exists = fs.existsSync(path.join(project.path, '.claude', 'commands', `${it.command}.md`));
+      return json(res, 200, { commands: list });
+    }
+    const cmdMatch = url.pathname.match(/^\/api\/commands\/([\w-]+)$/);
+    if (cmdMatch) {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      if (req.method === 'GET') {
+        const content = readCommandFile(project.path, cmdMatch[1]);
+        return content === null ? json(res, 400, { error: 'bad command name' }) : json(res, 200, { name: cmdMatch[1], content });
+      }
+      if (req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        let content;
+        try { ({ content } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        const result = await writeCommandFile(project.path, cmdMatch[1], content);
+        return json(res, result.ok ? 200 : 400, result);
+      }
+    }
 
     if (url.pathname === '/api/board') {
       const board = loadBoard(project.path);

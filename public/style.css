@@ -349,7 +349,16 @@ body {
   font: inherit; font-size: 10.5px; padding: 3px 9px; cursor: pointer;
 }
 .proj-remove:hover { border-color: var(--red); color: var(--red); }
-body.viewer #manage-projects, body.viewer #intake-btn { display: none !important; }
+body.viewer #manage-projects, body.viewer #intake-btn, body.viewer #prompts-btn { display: none !important; }
+.prompts-modal { width: min(760px, 94vw); }
+.prompts-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+.prompts-row select { background: var(--bg); border: 1px solid var(--line); color: var(--ink); font: inherit; font-size: 12px; padding: 6px 10px; }
+.prompt-text {
+  width: 100%; height: 46vh; resize: vertical; box-sizing: border-box;
+  background: var(--bg); border: 1px solid var(--line); color: var(--ink);
+  font-family: var(--mono); font-size: 12px; line-height: 1.55; padding: 12px;
+}
+.prompt-text:focus { outline: none; border-color: var(--amber); }
 .modal-row .chk { display: flex; align-items: center; gap: 6px; }
 .modal-row .chk input { width: auto; margin-top: 0; }
 

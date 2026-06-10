@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
-import { makeRepo, writeCard } from './helpers.js';
+import { makeRepo, writeCard, git } from './helpers.js';
 import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard } from '../src/board.js';
 
 test('loadBoard parses cards and criteria progress', () => {
@@ -140,4 +140,19 @@ test('createCard records an assignee (sanitized) and it round-trips', async () =
   // a card with no assignee parses to a falsy field (empty/null)
   const r2 = await createCard(repo, { title: 'Unassigned' });
   assert.ok(!readCard(repo, r2.id).data.assignee);
+});
+
+test('readCommandFile / writeCommandFile round-trip and reject path traversal', async () => {
+  const { readCommandFile, writeCommandFile } = await import('../src/board.js');
+  const repo = makeRepo();
+  // existing command from makeRepo's stubs
+  assert.match(readCommandFile(repo, 'todomd-build'), /stub/);
+  // write a new one + commit
+  const r = await writeCommandFile(repo, 'todomd-build', 'You are the BUILD agent. $ARGUMENTS\nDo the thing.');
+  assert.equal(r.ok, true);
+  assert.match(readCommandFile(repo, 'todomd-build'), /Do the thing/);
+  assert.match(git(repo, ['log', '-1', '--format=%s']), /edit todomd-build prompt/);
+  // traversal / bad names are refused (name constrained to [\w-])
+  assert.equal(readCommandFile(repo, '../../etc/passwd'), null);
+  assert.equal((await writeCommandFile(repo, '../evil', 'x')).ok, false);
 });
