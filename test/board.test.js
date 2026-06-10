@@ -121,6 +121,20 @@ test('appendRunLog anchors on the heading line, not a body mention of "## Run Lo
   assert.match(raw, /We insert into the ## Run Log section\.\n\n## Run Log/, 'Description left intact');
 });
 
+test('appendRunLog ignores a "## Run Log" line INSIDE a fenced code block', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  // a self-documenting card: the heading text appears at line-start inside a ``` fence
+  fs.writeFileSync(file,
+    '---\nid: task-0001\nstatus: Review\n---\n\n## Description\n\nFormat example:\n\n' +
+    '```\n## Run Log\n- sample\n```\n\n## Run Log\n\n- existing real entry\n');
+  await appendRunLog(repo, 'task-0001', '- NEW');
+  const raw = fs.readFileSync(file, 'utf8');
+  // appended under the REAL heading (after the existing entry), not into the fence
+  assert.match(raw, /## Run Log\n\n- existing real entry\n- NEW/);
+  assert.match(raw, /```\n## Run Log\n- sample\n```/, 'the code fence is left untouched');
+});
+
 test('attachCard stores under attachments/<id>, references in card, sanitizes name, avoids clobber', async () => {
   const { attachCard } = await import('../src/board.js');
   const repo = makeRepo();

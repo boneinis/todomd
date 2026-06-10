@@ -518,6 +518,10 @@ async function buildChain(project, id, retry = null) {
   if (run?.cancelled) {
     await recordRun(project, id, 'Build', attempt, result, 'cancelled');
     await releaseCoordination(project, id);
+    // abandon the worktree so the cancelled attempt's commits don't linger (and
+    // the card's worktree: frontmatter isn't left stale) — a re-approval starts fresh
+    await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
+    await patchFrontmatter(project.path, id, { worktree: '' });
     await orchMove(project, id, run.revertTo, 'cancelled');
     return sendState(project, id, 'idle');
   }
@@ -559,6 +563,9 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (run?.cancelled) {
     await recordRun(project, id, 'Verify', attempt, result, 'cancelled');
     await releaseCoordination(project, id);
+    // abandon the worktree (see Build cancel) so nothing stale is left behind
+    await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
+    await patchFrontmatter(project.path, id, { worktree: '' });
     await orchMove(project, id, run.revertTo, 'cancelled');
     return sendState(project, id, 'idle');
   }

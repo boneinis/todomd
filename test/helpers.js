@@ -7,12 +7,18 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 let counter = 0;
 
-// A fresh temp dir, isolated TODOMD_HOME, auto-cleaned.
+// A fresh temp dir, isolated TODOMD_HOME, auto-cleaned when the test process exits.
+const tmpDirs = [];
 export function tmp(label = 't') {
   const dir = path.join(os.tmpdir(), `todomd-test-${label}-${process.pid}-${counter++}`);
   fs.mkdirSync(dir, { recursive: true });
+  tmpDirs.push(dir);
   return dir;
 }
+// one synchronous sweep at exit removes every temp dir this run created
+process.once('exit', () => {
+  for (const d of tmpDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
+});
 
 export function isolateHome() {
   const home = tmp('home');

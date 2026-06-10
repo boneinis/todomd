@@ -319,18 +319,27 @@ export function appendRunLog(repoPath, id, line) {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
     let raw = card.raw;
-    // anchor to a real heading line — a body that merely mentions "## Run Log"
-    // (e.g. a todomd-about-todomd card) must not capture the insert point
-    const m = raw.match(/^## Run Log\b.*$/m);
-    if (!m) {
+    // Anchor to the REAL "## Run Log" heading — not a line-start mention inside a
+    // fenced code block (a self-documenting todomd card can quote the heading
+    // verbatim in a ``` block). Scan lines tracking fence state; the next "## "
+    // heading (also outside fences) bounds the section.
+    let inFence = false, pos = 0, headingFound = false, nextNl = -1;
+    for (const ln of raw.split('\n')) {
+      const isFence = /^\s*(```|~~~)/.test(ln);
+      if (isFence) { inFence = !inFence; pos += ln.length + 1; continue; }
+      if (!inFence) {
+        if (!headingFound && /^## Run Log\b/.test(ln)) headingFound = true;
+        else if (headingFound && /^## /.test(ln)) { nextNl = pos - 1; break; }
+      }
+      pos += ln.length + 1;
+    }
+    if (!headingFound) {
       raw = raw.replace(/\n*$/, '') + `\n\n## Run Log\n\n${line}\n`;
     } else {
-      const afterHeading = m.index + m[0].length;
-      const next = raw.indexOf('\n## ', afterHeading);
-      const insertAt = next < 0 ? raw.length : next;
+      const insertAt = nextNl < 0 ? raw.length : nextNl;
       const before = raw.slice(0, insertAt).replace(/\n*$/, '') + '\n';
-      // keep the blank line before a following heading (slice from `next`, not next+1)
-      raw = `${before}${line}\n` + (next < 0 ? '' : raw.slice(next));
+      // keep the blank line before a following heading (slice from the newline)
+      raw = `${before}${line}\n` + (nextNl < 0 ? '' : raw.slice(nextNl));
     }
     fs.writeFileSync(path.join(repoPath, '.todomd', 'tasks', card.file), raw);
     return { ok: true };

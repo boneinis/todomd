@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until } from './helpers.js';
+import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp } from './helpers.js';
 import { readCard } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 
@@ -93,6 +93,27 @@ test('worktree env: a verify setup_error → Needs Human (worktree_env) on attem
   const card = readCard(repo, 'task-0003');
   assert.equal(card.data.needs_human_reason, 'worktree_env');
   assert.equal(card.data.verification.attempts, 1, 'escalates on the first verify, not after the attempt cap');
+  clearFakeAgent();
+});
+
+test('cancel mid-build cleans the worktree and clears the worktree frontmatter', async () => {
+  isolateHome();
+  const marker = path.join(tmp('hang'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker }); // build hangs until SIGTERM
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Assigned'); // launcher drives → Build (then hangs)
+  await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: 15000 });
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  assert.ok(fs.existsSync(wt), 'worktree was created for the build');
+
+  await pipeline.humanMove(p, 'task-0001', 'Review'); // cancels the live run
+  await until(() => status(repo, 'task-0001') === 'Review', { timeout: 15000 });
+  assert.ok(!fs.existsSync(wt), 'worktree removed on cancel (no leak)');
+  assert.equal(readCard(repo, 'task-0001').data.worktree || '', '', 'worktree frontmatter cleared');
   clearFakeAgent();
 });
 

@@ -62,6 +62,12 @@ const stage = prompt.includes('plan') ? 'plan'
   : prompt.includes('build') ? 'build'
   : prompt.includes('verify') ? 'verify' : 'other';
 
+// ── hang during build until SIGTERM, so a test can cancel a LIVE run mid-build ──
+if (process.env.FAKE_HANG && stage === 'build') {
+  if (process.env.FAKE_HANG_MARKER) fs.writeFileSync(process.env.FAKE_HANG_MARKER, '1');
+  setInterval(() => {}, 1 << 30); // keep alive; the runner SIGTERMs us on cancel
+}
+
 if (stage === 'plan') {
   const file = findCard(taskId);
   if (file) {

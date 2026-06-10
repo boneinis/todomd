@@ -1,14 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import { isolateHome, makeRepo } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
 
-// boots the real server on a fixed test port and exercises the LAN toggle
+// grab an OS-assigned free port so parallel/repeated runs never collide (a fixed
+// port EADDRINUSE's a second concurrent instance)
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+  });
+}
+
+// boots the real server on a free test port and exercises the LAN toggle
 test('runtime LAN toggle: off at start, status gated by token, primary-only POST', async () => {
   isolateHome();
   addProject(makeRepo()); // serve needs a registered project for some routes
-  const { token, port, close } = await startServer({ port: 7811 });
+  const { token, port, close } = await startServer({ port: await freePort() });
   const base = `http://127.0.0.1:${port}`;
   try {
     // no token → 401
