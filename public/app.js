@@ -30,6 +30,8 @@ let currentProject = null;
 let boardData = null;
 let runStates = {};
 let drawerCard = null;
+let myName = localStorage.getItem('todomd-me') || '';
+let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'mine' : 'all';
 
 async function api(path) {
   const res = await fetch(`/api/${path}`, { headers });
@@ -77,14 +79,40 @@ function renderBanners(list) {
   );
 }
 
+/* ── team / my-work view ── */
+function applyViewToggle() {
+  const btn = $('#view-toggle');
+  btn.textContent = viewMode === 'mine' ? `mine: ${myName}` : 'team';
+  btn.classList.toggle('active', viewMode === 'mine');
+}
+function promptName(initial) {
+  const n = prompt("Your name for 'my work' — match the assignee on your cards:", initial || '');
+  if (n && n.trim()) { myName = n.trim(); localStorage.setItem('todomd-me', myName); return true; }
+  return false;
+}
+$('#view-toggle').addEventListener('click', (e) => {
+  if (e.altKey) { if (promptName(myName)) { applyViewToggle(); renderBoard(); } return; } // ⌥-click: change name
+  if (viewMode === 'all') {
+    if (!myName && !promptName()) return;
+    viewMode = 'mine';
+  } else {
+    viewMode = 'all';
+  }
+  localStorage.setItem('todomd-view', viewMode);
+  applyViewToggle();
+  renderBoard();
+});
+
 function renderBoard() {
   if (!boardData) return;
   const filter = filterInput.value.trim().toLowerCase();
+  const mine = viewMode === 'mine' && myName ? myName.toLowerCase() : null;
   boardEl.innerHTML = '';
   for (const col of boardData.config.columns) {
     const color = COL_COLORS[col] || 'var(--dim)';
     const cards = boardData.cards.filter(
       (c) => c.status === col &&
+        (!mine || (c.assignee || '').toLowerCase() === mine) &&
         (!filter || `${c.id} ${c.title} ${(c.labels || []).join(' ')} ${c.assignee || ''}`.toLowerCase().includes(filter))
     );
     const colEl = document.createElement('section');
@@ -501,6 +529,7 @@ $('#card-form').addEventListener('submit', async (e) => {
 
 projectSel.addEventListener('change', () => { currentProject = projectSel.value; loadBoard(); });
 filterInput.addEventListener('input', renderBoard);
+applyViewToggle();
 
 loadProjects().then(loadBoard).then(connectWs).catch((e) => {
   boardEl.innerHTML = `<p class="col-empty">${esc(e.message)} — is the token in the URL?</p>`;

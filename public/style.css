@@ -209,6 +209,13 @@ body {
   border: 1px solid var(--line); background: var(--panel-2);
 }
 .card-assignee { color: var(--cyan); font-size: 10px; letter-spacing: .04em; }
+
+.view-toggle {
+  background: none; border: 1px solid var(--line); color: var(--dim);
+  font: inherit; font-size: 11px; letter-spacing: .08em; padding: 6px 12px; cursor: pointer;
+}
+.view-toggle:hover { color: var(--ink); border-color: var(--dim); }
+.view-toggle.active { color: var(--cyan); border-color: var(--cyan); }
 .drawer-routing label { color: var(--dim); font-size: 10.5px; letter-spacing: .1em; }
 .drawer-routing input, .drawer-routing select {
   display: block; width: 100%; margin-top: 4px;

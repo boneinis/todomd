@@ -66,3 +66,7 @@ Set it:
 ```
 
 A route's `assignee` wins; otherwise the inbox/board `assignee` applies; otherwise the card is unassigned. The card still lands in **Review** (the human gate holds) — assignment just tells everyone whose card it is. Combined with `ACTIVE.md`, that's the full picture: **assignee** says who should pick it up, the manifest prevents two people building the same files at once.
+
+### Team view vs. my view
+
+The **team / mine** toggle (top bar, left of the filter) switches the board between everyone's cards and just yours. Click it to enter "my work"; the first time, it asks for your name (stored locally, per browser) — use the same name your cards are assigned to. ⌥-click (Alt-click) the toggle to change your name. The choice persists across reloads and applies to every project, so each teammate sees their own queue on the shared board.
