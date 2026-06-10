@@ -292,6 +292,7 @@ $('#card-form').addEventListener('submit', async (e) => {
     priority: f.get('priority'),
     agent: f.get('agent'),
     model: (f.get('model') || '').trim() || undefined,
+    skill: (f.get('skill') || '').trim() || undefined,
     labels: String(f.get('labels') || '').split(',').map((s) => s.trim()).filter(Boolean),
     description: f.get('description'),
     criteria: String(f.get('criteria') || '').split('\n').map((s) => s.trim()).filter(Boolean),

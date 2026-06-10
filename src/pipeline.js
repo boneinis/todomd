@@ -87,6 +87,24 @@ function stagePrompt(project, vendor, stage, id) {
   return body.replaceAll('$ARGUMENTS', id);
 }
 
+// Per-card skill override: a card with `skill:` frontmatter dragged into a
+// trigger column invokes that skill (any repo command, user skill, or plugin
+// skill) with the card as context, instead of the column's default command.
+function skillPrompt(project, vendor, skill, id, card) {
+  const safe = String(skill).replace(/[^\w:-]/g, '');
+  const ctx = `\n\nThis run is for todomd card ${id} ("${card.data.title || ''}") in this repository.` +
+    ` If the work produces findings or output worth keeping, append them under a "## Findings"` +
+    ` section of the card file .todomd/tasks/${card.file} (create the section if needed).` +
+    ` Never modify the YAML frontmatter or the "## Run Log" section.`;
+  if (vendor !== 'codex') return `/${safe} ${id}${ctx}`;
+  const file = path.join(project.path, '.claude', 'commands', `${safe}.md`);
+  if (!fs.existsSync(file)) {
+    throw new Error(`skill "${safe}" has no .claude/commands file — codex cards can only run repo commands`);
+  }
+  const body = fs.readFileSync(file, 'utf8').replace(/^---[\s\S]*?---\s*/, '');
+  return body.replaceAll('$ARGUMENTS', id) + ctx;
+}
+
 function classifyFailure({ envelope, exitCode, spawnError, stderr }) {
   if (spawnError === 'ENOENT') return { kind: 'cli_missing', detail: 'claude CLI not found on PATH' };
   const text = `${envelope?.result || ''} ${envelope?.subtype || ''} ${stderr || ''}`;
@@ -255,11 +273,21 @@ async function runTriggerStage(project, id, stageName) {
   const card = readCard(project.path, id);
   const stage = stageConfig(config, stageName, card);
   const vendor = cardVendor(config, card);
+  const skill = card.data.skill;
+
+  let prompt;
+  try {
+    prompt = skill
+      ? skillPrompt(project, vendor, skill, id, card)
+      : stagePrompt(project, vendor, stage, id);
+  } catch (e) {
+    return toNeedsHuman(project, id, stageName, 'skill_not_found', String(e.message || e));
+  }
 
   const { result, run } = await spawnTracked(project, id, stageName, 'Review', 0, {
     vendor,
     cwd: project.path,
-    prompt: stagePrompt(project, vendor, stage, id),
+    prompt,
     model: stage.model,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
@@ -274,8 +302,10 @@ async function runTriggerStage(project, id, stageName) {
   }
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (ok) {
-    await recordRun(project, id, stageName, 0, result, 'ok');
-    if (stageName === 'Plan') await orchMove(project, id, 'Planned', 'plan complete');
+    await recordRun(project, id, stageName, 0, result, skill ? `ok (/${skill})` : 'ok');
+    // skill cards stay in the column for the human to read the findings;
+    // only the default plan command advances the pipeline
+    if (stageName === 'Plan' && !skill) await orchMove(project, id, 'Planned', 'plan complete');
     sendState(project, id, 'idle');
     return;
   }
