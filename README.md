@@ -29,6 +29,8 @@ npx todomd init    # writes .todomd/ + the agent pipeline commands
 npx todomd         # localhost server + browser board (per-run token)
 ```
 
+**Desktop launcher (optional):** `todomd install-launcher` puts a double-clickable launcher on your Desktop (a `.app` on macOS, a `.desktop` entry on Linux, a `.bat` on Windows). It starts the server in the background if it isn't already running and opens the board — no terminal needed. `todomd stop` stops a background server.
+
 - **+ card** in the UI (or any editor — cards are just files; agents and humans coexist via the file watcher).
 - **Attach files** to a card (＋ file in the drawer, or drag-drop): images render inline, docs become links. Stored in `.todomd/attachments/<id>/` and committed — so a screenshot or spec travels with the card, and plan/build agents can **read** it (e.g. attach a bug screenshot and the agent sees it).
 - One server, many repos: every `init`'d repo appears in the project switcher.

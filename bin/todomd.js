@@ -8,7 +8,10 @@ import { initProject } from '../src/templates.js';
 import { startServer } from '../src/server.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const USAGE = 'usage: todomd [init|serve|revoke|intake-test <project>] [--port N] [--lan] [--no-open]';
+const TODOMD_BIN = fileURLToPath(import.meta.url);
+const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
+const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|intake-test <project>] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
 const VALUE_FLAGS = new Set(['--port']);
@@ -77,6 +80,30 @@ if (cmd === 'revoke') {
   process.exit(0);
 }
 
+if (cmd === 'install-launcher') {
+  const { installLauncher } = await import('../src/launcher.js');
+  try {
+    const r = installLauncher({ nodeBin: process.execPath, todomdBin: TODOMD_BIN, port: Number(flag('--port', 7337)) });
+    console.log(`launcher created: ${r.path}\n${r.hint}`);
+    process.exit(0);
+  } catch (e) {
+    console.error(`could not create launcher: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+if (cmd === 'stop') {
+  try {
+    const pid = Number(fs.readFileSync(PID_FILE, 'utf8').trim());
+    process.kill(pid);
+    fs.rmSync(PID_FILE, { force: true });
+    console.log(`stopped todomd (pid ${pid})`);
+  } catch {
+    console.log('no running todomd server found (or it was started in a terminal — close that instead)');
+  }
+  process.exit(0);
+}
+
 if (cmd === 'intake-test') {
   const name = positional[1];
   if (!name) { console.error('usage: todomd intake-test <project-name>'); process.exit(1); }
@@ -103,6 +130,15 @@ if (cmd === 'serve') {
     process.exit(1);
   }
   const { url, lanUrl } = await startServer({ port, lan: args.includes('--lan') });
+  // record the pid so `todomd stop` can stop a detached (launcher-started) server
+  try {
+    fs.mkdirSync(TODOMD_DIR, { recursive: true });
+    fs.writeFileSync(PID_FILE, String(process.pid));
+    const cleanup = () => { try { fs.rmSync(PID_FILE, { force: true }); } catch {} };
+    process.on('exit', cleanup);
+    process.on('SIGINT', () => { cleanup(); process.exit(0); });
+    process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+  } catch {}
   console.log(`todomd board: ${url}`);
   if (lanUrl) console.log(`mobile monitor (read-only, this network): ${lanUrl}`);
   if (!args.includes('--no-open')) {
