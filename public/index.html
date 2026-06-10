@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>todomd</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,500;1,9..144,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+
+<header class="topbar">
+  <h1 class="wordmark">todo<span>md</span></h1>
+  <div class="topbar-right">
+    <input id="filter" type="search" placeholder="filter…" spellcheck="false" autocomplete="off" />
+    <select id="project" title="project"></select>
+    <span class="usage" id="usage" title="model spend this month"></span>
+    <span class="conn" id="conn" title="live connection"><span class="conn-dot"></span><span id="conn-label">SYNC</span></span>
+  </div>
+</header>
+
+<div id="banners" class="banners"></div>
+
+<main id="board" class="board" aria-label="kanban board"></main>
+
+<aside id="drawer" class="drawer" hidden>
+  <header class="drawer-head">
+    <span class="card-id" id="drawer-id"></span>
+    <span>
+      <button id="drawer-cancel" class="drawer-close drawer-cancel" hidden>cancel run</button>
+      <button id="drawer-close" class="drawer-close" title="close">✕</button>
+    </span>
+  </header>
+  <h2 id="drawer-title"></h2>
+  <div class="drawer-meta" id="drawer-meta"></div>
+  <article class="drawer-body" id="drawer-body"></article>
+  <section id="drawer-run" class="drawer-run" hidden>
+    <h2 class="run-title">live run</h2>
+    <pre id="run-log" class="run-log"></pre>
+  </section>
+  <footer class="drawer-foot" id="drawer-file"></footer>
+</aside>
+
+<template id="card-tpl">
+  <article class="card" draggable="true">
+    <span class="card-notch" aria-hidden="true"></span>
+    <header><span class="card-id"></span><span class="card-run"></span><span class="card-prio"></span></header>
+    <h3 class="card-title"></h3>
+    <footer>
+      <span class="card-chips"></span>
+      <span class="card-criteria"></span>
+    </footer>
+  </article>
+</template>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

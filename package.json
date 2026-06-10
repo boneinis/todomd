@@ -1,0 +1,28 @@
+{
+  "name": "todomd",
+  "version": "0.1.0",
+  "description": "Markdown-native kanban board for git repos that drives subscription coding agents through a Review → Plan → Build → Verify pipeline.",
+  "type": "module",
+  "bin": {
+    "todomd": "bin/todomd.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node bin/todomd.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.0",
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}
