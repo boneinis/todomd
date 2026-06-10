@@ -78,7 +78,7 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 
 **Secrets on disk:** `~/.todomd/` holds the access token (`token*`, mode 0600) and, for IMAP intake, `intake.json` (set it `chmod 600`). Nothing there is committed to any repo.
 
-> **Network exposure:** the server binds `127.0.0.1` by default. `todomd --lan` exposes it to your local network over plain **HTTP** for the QR/mobile links — a read-only **monitor** link *and* an opt-in full-control link (clearly marked in the QR dialog). Use only on trusted networks; for remote access put it behind a VPN/Tailscale. Revoke device links with `todomd revoke`.
+> **Network exposure:** the server's main listener is **always loopback-only** (`127.0.0.1`). Mobile/QR access runs on a **separate LAN listener you toggle from the board** (the ▦ button → "enable network access") or start with `todomd --lan` — turning it off closes that listener entirely. It serves plain **HTTP** for the QR links: a read-only **monitor** link and an opt-in full-control link (clearly marked). Enabling/disabling requires the desktop session (a phone can't). Use only on trusted networks; for remote access put it behind a VPN/Tailscale. Revoke device links with `todomd revoke`.
 
 ## Development
 

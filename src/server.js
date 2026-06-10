@@ -67,11 +67,17 @@ export function startServer({ port = 7337, lan = false } = {}) {
 
   // DNS-rebinding / CSRF defense: the browser sends the rebound or foreign
   // hostname as Host, and a cross-site page sends its own Origin. Allow only
-  // our own loopback (and the LAN ip when --lan). Native clients (curl, the
-  // CLI) send no Origin, which is fine — they still need a token.
-  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
-  if (lan && lanAddress()) allowedHosts.add(`${lanAddress()}:${port}`);
-  const hostOk = (req) => allowedHosts.has(req.headers.host);
+  // our own loopback (and the live LAN ip when LAN access is on). Native
+  // clients (curl, the CLI) send no Origin, which is fine — they still need a token.
+  const loopbackHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  let lanEnabled = false;     // runtime-toggleable; the LAN listener below
+  let lanServer = null;
+  const hostOk = (req) => {
+    const h = req.headers.host;
+    if (loopbackHosts.has(h)) return true;
+    return lanEnabled && lanAddress() && h === `${lanAddress()}:${port}`; // live IP, not frozen at boot
+  };
+  const lanUrl = () => (lanEnabled && lanAddress() ? `http://${lanAddress()}:${port}/?token=${viewerToken}` : null);
   const originOk = (req) => {
     const o = req.headers.origin;
     if (!o) return true;
@@ -163,15 +169,28 @@ export function startServer({ port = 7337, lan = false } = {}) {
         return json(res, r.ok ? 200 : 400, r);
       }
     }
+    // LAN access state + runtime toggle. Enabling exposes the board to the
+    // network, so the toggle needs the PRIMARY desktop token (not mobile).
+    if (url.pathname === '/api/lan') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      if (req.method === 'GET') return json(res, 200, { enabled: lanEnabled, canToggle: primary(req), ip: lanAddress() });
+      if (req.method === 'POST') {
+        if (!primary(req)) return json(res, 403, { error: 'enable LAN from the computer running todomd' });
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        let on;
+        try { on = !!JSON.parse(body || '{}').enabled; } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        const r = setLan(on);
+        return json(res, r.ok ? 200 : 400, r);
+      }
+    }
     if (url.pathname === '/api/qr') {
       const wantFull = url.searchParams.get('access') === 'full';
       // minting any QR needs full access; minting the CONTROL QR needs the
       // primary desktop token specifically (a phone can't escalate itself)
       if (!fullAccess || (wantFull && !primary(req))) return json(res, 403, { error: 'not allowed from this link' });
-      const ip = lan ? lanAddress() : null;
-      if (!ip) {
-        return json(res, 400, { error: 'LAN access is off — restart with `todomd --lan` to enable the mobile link' });
-      }
+      const ip = lanEnabled ? lanAddress() : null;
+      if (!ip) return json(res, 400, { error: 'lan_off' });
       const link = `http://${ip}:${port}/?token=${wantFull ? mobileToken : viewerToken}`;
       const svg = await QRCode.toString(link, { type: 'svg', margin: 1, width: 240, color: { dark: wantFull ? '#ffb454' : '#d4dcc9', light: '#0a0c0a' } });
       return json(res, 200, { url: link, svg, access: wantFull ? 'full' : 'viewer' });
@@ -328,9 +347,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
     return json(res, 404, { error: 'not found' });
   }
 
-  const server = http.createServer(async (req, res) => {
+  // request + upgrade handlers are shared by the loopback listener and the
+  // optional LAN listener, so enabling LAN at runtime needs no rebind.
+  const requestHandler = async (req, res) => {
     const url = new URL(req.url, 'http://x');
     try {
+      if (!hostOk(req)) { res.writeHead(403); return res.end('bad host'); }
       if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
 
       const file = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -346,14 +368,34 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (!res.headersSent) json(res, 500, { error: String(e.message || e) });
       else res.end();
     }
-  });
-
-  // websocket: push "board changed" pings per project, with liveness pings
+  };
   const wss = new WebSocketServer({ noServer: true });
-  server.on('upgrade', (req, socket, head) => {
+  const upgradeHandler = (req, socket, head) => {
     if (!hostOk(req) || !originOk(req) || !viewerAuthed(req)) return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-  });
+  };
+
+  const server = http.createServer(requestHandler);
+  server.on('upgrade', upgradeHandler);
+
+  // Toggle a second listener bound to the LAN ip (port stays free on loopback
+  // because the two listeners bind distinct addresses). Never touches the main
+  // loopback listener, so the localhost-only default is preserved when off.
+  function setLan(on) {
+    if (on && !lanServer) {
+      const ip = lanAddress();
+      if (!ip) return { ok: false, error: 'no LAN connection found' };
+      lanServer = http.createServer(requestHandler);
+      lanServer.on('upgrade', upgradeHandler);
+      lanServer.on('error', () => { lanServer = null; lanEnabled = false; });
+      lanEnabled = true; // hostOk must allow the LAN host before the socket accepts
+      lanServer.listen(port, ip);
+    } else if (!on && lanServer) {
+      try { lanServer.close(); lanServer.closeAllConnections?.(); } catch {}
+      lanServer = null; lanEnabled = false;
+    }
+    return { ok: true, enabled: lanEnabled, url: lanUrl() };
+  }
   wss.on('connection', (ws) => {
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
@@ -404,18 +446,28 @@ export function startServer({ port = 7337, lan = false } = {}) {
   pipeline.reconcileOnBoot().catch(() => {});
 
   // IMAP email intake: poll configured mailboxes → cards in Review → triage
-  startIntake({
+  const stopIntake = startIntake({
     getProject: (name) => listProjects().find((p) => p.name === name),
     onCard: (project, id) => pipeline.maybeTriage(project, id).catch(() => {}),
     log: (m) => console.log(m),
   });
 
+  // Clean shutdown: stop both listeners, file watchers, and intake.
+  const close = () => {
+    try { server.close(); server.closeAllConnections?.(); } catch {}
+    setLan(false);
+    for (const w of watchers.values()) { try { w.close(); } catch {} }
+    try { stopIntake(); } catch {}
+  };
+
   return new Promise((resolve) => {
-    server.listen(port, lan ? '0.0.0.0' : '127.0.0.1', () => {
+    // main listener is ALWAYS loopback-only; LAN is a separate, toggleable listener
+    server.listen(port, '127.0.0.1', () => {
+      if (lan) setLan(true); // honor the --lan start flag
       resolve({
         url: `http://127.0.0.1:${port}/?token=${token}`,
-        lanUrl: lan && lanAddress() ? `http://${lanAddress()}:${port}/?token=${viewerToken}` : null,
-        port, token, server,
+        lanUrl: lanUrl(),
+        port, token, server, close,
       });
     });
   });

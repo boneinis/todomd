@@ -553,6 +553,13 @@ const QR_NOTES = {
   viewer: 'Read-only link for devices on this network — the board streams live, but cards can’t be moved or created from it.',
   full: '⚠ Full-control link: a phone with this QR can move cards and trigger agent runs. Plain HTTP on this network — only use on networks you trust. Revoke any time with `todomd revoke`.',
 };
+async function openQr() {
+  $('#qr-backdrop').hidden = false;
+  let lan;
+  try { lan = await api('lan'); } catch (e) { return toast(e.message); }
+  if (lan.enabled) { $('#qr-enable').hidden = true; $('#qr-view').hidden = false; showQr('viewer'); }
+  else { $('#qr-view').hidden = true; $('#qr-enable').hidden = false; }
+}
 async function showQr(access) {
   try {
     const out = await api(`qr${access === 'full' ? '?access=full' : ''}`);
@@ -561,12 +568,18 @@ async function showQr(access) {
     $('#qr-note').textContent = QR_NOTES[access];
     $('#qr-tab-viewer').classList.toggle('active', access === 'viewer');
     $('#qr-tab-full').classList.toggle('active', access === 'full');
-    $('#qr-backdrop').hidden = false;
-  } catch (e) {
-    toast(e.message);
-  }
+  } catch (e) { toast(e.message); }
 }
-$('#qr-btn').addEventListener('click', () => showQr('viewer'));
+async function setLan(enabled) {
+  const res = await fetch('/api/lan', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ enabled }) });
+  const out = await res.json();
+  if (!res.ok) { toast(out.error || 'could not change network access'); return false; }
+  return true;
+}
+$('#qr-btn').addEventListener('click', openQr);
+$('#qr-enable-go').addEventListener('click', async () => { if (await setLan(true)) openQr(); });
+$('#qr-enable-cancel').addEventListener('click', () => { $('#qr-backdrop').hidden = true; });
+$('#qr-disable').addEventListener('click', async () => { if (await setLan(false)) { toast('network access off'); $('#qr-backdrop').hidden = true; } });
 $('#qr-tab-viewer').addEventListener('click', () => showQr('viewer'));
 $('#qr-tab-full').addEventListener('click', () => showQr('full'));
 $('#qr-close').addEventListener('click', () => { $('#qr-backdrop').hidden = true; });

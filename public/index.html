@@ -192,14 +192,24 @@ todomd init             # scaffolds the board + registers it</code></pre>
 <div id="qr-backdrop" class="modal-backdrop" hidden>
   <div class="modal qr-modal">
     <h2>open on mobile</h2>
-    <div class="qr-tabs">
-      <button type="button" id="qr-tab-viewer" class="qr-tab active">monitor</button>
-      <button type="button" id="qr-tab-full" class="qr-tab">control</button>
+    <div id="qr-enable" hidden>
+      <p class="qr-note">Mobile access is <b>off</b> — the board is only reachable from this computer. Turn it on to get a QR your phone can scan on this Wi-Fi network.</p>
+      <p class="qr-note">⚠ This exposes the board to your local network over plain HTTP. Only enable on networks you trust; turn it back off when done, or run <code>todomd revoke</code>.</p>
+      <div class="modal-actions"><button type="button" id="qr-enable-cancel" class="drawer-close">cancel</button><button type="button" id="qr-enable-go" class="modal-submit">enable network access</button></div>
     </div>
-    <div id="qr-svg" class="qr-svg"></div>
-    <p id="qr-url" class="qr-url"></p>
-    <p class="qr-note" id="qr-note">Read-only link for devices on this network — the board streams live, but cards can't be moved or created from it.</p>
-    <div class="modal-actions"><button type="button" id="qr-close" class="drawer-close">close</button></div>
+    <div id="qr-view" hidden>
+      <div class="qr-tabs">
+        <button type="button" id="qr-tab-viewer" class="qr-tab active">monitor</button>
+        <button type="button" id="qr-tab-full" class="qr-tab">control</button>
+      </div>
+      <div id="qr-svg" class="qr-svg"></div>
+      <p id="qr-url" class="qr-url"></p>
+      <p class="qr-note" id="qr-note"></p>
+      <div class="modal-actions">
+        <button type="button" id="qr-disable" class="drawer-close">turn off network access</button>
+        <button type="button" id="qr-close" class="drawer-close">close</button>
+      </div>
+    </div>
   </div>
 </div>
 
