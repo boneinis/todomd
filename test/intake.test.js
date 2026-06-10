@@ -76,3 +76,48 @@ test('loadIntakeConfig: legacy inline format still works', async () => {
   assert.equal(cfg['repo-a'].host, 'imap.x.com');
   assert.equal(cfg['repo-a'].folder, 'todomd');
 });
+
+test('routeProject routes by To address (alias forwarding preserves original recipient)', async () => {
+  const { routeProject } = await import('../src/intake.js');
+  const routes = [
+    { project: 'repo-a', toMatches: 'repo-a@me.com' },
+    { project: 'repo-b', toMatches: 'you+repo-b@gmail.com' },
+  ];
+  // forwarded mail still addressed To the project alias
+  assert.equal(routeProject(routes, null, { to: { value: [{ address: 'repo-a@me.com' }] } }), 'repo-a');
+  // plus-address in To
+  assert.equal(routeProject(routes, null, { to: { value: [{ address: 'you+repo-b@gmail.com' }] } }), 'repo-b');
+  // no match → null, or the default
+  assert.equal(routeProject(routes, null, { to: { value: [{ address: 'random@x.com' }] } }), null);
+  assert.equal(routeProject(routes, 'triage', { to: { value: [{ address: 'random@x.com' }] } }), 'triage');
+});
+
+test('routeProject matches forwarding headers (Delivered-To / X-Forwarded-To)', async () => {
+  const { routeProject } = await import('../src/intake.js');
+  const routes = [{ project: 'repo-a', toMatches: 'repo-a@company.com' }];
+  // Gmail-style: lands in todomd@, but the forward header keeps the original recipient
+  const headers = new Map([
+    ['delivered-to', 'todomd@gmail.com'],
+    ['x-forwarded-to', 'repo-a@company.com'],
+  ]);
+  const parsed = { to: { value: [{ address: 'todomd@gmail.com' }] }, headers };
+  assert.equal(routeProject(routes, null, parsed), 'repo-a');
+});
+
+test('intakeSources: a shared inbox becomes one source with routes', async () => {
+  const home = isolateHome();
+  const fs = await import('node:fs'); const path = await import('node:path');
+  fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.todomd/intake.json'), JSON.stringify({
+    accounts: { hub: { host: 'imap.gmail.com', user: 'todomd@gmail.com', pass: 'app-pw' } },
+    inboxes: { main: { account: 'hub', folder: 'INBOX', default: 'triage',
+      routes: [{ project: 'repo-a', toMatches: 'repo-a@x.com' }, { project: 'repo-b', toMatches: 'repo-b@x.com' }] } },
+  }));
+  const { intakeSources } = await import('../src/intake.js');
+  const sources = intakeSources();
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].kind, 'inbox');
+  assert.equal(sources[0].conf.host, 'imap.gmail.com'); // account merged
+  assert.equal(sources[0].resolve({ to: { value: [{ address: 'repo-b@x.com' }] } }), 'repo-b');
+  assert.equal(sources[0].resolve({ to: { value: [{ address: 'nope@x.com' }] } }), 'triage'); // default
+});

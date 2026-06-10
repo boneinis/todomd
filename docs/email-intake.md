@@ -61,6 +61,35 @@ Routing is **per folder**: each board polls its own folder, so the decision "whi
 
 Then a filter files `todomd/repo-a` mail into that folder and `repo-a`'s board picks it up; `repo-b` likewise. A board only ever sees its own folder, so an email can never land on the wrong project. (Both formats can be mixed; the legacy flat `{ "<project>": {…} }` form still works.) Each board polls on its own connection — fine for a handful of projects; for many boards on one provider, stagger `pollSeconds` to stay under the account's simultaneous-connection limit (Gmail allows ~15).
 
+### One shared inbox, routed by the address it was sent to
+
+Best when you set up **one dedicated inbox** and forward each project's address into it (e.g. `repo-a@yourco.com` and `repo-b@yourco.com` both forward to `todomd@gmail.com`). todomd routes each message to a board by **the address it was sent to** — forwarding via aliases preserves the original recipient in the `To` header, and Gmail/server forwarding keeps it in `Delivered-To` / `X-Forwarded-To` / `X-Original-To`, all of which are matched:
+
+```json
+{
+  "accounts": {
+    "hub": { "host": "imap.gmail.com", "port": 993, "secure": true,
+             "user": "todomd@gmail.com", "pass": "an-app-password" }
+  },
+  "inboxes": {
+    "main": {
+      "account": "hub",
+      "folder": "INBOX",
+      "pollSeconds": 300,
+      "routes": [
+        { "project": "repo-a", "toMatches": "repo-a@yourco.com" },
+        { "project": "repo-b", "toMatches": "you+repo-b@gmail.com" }
+      ],
+      "default": "triage"
+    }
+  }
+}
+```
+
+- `toMatches` is a case-insensitive substring of any recipient address — so `repo-b@` matches `repo-b@anything`, and a plus-address or full alias both work. First matching route wins.
+- `default` (optional) is the board for mail that matches no route; without it, unrouted mail is logged (with the addresses it was sent to, so you can add a route) and skipped. Point `default` at a catch-all board and re-file from its Review column when something needs another project.
+- One connection, one folder, any number of projects — no per-project filters needed. `todomd intake-test main` reports the folder, unseen count, and route count.
+
 > **Security note:** email is untrusted input. Card titles are sanitized and bodies are escaped on render, so a crafted email can't corrupt a card or inject script. It *can* contain prompt-injection aimed at the triage agent — which runs read-only-ish (Edit scoped to `.todomd/tasks/`), but treat auto-triaged email cards with the same skepticism as any inbound request.
 
 ---

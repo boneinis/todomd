@@ -82,8 +82,10 @@ if (cmd === 'intake-test') {
   if (!name) { console.error('usage: todomd intake-test <project-name>'); process.exit(1); }
   const { testIntake } = await import('../src/intake.js');
   const r = await testIntake(name);
-  if (r.ok) console.log(`✓ connected to ${name}: folder "${r.folder}", ${r.unseen} unseen message(s)`);
-  else console.error(`✗ ${r.error}`);
+  if (r.ok) {
+    const routing = r.kind === 'inbox' ? `, ${r.routes} route(s)` : '';
+    console.log(`✓ connected to ${name} (${r.kind}): folder "${r.folder}", ${r.unseen} unseen message(s)${routing}`);
+  } else console.error(`✗ ${r.error}`);
   process.exit(r.ok ? 0 : 1);
 }
 
