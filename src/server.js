@@ -20,7 +20,7 @@ const FILE_MIME = {
 };
 const INLINE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif', '.pdf', '.txt', '.md']);
 import * as pipeline from './pipeline.js';
-import { startIntake } from './intake.js';
+import { startIntake, restartIntake, publicIntake, saveBoardIntake, testIntake } from './intake.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
@@ -130,6 +130,38 @@ export function startServer({ port = 7337, lan = false } = {}) {
       removeProject(name);            // unregister; board files untouched
       pipeline.forgetProject(name);   // drop in-memory queue/quota state for the name
       return json(res, 200, { ok: true });
+    }
+    // IMAP email-intake settings for a project. Full token only (host/user are
+    // sensitive; the password is never sent back to the browser).
+    if (url.pathname === '/api/intake' || url.pathname === '/api/intake/test') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const name = url.searchParams.get('project') || '';
+      if (!listProjects().some((p) => p.name === name)) return json(res, 404, { error: 'unknown project' });
+      if (url.pathname === '/api/intake' && req.method === 'GET') {
+        return json(res, 200, publicIntake(name));
+      }
+      if (url.pathname === '/api/intake' && req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        let f;
+        try { f = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        saveBoardIntake(name, {
+          host: String(f.host || '').trim(),
+          port: Number(f.port) || 993,
+          secure: f.secure !== false,
+          user: String(f.user || '').trim(),
+          pass: f.pass ? String(f.pass) : '', // blank keeps the saved one
+          folder: String(f.folder || 'INBOX').trim(),
+          pollSeconds: Math.max(30, Number(f.pollSeconds) || 300),
+          assignee: String(f.assignee || '').replace(/[^\w.@ -]/g, '').trim() || undefined,
+        });
+        restartIntake();               // pick up the change without a server restart
+        return json(res, 200, { ok: true });
+      }
+      if (url.pathname === '/api/intake/test' && req.method === 'POST') {
+        const r = await testIntake(name);
+        return json(res, r.ok ? 200 : 400, r);
+      }
     }
     if (url.pathname === '/api/qr') {
       const wantFull = url.searchParams.get('access') === 'full';

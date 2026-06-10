@@ -148,3 +148,21 @@ test('intake auto-assigns: inbox route assignee, board assignee, inbox default',
   assert.equal(inbox.assigneeOf({ to: { value: [{ address: 'y@co.com' }] } }), 'lead');     // inbox default (route has none)
   assert.equal(inbox.assigneeOf({ to: { value: [{ address: 'z@co.com' }] } }), 'lead');     // unmatched → inbox default
 });
+
+test('saveBoardIntake / publicIntake: round-trip, blank password keeps the saved one, never returns pass', async () => {
+  isolateHome();
+  const { saveBoardIntake, publicIntake, loadIntakeConfig } = await import('../src/intake.js');
+  saveBoardIntake('repo-a', { host: 'imap.x.com', port: 993, secure: true, user: 'me@x.com', pass: 'secret', folder: 'todomd', pollSeconds: 120 });
+  let pub = publicIntake('repo-a');
+  assert.equal(pub.host, 'imap.x.com');
+  assert.equal(pub.user, 'me@x.com');
+  assert.equal(pub.hasPassword, true);
+  assert.equal('pass' in pub, false, 'password must never be returned to the client');
+  // a save with a blank password keeps the stored one
+  saveBoardIntake('repo-a', { host: 'imap.x.com', user: 'me@x.com', pass: '', folder: 'inbox2' });
+  assert.equal(loadIntakeConfig()['repo-a'].pass, 'secret');
+  assert.equal(loadIntakeConfig()['repo-a'].folder, 'inbox2');
+  // clearing host+user removes the entry
+  saveBoardIntake('repo-a', { host: '', user: '' });
+  assert.equal(publicIntake('repo-a').configured, false);
+});

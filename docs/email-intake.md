@@ -8,6 +8,8 @@ Two ways to turn emails into Review-column cards. **Option A (IMAP)** is fully l
 
 todomd connects to any IMAP inbox (Gmail, Fastmail, iCloud, your own server) and turns new messages into cards: subject → title, body → description, and **email attachments become card attachments** the agents can read.
 
+**Easiest setup — the ✉ button.** In the board's top bar, click **✉**, fill in your IMAP host, username, app-specific password, and a folder, optionally set an "auto-assign to" developer, and **Save** (or **Test connection** first). It writes the settings to `~/.todomd/intake.json` (mode `0600`) and starts polling immediately — no restart, no hand-editing. The password is stored only on your machine and is never sent back to the browser. This covers the common "one mailbox per project" case; the advanced shared-account / shared-inbox-by-address setups below are configured by editing the file directly.
+
 **Credentials never touch the repo.** They live only in `~/.todomd/intake.json` (per-machine), keyed by project name — never in the committed `.todomd/config.yml`:
 
 ```json

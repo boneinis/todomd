@@ -420,6 +420,58 @@ $('#theme-btn').addEventListener('click', () => {
   localStorage.setItem('todomd-theme', light ? 'light' : 'dark');
 });
 
+/* ── email intake (IMAP) settings ── */
+const intakeForm = $('#intake-form');
+$('#intake-btn').addEventListener('click', async () => {
+  if (!currentProject) return;
+  $('#intake-project').textContent = currentProject;
+  $('#intake-status').textContent = '';
+  try {
+    const c = await api(`intake?project=${encodeURIComponent(currentProject)}`);
+    intakeForm.host.value = c.host; intakeForm.port.value = c.port; intakeForm.secure.checked = c.secure;
+    intakeForm.user.value = c.user; intakeForm.folder.value = c.folder;
+    intakeForm.pollSeconds.value = c.pollSeconds; intakeForm.assignee.value = c.assignee;
+    intakeForm.pass.value = '';
+    intakeForm.pass.placeholder = c.hasPassword ? 'saved — leave blank to keep' : 'app-specific password';
+    $('#intake-backdrop').hidden = false;
+  } catch (e) { toast(e.message); }
+});
+$('#intake-close').addEventListener('click', () => { $('#intake-backdrop').hidden = true; });
+$('#intake-backdrop').addEventListener('click', (e) => { if (e.target.id === 'intake-backdrop') $('#intake-backdrop').hidden = true; });
+function intakePayload() {
+  const f = intakeForm;
+  return {
+    host: f.host.value.trim(), port: Number(f.port.value), secure: f.secure.checked,
+    user: f.user.value.trim(), pass: f.pass.value, folder: f.folder.value.trim(),
+    pollSeconds: Number(f.pollSeconds.value), assignee: f.assignee.value.trim(),
+  };
+}
+intakeForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const res = await fetch(`/api/intake?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(intakePayload()),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'save failed');
+    toast('intake settings saved'); $('#intake-backdrop').hidden = true;
+  } catch { toast('server unreachable'); }
+});
+$('#intake-test').addEventListener('click', async () => {
+  // save first so the test uses the entered settings, then test
+  $('#intake-status').textContent = 'saving + testing…';
+  try {
+    await fetch(`/api/intake?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(intakePayload()),
+    });
+    const res = await fetch(`/api/intake/test?project=${encodeURIComponent(currentProject)}`, { method: 'POST', headers });
+    const r = await res.json();
+    $('#intake-status').textContent = r.ok
+      ? `✓ connected — folder "${r.folder}", ${r.unseen} unseen message(s)`
+      : `✗ ${r.error}`;
+  } catch { $('#intake-status').textContent = '✗ server unreachable'; }
+});
+
 /* ── manage projects ── */
 async function renderProjectList() {
   const { projects } = await api('projects');

@@ -33,6 +33,45 @@ function loadRaw() {
   } catch { return {}; }
 }
 
+function writeRaw(raw) {
+  const file = configFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch {} // it holds a password
+}
+
+// The per-project board config for the UI — WITHOUT the password (never sent
+// to the browser; we report only whether one is saved).
+export function publicIntake(projectName) {
+  const c = loadIntakeConfig()[projectName] || {};
+  return {
+    host: c.host || '', port: c.port || 993, secure: c.secure !== false,
+    user: c.user || '', folder: c.folder || 'INBOX',
+    pollSeconds: c.pollSeconds || 300, assignee: c.assignee || '',
+    hasPassword: !!c.pass, configured: !!(c.host && c.user),
+  };
+}
+
+// Upsert a project's board mailbox config. A blank password keeps the saved one.
+export function saveBoardIntake(projectName, fields) {
+  const raw = loadRaw();
+  // migrate a legacy flat file ({ project: {...} }) into boards{} on first save
+  if (!raw.boards && !raw.inboxes) {
+    const boards = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (k !== 'accounts' && v && typeof v === 'object') { boards[k] = v; delete raw[k]; }
+    }
+    raw.boards = boards;
+  }
+  if (!raw.boards) raw.boards = {};
+  const cur = raw.boards[projectName] || {};
+  const next = { ...cur, ...fields };
+  if (!fields.pass) next.pass = cur.pass; // don't clobber a saved password with a blank
+  if (!next.host && !next.user) { delete raw.boards[projectName]; } // empty → remove
+  else raw.boards[projectName] = next;
+  writeRaw(raw);
+}
+
 // Every recipient-ish address on a message, lowercased. Forwarding via aliases
 // preserves the original recipient in To/Cc; Gmail/server forwarding adds it in
 // Delivered-To / X-Forwarded-To / X-Original-To / Envelope-To.
@@ -189,7 +228,10 @@ async function pollSource(source, getProject) {
 }
 
 // Start a poll loop per source (board or routed inbox). Returns stop().
-export function startIntake({ getProject, onCard: onCardCb = () => {}, log: logFn = () => {} }) {
+let lastOpts = null;
+let stopCurrent = () => {};
+
+function _startIntake({ getProject, onCard: onCardCb = () => {}, log: logFn = () => {} }) {
   onCard = onCardCb;
   log = logFn;
   const timers = [];
@@ -209,6 +251,19 @@ export function startIntake({ getProject, onCard: onCardCb = () => {}, log: logF
   }
   if (timers.length) log(`intake: polling ${timers.length} mailbox(es)`);
   return () => timers.forEach(clearInterval);
+}
+
+export function startIntake(opts) {
+  lastOpts = opts;
+  stopCurrent = _startIntake(opts);
+  return () => stopCurrent();
+}
+
+// Re-read intake.json and restart the poll loops (after a UI config change).
+export function restartIntake() {
+  if (!lastOpts) return;
+  stopCurrent();
+  stopCurrent = _startIntake(lastOpts);
 }
 
 // One-shot connection test (for `todomd intake-test`): no card creation.

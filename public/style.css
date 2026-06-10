@@ -349,7 +349,9 @@ body {
   font: inherit; font-size: 10.5px; padding: 3px 9px; cursor: pointer;
 }
 .proj-remove:hover { border-color: var(--red); color: var(--red); }
-body.viewer #manage-projects { display: none !important; }
+body.viewer #manage-projects, body.viewer #intake-btn { display: none !important; }
+.modal-row .chk { display: flex; align-items: center; gap: 6px; }
+.modal-row .chk input { width: auto; margin-top: 0; }
 
 /* ── QR / viewer mode / mobile ── */
 .qr-btn {

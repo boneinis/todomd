@@ -24,6 +24,7 @@
     <input id="filter" type="search" placeholder="filter…" spellcheck="false" autocomplete="off" />
     <select id="project" title="project"></select>
     <button id="manage-projects" class="qr-btn" title="add / remove projects">⊕</button>
+    <button id="intake-btn" class="qr-btn" title="email intake (IMAP) settings">✉</button>
     <span class="usage" id="usage" title="model spend this month"></span>
     <span class="conn" id="conn" title="live connection"><span class="conn-dot"></span><span id="conn-label">SYNC</span></span>
   </div>
@@ -117,6 +118,34 @@
     <div class="modal-actions">
       <button type="button" id="modal-cancel" class="drawer-close">cancel</button>
       <button type="submit" class="modal-submit">create in Review</button>
+    </div>
+  </form>
+</div>
+
+<div id="intake-backdrop" class="modal-backdrop" hidden>
+  <form id="intake-form" class="modal">
+    <h2>email intake — <span id="intake-project"></span></h2>
+    <p class="qr-note">Poll an IMAP mailbox and turn new mail into Review cards. Credentials are stored only in <code>~/.todomd/intake.json</code> on this machine (never in the repo). Point it at a <b>dedicated folder/label</b>, and use an <b>app-specific password</b> (Gmail/iCloud require one).</p>
+    <div class="modal-row">
+      <label>IMAP host <input name="host" placeholder="imap.gmail.com" autocomplete="off" /></label>
+      <label>port <input name="port" type="number" value="993" /></label>
+      <label class="chk">TLS <input name="secure" type="checkbox" checked /></label>
+    </div>
+    <div class="modal-row">
+      <label>username <input name="user" placeholder="you@gmail.com" autocomplete="off" /></label>
+      <label>password <input name="pass" type="password" placeholder="app-specific password" autocomplete="new-password" /></label>
+      <label>folder <input name="folder" value="INBOX" autocomplete="off" /></label>
+    </div>
+    <div class="modal-row">
+      <label>poll every (seconds) <input name="pollSeconds" type="number" value="300" /></label>
+      <label>auto-assign to <input name="assignee" placeholder="developer (optional)" autocomplete="off" /></label>
+      <span></span>
+    </div>
+    <p class="qr-note" id="intake-status"></p>
+    <div class="modal-actions">
+      <button type="button" id="intake-test" class="drawer-close">test connection</button>
+      <button type="button" id="intake-close" class="drawer-close">close</button>
+      <button type="submit" class="modal-submit">save</button>
     </div>
   </form>
 </div>
