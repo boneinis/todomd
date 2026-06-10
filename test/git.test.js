@@ -84,3 +84,37 @@ test('linkIntoWorktree symlinks gitignored deps into the worktree', async () => 
   assert.ok(fs.existsSync(path.join(wt, 'node_modules/dep/index.js')), 'node_modules reachable via link');
   assert.equal(fs.readFileSync(path.join(wt, '.env'), 'utf8'), 'SECRET=x\n');
 });
+
+test('linkIntoWorktree makes the symlink un-stageable (git add -A skips it)', async () => {
+  const { linkIntoWorktree } = await import('../src/git.js');
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'node_modules/x.js'), '1\n');
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  await addWorktree(repo, wt, 'todomd/task-0001');
+  linkIntoWorktree(repo, wt, ['node_modules']);
+  fs.writeFileSync(path.join(wt, 'real.js'), 'code\n');
+  git(wt, ['add', '-A']);
+  const staged = git(wt, ['diff', '--cached', '--name-only']);
+  assert.match(staged, /real\.js/);
+  assert.doesNotMatch(staged, /node_modules/); // the symlink must NOT be staged
+});
+
+test('branchAddedForbidden catches a committed node_modules, passes a clean branch', async () => {
+  const { branchAddedForbidden } = await import('../src/git.js');
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'node_modules/x.js'), '1\n');
+
+  const wtA = path.join(repo, '.todomd/worktrees/task-0001');
+  await addWorktree(repo, wtA, 'todomd/task-0001');
+  fs.writeFileSync(path.join(wtA, 'real.js'), 'code\n');
+  git(wtA, ['add', '-A']); git(wtA, ['commit', '-qm', 'clean']);
+  assert.equal(await branchAddedForbidden(repo, 'todomd/task-0001'), null);
+
+  const wtB = path.join(repo, '.todomd/worktrees/task-0002');
+  await addWorktree(repo, wtB, 'todomd/task-0002');
+  fs.symlinkSync(path.join(repo, 'node_modules'), path.join(wtB, 'node_modules'));
+  git(wtB, ['add', '-f', '--', 'node_modules']); git(wtB, ['commit', '-qm', 'oops']);
+  assert.equal(await branchAddedForbidden(repo, 'todomd/task-0002'), 'node_modules');
+});

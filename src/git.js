@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -32,7 +32,12 @@ export async function addWorktree(repoPath, worktreePath, branch) {
 // Symlink gitignored runtime deps (node_modules, .env, …) from the main repo
 // into a fresh worktree so the verify command can actually run. Symlinks are
 // instant and share one install; never overwrites anything already present.
+// Critically: a `node_modules/` gitignore pattern (directory-only) does NOT
+// match a *symlink* named node_modules, so a build agent's `git add -A` would
+// commit a machine-specific absolute symlink. We add bare-name patterns to the
+// worktree's own exclude so git ignores the links in this worktree.
 export function linkIntoWorktree(repoPath, worktreePath, names) {
+  const linked = [];
   for (const name of names || []) {
     const src = path.join(repoPath, name);
     const dest = path.join(worktreePath, name);
@@ -40,8 +45,34 @@ export function linkIntoWorktree(repoPath, worktreePath, names) {
     try {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.symlinkSync(src, dest);
+      linked.push(name.replace(/\/+$/, ''));
     } catch { /* best effort — a missing link just means tests may fail loudly */ }
   }
+  if (linked.length) {
+    try {
+      const excludePath = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--git-path', 'info/exclude'],
+        { encoding: 'utf8' }).trim();
+      const abs = path.isAbsolute(excludePath) ? excludePath : path.join(worktreePath, excludePath);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      const cur = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : '';
+      const add = linked.filter((n) => !cur.split('\n').includes(n));
+      if (add.length) fs.appendFileSync(abs, (cur && !cur.endsWith('\n') ? '\n' : '') + add.join('\n') + '\n');
+    } catch { /* exclude is a safety net; the merge guard below is the backstop */ }
+  }
+}
+
+// Pre-merge safety net: a task branch must never introduce these (e.g. a
+// committed node_modules/.env symlink). Returns the offending path or null.
+export async function branchAddedForbidden(repoPath, branch) {
+  const res = await git(repoPath, ['diff', '--name-only', '--diff-filter=A', `HEAD...${branch}`]);
+  if (!res.ok) return null;
+  const base = (f) => f.split('/').pop();
+  const bad = res.stdout.split('\n').map((s) => s.trim()).find((f) => {
+    if (f === 'node_modules' || f.startsWith('node_modules/')) return true;
+    // real secret/runtime env files, but not committed templates (.env.example, …)
+    return /^\.env(\.local|\.development|\.production)?$/.test(base(f));
+  });
+  return bad || null;
 }
 
 export async function removeWorktree(repoPath, worktreePath, branch) {

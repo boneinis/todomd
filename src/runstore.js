@@ -15,10 +15,18 @@ export function runKey(project, cardId) {
   return `${project}:${cardId}`;
 }
 
+// atomic write so a crash mid-write can't truncate runs.json (which would
+// silently disable orphan-kill on the next boot)
+function writeAtomic(file, data) {
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
+
 export function persistRuns() {
   try {
     fs.mkdirSync(dir(), { recursive: true });
-    fs.writeFileSync(RUNS_FILE(), JSON.stringify([...runs.values()], null, 2) + '\n');
+    writeAtomic(RUNS_FILE(), JSON.stringify([...runs.values()], null, 2) + '\n');
   } catch { /* mirror only — never fatal */ }
 }
 
@@ -39,7 +47,7 @@ export function addCost(usd) {
     try { ledger = JSON.parse(fs.readFileSync(LEDGER_FILE(), 'utf8')); } catch {}
     const month = new Date().toISOString().slice(0, 7);
     ledger[month] = Math.round(((ledger[month] || 0) + usd) * 10000) / 10000;
-    fs.writeFileSync(LEDGER_FILE(), JSON.stringify(ledger, null, 2) + '\n');
+    writeAtomic(LEDGER_FILE(), JSON.stringify(ledger, null, 2) + '\n');
   } catch { /* best effort */ }
 }
 

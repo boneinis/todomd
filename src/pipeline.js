@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog } from './board.js';
-import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, linkIntoWorktree, git } from './git.js';
+import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
 
@@ -168,6 +168,7 @@ async function recordRun(project, id, stage, attempt, result, note) {
 }
 
 async function toNeedsHuman(project, id, from, reason, detail = '') {
+  retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await patchFrontmatter(project.path, id, { needs_human_reason: reason });
   if (detail) await appendRunLog(project.path, id, `  - ${reason}: ${detail.slice(0, 400)}`);
   await orchMove(project, id, 'Needs Human', reason);
@@ -232,6 +233,7 @@ export async function humanMove(project, id, to) {
       live.kill('SIGTERM');
       return { ok: true, cancelled: true };
     }
+    retryFindings.delete(key);
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
     return moveCard(project.path, id, 'Review', { reason: 'retriage' });
   }
@@ -249,14 +251,17 @@ export async function humanMove(project, id, to) {
     const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
     if (blocked.length) return { ok: false, error: `blocked by: ${blocked.join(', ')}` };
     const moved = await moveCard(project.path, id, 'Assigned', { reason: 'approved' });
-    // budget mode: the /todomd-dispatch session picks the card up from here
-    if (moved.ok && (config.mode || 'launcher') !== 'budget') enqueueBuild(project, id);
+    // budget mode: the /todomd-dispatch session picks the card up from here.
+    // `unchanged` guards a concurrent double-approval: only the transition that
+    // actually moved Planned→Assigned enqueues (enqueueBuild also dedupes).
+    if (moved.ok && !moved.unchanged && (config.mode || 'launcher') !== 'budget') enqueueBuild(project, id);
     return moved;
   }
 
   // retry path: Needs Human → Planned (resets the attempt counter)
   if (to === 'Planned') {
     if (from !== 'Needs Human') return { ok: false, error: 'Planned is set by the orchestrator' };
+    retryFindings.delete(key);
     const ver = card.data.verification || {};
     // discard the rejected worktree so the fresh attempt doesn't build on top of it
     if (card.data.worktree) {
@@ -538,6 +543,12 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     if (await branchTouchesBoard(project.path, branch)) {
       return toNeedsHuman(project, id, 'Verify', 'board_tampering', 'task branch modifies .todomd/');
     }
+    // safety net: the branch must not have committed a linked dep (e.g. a
+    // node_modules/.env symlink that slipped past the worktree exclude)
+    const forbidden = await branchAddedForbidden(project.path, branch);
+    if (forbidden) {
+      return toNeedsHuman(project, id, 'Verify', 'committed_dependency', `branch added ${forbidden}`);
+    }
     const merged = await mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`);
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
     await removeWorktree(project.path, worktreeAbs, branch);
@@ -684,7 +695,11 @@ export async function reconcileOnBoot() {
 function isOurAgentProcess(pid) {
   try {
     const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
-    return /(^|\/|\s)(claude|codex)(\s|$)/.test(out);
+    // Only the EXECUTABLE basename — never a substring elsewhere in argv (so
+    // `grep claude file` can't be matched). Erring toward not-killing is safe:
+    // an un-killed orphan is still handled by the card → Needs Human path.
+    const exe = path.basename((out.trim().split(/\s+/)[0] || ''));
+    return exe === 'claude' || exe === 'codex';
   } catch {
     return false; // no such process, or ps unavailable → don't kill
   }
