@@ -38,6 +38,12 @@
   </header>
   <h2 id="drawer-title"></h2>
   <div class="drawer-meta" id="drawer-meta"></div>
+  <div class="drawer-move">
+    <label>move to
+      <select id="move-select"></select>
+    </label>
+    <button id="move-apply" class="route-save">move</button>
+  </div>
   <div class="drawer-routing">
     <label>agent
       <select id="route-agent"><option>claude</option><option>codex</option></select>
@@ -105,10 +111,14 @@
 
 <div id="qr-backdrop" class="modal-backdrop" hidden>
   <div class="modal qr-modal">
-    <h2>monitor on mobile</h2>
+    <h2>open on mobile</h2>
+    <div class="qr-tabs">
+      <button type="button" id="qr-tab-viewer" class="qr-tab active">monitor</button>
+      <button type="button" id="qr-tab-full" class="qr-tab">control</button>
+    </div>
     <div id="qr-svg" class="qr-svg"></div>
     <p id="qr-url" class="qr-url"></p>
-    <p class="qr-note">Read-only link for devices on this network — the board streams live, but cards can't be moved or created from it.</p>
+    <p class="qr-note" id="qr-note">Read-only link for devices on this network — the board streams live, but cards can't be moved or created from it.</p>
     <div class="modal-actions"><button type="button" id="qr-close" class="drawer-close">close</button></div>
   </div>
 </div>

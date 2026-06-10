@@ -27,6 +27,18 @@ if (cmd === 'init') {
   process.exit(0);
 }
 
+if (cmd === 'revoke') {
+  // cut off mobile/viewer links without touching the desktop session;
+  // new tokens are minted on the next server start
+  const dir = path.join(process.env.HOME || process.env.USERPROFILE, '.todomd');
+  let n = 0;
+  for (const f of ['token-mobile', 'token-viewer']) {
+    try { fs.unlinkSync(path.join(dir, f)); n++; } catch {}
+  }
+  console.log(n ? `revoked ${n} device token(s) — restart todomd; old QR links are now dead.` : 'no device tokens to revoke');
+  process.exit(0);
+}
+
 if (cmd === 'serve') {
   const cwd = process.cwd();
   if (fs.existsSync(path.join(cwd, '.todomd', 'tasks'))) {
@@ -49,6 +61,6 @@ if (cmd === 'serve') {
     else execFile('xdg-open', [url], () => {});
   }
 } else {
-  console.log('usage: todomd [init|serve] [--port N] [--lan] [--no-open]');
+  console.log('usage: todomd [init|serve|revoke] [--port N] [--lan] [--no-open]');
   process.exit(cmd === 'help' ? 0 : 1);
 }

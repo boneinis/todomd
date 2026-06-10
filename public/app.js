@@ -179,8 +179,31 @@ async function openDrawer(id) {
   $('#route-agent').value = card.data.agent || 'claude';
   $('#route-model').value = card.data.model || '';
   $('#route-skill').value = card.data.skill || '';
+  const cols = boardData?.config?.columns || [];
+  $('#move-select').innerHTML = cols
+    .filter((c) => c !== card.data.status)
+    .map((c) => `<option>${esc(c)}</option>`).join('');
   $('#drawer').hidden = false;
 }
+
+$('#move-apply').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/move?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ status: $('#move-select').value }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'move failed');
+    toast(out.warning || `moved to ${$('#move-select').value}`);
+    $('#drawer').hidden = true;
+    drawerCard = null;
+    loadBoard();
+  } catch {
+    toast('server unreachable');
+  }
+});
 
 $('#route-save').addEventListener('click', async () => {
   if (!drawerCard) return;
@@ -301,17 +324,27 @@ function connectWs() {
   };
 }
 
-/* ── QR / mobile monitor ── */
-$('#qr-btn').addEventListener('click', async () => {
+/* ── QR / mobile access ── */
+const QR_NOTES = {
+  viewer: 'Read-only link for devices on this network — the board streams live, but cards can’t be moved or created from it.',
+  full: '⚠ Full-control link: a phone with this QR can move cards and trigger agent runs. Plain HTTP on this network — only use on networks you trust. Revoke any time with `todomd revoke`.',
+};
+async function showQr(access) {
   try {
-    const out = await api('qr');
+    const out = await api(`qr${access === 'full' ? '?access=full' : ''}`);
     $('#qr-svg').innerHTML = out.svg;
     $('#qr-url').textContent = out.url;
+    $('#qr-note').textContent = QR_NOTES[access];
+    $('#qr-tab-viewer').classList.toggle('active', access === 'viewer');
+    $('#qr-tab-full').classList.toggle('active', access === 'full');
     $('#qr-backdrop').hidden = false;
   } catch (e) {
     toast(e.message);
   }
-});
+}
+$('#qr-btn').addEventListener('click', () => showQr('viewer'));
+$('#qr-tab-viewer').addEventListener('click', () => showQr('viewer'));
+$('#qr-tab-full').addEventListener('click', () => showQr('full'));
 $('#qr-close').addEventListener('click', () => { $('#qr-backdrop').hidden = true; });
 $('#qr-backdrop').addEventListener('click', (e) => { if (e.target.id === 'qr-backdrop') $('#qr-backdrop').hidden = true; });
 

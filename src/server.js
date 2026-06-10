@@ -40,12 +40,14 @@ function lanAddress() {
 export function startServer({ port = 7337, lan = false } = {}) {
   const token = loadToken('token');
   const viewerToken = loadToken('token-viewer');
+  const mobileToken = loadToken('token-mobile'); // full control, revocable per device class
 
   const sentToken = (req) => {
     const url = new URL(req.url, 'http://x');
     return url.searchParams.get('token') || req.headers['x-todomd-token'] || '';
   };
-  const authed = (req) => sentToken(req) === token;
+  const primary = (req) => sentToken(req) === token;
+  const authed = (req) => primary(req) || sentToken(req) === mobileToken;
   const viewerAuthed = (req) => authed(req) || sentToken(req) === viewerToken;
 
   const json = (res, code, obj) => {
@@ -68,14 +70,17 @@ export function startServer({ port = 7337, lan = false } = {}) {
       return json(res, 200, { projects: listProjects().map((p) => p.name) });
     }
     if (url.pathname === '/api/qr') {
-      if (!fullAccess) return json(res, 403, { error: 'read-only link' });
+      const wantFull = url.searchParams.get('access') === 'full';
+      // minting any QR needs full access; minting the CONTROL QR needs the
+      // primary desktop token specifically (a phone can't escalate itself)
+      if (!fullAccess || (wantFull && !primary(req))) return json(res, 403, { error: 'not allowed from this link' });
       const ip = lan ? lanAddress() : null;
       if (!ip) {
         return json(res, 400, { error: 'LAN access is off — restart with `todomd --lan` to enable the mobile link' });
       }
-      const link = `http://${ip}:${port}/?token=${viewerToken}`;
-      const svg = await QRCode.toString(link, { type: 'svg', margin: 1, width: 240, color: { dark: '#d4dcc9', light: '#0a0c0a' } });
-      return json(res, 200, { url: link, svg });
+      const link = `http://${ip}:${port}/?token=${wantFull ? mobileToken : viewerToken}`;
+      const svg = await QRCode.toString(link, { type: 'svg', margin: 1, width: 240, color: { dark: wantFull ? '#ffb454' : '#d4dcc9', light: '#0a0c0a' } });
+      return json(res, 200, { url: link, svg, access: wantFull ? 'full' : 'viewer' });
     }
     const project = findProject(url.searchParams.get('project') || '');
     if (!project) return json(res, 404, { error: 'unknown project' });
