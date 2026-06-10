@@ -40,14 +40,15 @@ if (cmd === 'serve') {
     console.error(`invalid --port: ${flag('--port')}`);
     process.exit(1);
   }
-  const { url } = await startServer({ port });
+  const { url, lanUrl } = await startServer({ port, lan: args.includes('--lan') });
   console.log(`todomd board: ${url}`);
+  if (lanUrl) console.log(`mobile monitor (read-only, this network): ${lanUrl}`);
   if (!args.includes('--no-open')) {
     if (process.platform === 'darwin') execFile('open', [url], () => {});
     else if (process.platform === 'win32') execFile('cmd', ['/c', 'start', '', url], () => {});
     else execFile('xdg-open', [url], () => {});
   }
 } else {
-  console.log('usage: todomd [init|serve] [--port N] [--no-open]');
+  console.log('usage: todomd [init|serve] [--port N] [--lan] [--no-open]');
   process.exit(cmd === 'help' ? 0 : 1);
 }

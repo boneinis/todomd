@@ -15,6 +15,7 @@
 <header class="topbar">
   <h1 class="wordmark">todo<span>md</span></h1>
   <div class="topbar-right">
+    <button id="qr-btn" class="qr-btn" title="mobile monitor link">▦</button>
     <button id="new-card" class="new-card">+ card</button>
     <input id="filter" type="search" placeholder="filter…" spellcheck="false" autocomplete="off" />
     <select id="project" title="project"></select>
@@ -100,6 +101,16 @@
       <button type="submit" class="modal-submit">create in Review</button>
     </div>
   </form>
+</div>
+
+<div id="qr-backdrop" class="modal-backdrop" hidden>
+  <div class="modal qr-modal">
+    <h2>monitor on mobile</h2>
+    <div id="qr-svg" class="qr-svg"></div>
+    <p id="qr-url" class="qr-url"></p>
+    <p class="qr-note">Read-only link for devices on this network — the board streams live, but cards can't be moved or created from it.</p>
+    <div class="modal-actions"><button type="button" id="qr-close" class="drawer-close">close</button></div>
+  </div>
 </div>
 
 <div id="toast" class="toast" hidden></div>

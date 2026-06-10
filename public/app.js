@@ -55,7 +55,9 @@ async function loadBoard() {
   renderBanners(boardData.banners || []);
   const usage = boardData.usage || {};
   const modeTag = boardData.mode === 'budget' ? ' · budget' : '';
-  $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag;
+  const viewer = boardData.access === 'viewer';
+  $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag + (viewer ? ' · monitor' : '');
+  document.body.classList.toggle('viewer', viewer);
   renderBoard();
 }
 
@@ -98,6 +100,7 @@ function renderBoard() {
 
 function renderCard(card, color, i) {
   const el = $('#card-tpl').content.firstElementChild.cloneNode(true);
+  if (boardData.access === 'viewer') el.draggable = false;
   el.style.setProperty('--col', color);
   el.style.setProperty('--i', i);
   el.dataset.id = card.id;
@@ -297,6 +300,20 @@ function connectWs() {
     setTimeout(connectWs, 2000);
   };
 }
+
+/* ── QR / mobile monitor ── */
+$('#qr-btn').addEventListener('click', async () => {
+  try {
+    const out = await api('qr');
+    $('#qr-svg').innerHTML = out.svg;
+    $('#qr-url').textContent = out.url;
+    $('#qr-backdrop').hidden = false;
+  } catch (e) {
+    toast(e.message);
+  }
+});
+$('#qr-close').addEventListener('click', () => { $('#qr-backdrop').hidden = true; });
+$('#qr-backdrop').addEventListener('click', (e) => { if (e.target.id === 'qr-backdrop') $('#qr-backdrop').hidden = true; });
 
 /* ── new card modal ── */
 const backdrop = $('#modal-backdrop');

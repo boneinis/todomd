@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
+import QRCode from 'qrcode';
 import { listProjects } from './registry.js';
 import { loadBoard, readCard, createCard, patchFrontmatter } from './board.js';
 import * as pipeline from './pipeline.js';
@@ -13,10 +14,10 @@ import * as pipeline from './pipeline.js';
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
 
-// One token per machine, persisted so server restarts don't invalidate open
-// tabs. Still random, still localhost-only, file readable by the user only.
-function loadToken() {
-  const file = path.join(os.homedir(), '.todomd', 'token');
+// Tokens persisted per machine so restarts don't invalidate open tabs.
+// `token` = full access; `viewer` = read-only (the QR/mobile monitor link).
+function loadToken(name) {
+  const file = path.join(os.homedir(), '.todomd', name);
   try {
     const t = fs.readFileSync(file, 'utf8').trim();
     if (/^[a-f0-9]{32}$/.test(t)) return t;
@@ -27,13 +28,25 @@ function loadToken() {
   return t;
 }
 
-export function startServer({ port = 7337 } = {}) {
-  const token = loadToken();
+function lanAddress() {
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const i of ifaces || []) {
+      if (i.family === 'IPv4' && !i.internal) return i.address;
+    }
+  }
+  return null;
+}
 
-  const authed = (req) => {
+export function startServer({ port = 7337, lan = false } = {}) {
+  const token = loadToken('token');
+  const viewerToken = loadToken('token-viewer');
+
+  const sentToken = (req) => {
     const url = new URL(req.url, 'http://x');
-    return url.searchParams.get('token') === token || req.headers['x-todomd-token'] === token;
+    return url.searchParams.get('token') || req.headers['x-todomd-token'] || '';
   };
+  const authed = (req) => sentToken(req) === token;
+  const viewerAuthed = (req) => authed(req) || sentToken(req) === viewerToken;
 
   const json = (res, code, obj) => {
     res.writeHead(code, { 'content-type': 'application/json' });
@@ -43,10 +56,26 @@ export function startServer({ port = 7337 } = {}) {
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
   async function handleApi(req, res, url) {
-    if (!authed(req)) return json(res, 401, { error: 'bad token' });
+    // reads work with either token; anything that mutates or spawns
+    // requires the full token (the viewer/QR link is monitor-only)
+    if (!viewerAuthed(req)) return json(res, 401, { error: 'bad token' });
+    const fullAccess = authed(req);
+    if (!fullAccess && req.method !== 'GET') {
+      return json(res, 403, { error: 'read-only link — open the board on your computer to make changes' });
+    }
 
     if (url.pathname === '/api/projects') {
       return json(res, 200, { projects: listProjects().map((p) => p.name) });
+    }
+    if (url.pathname === '/api/qr') {
+      if (!fullAccess) return json(res, 403, { error: 'read-only link' });
+      const ip = lan ? lanAddress() : null;
+      if (!ip) {
+        return json(res, 400, { error: 'LAN access is off — restart with `todomd --lan` to enable the mobile link' });
+      }
+      const link = `http://${ip}:${port}/?token=${viewerToken}`;
+      const svg = await QRCode.toString(link, { type: 'svg', margin: 1, width: 240, color: { dark: '#d4dcc9', light: '#0a0c0a' } });
+      return json(res, 200, { url: link, svg });
     }
     const project = findProject(url.searchParams.get('project') || '');
     if (!project) return json(res, 404, { error: 'unknown project' });
@@ -56,6 +85,7 @@ export function startServer({ port = 7337 } = {}) {
       return json(res, 200, {
         ...board,
         mode: board.config.mode || 'launcher',
+        access: fullAccess ? 'full' : 'viewer',
         runStates: pipeline.getRunStates(project.name),
         banners: pipeline.getBanners(),
         usage: pipeline.usage(),
@@ -153,7 +183,7 @@ export function startServer({ port = 7337 } = {}) {
   // websocket: push "board changed" pings per project, with liveness pings
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
-    if (!authed(req)) return socket.destroy();
+    if (!viewerAuthed(req)) return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
   wss.on('connection', (ws) => {
@@ -206,8 +236,12 @@ export function startServer({ port = 7337 } = {}) {
   pipeline.reconcileOnBoot().catch(() => {});
 
   return new Promise((resolve) => {
-    server.listen(port, '127.0.0.1', () => {
-      resolve({ url: `http://127.0.0.1:${port}/?token=${token}`, port, token, server });
+    server.listen(port, lan ? '0.0.0.0' : '127.0.0.1', () => {
+      resolve({
+        url: `http://127.0.0.1:${port}/?token=${token}`,
+        lanUrl: lan && lanAddress() ? `http://${lanAddress()}:${port}/?token=${viewerToken}` : null,
+        port, token, server,
+      });
     });
   });
 }
