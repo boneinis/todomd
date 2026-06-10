@@ -112,7 +112,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
         access: fullAccess ? 'full' : 'viewer',
         runStates: pipeline.getRunStates(project.name),
         banners: pipeline.getBanners(),
-        usage: pipeline.usage(),
+        usage: pipeline.usage(project.name),
       });
     }
     if (url.pathname === '/api/cards' && req.method === 'POST') {
@@ -178,7 +178,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
       return json(res, result.ok ? 200 : 400, result);
     }
     if (url.pathname === '/api/resume-queues' && req.method === 'POST') {
-      pipeline.resumeQueues(listProjects());
+      // resume only the board the user clicked, not every paused project
+      pipeline.resumeQueues([project]);
       return json(res, 200, { ok: true });
     }
     return json(res, 404, { error: 'not found' });

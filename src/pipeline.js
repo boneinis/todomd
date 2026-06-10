@@ -32,7 +32,17 @@ const children = new Map();          // runKey → ChildProcess
 const queues = new Map();            // project name → [cardId]
 const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
-let quotaPaused = false;
+const quotaPaused = new Set();        // project names paused on a usage limit
+const pausedResumes = new Map();      // project name → [() => Promise] continuations
+
+function pauseForQuota(project, thunk) {
+  quotaPaused.add(project.name);
+  setBanner('quota', 'warn', 'usage limit reached — queue paused; resume when your usage resets');
+  if (thunk) {
+    if (!pausedResumes.has(project.name)) pausedResumes.set(project.name, []);
+    pausedResumes.get(project.name).push(thunk);
+  }
+}
 
 export function init(opts) {
   broadcast = opts.broadcast;
@@ -274,7 +284,9 @@ export function cancel(project, id) {
   }
   const run = runs.get(key);
   run.cancelled = true;
-  run.revertTo = run.prevStatus;
+  // a cancelled Verify run would revert to Build (prevStatus), which humanMove
+  // then refuses to leave — send it back to Assigned so it can be re-driven
+  run.revertTo = run.stage === 'Verify' ? 'Assigned' : run.prevStatus;
   live.kill('SIGTERM');
   return { ok: true };
 }
@@ -335,8 +347,9 @@ async function handleRunFailure(project, id, stageName, result, revertTo) {
     setBanner(failure.kind, 'error', failure.detail);
     await orchMove(project, id, revertTo, failure.kind);
   } else if (failure.kind === 'quota') {
-    quotaPaused = true;
-    setBanner('quota', 'warn', 'usage limit reached — queue paused; card returned to its column');
+    // trigger stages (Plan/skill) are human-initiated — revert and pause the
+    // project; no continuation to preserve (the human re-drags to retry)
+    pauseForQuota(project, null);
     await orchMove(project, id, revertTo, 'usage limit');
   } else {
     await toNeedsHuman(project, id, stageName, failure.kind === 'agent' ? failure.detail : 'agent_error', result.stderr);
@@ -358,7 +371,7 @@ function enqueueBuild(project, id) {
 }
 
 function processQueue(project) {
-  if (quotaPaused) return;
+  if (quotaPaused.has(project.name)) return;
   const config = loadConfig(project.path);
   const limit = config.concurrency || 1;
   const q = queues.get(project.name) || [];
@@ -433,11 +446,14 @@ async function buildChain(project, id, retry = null) {
     const failure = classifyFailure(result);
     await recordRun(project, id, 'Build', attempt, result, `failed: ${failure.kind}`);
     if (failure.kind === 'quota') {
-      quotaPaused = true;
-      setBanner('quota', 'warn', 'usage limit reached — queue paused');
-      await orchMove(project, id, 'Assigned', 'usage limit; will retry');
-      queues.get(project.name)?.unshift(id);
-      return sendState(project, id, 'queued', 'Build');
+      // roll back this attempt so the resume re-runs it without burning one,
+      // and preserve any verify-fail retry context (session/findings)
+      await patchFrontmatter(project.path, id, {
+        verification: { attempts: attempt - 1, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
+      });
+      await orchMove(project, id, 'Assigned', 'usage limit; will resume');
+      pauseForQuota(project, () => buildChain(project, id, retry));
+      return sendState(project, id, 'idle');
     }
     return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? failure.detail : failure.kind, result.stderr);
   }
@@ -474,11 +490,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (!result.envelope || result.envelope.is_error || !verdict || !verdict.verdict) {
     const failure = classifyFailure(result);
     if (failure.kind === 'quota') {
-      quotaPaused = true;
-      setBanner('quota', 'warn', 'usage limit reached — queue paused');
-      await orchMove(project, id, 'Assigned', 'usage limit during verify');
-      queues.get(project.name)?.unshift(id) ?? queues.set(project.name, [id]);
-      return sendState(project, id, 'queued', 'Build');
+      // resume the SAME verify (session, worktree, attempt all preserved) —
+      // never rebuild from scratch and never burn an attempt on a quota blip
+      await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
+      pauseForQuota(project, () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun));
+      return sendState(project, id, 'idle');
     }
     if (!isRerun && failure.kind === 'agent') {
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · malformed verdict, re-running once`);
@@ -647,12 +663,18 @@ export function hasLiveRun(projectName, id) {
   return children.has(runKey(projectName, id));
 }
 
-export function usage() {
-  return { month_cost_usd: monthCost(), quota_paused: quotaPaused };
+export function usage(projectName) {
+  return { month_cost_usd: monthCost(), quota_paused: projectName ? quotaPaused.has(projectName) : quotaPaused.size > 0 };
 }
 
 export function resumeQueues(projects) {
-  quotaPaused = false;
-  setBanner('quota', null, null);
-  for (const p of projects) processQueue(p);
+  for (const p of projects) {
+    if (!quotaPaused.has(p.name)) continue;
+    quotaPaused.delete(p.name);
+    const thunks = pausedResumes.get(p.name) || [];
+    pausedResumes.set(p.name, []);
+    for (const t of thunks) t().catch(() => {}); // re-run preserved continuations
+    processQueue(p);
+  }
+  if (quotaPaused.size === 0) setBanner('quota', null, null);
 }
