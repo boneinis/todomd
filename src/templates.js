@@ -188,15 +188,24 @@ Another dispatcher (or the server's launcher) may run on this repo at the same t
 
 Rules: hold the lock ONLY around quick commits — **never across an agent run** (plan/build/verify); UNLOCK before you start one and LOCK again for the next commit. Whenever you LOCK to act on a card, **re-read its status first and skip if another dispatcher already advanced it** (discard your work for that card). The lock is a plain directory on disk, so it persists across your tool calls until you UNLOCK. A crashed dispatcher's lock auto-expires after 5 minutes (LOCK steals it). \`.todomd/.lock/\` is gitignored — never commit it.
 
+### Leases — don't redo a long run another dispatcher is doing
+
+Build *selection* is already safe (status flips to \`Build\` under the lock, so a second dispatcher sees the card is no longer \`Assigned\`). But **triage and planning run a long agent step BEFORE the card's status changes**, so the status alone can't stop a second dispatcher from redoing the same work. Guard those with a **lease** in the card's frontmatter:
+
+- \`<worker>\` = config \`coordination.worker\` if set, else the output of \`echo "$(whoami)@$(hostname -s)"\` (same identity as a coordination claim; used even when coordination is off).
+- **Claim** — right after you select a card and BEFORE its long run: **LOCK**, re-check the card is still eligible and has no fresh lease, set \`lease: "<epoch-seconds> <worker>"\` (e.g. \`lease: "1781123013 alice@host"\`), commit, **UNLOCK**.
+- **Skip on select** — ignore any card whose \`lease\` is set and **fresh** (age ≤ 1800s) — it's already being worked. A lease older than 1800s is stale (that dispatcher crashed); ignore it and reclaim.
+- **Clear** — in the same **LOCK** where you record the result (set \`triaged\`/\`status\`), also clear the lease (set \`lease:\` empty), in that one commit.
+
 ## 0. Triage (all pending)
 
-Unless config \`triage.enabled\` is false: for each card with \`status: Review\` whose frontmatter \`triaged:\` is empty and that has no \`skill:\`, follow \`.claude/commands/todomd-triage.md\` for it. Then **LOCK**, re-read the card — if \`triaged:\` is still empty, set \`triaged: <today>\`, add a Run Log line, commit — **UNLOCK** (if another dispatcher already triaged it, discard your result).
+Unless config \`triage.enabled\` is false: for each card with \`status: Review\` whose frontmatter \`triaged:\` is empty, that has no \`skill:\`, and that has no fresh lease: **LOCK**, re-check it's still untriaged and unleased, set \`lease: "<epoch> <worker>"\`, commit, **UNLOCK** (claim it). Follow \`.claude/commands/todomd-triage.md\` for it. Then **LOCK**, if \`triaged:\` is still empty set \`triaged: <today>\`, clear \`lease\`, add a Run Log line, commit, **UNLOCK** (if another dispatcher beat you, discard your result).
 
 ## 1. Plan work (all pending)
 
-For each card in \`.todomd/tasks/*.md\` with \`status: Plan\` (run the plan/skill UNLOCKED, then record the result under **LOCK** with a status re-check):
-- If it has \`skill: <name>\`: invoke /<name> with the card id, save output worth keeping under \`## Findings\` in the card; then **LOCK**, if status is still \`Plan\` set \`status: Review\`, append a Run Log line, commit, **UNLOCK** (else discard).
-- Otherwise follow \`.claude/commands/todomd-plan.md\` for it; then **LOCK**, if status is still \`Plan\` set \`status: Planned\`, Run Log line, commit, **UNLOCK** (else discard).
+For each card in \`.todomd/tasks/*.md\` with \`status: Plan\` and no fresh lease: first **LOCK**, re-check it's still \`Plan\` and unleased, set \`lease: "<epoch> <worker>"\`, commit, **UNLOCK** (claim it so no other dispatcher plans it). Then run the plan/skill UNLOCKED and record the result under **LOCK**, clearing the lease:
+- If it has \`skill: <name>\`: invoke /<name> with the card id, save output worth keeping under \`## Findings\` in the card; then **LOCK**, if status is still \`Plan\` set \`status: Review\`, clear \`lease\`, append a Run Log line, commit, **UNLOCK** (else discard).
+- Otherwise follow \`.claude/commands/todomd-plan.md\` for it; then **LOCK**, if status is still \`Plan\` set \`status: Planned\`, clear \`lease\`, Run Log line, commit, **UNLOCK** (else discard).
 
 ## 2. Build work (ONE card per tick)
 
@@ -226,7 +235,7 @@ Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assi
 
 ## Rules
 
-- Frontmatter: you may change only \`status\`, \`verification\`, \`needs_human_reason\`, \`session_id\`, \`triaged\`.
+- Frontmatter: you may change only \`status\`, \`verification\`, \`needs_human_reason\`, \`session_id\`, \`triaged\`, \`lease\`.
 - Run Log: one line per action — \`- <UTC time> · <stage> attempt N (budget) · <result>\`.
 - Board commits are path-scoped to the card file: \`git commit -m "chore(todomd): <id> <from> -> <to> (<reason>)" -- .todomd/tasks/<file>\`. Code commits happen on the task branch per the build command.
 - Nothing to do → reply "board idle" and finish.
