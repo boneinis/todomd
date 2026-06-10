@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import { listProjects } from './registry.js';
-import { loadBoard, readCard } from './board.js';
+import { loadBoard, readCard, createCard } from './board.js';
 import * as pipeline from './pipeline.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -43,6 +43,18 @@ export function startServer({ port = 7337 } = {}) {
         banners: pipeline.getBanners(),
         usage: pipeline.usage(),
       });
+    }
+    if (url.pathname === '/api/cards' && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let fields;
+      try {
+        fields = JSON.parse(body || '{}');
+      } catch {
+        return json(res, 400, { error: 'invalid JSON body' });
+      }
+      const result = await createCard(project.path, fields);
+      return json(res, result.ok ? 200 : 400, result);
     }
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
     if (cardMatch && req.method === 'GET') {

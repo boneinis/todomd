@@ -146,6 +146,61 @@ export function patchFrontmatter(repoPath, id, updates) {
   });
 }
 
+function slugify(title) {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
+}
+
+export function createCard(repoPath, fields) {
+  return withRepoLock(repoPath, async () => {
+    const dir = tasksDir(repoPath);
+    fs.mkdirSync(dir, { recursive: true });
+    const title = String(fields.title || '').trim();
+    if (!title) return { ok: false, error: 'title is required' };
+
+    const max = fs.readdirSync(dir)
+      .map((f) => f.match(/^task-(\d+)/)?.[1])
+      .filter(Boolean)
+      .reduce((m, n) => Math.max(m, Number(n)), 0);
+    const id = `task-${String(max + 1).padStart(4, '0')}`;
+    const file = `${id}-${slugify(title)}.md`;
+
+    const labels = (fields.labels || []).map((l) => String(l).trim()).filter(Boolean);
+    const criteria = (fields.criteria || []).map((c) => String(c).trim()).filter(Boolean);
+    const content = `---
+id: ${id}
+title: ${title.replace(/[:#[\]{}]/g, ' ').replace(/\s+/g, ' ')}
+status: Review
+type: ${fields.type || 'improvement'}
+priority: ${fields.priority || 'medium'}
+labels: [${labels.join(', ')}]
+dependencies: []
+created_date: ${new Date().toISOString().slice(0, 10)}
+source: ${fields.source || 'ui'}
+agent: claude
+session_id:
+worktree:
+verification: { attempts: 0, max_attempts: 3, last_verdict: }
+---
+
+## Description
+
+${String(fields.description || title).trim()}
+
+## Acceptance Criteria
+
+${criteria.length ? criteria.map((c) => `- [ ] ${c}`).join('\n') : '- [ ] Implemented and verified'}
+
+## Implementation Plan
+
+## Run Log
+`;
+    fs.writeFileSync(path.join(dir, file), content);
+    const relFile = path.join('.todomd', 'tasks', file);
+    const commit = await commitCard(repoPath, relFile, `todomd: ${id} created (${fields.source || 'ui'})`);
+    return { ok: true, id, file, commit };
+  });
+}
+
 // Append one orchestrator-written line into the card's ## Run Log section
 // (inserted at the end of that section, before any following heading).
 export function appendRunLog(repoPath, id, line) {

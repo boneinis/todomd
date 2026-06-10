@@ -268,6 +268,42 @@ function connectWs() {
   };
 }
 
+/* ── new card modal ── */
+const backdrop = $('#modal-backdrop');
+$('#new-card').addEventListener('click', () => {
+  $('#card-form').reset();
+  backdrop.hidden = false;
+  $('#card-form [name=title]').focus();
+});
+$('#modal-cancel').addEventListener('click', () => { backdrop.hidden = true; });
+backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.hidden = true; });
+$('#card-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const payload = {
+    title: f.get('title'),
+    type: f.get('type'),
+    priority: f.get('priority'),
+    labels: String(f.get('labels') || '').split(',').map((s) => s.trim()).filter(Boolean),
+    description: f.get('description'),
+    criteria: String(f.get('criteria') || '').split('\n').map((s) => s.trim()).filter(Boolean),
+  };
+  try {
+    const res = await fetch(`/api/cards?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'create failed');
+    backdrop.hidden = true;
+    toast(`${out.id} created`);
+    loadBoard();
+  } catch {
+    toast('server unreachable');
+  }
+});
+
 projectSel.addEventListener('change', () => { currentProject = projectSel.value; loadBoard(); });
 filterInput.addEventListener('input', renderBoard);
 
