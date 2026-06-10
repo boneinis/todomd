@@ -10,6 +10,8 @@ With `coordination.enabled: true` in `.todomd/config.yml`, todomd keeps a commit
 - Before claiming, it checks for **overlap**: another worker's active claim that touches one of the same files. By default it logs a warning on the card and shows a board banner; with `block: true` it refuses the card (→ Needs Human, reason `work_conflict`) so you decide.
 - When the card **finishes** (Done, Needs Human, or cancelled), todomd **removes** the claim.
 
+This works the same in both run modes: **launcher mode** (the server's build pipeline claims/releases automatically) and **budget mode** (the `/todomd-dispatch` session claims before it builds and releases when the card reaches a terminal stage, following the same manifest format). A self-heal pass in each mode prunes stale claims left by an interrupted run.
+
 `ACTIVE.md` is human-readable and lives in git history, so even outside todomd you can see what's being worked on:
 
 ```markdown

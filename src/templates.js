@@ -190,15 +190,27 @@ For each card in \`.todomd/tasks/*.md\` with \`status: Plan\`:
 
 Take the oldest card with \`status: Assigned\` (none → skip):
 1. attempts = verification.attempts + 1. If attempts > max_attempts → \`status: Needs Human\`, \`needs_human_reason: attempts_exhausted\`, commit, stop.
-2. Set \`status: Build\` and verification.attempts, commit. Create the worktree if missing: \`git worktree add <worktree_dir>/<id> -b <branch_prefix><id>\`.
-3. Inside the worktree follow \`.claude/commands/todomd-build.md\` for the card. Never touch \`.todomd/\` inside the worktree.
-4. Set \`status: Verify\`, commit. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings.
-5. **pass** → confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit.
-   **fail** → if attempts < max_attempts: fix the findings in the worktree, re-run step 4. Else Needs Human as in step 1, with the findings quoted in the Run Log.
+2. **Coordination** (only if config \`coordination.enabled\`): read \`.todomd/ACTIVE.md\` (see format below). Work out the files this card touches from its \`## Implementation Plan\`. If another worker's claim (a line whose \`worker\` differs from yours) lists any of the same files: append \`  - ⚠ file overlap: <who/which files>\` to the Run Log, and if config \`coordination.block\` is true set \`status: Needs Human\`, \`needs_human_reason: work_conflict\`, commit, and stop. Otherwise add your claim to \`.todomd/ACTIVE.md\` (remove any existing line for this card first) and commit it, then continue.
+3. Set \`status: Build\` and verification.attempts, commit. Create the worktree if missing: \`git worktree add <worktree_dir>/<id> -b <branch_prefix><id>\`.
+4. Inside the worktree follow \`.claude/commands/todomd-build.md\` for the card. Never touch \`.todomd/\` inside the worktree.
+5. Set \`status: Verify\`, commit. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings.
+6. **pass** → confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit. **Release your coordination claim** (step C).
+   **fail** → if attempts < max_attempts: fix the findings in the worktree, re-run step 5. Else Needs Human as in step 1, with the findings quoted in the Run Log, then **release your coordination claim (step C)**.
+
+### Coordination manifest — \`.todomd/ACTIVE.md\` (only if \`coordination.enabled\`)
+
+So multiple developers don't build the same files at once. A claim is exactly two lines (note the em-dashes \`—\` and backticks; match this format so the server's launcher mode can read it too):
+
+\`\`\`
+- **<id>** — <title> — \`branch: <branch_prefix><id>\` — worker \`<worker>\` — started <UTC, e.g. 2026-06-10T14:30Z>
+  - files: <comma-separated paths from the plan>
+\`\`\`
+
+\`<worker>\` = config \`coordination.worker\` if set, else the output of \`echo "$(whoami)@$(hostname -s)"\`. **Add a claim** = remove any existing line for this card, append yours, commit \`.todomd/ACTIVE.md\`. **(step C) Release** = remove your card's two lines, commit. If the file becomes empty leave the \`# Active work\` header.
 
 ## 3. Self-heal
 
-Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assigned and re-enter step 2.
+Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assigned and re-enter step 2. Also: if \`coordination.enabled\`, remove from \`.todomd/ACTIVE.md\` any claim whose card is no longer \`Assigned\`/\`Build\`/\`Verify\` (a stale claim), and commit.
 
 ## Rules
 
