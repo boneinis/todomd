@@ -57,3 +57,21 @@ test('workerName uses config override else <user>@<host>', () => {
   assert.equal(workerName({ coordination: { worker: 'ci-runner' } }), 'ci-runner');
   assert.match(workerName({}), /@/);
 });
+
+test('concurrent claims do not lose each other (repo-lock serialized)', async () => {
+  const repo = makeRepo();
+  // fire two different cards' claims at the same time
+  await Promise.all([
+    claim(repo, { card: 'task-0001', title: 'A', branch: 'todomd/task-0001', worker: 'alice@a', files: ['src/a.js'] }, {}),
+    claim(repo, { card: 'task-0002', title: 'B', branch: 'todomd/task-0002', worker: 'bob@b', files: ['src/b.js'] }, {}),
+  ]);
+  const all = await readAllClaims(repo, {});
+  assert.deepEqual(all.map((c) => c.card).sort(), ['task-0001', 'task-0002'], 'both claims must survive a concurrent write');
+  // concurrent release of one while claiming a third
+  await Promise.all([
+    release(repo, 'task-0001', {}),
+    claim(repo, { card: 'task-0003', title: 'C', branch: 'todomd/task-0003', worker: 'carol@c', files: ['src/c.js'] }, {}),
+  ]);
+  const after = await readAllClaims(repo, {});
+  assert.deepEqual(after.map((c) => c.card).sort(), ['task-0002', 'task-0003']);
+});

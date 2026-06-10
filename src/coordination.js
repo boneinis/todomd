@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { git, commitPaths } from './git.js';
+import { withRepoLock } from './board.js';
 
 // A committed manifest of in-flight work so multiple developers on one repo
 // don't step on each other. todomd writes a claim when a card starts building
@@ -101,30 +102,39 @@ export function findConflicts(claims, { card, worker, files }) {
   );
 }
 
-async function writeAndCommit(repoPath, claims, message, { sync }) {
+async function pushActive(repoPath) {
+  const branch = await currentBranch(repoPath);
+  await git(repoPath, ['push', '--quiet', 'origin', `HEAD:${branch}`]); // best effort
+}
+
+// Atomically (under the repo lock) re-read the local manifest, apply `mutate`,
+// write, and commit — so concurrent claims/releases and board commits can't race
+// the file or the git index. Returns whether a commit was made (for push).
+async function commitManifest(repoPath, mutate, message) {
   const fs = await import('node:fs');
-  fs.writeFileSync(path.join(repoPath, ACTIVE_REL), renderActive(claims));
-  const commit = await commitPaths(repoPath, [ACTIVE_REL], message);
-  if (sync && commit.committed) {
-    const branch = await currentBranch(repoPath);
-    await git(repoPath, ['push', '--quiet', 'origin', `HEAD:${branch}`]); // best effort
-  }
-  return commit;
+  return withRepoLock(repoPath, async () => {
+    const current = await readLocal(repoPath);
+    const next = mutate(current);
+    fs.writeFileSync(path.join(repoPath, ACTIVE_REL), renderActive(next));
+    return commitPaths(repoPath, [ACTIVE_REL], message);
+  });
 }
 
 // Add/replace this card's claim. Returns the conflicting other-worker claims.
 export async function claim(repoPath, { card, title, branch, worker, files }, { sync } = {}) {
-  const all = await readAllClaims(repoPath, { sync });
+  const all = await readAllClaims(repoPath, { sync }); // network read, outside the lock (advisory)
   const conflicts = findConflicts(all, { card, worker, files });
-  const mineOnly = (await readLocal(repoPath)).filter((c) => c.card !== card);
-  mineOnly.push({ card, title, branch, worker, started: new Date().toISOString().slice(0, 16) + 'Z', files });
-  await writeAndCommit(repoPath, mineOnly, `chore(todomd): ${card} claim active work`, { sync });
+  const started = new Date().toISOString().slice(0, 16) + 'Z';
+  const commit = await commitManifest(repoPath,
+    (cur) => [...cur.filter((c) => c.card !== card), { card, title, branch, worker, started, files }],
+    `chore(todomd): ${card} claim active work`);
+  if (sync && commit.committed) await pushActive(repoPath);
   return conflicts;
 }
 
 export async function release(repoPath, card, { sync } = {}) {
-  const claims = await readLocal(repoPath);
-  if (!claims.some((c) => c.card === card)) return; // nothing to release
-  const remaining = claims.filter((c) => c.card !== card);
-  await writeAndCommit(repoPath, remaining, `chore(todomd): ${card} release active work`, { sync });
+  const commit = await commitManifest(repoPath,
+    (cur) => cur.filter((c) => c.card !== card),
+    `chore(todomd): ${card} release active work`);
+  if (sync && commit.committed) await pushActive(repoPath);
 }

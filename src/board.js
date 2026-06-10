@@ -84,7 +84,9 @@ function setStatusInFrontmatter(raw, newStatus) {
 // One write at a time per repo: a human drag and (in phase 2) an agent-run
 // transition must never interleave read-modify-write on the same files.
 const repoLocks = new Map();
-function withRepoLock(repoPath, fn) {
+// exported so coordination's ACTIVE.md read-modify-write-commit serializes with
+// board writes/commits on the same repo (no git-index race, no lost update)
+export function withRepoLock(repoPath, fn) {
   const prev = repoLocks.get(repoPath) || Promise.resolve();
   const next = prev.then(fn, fn);
   repoLocks.set(repoPath, next.then(() => {}, () => {}));
