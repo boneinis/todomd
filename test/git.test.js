@@ -70,3 +70,17 @@ test('mergeBranch merges, and aborts cleanly on conflict', async () => {
   // repo is not left mid-merge
   assert.ok(!fs.existsSync(path.join(repo, '.git/MERGE_HEAD')));
 });
+
+test('linkIntoWorktree symlinks gitignored deps into the worktree', async () => {
+  const { linkIntoWorktree } = await import('../src/git.js');
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, 'node_modules/dep'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'node_modules/dep/index.js'), 'export default 1;\n');
+  fs.writeFileSync(path.join(repo, '.env'), 'SECRET=x\n');
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  await addWorktree(repo, wt, 'todomd/task-0001');
+  assert.ok(!fs.existsSync(path.join(wt, 'node_modules')));
+  linkIntoWorktree(repo, wt, ['node_modules', '.env']);
+  assert.ok(fs.existsSync(path.join(wt, 'node_modules/dep/index.js')), 'node_modules reachable via link');
+  assert.equal(fs.readFileSync(path.join(wt, '.env'), 'utf8'), 'SECRET=x\n');
+});

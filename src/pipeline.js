@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog } from './board.js';
-import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, git } from './git.js';
+import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
 
@@ -430,6 +430,8 @@ async function buildChain(project, id, retry = null) {
   if (!fs.existsSync(worktreeAbs)) {
     const wt = await addWorktree(project.path, worktreeAbs, branch);
     if (!wt.ok) return toNeedsHuman(project, id, fromStatus, 'worktree_failed', wt.reason);
+    // make the worktree runnable: link gitignored runtime deps from the repo
+    linkIntoWorktree(project.path, worktreeAbs, config.worktree_link || ['node_modules']);
   }
 
   await patchFrontmatter(project.path, id, {

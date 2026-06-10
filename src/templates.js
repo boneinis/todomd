@@ -13,6 +13,9 @@ max_attempts: 3
 concurrency: 1
 merge: merge            # merge | pr (pr lands in a later phase)
 worktree_dir: .todomd/worktrees
+# gitignored runtime deps symlinked into each build worktree so the verify
+# command can run (add .env, .env.local, etc. if your tests need them)
+worktree_link: [node_modules]
 branch_prefix: todomd/
 default_agent: claude
 
