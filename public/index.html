@@ -22,6 +22,7 @@
     <button id="new-card" class="new-card">+ card</button>
     <input id="filter" type="search" placeholder="filter…" spellcheck="false" autocomplete="off" />
     <select id="project" title="project"></select>
+    <button id="manage-projects" class="qr-btn" title="add / remove projects">⊕</button>
     <span class="usage" id="usage" title="model spend this month"></span>
     <span class="conn" id="conn" title="live connection"><span class="conn-dot"></span><span id="conn-label">SYNC</span></span>
   </div>
@@ -112,6 +113,21 @@
       <button type="submit" class="modal-submit">create in Review</button>
     </div>
   </form>
+</div>
+
+<div id="projects-backdrop" class="modal-backdrop" hidden>
+  <div class="modal">
+    <h2>projects</h2>
+    <label>add a repo — paste its full path (it must be a git repo)
+      <div class="proj-add-row">
+        <input id="proj-path" placeholder="/Users/you/code/my-repo" autocomplete="off" spellcheck="false" />
+        <button type="button" id="proj-add" class="modal-submit">add</button>
+      </div>
+    </label>
+    <p class="qr-note">Tip: in Finder, right-click the folder → hold ⌥ Option → “Copy as Pathname”, then paste. The board (<code>.todomd/</code>) is created if the repo doesn’t have one.</p>
+    <ul id="proj-list" class="proj-list"></ul>
+    <div class="modal-actions"><button type="button" id="projects-close" class="drawer-close">close</button></div>
+  </div>
 </div>
 
 <div id="qr-backdrop" class="modal-backdrop" hidden>

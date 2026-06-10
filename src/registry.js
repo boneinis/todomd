@@ -26,6 +26,15 @@ export function listProjects() {
   );
 }
 
+// Unregister a project by name (does NOT delete its board files).
+export function removeProject(name) {
+  const reg = readRegistry();
+  const before = reg.projects.length;
+  reg.projects = reg.projects.filter((p) => p.name !== name);
+  if (reg.projects.length !== before) writeRegistry(reg);
+  return before - reg.projects.length;
+}
+
 export function addProject(repoPath) {
   const abs = path.resolve(repoPath);
   const reg = readRegistry();

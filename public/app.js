@@ -380,6 +380,49 @@ $('#theme-btn').addEventListener('click', () => {
   localStorage.setItem('todomd-theme', light ? 'light' : 'dark');
 });
 
+/* ── manage projects ── */
+async function renderProjectList() {
+  const { projects } = await api('projects');
+  $('#proj-list').innerHTML = projects.map((p) =>
+    `<li><span>${esc(p)}</span><button class="proj-remove" data-name="${esc(p)}" title="remove from board">remove</button></li>`
+  ).join('');
+  $('#proj-list').querySelectorAll('.proj-remove').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const name = btn.dataset.name;
+      const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE', headers });
+      if (res.ok) { toast(`removed ${name}`); await renderProjectList(); await loadProjects(); loadBoard(); }
+      else toast('remove failed');
+    })
+  );
+}
+$('#manage-projects').addEventListener('click', async () => {
+  $('#proj-path').value = '';
+  await renderProjectList().catch(() => {});
+  $('#projects-backdrop').hidden = false;
+  $('#proj-path').focus();
+});
+$('#projects-close').addEventListener('click', () => { $('#projects-backdrop').hidden = true; });
+$('#projects-backdrop').addEventListener('click', (e) => { if (e.target.id === 'projects-backdrop') $('#projects-backdrop').hidden = true; });
+async function addProjectByPath() {
+  const p = $('#proj-path').value.trim();
+  if (!p) return;
+  try {
+    const res = await fetch('/api/projects', {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ path: p }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'could not add');
+    toast(`added ${out.name}`);
+    $('#proj-path').value = '';
+    await loadProjects();
+    currentProject = out.name; projectSel.value = out.name;
+    await renderProjectList();
+    loadBoard();
+  } catch { toast('server unreachable'); }
+}
+$('#proj-add').addEventListener('click', addProjectByPath);
+$('#proj-path').addEventListener('keydown', (e) => { if (e.key === 'Enter') addProjectByPath(); });
+
 /* ── QR / mobile access ── */
 const QR_NOTES = {
   viewer: 'Read-only link for devices on this network — the board streams live, but cards can’t be moved or created from it.',

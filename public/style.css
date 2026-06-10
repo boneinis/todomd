@@ -318,6 +318,21 @@ body {
   font: inherit; font-weight: 600; padding: 6px 14px; cursor: pointer;
 }
 
+/* ── projects modal ── */
+.proj-add-row { display: flex; gap: 8px; margin-top: 5px; }
+.proj-add-row input { flex: 1; }
+.proj-list { list-style: none; padding: 0; margin: 14px 0 6px; max-height: 240px; overflow-y: auto; }
+.proj-list li {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 10px; border: 1px solid var(--line); margin-bottom: 6px; font-size: 12.5px;
+}
+.proj-remove {
+  background: none; border: 1px solid var(--line); color: var(--dim);
+  font: inherit; font-size: 10.5px; padding: 3px 9px; cursor: pointer;
+}
+.proj-remove:hover { border-color: var(--red); color: var(--red); }
+body.viewer #manage-projects { display: none !important; }
+
 /* ── QR / viewer mode / mobile ── */
 .qr-btn {
   background: none; border: 1px solid var(--line); color: var(--dim);

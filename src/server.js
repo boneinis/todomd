@@ -7,8 +7,10 @@ import { fileURLToPath } from 'node:url';
 import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
-import { listProjects } from './registry.js';
+import { listProjects, addProject, removeProject } from './registry.js';
 import { loadBoard, readCard, createCard, patchFrontmatter, attachCard } from './board.js';
+import { initProject } from './templates.js';
+import { isGitRepo } from './git.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -95,7 +97,32 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
 
     if (url.pathname === '/api/projects') {
-      return json(res, 200, { projects: listProjects().map((p) => p.name) });
+      if (req.method === 'GET') return json(res, 200, { projects: listProjects().map((p) => p.name) });
+      if (req.method === 'POST') {
+        // add a repo: validate it's a git repo, scaffold the board, register it
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        let dir;
+        try { dir = String(JSON.parse(body || '{}').path || '').trim(); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        if (!dir) return json(res, 400, { error: 'path is required' });
+        if (dir.startsWith('~')) dir = path.join(os.homedir(), dir.slice(1));
+        dir = path.resolve(dir);
+        if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return json(res, 400, { error: 'not a folder on this machine' });
+        if (!(await isGitRepo(dir))) return json(res, 400, { error: 'not a git repo — run `git init` there first' });
+        try {
+          initProject(dir);                 // idempotent: scaffolds a board or no-ops
+          const abs = addProject(dir);
+          const name = listProjects().find((p) => p.path === abs)?.name;
+          return json(res, 200, { ok: true, name });
+        } catch (e) {
+          return json(res, 400, { error: String(e.message || e) });
+        }
+      }
+    }
+    const rmProject = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+    if (rmProject && req.method === 'DELETE') {
+      removeProject(decodeURIComponent(rmProject[1])); // unregister; board files untouched
+      return json(res, 200, { ok: true });
     }
     if (url.pathname === '/api/qr') {
       const wantFull = url.searchParams.get('access') === 'full';

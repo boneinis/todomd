@@ -38,3 +38,15 @@ test('listProjects skips registered dirs that no longer have a board', () => {
   fs.rmSync(gone, { recursive: true, force: true });
   assert.equal(listProjects().some((p) => p.path === gone), false);
 });
+
+test('removeProject unregisters by name without touching board files', async () => {
+  isolateHome();
+  const a = boardDir(path.join(os.tmpdir(), `reg-${process.pid}-rm`));
+  addProject(a);
+  assert.equal(listProjects().some((p) => p.path === a), true);
+  const { removeProject } = await import('../src/registry.js');
+  const n = removeProject(path.basename(a));
+  assert.equal(n, 1);
+  assert.equal(listProjects().some((p) => p.path === a), false);
+  assert.ok(fs.existsSync(path.join(a, '.todomd/tasks')), 'board files remain on disk');
+});
