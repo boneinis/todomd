@@ -420,8 +420,17 @@ async function buildChain(project, id, retry = null) {
   const config = loadConfig(project.path);
   const card = readCard(project.path, id);
   if (!card) return;
-  // carry findings from a verify-fail build that was then quota-parked
   const key = runKey(project.name, id);
+  // a retry that arrives while the project is quota-paused (e.g. a concurrent
+  // card's verify-fail at concurrency>1) must not spawn against the exhausted
+  // quota — defer it to resume. processQueue already gates first builds, so
+  // this only fires on the direct verify→retry path.
+  if (quotaPaused.has(project.name)) {
+    if (retry?.findings) retryFindings.set(key, retry.findings);
+    await orchMove(project, id, 'Assigned', 'paused; will resume');
+    return sendState(project, id, 'idle');
+  }
+  // carry findings from a verify-fail build that was then quota-parked
   if (!retry && retryFindings.has(key)) { retry = { findings: retryFindings.get(key) }; retryFindings.delete(key); }
   const ver = card.data.verification || {};
   const attempt = (Number(ver.attempts) || 0) + 1;
@@ -489,10 +498,12 @@ async function buildChain(project, id, retry = null) {
   await recordRun(project, id, 'Build', attempt, result, 'ok');
   const buildSession = result.sessionId;
   await orchMove(project, id, 'Verify', `attempt ${attempt}`);
-  return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false);
+  // thread the findings that drove this attempt so a verify-quota resume can
+  // rebuild with them (the build code is in the worktree; this keeps context)
+  return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);
 }
 
-async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun) {
+async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
   const config = loadConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, 'Verify', card);
@@ -521,11 +532,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
       // park back in Assigned; resume re-enters the build→verify chain (the
       // existing worktree is reused). Attempt rolled back so none is burned.
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
-      return parkForQuota(project, id, attempt, maxAttempts, null);
+      return parkForQuota(project, id, attempt, maxAttempts, priorFindings);
     }
     if (!isRerun && failure.kind === 'agent') {
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · malformed verdict, re-running once`);
-      return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, true);
+      return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, true, priorFindings);
     }
     await recordRun(project, id, 'Verify', attempt, result, 'failed: bad_verdict');
     return toNeedsHuman(project, id, 'Verify', 'bad_verdict', result.stderr);

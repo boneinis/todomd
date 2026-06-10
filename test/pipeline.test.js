@@ -115,3 +115,26 @@ test('dependency gate: approval blocked until deps are Done', async () => {
   assert.equal(blocked.ok, false);
   assert.match(blocked.error, /blocked/);
 });
+
+test('quota: build hits a usage limit → card parks in Assigned + project paused; resume completes it', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const p = project(repo);
+  const marker = path.join(repo, '.quota-marker'); // build quotas once, then succeeds
+  useFakeAgent({ verdict: 'pass', build: 'good', quota_marker: marker });
+  pipeline.init({ broadcast: noop });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  // approve → build hits quota → parked back in Assigned, project paused
+  await pipeline.humanMove(p, 'task-0001', 'Assigned');
+  await until(() => pipeline.usage(p.name).quota_paused === true, { timeout: 10000 });
+  assert.equal(status(repo, 'task-0001'), 'Assigned'); // parked, not Needs Human
+  const ver = readCard(repo, 'task-0001').data.verification;
+  assert.ok((ver.attempts || 0) <= 1, 'quota must not burn an attempt'); // rolled back
+
+  // resume → build now succeeds → full chain to Done
+  pipeline.resumeQueues([p]);
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  assert.equal(pipeline.usage(p.name).quota_paused, false);
+  clearFakeAgent();
+});

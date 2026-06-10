@@ -34,6 +34,14 @@ function findCard(id) {
 }
 const taskId = (prompt.match(/task-\d+/) || [])[0];
 
+// ── quota-once: emit a usage-limit error on the first BUILD run, then behave ──
+if (process.env.FAKE_QUOTA_MARKER && prompt.includes('build') && !fs.existsSync(process.env.FAKE_QUOTA_MARKER)) {
+  fs.writeFileSync(process.env.FAKE_QUOTA_MARKER, '1');
+  emitStream([{ type: 'system', subtype: 'init' },
+    resultEnvelope({ subtype: 'error', is_error: true, result: 'usage limit reached — please try again later' })]);
+  process.exit(0);
+}
+
 // ── forced-failure modes ──
 if (process.env.FAKE_FAIL === '1') { process.stderr.write('forced failure\n'); process.exit(1); }
 if (process.env.FAKE_MAXTURNS === '1') {
