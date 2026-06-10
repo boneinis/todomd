@@ -34,7 +34,7 @@ export function makeRepo({ triage = false } = {}) {
     JSON.stringify({ name: 'fixture', type: 'module', scripts: { test: 'node --test' } }, null, 2));
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.writeFileSync(path.join(repo, 'src/calc.js'), 'export function sum(a, b) { return a + b; }\n');
-  fs.writeFileSync(path.join(repo, '.gitignore'), '.todomd/worktrees/\n.todomd/runs/\nnode_modules/\n');
+  fs.writeFileSync(path.join(repo, '.gitignore'), '.todomd/worktrees/\n.todomd/runs/\n.todomd/.lock/\nnode_modules/\n');
 
   fs.mkdirSync(path.join(repo, '.todomd/tasks'), { recursive: true });
   fs.writeFileSync(path.join(repo, '.todomd/config.yml'),

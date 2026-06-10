@@ -176,26 +176,38 @@ You are the todomd budget-mode dispatcher. Process the board in \`.todomd/\` of 
 
 Skip any card whose frontmatter \`agent:\` is not claude — the launcher handles those vendors.
 
+## Concurrency — one writer at a time
+
+Another dispatcher (or the server's launcher) may run on this repo at the same time. An on-disk lock at \`.todomd/.lock\` serializes every \`.todomd\` write so they never corrupt the board, \`ACTIVE.md\`, or the git index. Use it like this:
+
+- **LOCK** — run this and wait for it to return before any git commit that writes under \`.todomd/\` (and before *selecting* the build card in step 2):
+  \`\`\`
+  until mkdir .todomd/.lock 2>/dev/null; do o=$(cut -d' ' -f1 .todomd/.lock/owner 2>/dev/null); if [ -n "$o" ] && [ $(( $(date +%s) - o )) -gt 300 ]; then rm -rf .todomd/.lock; else sleep 1; fi; done; printf '%s %s\\n' "$(date +%s)" "$(whoami)@$(hostname -s)" > .todomd/.lock/owner
+  \`\`\`
+- **UNLOCK** — run immediately after that commit: \`rm -rf .todomd/.lock\`
+
+Rules: hold the lock ONLY around quick commits — **never across an agent run** (plan/build/verify); UNLOCK before you start one and LOCK again for the next commit. Whenever you LOCK to act on a card, **re-read its status first and skip if another dispatcher already advanced it** (discard your work for that card). The lock is a plain directory on disk, so it persists across your tool calls until you UNLOCK. A crashed dispatcher's lock auto-expires after 5 minutes (LOCK steals it). \`.todomd/.lock/\` is gitignored — never commit it.
+
 ## 0. Triage (all pending)
 
-Unless config \`triage.enabled\` is false: for each card with \`status: Review\` whose frontmatter \`triaged:\` is empty and that has no \`skill:\`, follow \`.claude/commands/todomd-triage.md\` for it, then set \`triaged: <today>\` in its frontmatter, Run Log line, commit.
+Unless config \`triage.enabled\` is false: for each card with \`status: Review\` whose frontmatter \`triaged:\` is empty and that has no \`skill:\`, follow \`.claude/commands/todomd-triage.md\` for it. Then **LOCK**, re-read the card — if \`triaged:\` is still empty, set \`triaged: <today>\`, add a Run Log line, commit — **UNLOCK** (if another dispatcher already triaged it, discard your result).
 
 ## 1. Plan work (all pending)
 
-For each card in \`.todomd/tasks/*.md\` with \`status: Plan\`:
-- If it has \`skill: <name>\`: invoke /<name> with the card id, save output worth keeping under \`## Findings\` in the card, set \`status: Review\`, append a Run Log line, commit.
-- Otherwise follow \`.claude/commands/todomd-plan.md\` for it, then set \`status: Planned\`, Run Log line, commit.
+For each card in \`.todomd/tasks/*.md\` with \`status: Plan\` (run the plan/skill UNLOCKED, then record the result under **LOCK** with a status re-check):
+- If it has \`skill: <name>\`: invoke /<name> with the card id, save output worth keeping under \`## Findings\` in the card; then **LOCK**, if status is still \`Plan\` set \`status: Review\`, append a Run Log line, commit, **UNLOCK** (else discard).
+- Otherwise follow \`.claude/commands/todomd-plan.md\` for it; then **LOCK**, if status is still \`Plan\` set \`status: Planned\`, Run Log line, commit, **UNLOCK** (else discard).
 
 ## 2. Build work (ONE card per tick)
 
-Take the oldest card with \`status: Assigned\` (none → skip):
-1. attempts = verification.attempts + 1. If attempts > max_attempts → \`status: Needs Human\`, \`needs_human_reason: attempts_exhausted\`, commit, stop.
-2. **Coordination** (only if config \`coordination.enabled\`): read \`.todomd/ACTIVE.md\` (see format below). Work out the files this card touches from its \`## Implementation Plan\`. If another worker's claim (a line whose \`worker\` differs from yours) lists any of the same files: append \`  - ⚠ file overlap: <who/which files>\` to the Run Log, and if config \`coordination.block\` is true set \`status: Needs Human\`, \`needs_human_reason: work_conflict\`, commit, and stop. Otherwise add your claim to \`.todomd/ACTIVE.md\` (remove any existing line for this card first) and commit it, then continue.
-3. Set \`status: Build\` and verification.attempts, commit. Create the worktree if missing: \`git worktree add <worktree_dir>/<id> -b <branch_prefix><id>\`.
-4. Inside the worktree follow \`.claude/commands/todomd-build.md\` for the card. Never touch \`.todomd/\` inside the worktree.
-5. Set \`status: Verify\`, commit. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings.
-6. **pass** → confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit. **Release your coordination claim** (step C).
-   **fail** → if attempts < max_attempts: fix the findings in the worktree, re-run step 5. Else Needs Human as in step 1, with the findings quoted in the Run Log, then **release your coordination claim (step C)**.
+**Select + claim under LOCK so two dispatchers never grab the same card.** **LOCK**, then re-read the board and take the oldest card with \`status: Assigned\` (none → **UNLOCK**, skip). Still holding the lock, do steps 1–3, then **UNLOCK** before building:
+1. attempts = verification.attempts + 1. If attempts > max_attempts → \`status: Needs Human\`, \`needs_human_reason: attempts_exhausted\`, commit, **UNLOCK**, stop.
+2. **Coordination** (only if config \`coordination.enabled\`): read \`.todomd/ACTIVE.md\` (see format below). Work out the files this card touches from its \`## Implementation Plan\`. If another worker's claim (a line whose \`worker\` differs from yours) lists any of the same files: append \`  - ⚠ file overlap: <who/which files>\` to the Run Log, and if config \`coordination.block\` is true set \`status: Needs Human\`, \`needs_human_reason: work_conflict\`, commit, **UNLOCK**, and stop. Otherwise add your claim to \`.todomd/ACTIVE.md\` (remove any existing line for this card first) and commit it, then continue.
+3. Set \`status: Build\` and verification.attempts, commit. **UNLOCK.** Then create the worktree if missing: \`git worktree add <worktree_dir>/<id> -b <branch_prefix><id>\`.
+4. Inside the worktree follow \`.claude/commands/todomd-build.md\` for the card (UNLOCKED — this is the long part). Never touch \`.todomd/\` inside the worktree.
+5. **LOCK**, set \`status: Verify\`, commit, **UNLOCK**. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings.
+6. **pass** → **LOCK**, then: confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering, commit, release claim step C, **UNLOCK**); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit; **release your coordination claim (step C)**; **UNLOCK**.
+   **fail** → if attempts < max_attempts: fix the findings in the worktree (UNLOCKED), re-run step 5. Else **LOCK**, Needs Human as in step 1 with the findings quoted in the Run Log, **release your coordination claim (step C)**, **UNLOCK**.
 
 ### Coordination manifest — \`.todomd/ACTIVE.md\` (only if \`coordination.enabled\`)
 
@@ -210,7 +222,7 @@ So multiple developers don't build the same files at once. A claim is exactly tw
 
 ## 3. Self-heal
 
-Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assigned and re-enter step 2. Also: if \`coordination.enabled\`, remove from \`.todomd/ACTIVE.md\` any claim whose card is no longer \`Assigned\`/\`Build\`/\`Verify\` (a stale claim), and commit.
+Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assigned and re-enter step 2 (which LOCKs). Also: if \`coordination.enabled\`, under **LOCK** remove from \`.todomd/ACTIVE.md\` any claim whose card is no longer \`Assigned\`/\`Build\`/\`Verify\` (a stale claim), commit, **UNLOCK**. (A crashed dispatcher's \`.todomd/.lock\` itself auto-expires after 5 minutes.)
 
 ## Rules
 
@@ -240,7 +252,7 @@ export function initProject(repoPath) {
   }
   const gi = path.join(repoPath, '.gitignore');
   let cur = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
-  for (const line of ['.todomd/worktrees/', '.todomd/runs/']) {
+  for (const line of ['.todomd/worktrees/', '.todomd/runs/', '.todomd/.lock/']) {
     if (!cur.includes(line)) {
       cur += (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n';
       created.push(`.gitignore (+${line})`);

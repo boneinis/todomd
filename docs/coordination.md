@@ -12,6 +12,10 @@ With `coordination.enabled: true` in `.todomd/config.yml`, todomd keeps a commit
 
 This works the same in both run modes: **launcher mode** (the server's build pipeline claims/releases automatically) and **budget mode** (the `/todomd-dispatch` session claims before it builds and releases when the card reaches a terminal stage, following the same manifest format). A self-heal pass in each mode prunes stale claims left by an interrupted run.
 
+### Single-writer lock (`.todomd/.lock`)
+
+`ACTIVE.md` and the board are guarded by a cross-process lock so two writers never corrupt them or race the git index — even when they're separate OS processes (two budget-mode `/todomd-dispatch` sessions, or a dispatcher running alongside the server). The lock is a directory at `.todomd/.lock` created with an atomic `mkdir`; the JS pipeline and the dispatch command both acquire it the same way and hold it only around quick commits, never across a plan/build/verify run. A holder that crashes leaves a lock that auto-expires after 5 minutes (the next writer reads the stale timestamp and steals it). It's gitignored and never committed. With this in place you can safely run more than one budget-mode dispatcher on the same repo (e.g. two terminals): they take turns selecting and claiming cards instead of double-building one.
+
 `ACTIVE.md` is human-readable and lives in git history, so even outside todomd you can see what's being worked on:
 
 ```markdown

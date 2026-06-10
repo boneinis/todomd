@@ -3,6 +3,7 @@ import path from 'node:path';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
+import { withFileLock } from './lockfile.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Assigned', 'Build', 'Verify', 'Needs Human', 'Done'];
 
@@ -85,10 +86,15 @@ function setStatusInFrontmatter(raw, newStatus) {
 // transition must never interleave read-modify-write on the same files.
 const repoLocks = new Map();
 // exported so coordination's ACTIVE.md read-modify-write-commit serializes with
-// board writes/commits on the same repo (no git-index race, no lost update)
+// board writes/commits on the same repo (no git-index race, no lost update).
+// Two layers: an in-process promise chain (cheap, serializes this process's
+// writers) wrapping the on-disk `.todomd/.lock` (serializes against OTHER
+// processes — a second server, or a budget-mode dispatch session committing via
+// its own shell git). The dispatch command grabs the same on-disk lock.
 export function withRepoLock(repoPath, fn) {
+  const guarded = () => withFileLock(repoPath, fn);
   const prev = repoLocks.get(repoPath) || Promise.resolve();
-  const next = prev.then(fn, fn);
+  const next = prev.then(guarded, guarded);
   repoLocks.set(repoPath, next.then(() => {}, () => {}));
   return next;
 }
