@@ -177,7 +177,7 @@ labels: [${labels.join(', ')}]
 dependencies: []
 created_date: ${new Date().toISOString().slice(0, 10)}
 source: ${fields.source || 'ui'}
-agent: claude
+agent: ${fields.agent === 'codex' ? 'codex' : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }

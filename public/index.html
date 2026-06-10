@@ -76,6 +76,15 @@
       </label>
       <label>labels <input name="labels" placeholder="a, b" autocomplete="off" /></label>
     </div>
+    <div class="modal-row">
+      <label>agent
+        <select name="agent">
+          <option selected>claude</option><option>codex</option>
+        </select>
+      </label>
+      <label>model override <input name="model" placeholder="(stage default)" autocomplete="off" /></label>
+      <span></span>
+    </div>
     <label>description <textarea name="description" rows="3"></textarea></label>
     <label>acceptance criteria — one per line <textarea name="criteria" rows="3"></textarea></label>
     <div class="modal-actions">

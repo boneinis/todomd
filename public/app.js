@@ -186,6 +186,12 @@ $('#drawer-cancel').addEventListener('click', async () => {
 
 function appendRunEvent(event) {
   const log = $('#run-log');
+  if (event.vendor === 'codex') {
+    const text = event.item?.text || event.item?.command || event.message || '';
+    log.textContent += `▸ ${event.type}${text ? `: ${String(text).slice(0, 200)}` : ''}\n`;
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
   if (event.type === 'system' && event.subtype === 'init') {
     log.textContent += `· session ${event.session_id}\n`;
   } else if (event.type === 'assistant') {
@@ -284,6 +290,8 @@ $('#card-form').addEventListener('submit', async (e) => {
     title: f.get('title'),
     type: f.get('type'),
     priority: f.get('priority'),
+    agent: f.get('agent'),
+    model: (f.get('model') || '').trim() || undefined,
     labels: String(f.get('labels') || '').split(',').map((s) => s.trim()).filter(Boolean),
     description: f.get('description'),
     criteria: String(f.get('criteria') || '').split('\n').map((s) => s.trim()).filter(Boolean),

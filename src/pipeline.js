@@ -61,6 +61,12 @@ async function orchMove(project, id, to, reason) {
   return moveCard(project.path, id, to, { reason });
 }
 
+const SUPPORTED_VENDORS = new Set(['claude', 'codex']);
+
+function cardVendor(config, card) {
+  return card?.data?.agent || config.default_agent || 'claude';
+}
+
 function stageConfig(config, stageName, card) {
   const stage = (config.stages || {})[stageName] || {};
   return {
@@ -69,6 +75,16 @@ function stageConfig(config, stageName, card) {
     maxTurns: stage.max_turns || 30,
     allowedTools: stage.allowed_tools || [],
   };
+}
+
+// claude invokes the repo's command file as a slash command; codex doesn't
+// read .claude/commands, so the command body is inlined with the id filled in.
+function stagePrompt(project, vendor, stage, id) {
+  if (vendor !== 'codex') return `/${stage.command} ${id}`;
+  const file = path.join(project.path, '.claude', 'commands', `${stage.command}.md`);
+  const raw = fs.readFileSync(file, 'utf8');
+  const body = raw.replace(/^---[\s\S]*?---\s*/, '');
+  return body.replaceAll('$ARGUMENTS', id);
 }
 
 function classifyFailure({ envelope, exitCode, spawnError, stderr }) {
@@ -168,8 +184,10 @@ export async function humanMove(project, id, to) {
   if (to === 'Assigned') {
     if (from !== 'Planned') return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
     if (!(await isGitRepo(project.path))) return { ok: false, error: 'pipeline needs a git repo' };
-    const agent = card.data.agent || config.default_agent || 'claude';
-    if (agent !== 'claude') return { ok: false, error: `agent "${agent}" not supported yet (phase 5)` };
+    const agent = cardVendor(config, card);
+    if (!SUPPORTED_VENDORS.has(agent)) {
+      return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
+    }
     const deps = card.data.dependencies || [];
     const board = loadBoard(project.path);
     const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
@@ -236,10 +254,12 @@ async function runTriggerStage(project, id, stageName) {
   const config = loadConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, stageName, card);
+  const vendor = cardVendor(config, card);
 
   const { result, run } = await spawnTracked(project, id, stageName, 'Review', 0, {
+    vendor,
     cwd: project.path,
-    prompt: `/${stage.command} ${id}`,
+    prompt: stagePrompt(project, vendor, stage, id),
     model: stage.model,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
@@ -330,19 +350,23 @@ async function buildChain(project, id, retry = null) {
   await orchMove(project, id, 'Build', `attempt ${attempt}`);
 
   const stage = stageConfig(config, 'Build', card);
+  const vendor = cardVendor(config, card);
   const buildOpts = {
+    vendor,
     cwd: worktreeAbs,
     model: stage.model,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
-    settings: stopHookSettings(config.verify_command || 'npm test'),
     logFile: runLogFile(project, id, 'Build', attempt),
   };
+  // Stop-hook quality gate is claude-only; for other vendors the independent
+  // Verify stage is the gate.
+  if (vendor === 'claude') buildOpts.settings = stopHookSettings(config.verify_command || 'npm test');
   if (retry?.sessionId) {
     buildOpts.resume = retry.sessionId;
     buildOpts.prompt = `The independent verifier failed your work (attempt ${attempt - 1}):\n\n${retry.findings}\n\nFix every finding, re-run the verify command until it passes, and commit on this branch.`;
   } else {
-    buildOpts.prompt = `/${stage.command} ${id}`;
+    buildOpts.prompt = stagePrompt(project, vendor, stage, id);
     if (retry?.findings) {
       buildOpts.prompt += `\n\nPrevious verifier findings to address:\n${retry.findings}`;
     }
@@ -379,10 +403,12 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const config = loadConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, 'Verify', card);
+  const vendor = cardVendor(config, card);
 
   const { result, run } = await spawnTracked(project, id, 'Verify', 'Build', attempt, {
+    vendor,
     cwd: worktreeAbs,
-    prompt: `/${stage.command} ${id}`,
+    prompt: stagePrompt(project, vendor, stage, id),
     model: stage.model,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
