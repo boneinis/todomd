@@ -397,16 +397,28 @@ body.viewer #drawer-attach { display: none !important; }
 body.viewer .card { cursor: default; }
 
 @media (max-width: 640px) {
-  .topbar { padding: 10px 12px 9px; flex-wrap: wrap; gap: 8px; }
-  .wordmark { font-size: 21px; }
-  #filter { width: 110px; }
+  .topbar { padding: 9px 10px; flex-wrap: wrap; gap: 7px; align-items: center; }
+  .wordmark { font-size: 20px; }
+  /* the control cluster wraps to a second row instead of overflowing off-screen */
+  .topbar-right { flex-wrap: wrap; justify-content: flex-start; gap: 6px; width: 100%; }
+  .topbar-right .qr-btn, .topbar-right .new-card, .topbar-right .view-toggle { padding: 5px 9px; font-size: 11px; }
+  #filter { flex: 1; min-width: 90px; width: auto; }
+  #project { max-width: 42vw; }
+  .usage { display: none; } /* spend meter is desktop-only on mobile to save room */
   .board {
     padding: 12px 12px 18px; gap: 10px;
     scroll-snap-type: x mandatory;
-    height: calc(100dvh - 56px);
+    height: calc(100dvh - 92px); /* taller topbar (wrapped) */
   }
-  .column { flex: 0 0 82vw; scroll-snap-align: start; }
-  .drawer { width: 100vw; }
+  .column { flex: 0 0 86vw; scroll-snap-align: start; }
+  .drawer { width: 100vw; padding: 16px 16px 28px; }
+
+  /* config panels & the drawer routing/move rows stack to one column */
+  .modal { width: 100vw; max-width: 100vw; min-height: 100dvh; border: 0; padding: 18px 16px 28px; }
+  .modal-backdrop { padding-top: 0; align-items: stretch; }
+  .modal-row, .drawer-routing, .drawer-move { grid-template-columns: 1fr; display: grid; gap: 10px; }
+  .drawer-move { display: flex; flex-direction: column; align-items: stretch; }
+  .prompt-text { height: 50vh; }
 }
 
 /* ── toast ── */

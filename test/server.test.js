@@ -23,6 +23,9 @@ test('runtime LAN toggle: off at start, status gated by token, primary-only POST
     // a cross-site POST (foreign Origin) is rejected
     r = await fetch(`${base}/api/lan`, { method: 'POST', headers: { 'x-todomd-token': token, 'content-type': 'application/json', origin: 'http://evil.com' }, body: '{"enabled":true}' });
     assert.equal(r.status, 403);
+    // but a SAME-origin POST (the browser always sends Origin) must NOT be blocked
+    r = await fetch(`${base}/api/lan`, { method: 'POST', headers: { 'x-todomd-token': token, 'content-type': 'application/json', origin: base }, body: '{"enabled":false}' });
+    assert.notEqual(r.status, 403, 'same-origin browser POST must pass the Origin check');
     // disabling (no-op) succeeds and stays off
     r = await fetch(`${base}/api/lan`, { method: 'POST', headers: { 'x-todomd-token': token, 'content-type': 'application/json' }, body: '{"enabled":false}' });
     assert.equal((await r.json()).enabled, false);

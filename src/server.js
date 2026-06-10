@@ -80,8 +80,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
   const lanUrl = () => (lanEnabled && lanAddress() ? `http://${lanAddress()}:${port}/?token=${viewerToken}` : null);
   const originOk = (req) => {
     const o = req.headers.origin;
-    if (!o) return true;
-    try { return allowedHosts.has(new URL(o).host); } catch { return false; }
+    if (!o) return true; // native clients (curl, the CLI) send none
+    try { return hostOk({ headers: { host: new URL(o).host } }); } catch { return false; }
   };
 
   const json = (res, code, obj) => {
