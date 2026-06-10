@@ -1,6 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+// shipped icon assets (built from public/icon.svg)
+const ASSETS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+function copyIfPresent(src, dest) {
+  try { fs.copyFileSync(src, dest); return true; } catch { return false; }
+}
 
 // The shell body shared by every platform's launcher: ensure the server is up
 // (start it detached if not), then open the board in the browser. Re-launching
@@ -29,6 +36,11 @@ function macApp(nodeBin, todomdBin, port, home) {
   const exe = path.join(macos, 'todomd');
   fs.writeFileSync(exe, unixScript(nodeBin, todomdBin, port, 'open'));
   fs.chmodSync(exe, 0o755);
+  // ship the prebuilt .icns so the .app shows the todomd icon (no rasterizer
+  // needed on the user's machine) — only declare CFBundleIconFile if it copied
+  const resources = path.join(appDir, 'Contents', 'Resources');
+  fs.mkdirSync(resources, { recursive: true });
+  const hasIcon = copyIfPresent(path.join(ASSETS, 'icon.icns'), path.join(resources, 'todomd.icns'));
   fs.writeFileSync(path.join(appDir, 'Contents', 'Info.plist'),
     `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -38,7 +50,7 @@ function macApp(nodeBin, todomdBin, port, home) {
   <key>CFBundleIdentifier</key><string>md.todo.launcher</string>
   <key>CFBundleVersion</key><string>1.0</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleExecutable</key><string>todomd</string>
+  <key>CFBundleExecutable</key><string>todomd</string>${hasIcon ? '\n  <key>CFBundleIconFile</key><string>todomd</string>' : ''}
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
@@ -54,12 +66,15 @@ function linuxDesktop(nodeBin, todomdBin, port, home) {
   const script = path.join(scriptDir, 'launch.sh');
   fs.writeFileSync(script, unixScript(nodeBin, todomdBin, port, 'xdg-open'));
   fs.chmodSync(script, 0o755);
+  // ship the SVG into ~/.todomd and point the entry at it (.desktop supports SVG)
+  const iconPath = path.join(scriptDir, 'icon.svg');
+  const iconLine = copyIfPresent(path.join(ASSETS, 'icon.svg'), iconPath) ? `Icon=${iconPath}\n` : '';
   const desktop = `[Desktop Entry]
 Type=Application
 Name=todomd
 Comment=Markdown kanban that drives coding agents
 Exec=${script}
-Terminal=false
+${iconLine}Terminal=false
 Categories=Development;
 `;
   const targets = [];
