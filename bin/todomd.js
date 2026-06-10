@@ -95,11 +95,13 @@ if (cmd === 'install-launcher') {
 if (cmd === 'stop') {
   try {
     const pid = Number(fs.readFileSync(PID_FILE, 'utf8').trim());
+    process.kill(pid, 0); // throws if the pid is dead → don't signal a recycled pid
     process.kill(pid);
     fs.rmSync(PID_FILE, { force: true });
     console.log(`stopped todomd (pid ${pid})`);
   } catch {
-    console.log('no running todomd server found (or it was started in a terminal — close that instead)');
+    fs.rmSync(PID_FILE, { force: true }); // clear a stale pid file
+    console.log('no running todomd server found');
   }
   process.exit(0);
 }
@@ -134,7 +136,11 @@ if (cmd === 'serve') {
   try {
     fs.mkdirSync(TODOMD_DIR, { recursive: true });
     fs.writeFileSync(PID_FILE, String(process.pid));
-    const cleanup = () => { try { fs.rmSync(PID_FILE, { force: true }); } catch {} };
+    // only remove the pid file if it's still OURS — never clobber another
+    // running instance's pid (e.g. a terminal serve exiting on EADDRINUSE)
+    const cleanup = () => {
+      try { if (fs.readFileSync(PID_FILE, 'utf8').trim() === String(process.pid)) fs.rmSync(PID_FILE, { force: true }); } catch {}
+    };
     process.on('exit', cleanup);
     process.on('SIGINT', () => { cleanup(); process.exit(0); });
     process.on('SIGTERM', () => { cleanup(); process.exit(0); });

@@ -96,8 +96,6 @@ Best when you set up **one dedicated inbox** and forward each project's address 
 
 ## Option B — cloud routine (zero infrastructure, machine-off)
 
-# Email → board intake (cloud routine)
-
 Tasks arrive on the board by email using a **Claude Code cloud routine** — runs on Anthropic's infrastructure under your subscription, no server, no API key, no email code in todomd. Requires: the repo has a remote (GitHub), and your claude.ai account has the **Gmail connector** enabled (claude.ai → Settings → Connectors).
 
 ## Setup (once per repo)

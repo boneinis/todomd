@@ -121,3 +121,9 @@ test('intakeSources: a shared inbox becomes one source with routes', async () =>
   assert.equal(sources[0].resolve({ to: { value: [{ address: 'repo-b@x.com' }] } }), 'repo-b');
   assert.equal(sources[0].resolve({ to: { value: [{ address: 'nope@x.com' }] } }), 'triage'); // default
 });
+
+test('routeProject accepts an array of toMatches', async () => {
+  const { routeProject } = await import('../src/intake.js');
+  const routes = [{ project: 'repo-a', toMatches: ['a@x.com', 'a-alt@x.com'] }];
+  assert.equal(routeProject(routes, null, { to: { value: [{ address: 'a-alt@x.com' }] } }), 'repo-a');
+});

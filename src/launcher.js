@@ -6,15 +6,16 @@ import os from 'node:os';
 // (start it detached if not), then open the board in the browser. Re-launching
 // just re-opens the board — the detached server keeps running.
 function unixScript(nodeBin, todomdBin, port, openCmd) {
+  // port check uses bash's /dev/tcp (no curl dependency); server.log is created
+  // 0600 since `serve` prints the token in its URL line.
   return `#!/bin/bash
 PORT=${port}
 mkdir -p "$HOME/.todomd"
-if ! curl -s "http://127.0.0.1:$PORT/" 2>/dev/null | grep -q todo; then
+up() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
+if ! up; then
+  touch "$HOME/.todomd/server.log"; chmod 600 "$HOME/.todomd/server.log"
   nohup "${nodeBin}" "${todomdBin}" serve --no-open --port $PORT >> "$HOME/.todomd/server.log" 2>&1 &
-  for i in $(seq 1 20); do
-    curl -s "http://127.0.0.1:$PORT/" 2>/dev/null | grep -q todo && break
-    sleep 0.5
-  done
+  for i in $(seq 1 20); do up && break; sleep 0.5; done
 fi
 TOKEN=$(cat "$HOME/.todomd/token" 2>/dev/null)
 ${openCmd} "http://127.0.0.1:$PORT/?token=$TOKEN"

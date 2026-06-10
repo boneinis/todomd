@@ -6,7 +6,7 @@ import { simpleParser } from 'mailparser';
 import { createCard, attachCard } from './board.js';
 
 // Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json.
-// Two formats, both keyed by project name:
+// Formats (boards keyed by project name; inboxes keyed by inbox name + routes):
 //
 //  (1) inline — one self-contained mailbox per project:
 //      { "<project>": { host, port, secure, user, pass, folder, pollSeconds, markSeen } }
@@ -55,8 +55,9 @@ export function recipientAddresses(parsed) {
 export function routeProject(routes, fallback, parsed) {
   const addrs = recipientAddresses(parsed);
   for (const r of routes || []) {
-    const needle = String(r.toMatches || '').toLowerCase().trim();
-    if (needle && addrs.some((a) => a.includes(needle))) return r.project;
+    // toMatches may be a string or a list of addresses
+    const needles = [].concat(r.toMatches || []).map((s) => String(s).toLowerCase().trim()).filter(Boolean);
+    if (needles.some((n) => addrs.some((a) => a.includes(n)))) return r.project;
   }
   return fallback || null;
 }
@@ -111,9 +112,16 @@ export function emailToCardFields(parsed) {
 let onCard = () => {};   // set by start(): (project, id) => void  (e.g. trigger triage)
 let log = () => {};
 
+// per-source set of Message-IDs handled this run: a second idempotency key so a
+// failed \Seen write (or markSeen:false) can't re-create a card we already made
+const seenMessageIds = new Map(); // label → Set
+
 async function pollSource(source, getProject) {
   const { conf, resolve, label } = source;
   if (!conf.host || !conf.user || !conf.pass) { log(`intake: "${label}" missing host/user/pass`); return; }
+  if (!seenMessageIds.has(label)) seenMessageIds.set(label, new Set());
+  const handled = seenMessageIds.get(label);
+  const maxPerPoll = conf.maxPerPoll ?? 50; // bound disk/cost from a flood of unseen mail
 
   const client = new ImapFlow({
     host: conf.host,
@@ -122,14 +130,23 @@ async function pollSource(source, getProject) {
     auth: { user: conf.user, pass: conf.pass },
     logger: false,
   });
-  await client.connect();
-  const lock = await client.getMailboxLock(conf.folder || 'INBOX');
+  let lock;
   let created = 0;
+  let processed = 0;
   try {
-    // only unseen messages; marking them seen (default) is the idempotency key
+    await client.connect();
+    lock = await client.getMailboxLock(conf.folder || 'INBOX');
+    // only unseen messages; \Seen (default) is the primary idempotency key
     for await (const msg of client.fetch({ seen: false }, { source: true, uid: true })) {
+      if (processed >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
+      processed++;
       try {
         const parsed = await simpleParser(msg.source);
+        const mid = parsed.messageId;
+        if (mid && handled.has(mid)) {            // already made a card for this message this run
+          if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
+          continue;
+        }
         const targetName = resolve(parsed);          // board → fixed; inbox → by recipient
         const project = targetName && getProject(targetName);
         if (!project) {
@@ -140,6 +157,7 @@ async function pollSource(source, getProject) {
           const card = await createCard(project.path, emailToCardFields(parsed));
           if (card.ok) {
             created++;
+            if (mid) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
             for (const att of (parsed.attachments || []).slice(0, conf.maxAttachments ?? 5)) {
               if (att?.content && att?.filename) {
                 try { await attachCard(project.path, card.id, att.filename, att.content); } catch {}
@@ -155,7 +173,7 @@ async function pollSource(source, getProject) {
       }
     }
   } finally {
-    lock.release();
+    lock?.release();
     await client.logout().catch(() => {});
   }
   if (created) log(`intake: "${label}" created ${created} card(s) from email`);
@@ -167,7 +185,14 @@ export function startIntake({ getProject, onCard: onCardCb = () => {}, log: logF
   log = logFn;
   const timers = [];
   for (const source of intakeSources()) {
-    const tick = () => pollSource(source, getProject).catch((e) => log(`intake: "${source.label}" poll error: ${e.message}`));
+    let busy = false; // skip a tick if the previous poll is still running (no overlap → no dup fetch)
+    const tick = async () => {
+      if (busy) return;
+      busy = true;
+      try { await pollSource(source, getProject); }
+      catch (e) { log(`intake: "${source.label}" poll error: ${e.message}`); }
+      finally { busy = false; }
+    };
     tick(); // poll immediately on boot
     const t = setInterval(tick, Math.max(30, source.conf.pollSeconds || 300) * 1000);
     t.unref();

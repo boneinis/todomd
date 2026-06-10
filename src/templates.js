@@ -60,23 +60,6 @@ stages:
     allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)"]
 `;
 
-const BUILD_SETTINGS = `{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "npm test >/dev/null 2>&1 || { echo 'Stop blocked by todomd quality gate: the verify command is failing. Fix it before finishing.' >&2; exit 2; }",
-            "timeout": 120
-          }
-        ]
-      }
-    ]
-  }
-}
-`;
-
 const CMD_PLAN = `---
 description: Produce an implementation plan for a todomd task card
 ---
@@ -219,7 +202,6 @@ Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assi
 export function initProject(repoPath) {
   const writes = [
     ['.todomd/config.yml', CONFIG_YML],
-    ['.todomd/build-settings.json', BUILD_SETTINGS],
     ['.todomd/tasks/task-0001-welcome.md', WELCOME_CARD],
     ['.claude/commands/todomd-plan.md', CMD_PLAN],
     ['.claude/commands/todomd-build.md', CMD_BUILD],

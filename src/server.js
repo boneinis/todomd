@@ -141,19 +141,24 @@ export function startServer({ port = 7337, lan = false } = {}) {
     // viewer-token holder can't read arbitrary repo files (source, secrets)
     if (url.pathname === '/api/file' && req.method === 'GET') {
       const rel = url.searchParams.get('p') || '';
-      const attRoot = path.join(project.path, '.todomd', 'attachments') + path.sep;
+      const attDir = path.join(project.path, '.todomd', 'attachments');
       const abs = path.resolve(project.path, rel);
-      if (!abs.startsWith(attRoot) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      if (!abs.startsWith(attDir + path.sep)) return json(res, 404, { error: 'not found' });
+      // realpath both sides so a symlink inside attachments/ can't read repo
+      // secrets: the resolved target must still live under the resolved dir
+      let real, root;
+      try { root = fs.realpathSync(attDir); real = fs.realpathSync(abs); } catch { return json(res, 404, { error: 'not found' }); }
+      if (!real.startsWith(root + path.sep) || !fs.statSync(real).isFile()) {
         return json(res, 404, { error: 'not found' });
       }
-      const ext = path.extname(abs).toLowerCase();
+      const ext = path.extname(real).toLowerCase();
       res.writeHead(200, {
         'content-type': FILE_MIME[ext] || 'application/octet-stream',
-        'content-disposition': `${INLINE_EXT.has(ext) ? 'inline' : 'attachment'}; filename="${path.basename(abs).replace(/"/g, '')}"`,
+        'content-disposition': `${INLINE_EXT.has(ext) ? 'inline' : 'attachment'}; filename="${path.basename(real).replace(/"/g, '')}"`,
         'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
         'x-content-type-options': 'nosniff',
       });
-      return res.end(fs.readFileSync(abs));
+      return res.end(fs.readFileSync(real));
     }
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
     if (cardMatch && req.method === 'GET') {
