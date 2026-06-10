@@ -125,6 +125,13 @@
       </div>
     </label>
     <p class="qr-note">Tip: in Finder, right-click the folder → hold ⌥ Option → “Copy as Pathname”, then paste. The board (<code>.todomd/</code>) is created if the repo doesn’t have one.</p>
+    <details class="proj-cli">
+      <summary>…or from the terminal</summary>
+      <p>Inside the repo, run:</p>
+      <pre><code>cd /path/to/your/repo   # must be a git repo
+todomd init             # scaffolds the board + registers it</code></pre>
+      <p>Then refresh this page — the project appears in the switcher. <code>todomd init</code> is safe to re-run; on a repo that already has a board it just registers it. (If <code>todomd</code> isn’t found, run <code>npm link</code> once in the todomd folder, or use <code>npx todomd init</code>.)</p>
+    </details>
     <ul id="proj-list" class="proj-list"></ul>
     <div class="modal-actions"><button type="button" id="projects-close" class="drawer-close">close</button></div>
   </div>
