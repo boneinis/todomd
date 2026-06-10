@@ -4,7 +4,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges } from './board.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
-import { claim as coordClaim, release as coordRelease, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
+import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
 
 const VERDICT_SCHEMA = {
@@ -26,6 +26,8 @@ const VERDICT_SCHEMA = {
 };
 
 const IN_FLIGHT = new Set(['Plan', 'Build', 'Verify']);
+// statuses where a coordination claim is legitimately held (assigned-and-parked, or building)
+const BUILD_FLOW = new Set(['Assigned', 'Build', 'Verify']);
 const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human']);
 
 let broadcast = () => {};
@@ -241,6 +243,7 @@ export async function humanMove(project, id, to) {
       return { ok: true, cancelled: true };
     }
     retryFindings.delete(key);
+    await releaseCoordination(project, id); // a card pulled back out of the build flow drops its claim
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
     return moveCard(project.path, id, 'Review', { reason: 'retriage' });
   }
@@ -731,6 +734,14 @@ export async function reconcileOnBoot() {
       // Assigned cards (quota-parked, or approved just before a restart) have
       // no live run and no in-memory queue entry — re-drive them.
       enqueueAssigned(project);
+      // prune stale coordination claims for cards no longer in the build flow
+      // (e.g. moved out while the server was down) so ACTIVE.md doesn't leak
+      if ((config.coordination || {}).enabled) {
+        const building = new Set(board.cards.filter((c) => BUILD_FLOW.has(c.status)).map((c) => c.id));
+        for (const claimed of await coordClaims(project.path, { sync: false })) {
+          if (!building.has(claimed.card)) await coordRelease(project.path, claimed.card, { sync: (config.coordination || {}).sync });
+        }
+      }
     } catch { /* per-project, never fatal */ }
   }
 }

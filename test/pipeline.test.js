@@ -192,3 +192,35 @@ test('coordination: a card claims ACTIVE.md while building and releases it on Do
   assert.doesNotMatch(final, /task-0001/, 'claim must be released on Done');
   clearFakeAgent();
 });
+
+test('coordination: claim is released when a card is pulled back to Review', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfgPath = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfgPath, fs.readFileSync(cfgPath, 'utf8') + '\ncoordination:\n  enabled: true\n');
+  const p = project(repo);
+  // a quota-parked-style card: Assigned with an active claim, no live run
+  writeCard(repo, 'task-0001', { status: 'Assigned' });
+  const { claim, readAllClaims } = await import('../src/coordination.js');
+  await claim(repo, { card: 'task-0001', title: 'x', branch: 'todomd/task-0001', worker: 'me@h', files: ['src/a.js'] }, {});
+  assert.equal((await readAllClaims(repo, {})).length, 1);
+  // human drags it back to Review → claim must be released
+  await pipeline.humanMove(p, 'task-0001', 'Review');
+  assert.equal((await readAllClaims(repo, {})).length, 0, 'claim released on retriage');
+});
+
+test('coordination: reconcileOnBoot prunes a stale claim for a card no longer building', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfgPath = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfgPath, fs.readFileSync(cfgPath, 'utf8') + '\ncoordination:\n  enabled: true\n');
+  (await import('../src/registry.js')).addProject(repo);
+  // card is in Done, but a stale claim lingers (server died before release)
+  writeCard(repo, 'task-0001', { status: 'Done' });
+  const { claim, readAllClaims } = await import('../src/coordination.js');
+  await claim(repo, { card: 'task-0001', title: 'x', branch: 'b', worker: 'me@h', files: ['src/a.js'] }, {});
+  await pipeline.reconcileOnBoot();
+  assert.equal((await readAllClaims(repo, {})).length, 0, 'stale claim pruned on boot');
+});
