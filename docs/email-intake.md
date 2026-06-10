@@ -36,8 +36,30 @@ todomd                              # the server now polls that inbox while it r
 
 - **Point it at a dedicated folder/label**, not your main inbox — make a filter that files "todomd" mail into a `todomd` folder. todomd processes **unseen** messages and marks them seen (the idempotency key), so a dedicated folder avoids fighting your mail client.
 - Use an **app-specific password** (Gmail/iCloud require one; never your account password).
-- One mailbox per project; add more keys to the JSON for more boards.
 - Polling runs only while the todomd server is up. For machine-off intake, use Option B.
+
+### Multiple projects
+
+Routing is **per folder**: each board polls its own folder, so the decision "which board does this email become a card on" is made by your mail filters. Two common setups:
+
+**Separate accounts/addresses** — give each project its own entry (or use plus-addressing like `you+repo-a@gmail.com`). Each board is fully independent.
+
+**One shared account, a folder per project** — define the credentials once under `accounts` and reference them, so the password isn't repeated:
+
+```json
+{
+  "accounts": {
+    "work": { "host": "imap.fastmail.com", "port": 993, "secure": true,
+              "user": "you@fastmail.com", "pass": "an-app-password" }
+  },
+  "boards": {
+    "repo-a": { "account": "work", "folder": "todomd/repo-a", "pollSeconds": 300 },
+    "repo-b": { "account": "work", "folder": "todomd/repo-b" }
+  }
+}
+```
+
+Then a filter files `todomd/repo-a` mail into that folder and `repo-a`'s board picks it up; `repo-b` likewise. A board only ever sees its own folder, so an email can never land on the wrong project. (Both formats can be mixed; the legacy flat `{ "<project>": {…} }` form still works.) Each board polls on its own connection — fine for a handful of projects; for many boards on one provider, stagger `pollSeconds` to stay under the account's simultaneous-connection limit (Gmail allows ~15).
 
 > **Security note:** email is untrusted input. Card titles are sanitized and bodies are escaped on render, so a crafted email can't corrupt a card or inject script. It *can* contain prompt-injection aimed at the triage agent — which runs read-only-ish (Edit scoped to `.todomd/tasks/`), but treat auto-triaged email cards with the same skepticism as any inbound request.
 

@@ -5,18 +5,34 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { createCard, attachCard } from './board.js';
 
-// Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json
-//   { "<project-name>": { host, port, secure, user, pass,
-//                         folder, pollSeconds, markSeen, maxAttachments } }
+// Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json.
+// Two formats, both keyed by project name:
+//
+//  (1) inline — one self-contained mailbox per project:
+//      { "<project>": { host, port, secure, user, pass, folder, pollSeconds, markSeen } }
+//
+//  (2) shared accounts — define credentials once, route by folder per project
+//      (best when several boards share one inbox):
+//      { "accounts": { "work": { host, port, secure, user, pass } },
+//        "boards":   { "repo-a": { account: "work", folder: "todomd-a" },
+//                      "repo-b": { account: "work", folder: "todomd-b" } } }
 const configFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake.json');
 
+// Returns a flat map: project name → resolved mailbox config (account creds merged in).
 export function loadIntakeConfig() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(configFile(), 'utf8'));
-    return raw && typeof raw === 'object' ? raw : {};
-  } catch {
-    return {};
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(configFile(), 'utf8')); } catch { return {}; }
+  if (!raw || typeof raw !== 'object') return {};
+  if (raw.boards && typeof raw.boards === 'object') {
+    const accounts = raw.accounts || {};
+    const out = {};
+    for (const [name, board] of Object.entries(raw.boards)) {
+      const acct = board && board.account ? accounts[board.account] : null;
+      out[name] = { ...(acct || {}), ...board }; // board keys (folder, etc.) win over account
+    }
+    return out;
   }
+  return raw; // legacy: top-level keys are project names with inline creds
 }
 
 // Pure, testable: a parsed email → card fields. Untrusted content; createCard

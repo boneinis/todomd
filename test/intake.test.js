@@ -39,3 +39,40 @@ test('a malicious subject cannot break the card frontmatter', async () => {
   assert.ok(!c.parseError, 'card frontmatter must still parse');
   assert.equal(c.data.status, 'Review'); // not hijacked to Done
 });
+
+test('loadIntakeConfig: shared accounts merge into per-board configs (multi-project)', async () => {
+  const home = isolateHome();
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.todomd/intake.json'), JSON.stringify({
+    accounts: { work: { host: 'imap.x.com', port: 993, user: 'me@x.com', pass: 'secret', secure: true } },
+    boards: {
+      'repo-a': { account: 'work', folder: 'todomd-a', pollSeconds: 120 },
+      'repo-b': { account: 'work', folder: 'todomd-b' },
+      'repo-c': { host: 'imap.y.com', user: 'other@y.com', pass: 'p2', folder: 'INBOX' }, // standalone
+    },
+  }));
+  const cfg = (await import('../src/intake.js')).loadIntakeConfig();
+  // account creds merged, board folder/interval preserved
+  assert.equal(cfg['repo-a'].host, 'imap.x.com');
+  assert.equal(cfg['repo-a'].pass, 'secret');
+  assert.equal(cfg['repo-a'].folder, 'todomd-a');
+  assert.equal(cfg['repo-a'].pollSeconds, 120);
+  assert.equal(cfg['repo-b'].folder, 'todomd-b');     // distinct folder = distinct routing
+  assert.equal(cfg['repo-b'].host, 'imap.x.com');     // same shared account
+  assert.equal(cfg['repo-c'].host, 'imap.y.com');     // standalone board, its own creds
+});
+
+test('loadIntakeConfig: legacy inline format still works', async () => {
+  const home = isolateHome();
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.todomd/intake.json'), JSON.stringify({
+    'repo-a': { host: 'imap.x.com', user: 'me@x.com', pass: 's', folder: 'todomd' },
+  }));
+  const cfg = (await import('../src/intake.js')).loadIntakeConfig();
+  assert.equal(cfg['repo-a'].host, 'imap.x.com');
+  assert.equal(cfg['repo-a'].folder, 'todomd');
+});
