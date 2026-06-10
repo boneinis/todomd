@@ -71,6 +71,7 @@ export function startServer({ port = 7337 } = {}) {
         return json(res, 400, { error: 'invalid JSON body' });
       }
       const result = await createCard(project.path, fields);
+      if (result.ok) pipeline.maybeTriage(project, result.id).catch(() => {});
       return json(res, result.ok ? 200 : 400, result);
     }
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
@@ -185,11 +186,15 @@ export function startServer({ port = 7337 } = {}) {
     for (const [dir, name] of current) {
       if (watchers.has(dir) || !fs.existsSync(dir)) continue;
       let timer;
+      const project = listProjects().find((p) => p.name === name);
       const w = chokidar.watch(dir, { ignoreInitial: true });
       w.on('error', () => {});
       w.on('all', () => {
         clearTimeout(timer);
-        timer = setTimeout(() => broadcast({ type: 'board-changed', project: name }), 150);
+        timer = setTimeout(() => {
+          broadcast({ type: 'board-changed', project: name });
+          if (project) pipeline.triageSweep(project); // annotate externally-arrived cards
+        }, 1500);
       });
       watchers.set(dir, w);
     }

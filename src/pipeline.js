@@ -504,6 +504,70 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   return buildChain(project, id, { sessionId: buildSession, findings });
 }
 
+/* ── auto-triage: annotate incoming Review cards with insight + plan ── */
+
+export async function maybeTriage(project, id) {
+  const config = loadConfig(project.path);
+  const t = config.triage || {};
+  if (t.enabled === false) return;
+  if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
+  const card = readCard(project.path, id);
+  if (!card || card.data.status !== 'Review') return;
+  if (card.data.triaged) return;                         // idempotent
+  if (card.data.skill) return;                           // skill cards have their own flow
+  const vendor = cardVendor(config, card);
+  if (!SUPPORTED_VENDORS.has(vendor)) return;
+  if (children.has(runKey(project.name, id))) return;
+
+  // stamp first so concurrent watcher sweeps can't double-spawn
+  await patchFrontmatter(project.path, id, { triaged: 'running' });
+
+  let prompt;
+  try {
+    prompt = stagePrompt(project, vendor, { command: 'todomd-triage' }, id);
+  } catch {
+    return patchFrontmatter(project.path, id, { triaged: 'skipped (no command)' });
+  }
+
+  const { result, run } = await spawnTracked(project, id, 'Triage', 'Review', 0, {
+    vendor,
+    cwd: project.path,
+    prompt,
+    model: t.model,
+    maxTurns: t.max_turns || 15,
+    allowedTools: ['Read', 'Glob', 'Grep', 'Edit'],
+    logFile: runLogFile(project, id, 'Triage'),
+  });
+
+  const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
+  if (run?.cancelled) {
+    await patchFrontmatter(project.path, id, { triaged: '' });
+  } else if (ok) {
+    await recordRun(project, id, 'Triage', 0, result, 'ok');
+    await patchFrontmatter(project.path, id, { triaged: new Date().toISOString().slice(0, 10) });
+  } else {
+    const failure = classifyFailure(result);
+    // a failed triage never blocks the card — it just stays unannotated
+    await patchFrontmatter(project.path, id, { triaged: `failed (${failure.kind})` });
+    if (failure.kind === 'quota' || failure.kind === 'cli_missing' || failure.kind === 'auth') {
+      setBanner(failure.kind, 'warn', `triage paused: ${failure.detail}`);
+    }
+  }
+  sendState(project, id, 'idle');
+}
+
+// Catch cards that arrive outside the API (git pull, email routine, editor).
+export function triageSweep(project) {
+  try {
+    const board = loadBoard(project.path);
+    for (const card of board.cards) {
+      if (card.status === 'Review' && card.id && !card.triaged && !card.skill) {
+        maybeTriage(project, card.id).catch(() => {});
+      }
+    }
+  } catch { /* never fatal */ }
+}
+
 /* ── boot-time duties ── */
 
 function preflight() {
@@ -522,6 +586,9 @@ export async function reconcileOnBoot() {
       for (const card of board.cards) {
         if (IN_FLIGHT.has(card.status) && !children.has(runKey(project.name, card.id))) {
           await toNeedsHuman(project, card.id, card.status, 'orphaned_run', 'server restarted during a run');
+        }
+        if (card.triaged === 'running') {
+          await patchFrontmatter(project.path, card.id, { triaged: '' }); // interrupted triage — retry via sweep
         }
       }
       await git(project.path, ['worktree', 'prune']);

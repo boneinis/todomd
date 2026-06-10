@@ -16,6 +16,15 @@ worktree_dir: .todomd/worktrees
 branch_prefix: todomd/
 default_agent: claude
 
+# Auto-triage: when a card arrives in Review (UI, API, or email push), an
+# agent annotates it with codebase insight + a proposed plan of action.
+# The card stays in Review — the human still decides. Set enabled: false
+# to turn off, or model: haiku to cut the per-card cost ~5x.
+triage:
+  enabled: true
+  model: sonnet
+  max_turns: 15
+
 # Each pipeline stage maps a column to the command it invokes, the model it
 # runs on, and its tool allowlist. Cards can override agent/model in their
 # own frontmatter. Add custom columns + commands for your own stages.
@@ -145,6 +154,25 @@ This card is a markdown file at \`.todomd/tasks/task-0001-welcome.md\`. Drag it 
 ## Run Log
 `;
 
+const CMD_TRIAGE = `---
+description: Triage an incoming todomd card — codebase insight + proposed plan of action
+---
+
+You are the todomd TRIAGE agent. A new card just arrived for human review. The task id is: $ARGUMENTS
+
+1. Read the card \`.todomd/tasks/<task-id>-*.md\` (Description, Acceptance Criteria, source).
+2. Investigate the codebase enough to give the human real insight: which files/modules are involved, how the relevant code works today, likely root cause (for fixes), risks and unknowns.
+3. Edit the card file — **the only file you may modify** — adding a \`## Triage\` section (replace it if present) containing exactly:
+   - **Insight:** 2-4 sentences on what the request actually touches and anything surprising you found.
+   - **Proposed plan of action:** 3-6 numbered, concrete steps (advisory — the formal plan is written later in the Plan stage).
+   - **Estimate:** S / M / L with a clause of rationale.
+   - **Flags:** anything the human must decide or verify first (missing info, external dependencies, manual steps), or "none".
+4. If the Description is too vague to investigate, say so in **Flags** with the specific questions to answer.
+5. Never modify the YAML frontmatter, any other section, or any other file. Do not implement anything.
+
+Finish with a one-line summary.
+`;
+
 const CMD_DISPATCH = `---
 description: Budget-mode dispatcher — process pending todomd cards in this session
 ---
@@ -152,6 +180,10 @@ description: Budget-mode dispatcher — process pending todomd cards in this ses
 You are the todomd budget-mode dispatcher. Process the board in \`.todomd/\` of the current repo. All work happens in THIS session (or its subagents) so it bills to the interactive subscription pool. First read \`.todomd/config.yml\` (verify_command, max_attempts, worktree_dir, branch_prefix).
 
 Skip any card whose frontmatter \`agent:\` is not claude — the launcher handles those vendors.
+
+## 0. Triage (all pending)
+
+Unless config \`triage.enabled\` is false: for each card with \`status: Review\` whose frontmatter \`triaged:\` is empty and that has no \`skill:\`, follow \`.claude/commands/todomd-triage.md\` for it, then set \`triaged: <today>\` in its frontmatter, Run Log line, commit.
 
 ## 1. Plan work (all pending)
 
@@ -175,7 +207,7 @@ Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Assi
 
 ## Rules
 
-- Frontmatter: you may change only \`status\`, \`verification\`, \`needs_human_reason\`, \`session_id\`.
+- Frontmatter: you may change only \`status\`, \`verification\`, \`needs_human_reason\`, \`session_id\`, \`triaged\`.
 - Run Log: one line per action — \`- <UTC time> · <stage> attempt N (budget) · <result>\`.
 - Board commits are path-scoped to the card file: \`git commit -m "chore(todomd): <id> <from> -> <to> (<reason>)" -- .todomd/tasks/<file>\`. Code commits happen on the task branch per the build command.
 - Nothing to do → reply "board idle" and finish.
@@ -190,6 +222,7 @@ export function initProject(repoPath) {
     ['.claude/commands/todomd-build.md', CMD_BUILD],
     ['.claude/commands/todomd-verify.md', CMD_VERIFY],
     ['.claude/commands/todomd-dispatch.md', CMD_DISPATCH],
+    ['.claude/commands/todomd-triage.md', CMD_TRIAGE],
   ];
   const created = [];
   for (const [rel, content] of writes) {
