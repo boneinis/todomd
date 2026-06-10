@@ -109,7 +109,8 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
     const relFile = path.join('.todomd', 'tasks', card.file);
     fs.writeFileSync(path.join(repoPath, relFile), updated);
 
-    const msg = `todomd: ${id} ${oldStatus ?? '(none)'} -> ${newStatus}${reason ? ` (${reason})` : ''}`;
+    // chore(todomd): passes Conventional Commits gates (husky/commitlint)
+    const msg = `chore(todomd): ${id} ${oldStatus ?? '(none)'} -> ${newStatus}${reason ? ` (${reason})` : ''}`;
     const commit = await commitCard(repoPath, relFile, msg);
     const result = { ok: true, oldStatus, newStatus, commit };
     if (!commit.committed) result.warning = `moved, but not committed: ${commit.reason}`;
@@ -196,7 +197,7 @@ ${criteria.length ? criteria.map((c) => `- [ ] ${c}`).join('\n') : '- [ ] Implem
 `;
     fs.writeFileSync(path.join(dir, file), content);
     const relFile = path.join('.todomd', 'tasks', file);
-    const commit = await commitCard(repoPath, relFile, `todomd: ${id} created (${fields.source || 'ui'})`);
+    const commit = await commitCard(repoPath, relFile, `chore(todomd): ${id} created (${fields.source || 'ui'})`);
     return { ok: true, id, file, commit };
   });
 }

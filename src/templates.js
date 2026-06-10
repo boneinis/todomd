@@ -87,7 +87,7 @@ You are running inside a dedicated git worktree branch for this task. Rules:
 2. **Never modify anything under \`.todomd/\`** — this worktree's copy of the board is read-only context; the board is owned elsewhere.
 3. Implement the plan: edit/create source and test files so that every acceptance criterion is met.
 4. Run the project's verify command and iterate until it passes.
-5. Commit your changes on the current branch with message \`<task-id>: <short summary>\`. Do not push, do not switch branches, do not merge.
+5. Commit your changes on the current branch. **Follow the repository's commit conventions** — if commitlint/husky enforce Conventional Commits, use an appropriate type (\`feat:\`/\`fix:\`/\`test:\`…); include the task id in the message. Do not push, do not switch branches, do not merge.
 
 Finish with a one-line summary of what you changed.
 `;

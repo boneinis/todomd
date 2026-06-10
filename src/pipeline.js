@@ -425,7 +425,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     if (await branchTouchesBoard(project.path, branch)) {
       return toNeedsHuman(project, id, 'Verify', 'board_tampering', 'task branch modifies .todomd/');
     }
-    const merged = await mergeBranch(project.path, branch, `merge ${id} (todomd verified, attempt ${attempt})`);
+    const merged = await mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`);
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
     await removeWorktree(project.path, worktreeAbs, branch);
     await patchFrontmatter(project.path, id, { worktree: '' });
