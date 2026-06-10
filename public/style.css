@@ -2,6 +2,7 @@
 
 :root {
   --bg: #0a0c0a;
+  --bg-glow: #11160f;
   --panel: #10140f;
   --panel-2: #141a13;
   --line: #20281e;
@@ -13,8 +14,29 @@
   --red: #ff6f6f;
   --cyan: #7ad0db;
   --violet: #b8a1e8;
+  --scan: .022;
+  --vignette: .5;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
   --serif: "Fraunces", georgia, serif;
+}
+
+/* ── light: warm paper & ink, same amber accent ── */
+body.light {
+  --bg: #f4f1e7;
+  --bg-glow: #fbf9f1;
+  --panel: #ece7da;
+  --panel-2: #e4ddcb;
+  --line: #d3ccb6;
+  --ink: #2a2820;
+  --dim: #746f5c;
+  --faint: #a89f88;
+  --amber: #a3640a;
+  --green: #3c8a4f;
+  --red: #c0392b;
+  --cyan: #2c8593;
+  --violet: #6b50a4;
+  --scan: 0;
+  --vignette: .06;
 }
 
 * { box-sizing: border-box; }
@@ -27,19 +49,19 @@ html, body { height: 100%; }
 body {
   margin: 0;
   background:
-    radial-gradient(120% 90% at 50% 0%, #11160f 0%, var(--bg) 55%);
+    radial-gradient(120% 90% at 50% 0%, var(--bg-glow) 0%, var(--bg) 55%);
   color: var(--ink);
   font-family: var(--mono);
   font-size: 13px;
   overflow: hidden;
 }
 
-/* CRT scanlines + vignette, very quiet */
+/* CRT scanlines + vignette, very quiet (both fade out in light mode) */
 .scanlines {
   position: fixed; inset: 0; pointer-events: none; z-index: 50;
   background:
-    repeating-linear-gradient(0deg, rgba(255,255,255,.022) 0 1px, transparent 1px 3px),
-    radial-gradient(140% 100% at 50% 50%, transparent 60%, rgba(0,0,0,.5) 100%);
+    repeating-linear-gradient(0deg, rgba(255,255,255,var(--scan)) 0 1px, transparent 1px 3px),
+    radial-gradient(140% 100% at 50% 50%, transparent 60%, rgba(0,0,0,var(--vignette)) 100%);
   mix-blend-mode: overlay;
 }
 

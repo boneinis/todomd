@@ -10,11 +10,13 @@
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+<script>if (localStorage.getItem('todomd-theme') === 'light') document.body.classList.add('light');</script>
 <div class="scanlines" aria-hidden="true"></div>
 
 <header class="topbar">
   <h1 class="wordmark">todo<span>md</span></h1>
   <div class="topbar-right">
+    <button id="theme-btn" class="qr-btn" title="toggle light / dark">◐</button>
     <button id="qr-btn" class="qr-btn" title="mobile monitor link">▦</button>
     <button id="new-card" class="new-card">+ card</button>
     <input id="filter" type="search" placeholder="filter…" spellcheck="false" autocomplete="off" />

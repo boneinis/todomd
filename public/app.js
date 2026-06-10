@@ -324,6 +324,12 @@ function connectWs() {
   };
 }
 
+/* ── theme toggle ── */
+$('#theme-btn').addEventListener('click', () => {
+  const light = document.body.classList.toggle('light');
+  localStorage.setItem('todomd-theme', light ? 'light' : 'dark');
+});
+
 /* ── QR / mobile access ── */
 const QR_NOTES = {
   viewer: 'Read-only link for devices on this network — the board streams live, but cards can’t be moved or created from it.',
