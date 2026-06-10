@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { addProject, listProjects } from '../src/registry.js';
 import { initProject } from '../src/templates.js';
 import { startServer } from '../src/server.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const USAGE = 'usage: todomd [init|serve|revoke] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
 const VALUE_FLAGS = new Set(['--port']);
@@ -13,16 +17,50 @@ for (let i = 0; i < args.length; i++) {
   if (VALUE_FLAGS.has(args[i])) { i++; continue; }
   if (!args[i].startsWith('-')) positional.push(args[i]);
 }
+
+if (args.includes('--version') || args.includes('-v')) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'package.json'), 'utf8'));
+  console.log(pkg.version);
+  process.exit(0);
+}
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(USAGE);
+  process.exit(0);
+}
+
 const cmd = positional[0] || 'serve';
 const flag = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback;
 };
 
+const isGitRepo = (dir) => {
+  try { execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, stdio: 'ignore' }); return true; }
+  catch { return false; }
+};
+const claudeAvailable = () => {
+  try { execFileSync('claude', ['--version'], { stdio: 'ignore' }); return true; }
+  catch { return false; }
+};
+
 if (cmd === 'init') {
+  if (!isGitRepo(process.cwd())) {
+    console.error('⚠ not a git repo. todomd commits each board change to git — run `git init` first, then `todomd init`.');
+    process.exit(1);
+  }
   const created = initProject(process.cwd());
   addProject(process.cwd());
   console.log(created.length ? `created:\n  ${created.join('\n  ')}` : 'board already initialized');
+  // warn if .claude/commands won't be shared (repo ignores .claude/)
+  try {
+    execFileSync('git', ['check-ignore', '-q', '.claude/commands'], { cwd: process.cwd(), stdio: 'ignore' });
+    console.log('\nnote: this repo gitignores .claude/ — the pipeline commands work locally but');
+    console.log('      won\'t be committed/shared. `git add -f .claude/commands` to share them.');
+  } catch { /* not ignored — good */ }
+  if (!claudeAvailable()) {
+    console.log('\nnote: the `claude` CLI isn\'t on PATH. Install it and run `claude` once to log in');
+    console.log('      before driving the pipeline (Codex cards need `codex` logged in too).');
+  }
   console.log('\nrun `todomd` to open the board.');
   process.exit(0);
 }
@@ -61,6 +99,6 @@ if (cmd === 'serve') {
     else execFile('xdg-open', [url], () => {});
   }
 } else {
-  console.log('usage: todomd [init|serve|revoke] [--port N] [--lan] [--no-open]');
+  console.log(USAGE);
   process.exit(cmd === 'help' ? 0 : 1);
 }

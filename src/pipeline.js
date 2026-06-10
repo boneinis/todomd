@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog } from './board.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
-import { runs, runKey, persistRuns, addCost, monthCost } from './runstore.js';
+import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
 
 const VERDICT_SCHEMA = {
   // todomd.verdict/1
@@ -146,6 +146,10 @@ function runLogFile(project, id, stage, attempt) {
 
 function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   const key = runKey(project.name, id);
+  if (children.has(key)) {
+    // never overwrite a live run's tracking entry — that would orphan it
+    return Promise.resolve({ result: { envelope: null, exitCode: -1, stderr: 'already running' }, run: null });
+  }
   const { child, done } = runStage({
     ...opts,
     onEvent: (event) => {
@@ -220,8 +224,14 @@ export async function humanMove(project, id, to) {
   if (to === 'Planned') {
     if (from !== 'Needs Human') return { ok: false, error: 'Planned is set by the orchestrator' };
     const ver = card.data.verification || {};
+    // discard the rejected worktree so the fresh attempt doesn't build on top of it
+    if (card.data.worktree) {
+      const wtDir = config.worktree_dir || '.todomd/worktrees';
+      await removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree);
+    }
     await patchFrontmatter(project.path, id, {
       needs_human_reason: '',
+      worktree: '',
       verification: { attempts: 0, max_attempts: ver.max_attempts || config.max_attempts || 3, last_verdict: '' },
     });
     return moveCard(project.path, id, 'Planned', { reason: 'human retry' });
@@ -339,7 +349,10 @@ async function handleRunFailure(project, id, stageName, result, revertTo) {
 
 function enqueueBuild(project, id) {
   if (!queues.has(project.name)) queues.set(project.name, []);
-  queues.get(project.name).push(id);
+  const q = queues.get(project.name);
+  // dedupe: a concurrent double-approval or re-approval must not queue twice
+  if (q.includes(id) || children.has(runKey(project.name, id))) return;
+  q.push(id);
   sendState(project, id, 'queued', 'Build');
   processQueue(project);
 }
@@ -506,20 +519,33 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
 /* ── auto-triage: annotate incoming Review cards with insight + plan ── */
 
+const triaging = new Set(); // synchronous claim — closes the check-then-spawn gap
+
 export async function maybeTriage(project, id) {
   const config = loadConfig(project.path);
   const t = config.triage || {};
   if (t.enabled === false) return;
   if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
+  const key = runKey(project.name, id);
+  if (triaging.has(key)) return;                         // already claimed this tick
   const card = readCard(project.path, id);
   if (!card || card.data.status !== 'Review') return;
-  if (card.data.triaged) return;                         // idempotent
+  if (card.data.triaged) return;                         // idempotent across restarts
   if (card.data.skill) return;                           // skill cards have their own flow
   const vendor = cardVendor(config, card);
   if (!SUPPORTED_VENDORS.has(vendor)) return;
-  if (children.has(runKey(project.name, id))) return;
+  if (children.has(key)) return;
+  triaging.add(key); // claimed before any await — no two concurrent calls proceed
 
-  // stamp first so concurrent watcher sweeps can't double-spawn
+  try {
+    await runTriage(project, id, config, t, vendor);
+  } finally {
+    triaging.delete(key);
+  }
+}
+
+async function runTriage(project, id, config, t, vendor) {
+  // stamp so a restart-time sweep treats an interrupted triage as retryable
   await patchFrontmatter(project.path, id, { triaged: 'running' });
 
   let prompt;
@@ -577,15 +603,25 @@ function preflight() {
 }
 
 export async function reconcileOnBoot() {
+  // A prior server's agent children were reparented to init and keep running —
+  // editing worktrees behind our back. Kill any still-alive PIDs first.
+  for (const prev of readPriorRuns()) {
+    if (prev.pid) { try { process.kill(prev.pid, 'SIGKILL'); } catch { /* gone already */ } }
+  }
   for (const project of (await import('./registry.js')).listProjects()) {
     try {
       // budget-mode boards belong to the dispatcher session, which self-heals
       // its own interrupted cards — the server must not orphan-sweep them
       if ((loadConfig(project.path).mode || 'launcher') === 'budget') continue;
+      const config = loadConfig(project.path);
+      const wtDir = config.worktree_dir || '.todomd/worktrees';
+      const branchPrefix = config.branch_prefix || 'todomd/';
       const board = loadBoard(project.path);
       for (const card of board.cards) {
         if (IN_FLIGHT.has(card.status) && !children.has(runKey(project.name, card.id))) {
           await toNeedsHuman(project, card.id, card.status, 'orphaned_run', 'server restarted during a run');
+          // a fresh retry must not build on the abandoned worktree's rejected commits
+          await removeWorktree(project.path, path.join(project.path, wtDir, card.id), `${branchPrefix}${card.id}`);
         }
         if (card.triaged === 'running') {
           await patchFrontmatter(project.path, card.id, { triaged: '' }); // interrupted triage — retry via sweep

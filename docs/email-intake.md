@@ -45,7 +45,7 @@ You maintain the todomd task board in this repository.
    ## Run Log
 
 3. Mark each processed email as read.
-4. Commit each new file with message "todomd: task-NNNN created (email)" and push.
+4. Commit each new file with message "chore(todomd): task-NNNN created (email)" and push. (The `chore(todomd):` prefix matches todomd's own commits and passes Conventional-Commits/commitlint gates.)
 5. If there are no matching emails, do nothing and finish.
 ```
 

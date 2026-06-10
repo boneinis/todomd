@@ -58,6 +58,7 @@ function runClaude({
     log = fs.createWriteStream(logFile);
   }
 
+  child.stdout.setEncoding('utf8'); // decode multibyte chars across chunk boundaries
   const done = new Promise((resolve) => {
     let envelope = null;
     let sessionId = null;
@@ -65,21 +66,24 @@ function runClaude({
     let lineBuf = '';
     let stderr = '';
 
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      log?.write(line + '\n');
+      try {
+        const event = JSON.parse(line);
+        if (event.type === 'system' && event.subtype === 'init') sessionId = event.session_id;
+        if (event.type === 'result') envelope = event;
+        onEvent(event);
+      } catch { /* partial/garbled line — skip */ }
+    };
+
     child.stdout.on('data', (chunk) => {
       if (!streaming) { stdoutBuf += chunk; return; }
       lineBuf += chunk;
       let nl;
       while ((nl = lineBuf.indexOf('\n')) >= 0) {
-        const line = lineBuf.slice(0, nl);
+        handleLine(lineBuf.slice(0, nl));
         lineBuf = lineBuf.slice(nl + 1);
-        if (!line.trim()) continue;
-        log?.write(line + '\n');
-        try {
-          const event = JSON.parse(line);
-          if (event.type === 'system' && event.subtype === 'init') sessionId = event.session_id;
-          if (event.type === 'result') envelope = event;
-          onEvent(event);
-        } catch { /* partial/garbled line — skip */ }
       }
     });
     child.stderr.on('data', (c) => { stderr += c; });
@@ -89,7 +93,9 @@ function runClaude({
       resolve({ envelope: null, sessionId, exitCode: -1, spawnError: err.code || String(err), stderr });
     });
     child.on('close', (code) => {
-      if (!streaming) {
+      if (streaming) {
+        if (lineBuf.trim()) handleLine(lineBuf); // flush a final newline-less event
+      } else {
         try { envelope = JSON.parse(stdoutBuf); } catch { /* leave null */ }
       }
       cleanup();
@@ -159,21 +165,25 @@ function runCodex({
     let lineBuf = '';
     let stderr = '';
 
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      log?.write(line + '\n');
+      try {
+        const event = JSON.parse(line);
+        sessionId ||= event.thread_id || event.session_id || event?.thread?.id || null;
+        if (event.type === 'turn.completed') turns++;
+        if (event.type === 'turn.failed' || event.type === 'error') failed = event;
+        onEvent({ vendor: 'codex', ...event });
+      } catch { /* non-JSON line — skip */ }
+    };
+
+    child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
       lineBuf += chunk;
       let nl;
       while ((nl = lineBuf.indexOf('\n')) >= 0) {
-        const line = lineBuf.slice(0, nl);
+        handleLine(lineBuf.slice(0, nl));
         lineBuf = lineBuf.slice(nl + 1);
-        if (!line.trim()) continue;
-        log?.write(line + '\n');
-        try {
-          const event = JSON.parse(line);
-          sessionId ||= event.thread_id || event.session_id || event?.thread?.id || null;
-          if (event.type === 'turn.completed') turns++;
-          if (event.type === 'turn.failed' || event.type === 'error') failed = event;
-          onEvent({ vendor: 'codex', ...event });
-        } catch { /* non-JSON line — skip */ }
       }
     });
     child.stderr.on('data', (c) => { stderr += c; });
@@ -183,6 +193,7 @@ function runCodex({
       resolve({ envelope: null, sessionId, exitCode: -1, spawnError: err.code || String(err), stderr });
     });
     child.on('close', (code) => {
+      if (lineBuf.trim()) handleLine(lineBuf); // flush trailing newline-less event
       let structured;
       if (outFile) {
         try { structured = JSON.parse(fs.readFileSync(outFile, 'utf8')); } catch {}

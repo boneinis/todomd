@@ -76,7 +76,7 @@ function setStatusInFrontmatter(raw, newStatus) {
   if (!m) return null;
   const fm = m[1];
   const newFm = /^status:.*$/m.test(fm)
-    ? fm.replace(/^status:.*$/m, `status: ${newStatus}`)
+    ? fm.replace(/^status:.*$/m, () => `status: ${newStatus}`)
     : `${fm}\nstatus: ${newStatus}`;
   return `---\n${newFm}\n---` + raw.slice(m[0].length);
 }
@@ -118,13 +118,22 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
   });
 }
 
+function flowScalar(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const s = String(value);
+  // quote anything that isn't an obviously-safe bare scalar, so a value with
+  // ':', '#', '$', quotes, etc. can't corrupt the frontmatter or wedge the card
+  if (/^[\w./@+-]+$/.test(s)) return s;
+  return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
 function flowYaml(value) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'object' && !Array.isArray(value)) {
     return `{ ${Object.entries(value).map(([k, v]) => `${k}: ${flowYaml(v)}`).join(', ')} }`;
   }
   if (Array.isArray(value)) return `[${value.map(flowYaml).join(', ')}]`;
-  return String(value);
+  return flowScalar(value);
 }
 
 // Format-preserving frontmatter patch: replaces (or appends) whole top-level
@@ -139,7 +148,8 @@ export function patchFrontmatter(repoPath, id, updates) {
     for (const [key, value] of Object.entries(updates)) {
       const line = `${key}: ${flowYaml(value)}`.trimEnd();
       const re = new RegExp(`^${key}:.*$`, 'm');
-      fm = re.test(fm) ? fm.replace(re, line) : `${fm}\n${line}`;
+      // function replacer so '$&', '$1', etc. in a value aren't expanded
+      fm = re.test(fm) ? fm.replace(re, () => line) : `${fm}\n${line}`;
     }
     const updated = `---\n${fm}\n---` + card.raw.slice(m[0].length);
     fs.writeFileSync(path.join(repoPath, '.todomd', 'tasks', card.file), updated);
@@ -211,13 +221,14 @@ export function appendRunLog(repoPath, id, line) {
     let raw = card.raw;
     const heading = raw.indexOf('## Run Log');
     if (heading < 0) {
-      raw = raw.replace(/\n*$/, `\n\n## Run Log\n\n${line}\n`);
+      raw = raw.replace(/\n*$/, '') + `\n\n## Run Log\n\n${line}\n`;
     } else {
       const afterHeading = heading + '## Run Log'.length;
       const next = raw.indexOf('\n## ', afterHeading);
       const insertAt = next < 0 ? raw.length : next;
-      const before = raw.slice(0, insertAt).replace(/\n*$/, '\n');
-      raw = `${before}${line}\n` + (next < 0 ? '' : raw.slice(insertAt + 1));
+      const before = raw.slice(0, insertAt).replace(/\n*$/, '') + '\n';
+      // keep the blank line before a following heading (slice from `next`, not next+1)
+      raw = `${before}${line}\n` + (next < 0 ? '' : raw.slice(next));
     }
     fs.writeFileSync(path.join(repoPath, '.todomd', 'tasks', card.file), raw);
     return { ok: true };

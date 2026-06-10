@@ -46,9 +46,26 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const url = new URL(req.url, 'http://x');
     return url.searchParams.get('token') || req.headers['x-todomd-token'] || '';
   };
-  const primary = (req) => sentToken(req) === token;
-  const authed = (req) => primary(req) || sentToken(req) === mobileToken;
-  const viewerAuthed = (req) => authed(req) || sentToken(req) === viewerToken;
+  const eq = (a, b) => {
+    const ba = Buffer.from(String(a)), bb = Buffer.from(String(b));
+    return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+  };
+  const primary = (req) => eq(sentToken(req), token);
+  const authed = (req) => primary(req) || eq(sentToken(req), mobileToken);
+  const viewerAuthed = (req) => authed(req) || eq(sentToken(req), viewerToken);
+
+  // DNS-rebinding / CSRF defense: the browser sends the rebound or foreign
+  // hostname as Host, and a cross-site page sends its own Origin. Allow only
+  // our own loopback (and the LAN ip when --lan). Native clients (curl, the
+  // CLI) send no Origin, which is fine — they still need a token.
+  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  if (lan && lanAddress()) allowedHosts.add(`${lanAddress()}:${port}`);
+  const hostOk = (req) => allowedHosts.has(req.headers.host);
+  const originOk = (req) => {
+    const o = req.headers.origin;
+    if (!o) return true;
+    try { return allowedHosts.has(new URL(o).host); } catch { return false; }
+  };
 
   const json = (res, code, obj) => {
     res.writeHead(code, { 'content-type': 'application/json' });
@@ -58,6 +75,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
   async function handleApi(req, res, url) {
+    if (!hostOk(req)) return json(res, 403, { error: 'bad host' });
+    if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
     // reads work with either token; anything that mutates or spawns
     // requires the full token (the viewer/QR link is monitor-only)
     if (!viewerAuthed(req)) return json(res, 401, { error: 'bad token' });
@@ -188,7 +207,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
   // websocket: push "board changed" pings per project, with liveness pings
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
-    if (!viewerAuthed(req)) return socket.destroy();
+    if (!hostOk(req) || !originOk(req) || !viewerAuthed(req)) return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   });
   wss.on('connection', (ws) => {

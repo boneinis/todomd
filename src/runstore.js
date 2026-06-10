@@ -21,6 +21,15 @@ export function persistRuns() {
   } catch { /* mirror only — never fatal */ }
 }
 
+// Runs left in the mirror by a previous server process (for orphan-kill on boot).
+export function readPriorRuns() {
+  try {
+    return JSON.parse(fs.readFileSync(RUNS_FILE, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
 export function addCost(usd) {
   if (!usd || !(usd > 0)) return;
   try {
