@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import chokidar from 'chokidar';
@@ -12,8 +13,22 @@ import * as pipeline from './pipeline.js';
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
 
+// One token per machine, persisted so server restarts don't invalidate open
+// tabs. Still random, still localhost-only, file readable by the user only.
+function loadToken() {
+  const file = path.join(os.homedir(), '.todomd', 'token');
+  try {
+    const t = fs.readFileSync(file, 'utf8').trim();
+    if (/^[a-f0-9]{32}$/.test(t)) return t;
+  } catch {}
+  const t = crypto.randomBytes(16).toString('hex');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, t + '\n', { mode: 0o600 });
+  return t;
+}
+
 export function startServer({ port = 7337 } = {}) {
-  const token = crypto.randomBytes(16).toString('hex');
+  const token = loadToken();
 
   const authed = (req) => {
     const url = new URL(req.url, 'http://x');
