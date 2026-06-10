@@ -37,6 +37,14 @@
   </header>
   <h2 id="drawer-title"></h2>
   <div class="drawer-meta" id="drawer-meta"></div>
+  <div class="drawer-routing">
+    <label>agent
+      <select id="route-agent"><option>claude</option><option>codex</option></select>
+    </label>
+    <label>model <input id="route-model" placeholder="stage default" autocomplete="off" /></label>
+    <label>skill <input id="route-skill" placeholder="stage command" autocomplete="off" /></label>
+    <button id="route-save" class="route-save">save</button>
+  </div>
   <article class="drawer-body" id="drawer-body"></article>
   <section id="drawer-run" class="drawer-run" hidden>
     <h2 class="run-title">live run</h2>

@@ -303,9 +303,12 @@ async function runTriggerStage(project, id, stageName) {
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (ok) {
     await recordRun(project, id, stageName, 0, result, skill ? `ok (/${skill})` : 'ok');
-    // skill cards stay in the column for the human to read the findings;
-    // only the default plan command advances the pipeline
-    if (stageName === 'Plan' && !skill) await orchMove(project, id, 'Planned', 'plan complete');
+    if (stageName === 'Plan') {
+      // skill cards return to Review (human reads the findings and decides);
+      // staying in Plan would read as an orphaned run after a restart
+      if (skill) await orchMove(project, id, 'Review', `findings ready (/${skill})`);
+      else await orchMove(project, id, 'Planned', 'plan complete');
+    }
     sendState(project, id, 'idle');
     return;
   }
@@ -529,6 +532,10 @@ export function getRunStates(projectName) {
     states[id] = { state: 'queued', stage: 'Build' };
   }
   return states;
+}
+
+export function hasLiveRun(projectName, id) {
+  return children.has(runKey(projectName, id));
 }
 
 export function usage() {

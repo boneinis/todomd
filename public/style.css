@@ -181,6 +181,24 @@ body {
 .meta-chip { border: 1px solid var(--line); color: var(--dim); padding: 3px 9px; font-size: 10.5px; letter-spacing: .07em; }
 .meta-chip b { color: var(--ink); font-weight: 500; }
 
+.drawer-routing {
+  display: grid; grid-template-columns: 1fr 1.2fr 1.2fr auto; gap: 8px;
+  align-items: end; margin-bottom: 18px; padding: 10px 12px;
+  border: 1px solid var(--line); background: var(--panel-2);
+}
+.drawer-routing label { color: var(--dim); font-size: 10.5px; letter-spacing: .1em; }
+.drawer-routing input, .drawer-routing select {
+  display: block; width: 100%; margin-top: 4px;
+  background: var(--bg); border: 1px solid var(--line); color: var(--ink);
+  font: inherit; font-size: 12px; padding: 5px 8px;
+}
+.drawer-routing input:focus, .drawer-routing select:focus { outline: none; border-color: var(--amber); }
+.route-save {
+  background: none; border: 1px solid var(--amber); color: var(--amber);
+  font: inherit; font-size: 11px; padding: 6px 12px; cursor: pointer;
+}
+.route-save:hover { background: var(--amber); color: var(--bg); }
+
 .drawer-body { font-size: 12.5px; line-height: 1.75; color: var(--ink); }
 .drawer-body h2 {
   font-family: var(--mono); font-style: normal; font-size: 11px; font-weight: 600;

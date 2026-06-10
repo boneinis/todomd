@@ -172,8 +172,31 @@ async function openDrawer(id) {
   ].filter(([, v]) => v).map(([k, v]) => `<span class="meta-chip">${esc(k)} <b>${esc(String(v))}</b></span>`).join('');
   $('#drawer-body').innerHTML = mdToHtml(card.body);
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
+  $('#route-agent').value = card.data.agent || 'claude';
+  $('#route-model').value = card.data.model || '';
+  $('#route-skill').value = card.data.skill || '';
   $('#drawer').hidden = false;
 }
+
+$('#route-save').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/set?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agent: $('#route-agent').value,
+        model: $('#route-model').value.trim(),
+        skill: $('#route-skill').value.trim(),
+      }),
+    });
+    const out = await res.json();
+    toast(res.ok ? 'routing saved' : out.error || 'save failed');
+    if (res.ok) loadBoard();
+  } catch {
+    toast('server unreachable');
+  }
+});
 $('#drawer-close').addEventListener('click', () => { $('#drawer').hidden = true; drawerCard = null; });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#drawer').hidden = true; drawerCard = null; } });
 $('#drawer-cancel').addEventListener('click', async () => {

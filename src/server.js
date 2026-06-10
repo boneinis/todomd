@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import { listProjects } from './registry.js';
-import { loadBoard, readCard, createCard } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter } from './board.js';
 import * as pipeline from './pipeline.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -88,6 +88,31 @@ export function startServer({ port = 7337 } = {}) {
       }
       // every API move is a human move: the §3.1 table is enforced here
       const result = await pipeline.humanMove(project, moveMatch[1], status);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    // human-owned routing fields, editable from the drawer
+    const setMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/set$/);
+    if (setMatch && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let fields;
+      try {
+        fields = JSON.parse(body || '{}');
+      } catch {
+        return json(res, 400, { error: 'invalid JSON body' });
+      }
+      if (pipeline.hasLiveRun(project.name, setMatch[1])) {
+        return json(res, 400, { error: 'run in progress — cancel it first' });
+      }
+      const updates = {};
+      if ('agent' in fields) {
+        if (!['claude', 'codex'].includes(fields.agent)) return json(res, 400, { error: 'agent must be claude or codex' });
+        updates.agent = fields.agent;
+      }
+      if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
+      if ('skill' in fields) updates.skill = String(fields.skill || '').replace(/[^\w:-]/g, '');
+      if (!Object.keys(updates).length) return json(res, 400, { error: 'nothing to set' });
+      const result = await patchFrontmatter(project.path, setMatch[1], updates);
       return json(res, result.ok ? 200 : 400, result);
     }
     const cancelMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/cancel$/);
