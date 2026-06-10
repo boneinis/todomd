@@ -138,3 +138,26 @@ test('quota: build hits a usage limit → card parks in Assigned + project pause
   assert.equal(pipeline.usage(p.name).quota_paused, false);
   clearFakeAgent();
 });
+
+test('triage commits the card so the working tree stays clean (with triage enabled)', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo({ triage: true });
+  const p = project(repo);
+  // create via the board path so triage auto-fires (like the API does)
+  const { createCard } = await import('../src/board.js');
+  const card = await createCard(repo, { title: 'Triage commit test', description: 'x', criteria: ['y'] });
+  await pipeline.maybeTriage(p, card.id);
+  await until(() => readCard(repo, card.id).data.triaged && readCard(repo, card.id).data.triaged !== 'running', { timeout: 12000 });
+  // after triage, the working tree must have no uncommitted .todomd changes
+  const { execFileSync } = await import('node:child_process');
+  const dirty = execFileSync('git', ['status', '--porcelain', '--', '.todomd'], { cwd: repo, encoding: 'utf8' }).trim();
+  assert.equal(dirty, '', `triage left uncommitted board changes:\n${dirty}`);
+});
+
+test('forgetProject + projectHasLiveRun', async () => {
+  pipeline.init({ broadcast: noop });
+  assert.equal(pipeline.projectHasLiveRun('nope'), false);
+  pipeline.forgetProject('nope'); // no-op, must not throw
+});

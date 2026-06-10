@@ -106,8 +106,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
         try { dir = String(JSON.parse(body || '{}').path || '').trim(); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
         if (!dir) return json(res, 400, { error: 'path is required' });
         if (dir.startsWith('~')) dir = path.join(os.homedir(), dir.slice(1));
-        dir = path.resolve(dir);
-        if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return json(res, 400, { error: 'not a folder on this machine' });
+        // realpath so a symlinked path can't redirect the scaffold writes elsewhere
+        try { dir = fs.realpathSync(path.resolve(dir)); } catch { return json(res, 400, { error: 'not a folder on this machine' }); }
+        if (!fs.statSync(dir).isDirectory()) return json(res, 400, { error: 'not a folder on this machine' });
         if (!(await isGitRepo(dir))) return json(res, 400, { error: 'not a git repo — run `git init` there first' });
         try {
           initProject(dir);                 // idempotent: scaffolds a board or no-ops
@@ -121,7 +122,13 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     const rmProject = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
     if (rmProject && req.method === 'DELETE') {
-      removeProject(decodeURIComponent(rmProject[1])); // unregister; board files untouched
+      let name;
+      try { name = decodeURIComponent(rmProject[1]); } catch { return json(res, 400, { error: 'bad project name' }); }
+      if (pipeline.projectHasLiveRun(name)) {
+        return json(res, 400, { error: 'a card is running in this project — cancel it first' });
+      }
+      removeProject(name);            // unregister; board files untouched
+      pipeline.forgetProject(name);   // drop in-memory queue/quota state for the name
       return json(res, 200, { ok: true });
     }
     if (url.pathname === '/api/qr') {

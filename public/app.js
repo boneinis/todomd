@@ -44,12 +44,16 @@ async function api(path) {
 async function loadProjects() {
   const { projects } = await api('projects');
   projectSel.innerHTML = projects.map((p) => `<option>${esc(p)}</option>`).join('');
-  if (!currentProject || !projects.includes(currentProject)) currentProject = projects[0];
-  projectSel.value = currentProject;
+  if (!currentProject || !projects.includes(currentProject)) currentProject = projects[0]; // undefined if none
+  projectSel.value = currentProject || '';
 }
 
 async function loadBoard() {
-  if (!currentProject) return;
+  if (!currentProject) { // no projects (e.g. the last one was removed) — show an empty state
+    boardData = null;
+    boardEl.innerHTML = '<p class="col-empty">no projects — add one with the ⊕ button</p>';
+    return;
+  }
   boardData = await api(`board?project=${encodeURIComponent(currentProject)}`);
   runStates = boardData.runStates || {};
   renderBanners(boardData.banners || []);
@@ -350,7 +354,7 @@ function connectWs() {
     loadProjects().then(loadBoard).catch(() => {}); // refetch anything missed while disconnected
   };
   ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
     if (msg.type === 'board-changed' && msg.project === currentProject) loadBoard();
     else if (msg.type === 'run-state' && msg.project === currentProject) {
       if (msg.state === 'idle') delete runStates[msg.card];

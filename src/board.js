@@ -212,6 +212,16 @@ ${criteria.length ? criteria.map((c) => `- [ ] ${c}`).join('\n') : '- [ ] Implem
   });
 }
 
+// Commit a card's file as-is (for flows like triage that annotate the card but
+// don't change status, so no moveCard commit folds the changes in).
+export function commitCardChanges(repoPath, id, message) {
+  return withRepoLock(repoPath, async () => {
+    const file = findCardFile(tasksDir(repoPath), id);
+    if (!file) return { committed: false, reason: 'card not found' };
+    return commitCard(repoPath, path.join('.todomd', 'tasks', file), message);
+  });
+}
+
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
 const MAX_ATTACHMENT = 25 * 1024 * 1024; // 25 MB
 

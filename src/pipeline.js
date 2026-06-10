@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
-import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog } from './board.js';
+import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges } from './board.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
@@ -642,6 +642,9 @@ async function runTriage(project, id, config, t, vendor) {
       setBanner(failure.kind, 'warn', `triage paused: ${failure.detail}`);
     }
   }
+  // triage ends in Review with no moveCard — commit the annotations ourselves so
+  // the board doesn't accumulate uncommitted working-tree changes
+  if (!run?.cancelled) await commitCardChanges(project.path, id, `chore(todomd): ${id} triaged`);
   sendState(project, id, 'idle');
 }
 
@@ -729,6 +732,22 @@ export function getRunStates(projectName) {
 
 export function hasLiveRun(projectName, id) {
   return children.has(runKey(projectName, id));
+}
+
+// Any live agent run for this project (used to refuse removing a busy project).
+export function projectHasLiveRun(projectName) {
+  const prefix = `${projectName}:`;
+  for (const key of children.keys()) if (key.startsWith(prefix)) return true;
+  return false;
+}
+
+// Drop all in-memory state for a removed project so a same-named re-add starts clean.
+export function forgetProject(projectName) {
+  queues.delete(projectName);
+  active.delete(projectName);
+  quotaPaused.delete(projectName);
+  const prefix = `${projectName}:`;
+  for (const k of retryFindings.keys()) if (k.startsWith(prefix)) retryFindings.delete(k);
 }
 
 export function usage(projectName) {
