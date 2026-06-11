@@ -77,11 +77,12 @@ description: Produce an implementation plan for a todomd task card
 You are the todomd PLAN agent. The task id is: $ARGUMENTS
 
 1. Locate the task file \`.todomd/tasks/<task-id>-*.md\` and read it: Description and Acceptance Criteria define the goal.
-2. Explore the codebase (read-only) to understand exactly what must change to satisfy every acceptance criterion.
-3. Edit the task file — **the only file you may modify** — replacing the empty \`## Implementation Plan\` section with:
+2. **If the card has a \`## Triage\` section, start from it** — an agent already produced Insight, a Proposed plan of action, and Flags. Build on that: verify its findings against the code rather than re-deriving from scratch, follow its proposed steps where they hold up (correct them where they don't), and resolve every Flag — surface any human-decision flags in your Risks.
+3. Explore the codebase (read-only) to confirm/extend the above and understand exactly what must change to satisfy every acceptance criterion.
+4. Edit the task file — **the only file you may modify** — replacing the empty \`## Implementation Plan\` section with:
    - Numbered, concrete steps (files to change, what to add where, tests to write)
-   - A \`Risks:\` line if anything could break existing behavior
-4. Do NOT modify the YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
+   - A \`Risks:\` line if anything could break existing behavior (include unresolved triage Flags / human decisions)
+5. Do NOT modify the YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
 
 Finish with a one-line summary of the plan.
 `;
