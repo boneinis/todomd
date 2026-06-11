@@ -122,6 +122,29 @@ if (cmd === 'intake-test') {
   process.exit(r.ok ? 0 : 1);
 }
 
+if (cmd === 'fanout') {
+  const id = positional[1];
+  if (!id) { console.error('usage: todomd fanout <id>'); process.exit(1); }
+  const { materializeChunks } = await import('../src/chunks.js');
+  const { readCard, parseChunks } = await import('../src/board.js');
+  const card = readCard(process.cwd(), id);
+  if (!card) { console.error(`card not found: ${id}`); process.exit(1); }
+  const chunks = parseChunks(card.body || '');
+  if (chunks.length < 2) { console.error(`no multi-chunk breakdown found in ${id}`); process.exit(1); }
+  const ids = await materializeChunks(process.cwd(), id, chunks);
+  console.log(`fanned out ${ids.length} chunk(s) from ${id}`);
+  process.exit(0);
+}
+
+if (cmd === 'advance') {
+  const id = positional[1];
+  if (!id) { console.error('usage: todomd advance <id>'); process.exit(1); }
+  const { advanceEpicChildren } = await import('../src/chunks.js');
+  const moved = await advanceEpicChildren(process.cwd(), id);
+  console.log(moved.length ? `advanced: ${moved.join(', ')}` : 'no cards ready to advance');
+  process.exit(0);
+}
+
 if (cmd === 'serve') {
   const cwd = process.cwd();
   if (fs.existsSync(path.join(cwd, '.todomd', 'tasks'))) {
