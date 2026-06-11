@@ -72,7 +72,18 @@ if (stage === 'plan') {
   const file = findCard(taskId);
   if (file) {
     const raw = fs.readFileSync(file, 'utf8');
-    fs.writeFileSync(file, raw.replace('## Implementation Plan\n', '## Implementation Plan\n\n1. Do the thing.\n'));
+    if (process.env.FAKE_CHUNKS) {
+      // split into N chunks: write a `## Chunks` yaml block, leave the plan empty
+      const n = Math.max(1, Number(process.env.FAKE_CHUNKS) || 2);
+      const items = [];
+      for (let i = 1; i <= n; i++) {
+        items.push(`- title: Chunk ${i}\n  plan: |\n    1. Implement part ${i}.\n  criteria:\n    - Part ${i} works`);
+      }
+      const block = '## Chunks\n\n```yaml\n' + items.join('\n') + '\n```\n\n';
+      fs.writeFileSync(file, raw.replace('## Run Log', block + '## Run Log'));
+    } else {
+      fs.writeFileSync(file, raw.replace('## Implementation Plan\n', '## Implementation Plan\n\n1. Do the thing.\n'));
+    }
   }
   emitStream([{ type: 'system', subtype: 'init' }, { type: 'assistant', message: { content: [{ type: 'text', text: 'planned' }] } }, resultEnvelope()]);
   process.exit(0);

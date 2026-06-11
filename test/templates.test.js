@@ -16,6 +16,16 @@ test('detectWorktreeLinks: always node_modules; adds present+gitignored deps, sk
   assert.ok(!links.includes('.npmrc'), 'a tracked (non-ignored) file is not linked');
 });
 
+test('initProject ships the PLAN command with the sequential-chunks contract', () => {
+  const repo = tmp('plan-cmd');
+  git(repo, ['init', '-q']);
+  initProject(repo);
+  const plan = fs.readFileSync(path.join(repo, '.claude/commands/todomd-plan.md'), 'utf8');
+  assert.match(plan, /## Chunks/);
+  assert.match(plan, /sequential chunks/i);
+  assert.match(plan, /yaml/); // the fenced block format the orchestrator parses
+});
+
 test('initProject injects the detected gitignored deps into a fresh config.yml', () => {
   const repo = tmp('init');
   git(repo, ['init', '-q']);

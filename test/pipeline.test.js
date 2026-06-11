@@ -247,6 +247,73 @@ test('triage commits the card so the working tree stays clean (with triage enabl
   assert.equal(dirty, '', `triage left uncommitted board changes:\n${dirty}`);
 });
 
+test('chunking: a splitting plan fans out sequential child cards; approving the epic cascades them to Done', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good', chunks: 2 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { title: 'big feature' });
+
+  // drag to Plan → the plan agent emits ## Chunks → orchestrator fans out children
+  await pipeline.humanMove(p, 'task-0001', 'Plan');
+  await until(() => readCard(repo, 'task-0001').data.epic === true && status(repo, 'task-0001') === 'Planned', { timeout: 12000 });
+
+  const epic = readCard(repo, 'task-0001').data;
+  assert.equal(epic.children.length, 2);
+  const [c1, c2] = epic.children;
+  assert.equal(status(repo, c1), 'Planned');
+  assert.equal(readCard(repo, c1).data.parent, 'task-0001');
+  assert.deepEqual(readCard(repo, c1).data.dependencies, []);     // chunk 1: no deps
+  assert.deepEqual(readCard(repo, c2).data.dependencies, [c1]);   // chunk 2 depends on chunk 1
+  assert.match(readCard(repo, c1).body, /## Implementation Plan\n\n1\. Implement part 1\./); // pre-planned
+
+  // one approval → the chunks build in order, the epic auto-completes
+  const r = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(r.ok, true);
+  assert.equal(status(repo, 'task-0001'), 'Queue'); // epic parks as a tracker
+  await until(() => status(repo, c1) === 'Done', { timeout: 20000 });
+  await until(() => status(repo, c2) === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  // the epic tracker itself never built — no worktree was ever created for it
+  assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')));
+  clearFakeAgent();
+});
+
+test('chunking: approving a split-but-unmaterialized plan is refused (budget-mode safety net)', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  // a plan that proposed chunks but was never fanned out (no epic flag) — e.g. a
+  // budget-mode dispatcher set it Planned without creating child cards
+  const chunks = '\n\n## Chunks\n\n```yaml\n- title: A\n  plan: do a\n  criteria:\n    - a works\n- title: B\n  plan: do b\n  criteria:\n    - b works\n```\n';
+  writeCard(repo, 'task-0001', { status: 'Planned', body: chunks });
+
+  const r = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /split into chunks/);
+  assert.equal(status(repo, 'task-0001'), 'Planned'); // refused, not moved/built
+});
+
+test('chunking: reconcileOnBoot re-releases an approved epic\'s ready chunk and never builds the epic', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  addProject(repo);
+  const p = project(repo);
+  // simulate a crash right after epic approval: epic parked in Queue, chunk ready in Planned
+  writeCard(repo, 'task-0001', { status: 'Queue', title: 'epic', extra: 'epic: true\nchildren: [task-0002]\n' });
+  writeCard(repo, 'task-0002', { status: 'Planned', title: 'chunk', extra: 'parent: task-0001\n' });
+
+  await pipeline.reconcileOnBoot();
+  await until(() => status(repo, 'task-0002') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), 'epic tracker is never built');
+  clearFakeAgent();
+});
+
 test('forgetProject + projectHasLiveRun', async () => {
   pipeline.init({ broadcast: noop });
   assert.equal(pipeline.projectHasLiveRun('nope'), false);

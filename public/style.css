@@ -191,6 +191,8 @@ body.viewer .col-edit { display: none; }
 
 .card footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .card-chips { color: var(--faint); font-size: 10px; letter-spacing: .05em; }
+.card-rel { color: var(--dim); font-size: 10px; letter-spacing: .04em; white-space: nowrap; }
+.card-rel.blocked { color: var(--faint); }
 .card-criteria { color: var(--dim); font-size: 10px; white-space: nowrap; }
 .card-criteria.complete { color: var(--green); }
 

@@ -242,6 +242,17 @@ function renderCard(card, color, i) {
     crit.textContent = `☑ ${card.criteria.done}/${card.criteria.total}`;
     if (card.criteria.done === card.criteria.total) crit.classList.add('complete');
   }
+  // epic/chunk relationship badge (sequential chunking)
+  const rel = el.querySelector('.card-rel');
+  if (card.epic) {
+    const kids = boardData.cards.filter((c) => c.parent === card.id);
+    const done = kids.filter((c) => c.status === 'Done').length;
+    rel.textContent = `⊞ epic ${done}/${kids.length}`;
+  } else if (card.parent) {
+    const blocked = (card.dependencies || []).some((d) => boardData.cards.find((c) => c.id === d)?.status !== 'Done');
+    rel.textContent = blocked ? '⊞ chunk 🔒' : '⊞ chunk';
+    if (blocked) rel.classList.add('blocked');
+  }
   const rs = runStates[card.id];
   const runEl = el.querySelector('.card-run');
   if (rs?.state === 'running') {

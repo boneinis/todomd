@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig } from '../src/board.js';
+import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks } from '../src/board.js';
 
 test('loadBoard parses cards and criteria progress', () => {
   const repo = makeRepo();
@@ -331,4 +331,71 @@ test('setStageRouting refuses an inline stage map rather than corrupting it', as
   assert.equal(r.ok, false);
   assert.match(r.error, /inline/);
   assert.equal(loadConfig(repo).stages.Build.command, 'todomd-build'); // untouched, still valid
+});
+
+/* ── sequential chunking ── */
+
+const CHUNKS_BODY = `## Description
+
+x
+
+## Chunks
+
+\`\`\`yaml
+- title: DB migration
+  type: feature
+  plan: |
+    1. add migration
+  criteria:
+    - applies cleanly
+    - npm test passes
+- title: API wiring
+  plan: |
+    1. wire endpoint
+  criteria:
+    - returns 200
+\`\`\`
+
+## Run Log
+`;
+
+test('parseChunks: a valid ## Chunks yaml block yields ordered, validated chunks', () => {
+  const chunks = parseChunks(CHUNKS_BODY);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].title, 'DB migration');
+  assert.equal(chunks[0].type, 'feature');
+  assert.match(chunks[0].plan, /add migration/);
+  assert.deepEqual(chunks[0].criteria, ['applies cleanly', 'npm test passes']);
+  assert.equal(chunks[1].title, 'API wiring');
+  assert.equal(chunks[1].type, undefined); // optional, omitted
+});
+
+test('parseChunks: absent section, malformed yaml, and items missing required fields return nothing usable', () => {
+  assert.deepEqual(parseChunks('## Implementation Plan\n\n1. just a normal plan\n'), []);
+  assert.deepEqual(parseChunks('## Chunks\n\n```yaml\n: : not yaml : :\n```\n'), []);
+  // a chunk with no criteria is dropped; the section is otherwise well-formed
+  const partial = '## Chunks\n\n```yaml\n- title: only a title\n  plan: do it\n```\n';
+  assert.deepEqual(parseChunks(partial), []);
+});
+
+test('createCard: child fields render frontmatter + pre-filled plan; defaults unchanged when omitted', async () => {
+  const repo = makeRepo();
+  // plain card keeps today's defaults (Review, empty deps, no parent/plan)
+  const plain = await createCard(repo, { title: 'plain' });
+  const pc = readCard(repo, plain.id);
+  assert.equal(pc.data.status, 'Review');
+  assert.deepEqual(pc.data.dependencies, []);
+  assert.equal(pc.data.parent, undefined);
+
+  // child/chunk card with the new fields
+  const child = await createCard(repo, {
+    title: 'chunk two', status: 'Planned', dependencies: [plain.id], parent: 'task-0001',
+    triaged: 'n/a (chunk 2/2 of task-0001)', plan: '1. do the second part', criteria: ['c1'],
+  });
+  const cc = readCard(repo, child.id);
+  assert.equal(cc.data.status, 'Planned');
+  assert.deepEqual(cc.data.dependencies, [plain.id]);
+  assert.equal(cc.data.parent, 'task-0001');
+  assert.match(String(cc.data.triaged), /chunk 2\/2/);
+  assert.match(cc.body, /## Implementation Plan\n\n1\. do the second part\n/);
 });

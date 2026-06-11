@@ -145,6 +145,35 @@ function criteriaProgress(body) {
   return total ? { done, total } : null;
 }
 
+// Parse the Plan agent's optional `## Chunks` breakdown — a single fenced yaml
+// block listing ordered, independently-buildable sub-tasks. The orchestrator
+// turns each into a sequential child card. Returns a validated array of
+// { title, plan, criteria, type? }, or [] if the section is absent or malformed
+// (caller decides the >=2 threshold for an actual split).
+export function parseChunks(body = '') {
+  const section = body.split(/^## /m).find((s) => /^Chunks\s*(\r?\n|$)/.test(s));
+  if (!section) return [];
+  const fence = section.match(/```(?:ya?ml)?\r?\n([\s\S]*?)\r?\n```/);
+  if (!fence) return [];
+  let parsed;
+  try { parsed = yaml.load(fence[1]); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  const chunks = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const title = String(item.title ?? '').trim();
+    const plan = String(item.plan ?? '').trim();
+    const criteria = Array.isArray(item.criteria)
+      ? item.criteria.map((c) => String(c).trim()).filter(Boolean)
+      : [];
+    if (!title || !plan || !criteria.length) continue;
+    const chunk = { title, plan, criteria };
+    if (item.type) chunk.type = String(item.type).trim();
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
 export function loadBoard(repoPath, { includeArchived = false } = {}) {
   const config = loadConfig(repoPath);
   const dir = tasksDir(repoPath);
@@ -371,18 +400,25 @@ export function createCard(repoPath, fields) {
 
     const labels = (fields.labels || []).map((l) => String(l).trim()).filter(Boolean);
     const criteria = (fields.criteria || []).map((c) => String(c).trim()).filter(Boolean);
+    // optional fields for orchestrator-created child cards (chunks of an epic);
+    // omitted by the UI/email callers, which keep today's defaults
+    const status = String(fields.status || 'Review').replace(/[^\w ]/g, '').trim() || 'Review';
+    const deps = (fields.dependencies || []).map((d) => String(d).replace(/[^\w-]/g, '')).filter(Boolean);
+    const parent = fields.parent ? String(fields.parent).replace(/[^\w-]/g, '') : '';
+    const triaged = fields.triaged ? String(fields.triaged).replace(/[\r\n:]/g, ' ').trim() : '';
+    const plan = fields.plan ? String(fields.plan).trim() : '';
     const content = `---
 id: ${id}
 title: ${title.replace(/[:#[\]{}]/g, ' ').replace(/\s+/g, ' ')}
-status: Review
+status: ${status}
 type: ${fields.type || 'improvement'}
 priority: ${fields.priority || 'medium'}
 labels: [${labels.join(', ')}]
-dependencies: []
+dependencies: [${deps.join(', ')}]${parent ? `\nparent: ${parent}` : ''}
 created_date: ${new Date().toISOString().slice(0, 10)}
 source: ${fields.source || 'ui'}
 assignee: ${fields.assignee ? String(fields.assignee).replace(/[^\w.@ -]/g, '').trim() : ''}
-agent: ${fields.agent === 'codex' ? 'codex' : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}
+agent: ${fields.agent === 'codex' ? 'codex' : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
@@ -398,7 +434,7 @@ ${criteria.length ? criteria.map((c) => `- [ ] ${c}`).join('\n') : '- [ ] Implem
 
 ## Implementation Plan
 
-## Run Log
+${plan ? `${plan}\n\n` : ''}## Run Log
 `;
     fs.writeFileSync(path.join(dir, file), content);
     const relFile = path.join('.todomd', 'tasks', file);

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
-import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock } from './board.js';
+import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, createCard, parseChunks } from './board.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
@@ -70,7 +70,8 @@ async function parkForQuota(project, id, attempt, maxAttempts, findings) {
 function enqueueQueue(project) {
   try {
     for (const card of loadBoard(project.path).cards) {
-      if (card.status === 'Queue' && card.id && !children.has(runKey(project.name, card.id))) {
+      // epics sit in Queue as trackers — they never build (their chunks do)
+      if (card.status === 'Queue' && card.id && !card.epic && !children.has(runKey(project.name, card.id))) {
         enqueueBuild(project, card.id);
       }
     }
@@ -301,6 +302,24 @@ export async function humanMove(project, id, to) {
     if (!SUPPORTED_VENDORS.has(agent)) {
       return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
     }
+    if (card.data.epic) {
+      // approving an epic starts the cascade — it never builds itself; it parks
+      // in Queue as a tracker while its chunk children build in sequence
+      const moved = await moveCard(project.path, id, 'Queue', { reason: 'epic approved — chunks building' });
+      if (moved.ok && !moved.unchanged && (config.mode || 'launcher') !== 'budget') await advanceChildren(project, id);
+      return moved;
+    }
+    // a plan that was SPLIT into chunks but never fanned out into child cards has
+    // no epic flag — fan-out is launcher-only (in budget mode the dispatcher just
+    // sets Planned). Approving it would build the whole epic as one monolith, so
+    // refuse with a clear path forward. A real launcher epic carries epic:true and
+    // already returned above, so this only catches the unmaterialized case.
+    if (parseChunks(card.body).length >= 2) {
+      const why = (config.mode || 'launcher') === 'budget'
+        ? 'chunk fan-out runs only under the launcher server, not in budget mode'
+        : 'the plan was split into chunks but no chunk cards were created';
+      return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (${why}). Re-plan it as a single task, or build this board under the launcher.` };
+    }
     const deps = card.data.dependencies || [];
     // include archived cards so a completed-then-archived dependency still counts
     const board = loadBoard(project.path, { includeArchived: true });
@@ -418,8 +437,21 @@ async function runTriggerStage(project, id, stageName) {
     if (stageName === 'Plan') {
       // skill cards return to Review (human reads the findings and decides);
       // staying in Plan would read as an orphaned run after a restart
-      if (skill) await orchMove(project, id, 'Review', `findings ready (/${skill})`);
-      else await orchMove(project, id, 'Planned', 'plan complete');
+      if (skill) {
+        await orchMove(project, id, 'Review', `findings ready (/${skill})`);
+      } else {
+        // the plan agent may have split the work into a `## Chunks` breakdown —
+        // fan it out into sequential child cards; otherwise it's a normal plan
+        const chunks = parseChunks(readCard(project.path, id)?.body || '');
+        if (chunks.length >= 2) {
+          await fanOutChunks(project, id, chunks);
+        } else {
+          if (chunks.length === 1) {
+            await appendRunLog(project.path, id, '  - note: plan proposed a single chunk — kept as one card');
+          }
+          await orchMove(project, id, 'Planned', 'plan complete');
+        }
+      }
     }
     sendState(project, id, 'idle');
     return;
@@ -443,6 +475,80 @@ async function handleRunFailure(project, id, stageName, result, revertTo) {
     return;
   }
   sendState(project, id, 'idle');
+}
+
+/* ── epic chunking: fan-out + sequential cascade ── */
+
+// The plan agent split a large card into a `## Chunks` breakdown. Materialize
+// each chunk as a child card wired sequentially (chunk N depends on chunk N-1),
+// pre-planned so it skips its own Plan stage, and flag the original as an epic
+// tracker. Because each chunk is gated behind its predecessor's Done (= merged),
+// its build worktree forks from a main that already contains the earlier chunks.
+async function fanOutChunks(project, epicId, chunks) {
+  const epic = readCard(project.path, epicId);
+  const epicType = epic?.data?.type;
+  const epicAgent = epic?.data?.agent;
+  const epicModel = epic?.data?.model;
+  const ids = [];
+  let prev = null;
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    const res = await createCard(project.path, {
+      title: c.title,
+      description: c.title,
+      type: c.type || epicType,
+      criteria: c.criteria,
+      plan: c.plan,
+      dependencies: prev ? [prev] : [],
+      parent: epicId,
+      status: 'Planned',
+      triaged: `n/a (chunk ${i + 1}/${chunks.length} of ${epicId})`,
+      agent: epicAgent,
+      model: epicModel,
+      source: 'chunk',
+    });
+    if (!res.ok) {
+      await appendRunLog(project.path, epicId, `  - ⚠ chunk ${i + 1} create failed: ${res.error || 'unknown'}`);
+      continue;
+    }
+    ids.push(res.id);
+    prev = res.id;
+  }
+  if (!ids.length) {
+    // nothing materialized — don't strand the epic; keep it as a normal plan card
+    await orchMove(project, epicId, 'Planned', 'split produced no chunks; kept as one card');
+    return;
+  }
+  await patchFrontmatter(project.path, epicId, { epic: true, children: ids });
+  await appendRunLog(project.path, epicId,
+    `- ${now()} · Plan · split into ${ids.length} sequential chunks: ${ids.join(' → ')}`);
+  await orchMove(project, epicId, 'Planned', `split into ${ids.length} chunks`);
+}
+
+// Release every chunk child of an epic whose dependencies are all Done — move it
+// Planned → Queue and enqueue its build. Called when the epic is approved
+// (releases chunk 1) and each time a chunk finishes (releases the next one).
+async function advanceChildren(project, epicId) {
+  const board = loadBoard(project.path, { includeArchived: true });
+  for (const child of board.cards.filter((c) => c.parent === epicId && c.status === 'Planned' && !c.epic)) {
+    const blocked = (child.dependencies || []).filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
+    if (blocked.length) continue;
+    const mv = await moveCard(project.path, child.id, 'Queue', { reason: 'chunk ready' });
+    if (mv.ok && !mv.unchanged) enqueueBuild(project, child.id);
+  }
+}
+
+// A chunk child reached Done: release the next ready chunk and, once every chunk
+// is Done, complete the epic. No-op for cards that aren't chunks of an epic.
+async function maybeAdvanceEpic(project, childId) {
+  const parentId = readCard(project.path, childId)?.data?.parent;
+  if (!parentId) return;
+  await advanceChildren(project, parentId);
+  const board = loadBoard(project.path, { includeArchived: true });
+  const kids = board.cards.filter((c) => c.parent === parentId);
+  if (kids.length && kids.every((c) => c.status === 'Done')) {
+    await orchMove(project, parentId, 'Done', 'all chunks complete');
+  }
 }
 
 /* ── build/verify chain ── */
@@ -654,6 +760,9 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     await patchFrontmatter(project.path, id, { worktree: '' });
     await releaseCoordination(project, id);
     await orchMove(project, id, 'Done', `verdict: pass, attempt ${attempt}`);
+    // if this card is a chunk of an epic, release the next chunk (and complete
+    // the epic when the last chunk lands) — the sequential build cascade
+    await maybeAdvanceEpic(project, id);
     return sendState(project, id, 'idle');
   }
 
@@ -830,6 +939,11 @@ export async function reconcileOnBoot() {
       // Queue cards (quota-parked, or approved just before a restart) have
       // no live run and no in-memory queue entry — re-drive them.
       enqueueQueue(project);
+      // an approved epic re-releases any ready chunk (a crash between epic
+      // approval and the chunk-1 enqueue would otherwise strand it in Planned)
+      for (const card of board.cards) {
+        if (card.epic && card.status === 'Queue') await advanceChildren(project, card.id);
+      }
       // re-triage anything now eligible (incl. the transient-failure cards just reset)
       triageSweep(project);
       // prune stale coordination claims for cards no longer in the build flow
