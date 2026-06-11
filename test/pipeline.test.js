@@ -11,7 +11,7 @@ const noop = () => {};
 function project(repo) { return { name: path.basename(repo), path: repo }; }
 const status = (repo, id) => readCard(repo, id).data.status;
 
-test('happy path: Review → Plan → Planned → Assigned → Build → Verify → Done, merged + worktree pruned', async () => {
+test('happy path: Review → Plan → Planned → Queue → Build → Verify → Done, merged + worktree pruned', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });
   pipeline.init({ broadcast: noop });
@@ -25,7 +25,7 @@ test('happy path: Review → Plan → Planned → Assigned → Build → Verify 
   await until(() => status(repo, 'task-0001') === 'Planned');
 
   // approve → the full automatic chain
-  r = await pipeline.humanMove(p, 'task-0001', 'Assigned');
+  r = await pipeline.humanMove(p, 'task-0001', 'Queue');
   assert.equal(r.ok, true);
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: 15000 });
 
@@ -47,7 +47,7 @@ test('verification loop: fail then pass on retry → Done', async () => {
 
   await pipeline.humanMove(p, 'task-0002', 'Plan');
   await until(() => status(repo, 'task-0002') === 'Planned');
-  await pipeline.humanMove(p, 'task-0002', 'Assigned');
+  await pipeline.humanMove(p, 'task-0002', 'Queue');
 
   // wait until at least one verify failed and a retry incremented attempts
   await until(() => (readCard(repo, 'task-0002').data.verification?.attempts || 0) >= 2, { timeout: 15000 });
@@ -66,7 +66,7 @@ test('attempt cap: persistent fail → Needs Human with a reason, attempts not e
 
   await pipeline.humanMove(p, 'task-0003', 'Plan');
   await until(() => status(repo, 'task-0003') === 'Planned');
-  await pipeline.humanMove(p, 'task-0003', 'Assigned');
+  await pipeline.humanMove(p, 'task-0003', 'Queue');
   await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: 25000 });
 
   const card = readCard(repo, 'task-0003');
@@ -87,7 +87,7 @@ test('worktree env: a verify setup_error → Needs Human (worktree_env) on attem
 
   await pipeline.humanMove(p, 'task-0003', 'Plan');
   await until(() => status(repo, 'task-0003') === 'Planned');
-  await pipeline.humanMove(p, 'task-0003', 'Assigned');
+  await pipeline.humanMove(p, 'task-0003', 'Queue');
   await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: 25000 });
 
   const card = readCard(repo, 'task-0003');
@@ -105,7 +105,7 @@ test('cancel mid-build cleans the worktree and clears the worktree frontmatter',
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
-  await pipeline.humanMove(p, 'task-0001', 'Assigned'); // launcher drives → Build (then hangs)
+  await pipeline.humanMove(p, 'task-0001', 'Queue'); // launcher drives → Build (then hangs)
   await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: 15000 });
   const wt = path.join(repo, '.todomd/worktrees/task-0001');
   assert.ok(fs.existsSync(wt), 'worktree was created for the build');
@@ -126,7 +126,7 @@ test('agent question → Needs Human (needs_answer); answering re-drives the bui
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
-  await pipeline.humanMove(p, 'task-0001', 'Assigned'); // build → verify asks a question
+  await pipeline.humanMove(p, 'task-0001', 'Queue'); // build → verify asks a question
   await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
   let card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'needs_answer');
@@ -176,12 +176,12 @@ test('dependency gate: approval blocked until deps are Done', async () => {
   writeCard(repo, 'task-0011', { status: 'Done' });          // dependency, done
   writeCard(repo, 'task-0012', { status: 'Planned', deps: ['task-0010', 'task-0099'] });
   // task-0099 doesn't exist → not Done → blocked
-  const blocked = await pipeline.humanMove(p, 'task-0012', 'Assigned');
+  const blocked = await pipeline.humanMove(p, 'task-0012', 'Queue');
   assert.equal(blocked.ok, false);
   assert.match(blocked.error, /blocked/);
 });
 
-test('quota: build hits a usage limit → card parks in Assigned + project paused; resume completes it', async () => {
+test('quota: build hits a usage limit → card parks in Queue + project paused; resume completes it', async () => {
   isolateHome();
   const repo = makeRepo();
   const p = project(repo);
@@ -190,10 +190,10 @@ test('quota: build hits a usage limit → card parks in Assigned + project pause
   pipeline.init({ broadcast: noop });
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
-  // approve → build hits quota → parked back in Assigned, project paused
-  await pipeline.humanMove(p, 'task-0001', 'Assigned');
+  // approve → build hits quota → parked back in Queue, project paused
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
   await until(() => pipeline.usage(p.name).quota_paused === true, { timeout: 10000 });
-  assert.equal(status(repo, 'task-0001'), 'Assigned'); // parked, not Needs Human
+  assert.equal(status(repo, 'task-0001'), 'Queue'); // parked, not Needs Human
   const ver = readCard(repo, 'task-0001').data.verification;
   assert.ok((ver.attempts || 0) <= 1, 'quota must not burn an attempt'); // rolled back
 
@@ -247,7 +247,7 @@ test('coordination: a card claims ACTIVE.md while building and releases it on Do
     } catch {}
   }, 50);
 
-  await pipeline.humanMove(p, 'task-0001', 'Assigned');
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
   clearInterval(watch);
 
@@ -265,8 +265,8 @@ test('coordination: claim is released when a card is pulled back to Review', asy
   const cfgPath = path.join(repo, '.todomd/config.yml');
   fs.writeFileSync(cfgPath, fs.readFileSync(cfgPath, 'utf8') + '\ncoordination:\n  enabled: true\n');
   const p = project(repo);
-  // a quota-parked-style card: Assigned with an active claim, no live run
-  writeCard(repo, 'task-0001', { status: 'Assigned' });
+  // a quota-parked-style card: Queue with an active claim, no live run
+  writeCard(repo, 'task-0001', { status: 'Queue' });
   const { claim, readAllClaims } = await import('../src/coordination.js');
   await claim(repo, { card: 'task-0001', title: 'x', branch: 'todomd/task-0001', worker: 'me@h', files: ['src/a.js'] }, {});
   assert.equal((await readAllClaims(repo, {})).length, 1);

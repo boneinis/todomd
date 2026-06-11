@@ -33,7 +33,7 @@ const VERDICT_SCHEMA = {
 
 const IN_FLIGHT = new Set(['Plan', 'Build', 'Verify']);
 // statuses where a coordination claim is legitimately held (assigned-and-parked, or building)
-const BUILD_FLOW = new Set(['Assigned', 'Build', 'Verify']);
+const BUILD_FLOW = new Set(['Queue', 'Build', 'Verify']);
 const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human']);
 
 let broadcast = () => {};
@@ -44,7 +44,7 @@ const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
 const retryFindings = new Map();      // runKey → verifier findings to carry into a resumed build
 
-// On a usage limit the card is parked back in Assigned with its attempt rolled
+// On a usage limit the card is parked back in Queue with its attempt rolled
 // back; resume (or boot) re-enqueues it through the normal queue, so accounting
 // and dedup guards always apply. No continuations run outside the queue.
 function pauseForQuota(project) {
@@ -60,17 +60,17 @@ async function parkForQuota(project, id, attempt, maxAttempts, findings) {
   });
   if (findings) retryFindings.set(runKey(project.name, id), findings);
   else retryFindings.delete(runKey(project.name, id));
-  await orchMove(project, id, 'Assigned', 'usage limit; will resume');
+  await orchMove(project, id, 'Queue', 'usage limit; will resume');
   pauseForQuota(project);
   sendState(project, id, 'idle');
 }
 
-// Re-enqueue every Assigned card that has no live run (used by resume and boot).
+// Re-enqueue every Queue card that has no live run (used by resume and boot).
 // enqueueBuild dedupes, so this is safe to call repeatedly.
-function enqueueAssigned(project) {
+function enqueueQueue(project) {
   try {
     for (const card of loadBoard(project.path).cards) {
-      if (card.status === 'Assigned' && card.id && !children.has(runKey(project.name, card.id))) {
+      if (card.status === 'Queue' && card.id && !children.has(runKey(project.name, card.id))) {
         enqueueBuild(project, card.id);
       }
     }
@@ -219,7 +219,7 @@ export async function answerCard(project, id, answer) {
     `A human answered your earlier question — use this decision to proceed.\nQuestion: ${question}\nAnswer: ${text}`);
   await patchFrontmatter(project.path, id, { question: '', needs_human_reason: '' });
   await appendRunLog(project.path, id, `- ${now()} · human answered: ${text.slice(0, 200)}`);
-  await orchMove(project, id, 'Assigned', 'answered; resuming');
+  await orchMove(project, id, 'Queue', 'answered; resuming');
   enqueueBuild(project, id);
   return { ok: true };
 }
@@ -288,8 +288,8 @@ export async function humanMove(project, id, to) {
     return moveCard(project.path, id, 'Review', { reason: 'retriage' });
   }
 
-  // approval gate: Planned → Assigned
-  if (to === 'Assigned') {
+  // approval gate: Planned → Queue
+  if (to === 'Queue') {
     if (from !== 'Planned') return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
     if (!(await isGitRepo(project.path))) return { ok: false, error: 'pipeline needs a git repo' };
     const agent = cardVendor(config, card);
@@ -301,10 +301,10 @@ export async function humanMove(project, id, to) {
     const board = loadBoard(project.path, { includeArchived: true });
     const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
     if (blocked.length) return { ok: false, error: `blocked by: ${blocked.join(', ')}` };
-    const moved = await moveCard(project.path, id, 'Assigned', { reason: 'approved' });
+    const moved = await moveCard(project.path, id, 'Queue', { reason: 'approved' });
     // budget mode: the /todomd-dispatch session picks the card up from here.
     // `unchanged` guards a concurrent double-approval: only the transition that
-    // actually moved Planned→Assigned enqueues (enqueueBuild also dedupes).
+    // actually moved Planned→Queue enqueues (enqueueBuild also dedupes).
     if (moved.ok && !moved.unchanged && (config.mode || 'launcher') !== 'budget') enqueueBuild(project, id);
     return moved;
   }
@@ -367,8 +367,8 @@ export function cancel(project, id) {
   const run = runs.get(key);
   run.cancelled = true;
   // a cancelled Verify run would revert to Build (prevStatus), which humanMove
-  // then refuses to leave — send it back to Assigned so it can be re-driven
-  run.revertTo = run.stage === 'Verify' ? 'Assigned' : run.prevStatus;
+  // then refuses to leave — send it back to Queue so it can be re-driven
+  run.revertTo = run.stage === 'Verify' ? 'Queue' : run.prevStatus;
   live.kill('SIGTERM');
   return { ok: true };
 }
@@ -480,7 +480,7 @@ async function buildChain(project, id, retry = null) {
   // this only fires on the direct verify→retry path.
   if (quotaPaused.has(project.name)) {
     if (retry?.findings) retryFindings.set(key, retry.findings);
-    await orchMove(project, id, 'Assigned', 'paused; will resume');
+    await orchMove(project, id, 'Queue', 'paused; will resume');
     return sendState(project, id, 'idle');
   }
   // carry findings from a verify-fail build that was then quota-parked
@@ -491,7 +491,7 @@ async function buildChain(project, id, retry = null) {
   const branch = `${config.branch_prefix || 'todomd/'}${id}`;
   const worktreeRel = path.join(config.worktree_dir || '.todomd/worktrees', id);
   const worktreeAbs = path.join(project.path, worktreeRel);
-  const fromStatus = retry ? 'Verify' : 'Assigned';
+  const fromStatus = retry ? 'Verify' : 'Queue';
 
   // worktree exists across retries; create on first attempt
   if (!fs.existsSync(worktreeAbs)) {
@@ -568,7 +568,7 @@ async function buildChain(project, id, retry = null) {
     const failure = classifyFailure(result);
     await recordRun(project, id, 'Build', attempt, result, `failed: ${failure.kind}`);
     if (failure.kind === 'quota') {
-      // park back in Assigned (attempt rolled back); resume re-enqueues it
+      // park back in Queue (attempt rolled back); resume re-enqueues it
       return parkForQuota(project, id, attempt, maxAttempts, retry?.findings);
     }
     return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? failure.detail : failure.kind, result.stderr);
@@ -612,7 +612,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (!result.envelope || result.envelope.is_error || !verdict || !verdict.verdict) {
     const failure = classifyFailure(result);
     if (failure.kind === 'quota') {
-      // park back in Assigned; resume re-enters the build→verify chain (the
+      // park back in Queue; resume re-enters the build→verify chain (the
       // existing worktree is reused). Attempt rolled back so none is burned.
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
       return parkForQuota(project, id, attempt, maxAttempts, priorFindings);
@@ -671,7 +671,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     return toNeedsHuman(project, id, 'Verify', 'worktree_env',
       `verify command couldn't run in the worktree: ${verdict.setup_error}. ` +
       `The worktree lacks a gitignored file/dep the tests need — add it to ` +
-      `worktree_link in .todomd/config.yml (e.g. .env), then drag the card back to Assigned.`);
+      `worktree_link in .todomd/config.yml (e.g. .env), then drag the card back to Queue.`);
   }
 
   // fail → retry loop or escalation
@@ -799,7 +799,7 @@ export async function reconcileOnBoot() {
           if (stuck.length) {
             setBanner(`budget:${project.name}`, 'warn',
               `${project.name}: ${stuck.length} card(s) stuck in Build/Verify for 30+ min — ` +
-              `if no \`/loop /todomd-dispatch\` is running, start it or drag them back to Assigned.`);
+              `if no \`/loop /todomd-dispatch\` is running, start it or drag them back to Queue.`);
           }
         } catch { /* nudge is best-effort */ }
         continue;
@@ -819,9 +819,9 @@ export async function reconcileOnBoot() {
         }
       }
       await withRepoLock(project.path, () => git(project.path, ['worktree', 'prune']));
-      // Assigned cards (quota-parked, or approved just before a restart) have
+      // Queue cards (quota-parked, or approved just before a restart) have
       // no live run and no in-memory queue entry — re-drive them.
-      enqueueAssigned(project);
+      enqueueQueue(project);
       // prune stale coordination claims for cards no longer in the build flow
       // (e.g. moved out while the server was down) so ACTIVE.md doesn't leak
       if ((config.coordination || {}).enabled) {
@@ -907,7 +907,7 @@ export function resumeQueues(projects) {
   for (const p of projects) {
     if (!quotaPaused.has(p.name)) continue;
     quotaPaused.delete(p.name);
-    enqueueAssigned(p); // re-enqueue parked cards through the normal queue
+    enqueueQueue(p); // re-enqueue parked cards through the normal queue
     processQueue(p);
   }
   if (quotaPaused.size === 0) setBanner('quota', null, null);

@@ -5,7 +5,7 @@ Markdown-native kanban for git repos that **drives coding agents through a verif
 Each card is a markdown file in `.todomd/tasks/`; the board is just a view. Two human drags take a card from idea to merged code:
 
 ```
-Review ──drag──▶ Plan ──auto──▶ Planned ──drag──▶ Assigned ──auto──▶ Build ──▶ Verify ──▶ Done
+Review ──drag──▶ Plan ──auto──▶ Planned ──drag──▶ Queue ──auto──▶ Build ──▶ Verify ──▶ Done
                  (plan agent      (human            (worktree, build agent,   independent   merge,
                   writes plan)     approves)         Stop-hook test gate)     verdict       prune
                                                                               (cheap model) worktree

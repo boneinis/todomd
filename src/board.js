@@ -5,7 +5,7 @@ import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
 import { withFileLock } from './lockfile.js';
 
-const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Assigned', 'Build', 'Verify', 'Needs Human', 'Done'];
+const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'Verify', 'Needs Human', 'Done'];
 
 // gray-matter (v4) caches parse results keyed by the input string — AND caches
 // an empty result even after the first parse THREW. So once loadBoard hits a

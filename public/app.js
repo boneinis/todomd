@@ -18,7 +18,7 @@ function toast(msg) {
 
 const COL_COLORS = {
   Review: 'var(--dim)', Plan: 'var(--cyan)', Planned: 'var(--cyan)',
-  Assigned: 'var(--violet)', Build: 'var(--amber)', Verify: 'var(--amber)',
+  Queue: 'var(--violet)', Build: 'var(--amber)', Verify: 'var(--amber)',
   'Needs Human': 'var(--red)', Done: 'var(--green)',
 };
 
@@ -141,6 +141,32 @@ $('#archived-toggle').addEventListener('click', () => {
   loadBoard(); // re-fetch: archived cards aren't in the default board payload
 });
 
+// plain-language explanation of what each column does (shown by the ? button)
+const COLUMN_HELP = {
+  Review: 'New cards land here. An agent auto-triages each one — codebase insight, a proposed plan, an estimate, and flags — written into the card. You decide: drag to Plan to proceed.',
+  Plan: 'An agent writes a concrete implementation plan into the card, then moves it to Planned. (No code is written yet.)',
+  Planned: 'The plan is ready for your review. Read it in the card, then drag to Queue to approve and build it.',
+  Queue: 'Approved & waiting to build. An agent picks it up automatically (launcher mode) or via your /loop dispatcher (budget mode). Quota-paused cards also wait here to resume.',
+  Build: 'An agent is implementing the card in an isolated git worktree (your main branch is untouched until it passes).',
+  Verify: 'An independent agent checks the work against the acceptance criteria. Pass → merged to Done; fail → it retries with the findings, up to the attempt cap.',
+  'Needs Human': 'The pipeline paused for you: attempts exhausted, a merge/work conflict, a worktree-env issue, or the agent has a question. Open the card for the reason — answer it, or drag it back to retry.',
+  Done: 'Verified and merged into your branch. (Archive it to clear it off the board when you like.)',
+};
+const colHelpEl = (() => {
+  const el = document.createElement('div');
+  el.id = 'col-help'; el.hidden = true;
+  document.body.appendChild(el);
+  return el;
+})();
+function showColHelp(col, anchor) {
+  colHelpEl.textContent = COLUMN_HELP[col] || `the ${col} column`;
+  const r = anchor.getBoundingClientRect();
+  colHelpEl.style.left = `${Math.min(r.left, window.innerWidth - 320)}px`;
+  colHelpEl.style.top = `${r.bottom + 6}px`;
+  colHelpEl.hidden = false;
+}
+document.addEventListener('click', (e) => { if (!e.target.classList?.contains('col-help-btn')) colHelpEl.hidden = true; });
+
 // the command a column's prompt edits: a stage command, or triage for Review
 function columnCommand(col) {
   const cfg = boardData.config || {};
@@ -172,7 +198,8 @@ function renderBoard() {
     const cmd = columnCommand(col);
     const editBtn = (cmd && boardData.access !== 'viewer')
       ? `<button class="col-edit" data-cmd="${esc(cmd)}" title="edit the ${col === 'Review' ? 'review (triage)' : esc(col)} prompt">✎ prompt</button>` : '';
-    colEl.innerHTML = `<header class="col-head"><span>${esc(col)}</span><span class="col-head-right"><span class="col-count">[${cards.length}]</span>${editBtn}</span></header>`;
+    colEl.innerHTML = `<header class="col-head"><span class="col-name">${esc(col)} <button class="col-help-btn" title="what does this column do?">?</button></span><span class="col-head-right"><span class="col-count">[${cards.length}]</span>${editBtn}</span></header>`;
+    colEl.querySelector('.col-help-btn')?.addEventListener('click', (e) => { e.stopPropagation(); showColHelp(col, e.currentTarget); });
     colEl.querySelector('.col-edit')?.addEventListener('click', (e) => { e.stopPropagation(); openPromptEditor(e.currentTarget.dataset.cmd); });
     const list = document.createElement('div');
     list.className = 'col-cards';

@@ -22,7 +22,7 @@ offer can drive it. Pick lanes by latency, attendance, and which usage pool pays
    /loop 2m /todomd-dispatch
    ```
 
-   Every tick the session plans pending Plan-column cards, processes ONE Assigned
+   Every tick the session plans pending Plan-column cards, processes ONE Queue
    card through build → subagent verify → merge, runs skill cards, self-heals
    anything an interrupted tick left behind, and goes idle when the board is clear.
 3. Notes: `/loop` is session-scoped (dies with the terminal, 7-day expiry — restart

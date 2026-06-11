@@ -50,7 +50,7 @@ test('budget: Review→Plan does NOT run the plan agent (launcher would auto-pla
   clearFakeAgent();
 });
 
-test('budget: approving Planned→Assigned does NOT start a build (launcher would)', async () => {
+test('budget: approving Planned→Queue does NOT start a build (launcher would)', async () => {
   isolateHome();
   useFakeAgent();
   pipeline.init({ broadcast: noop });
@@ -58,10 +58,10 @@ test('budget: approving Planned→Assigned does NOT start a build (launcher woul
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
-  const r = await pipeline.humanMove(p, 'task-0001', 'Assigned');
+  const r = await pipeline.humanMove(p, 'task-0001', 'Queue');
   assert.equal(r.ok, true);
   await sleep(400);
-  assert.equal(status(repo, 'task-0001'), 'Assigned', 'sits in Assigned for the dispatcher to pick up');
+  assert.equal(status(repo, 'task-0001'), 'Queue', 'sits in Queue for the dispatcher to pick up');
   assert.ok(idle(p.name), 'no build spawned');
   clearFakeAgent();
 });

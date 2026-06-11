@@ -44,7 +44,7 @@ export function makeRepo({ triage = false } = {}) {
 
   fs.mkdirSync(path.join(repo, '.todomd/tasks'), { recursive: true });
   fs.writeFileSync(path.join(repo, '.todomd/config.yml'),
-    `columns: [Review, Plan, Planned, Assigned, Build, Verify, Needs Human, Done]\n` +
+    `columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]\n` +
     `mode: launcher\nverify_command: npm test\nmax_attempts: 3\nconcurrency: 1\n` +
     `triage:\n  enabled: ${triage}\n  model: sonnet\n` +
     `stages:\n  Plan: { command: todomd-plan, model: sonnet }\n` +
