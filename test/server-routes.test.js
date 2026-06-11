@@ -46,9 +46,11 @@ test('API auth gauntlet: token tiers, origin check, viewer is read-only', async 
     // viewer cannot mutate → 403 read-only
     r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: J(viewer, base), body: '{"title":"x"}' });
     assert.equal(r.status, 403);
-    // full token reads as 'full'
+    // full token reads as 'full', and the board carries the skill picker options
     r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': full } });
-    assert.equal((await r.json()).access, 'full');
+    const fullBoard = await r.json();
+    assert.equal(fullBoard.access, 'full');
+    assert.ok(Array.isArray(fullBoard.skills) && fullBoard.skills.includes('todomd-plan'), 'board lists available skills');
     // full POST with a FOREIGN origin → 403 (CSRF/DNS-rebind defense)
     r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: J(full, 'http://evil.com'), body: '{"title":"x"}' });
     assert.equal(r.status, 403);

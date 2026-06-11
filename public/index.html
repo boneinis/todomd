@@ -61,11 +61,12 @@
     <label>agent
       <select id="route-agent"><option>claude</option><option>codex</option></select>
     </label>
-    <label>model <input id="route-model" placeholder="stage default" autocomplete="off" /></label>
-    <label>skill <input id="route-skill" placeholder="stage command" autocomplete="off" /></label>
+    <label>model <input id="route-model" list="model-options" placeholder="stage default" autocomplete="off" /></label>
+    <label>skill <input id="route-skill" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
     <label>assignee <input id="route-assignee" placeholder="developer" autocomplete="off" /></label>
     <button id="route-save" class="route-save">save</button>
   </div>
+  <p class="route-hint">agent / model / skill set here override the column for <b>every</b> stage this card runs (leave blank to use each column's default). skill swaps the command run in trigger columns.</p>
   <article class="drawer-body" id="drawer-body"></article>
   <section id="drawer-run" class="drawer-run" hidden>
     <h2 class="run-title">live run</h2>
@@ -115,8 +116,8 @@
           <option selected>claude</option><option>codex</option>
         </select>
       </label>
-      <label>model override <input name="model" placeholder="(stage default)" autocomplete="off" /></label>
-      <label>skill override <input name="skill" placeholder="(stage command)" autocomplete="off" /></label>
+      <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
+      <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
     </div>
     <label>description <textarea name="description" rows="3"></textarea></label>
     <label>acceptance criteria — one per line <textarea name="criteria" rows="3"></textarea></label>
@@ -218,6 +219,10 @@ todomd init             # scaffolds the board + registers it</code></pre>
 </div>
 
 <div id="toast" class="toast" hidden></div>
+
+<!-- suggestion lists for the model / skill pickers (populated by app.js) -->
+<datalist id="model-options"></datalist>
+<datalist id="skill-options"></datalist>
 
 <script src="/app.js"></script>
 </body>

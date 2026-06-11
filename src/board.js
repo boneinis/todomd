@@ -74,6 +74,17 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
   return { config, cards };
 }
 
+// The repo's invocable commands (.claude/commands/*.md) — the values a card's
+// `skill:` can take (a card can also use a user/plugin skill not listed here).
+export function listSkills(repoPath) {
+  try {
+    return fs.readdirSync(path.join(repoPath, '.claude', 'commands'))
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => f.replace(/\.md$/, ''))
+      .sort();
+  } catch { return []; }
+}
+
 export function readCard(repoPath, id) {
   const dir = tasksDir(repoPath);
   if (!fs.existsSync(dir)) return null;

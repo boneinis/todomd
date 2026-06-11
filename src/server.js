@@ -8,7 +8,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig, setArchived, deleteCard } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig, setArchived, deleteCard, listSkills } from './board.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 
@@ -237,6 +237,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
         runStates: pipeline.getRunStates(project.name),
         banners: pipeline.getBanners(),
         usage: pipeline.usage(project.name),
+        skills: listSkills(project.path), // available command/skill names for the picker
       });
     }
     if (url.pathname === '/api/cards' && req.method === 'POST') {

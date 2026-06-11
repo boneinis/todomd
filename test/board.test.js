@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard } from '../src/board.js';
+import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills } from '../src/board.js';
 
 test('loadBoard parses cards and criteria progress', () => {
   const repo = makeRepo();
@@ -228,4 +228,15 @@ test('deleteCard removes the task file + its attachments and commits the removal
   assert.equal(git(repo, ['status', '--porcelain']).trim(), '', 'clean tree — deletion committed');
 
   assert.equal((await deleteCard(repo, 'task-0001')).ok, false, 'deleting a missing card errors');
+});
+
+test('listSkills returns the repo command basenames (the skill picker options)', () => {
+  const repo = makeRepo();
+  const skills = listSkills(repo);
+  assert.ok(skills.includes('todomd-plan'), 'lists todomd-plan');
+  assert.ok(skills.includes('todomd-build'));
+  assert.ok(skills.includes('todomd-verify'));
+  // add a custom command → it shows up
+  fs.writeFileSync(path.join(repo, '.claude/commands/code-review.md'), '---\n---\nreview\n');
+  assert.ok(listSkills(repo).includes('code-review'), 'a custom command is listed');
 });

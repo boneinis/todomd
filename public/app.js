@@ -36,6 +36,17 @@ let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
 
+// model suggestions per vendor (a datalist — the user can still type a custom id)
+const MODELS = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-5-codex', 'gpt-5'] };
+function setModelOptions(vendor) {
+  const list = MODELS[vendor] || MODELS.claude;
+  $('#model-options').innerHTML = list.map((m) => `<option value="${esc(m)}"></option>`).join('');
+}
+function setSkillOptions() { // the repo's available commands (from the board payload)
+  $('#skill-options').innerHTML = ((boardData && boardData.skills) || [])
+    .map((s) => `<option value="${esc(s)}"></option>`).join('');
+}
+
 async function api(path) {
   const res = await fetch(`/api/${path}`, { headers });
   if (res.status === 401) {
@@ -67,6 +78,7 @@ async function loadBoard() {
   const viewer = boardData.access === 'viewer';
   $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag + (viewer ? ' · monitor' : '');
   document.body.classList.toggle('viewer', viewer);
+  setSkillOptions();
   renderBoard();
 }
 
@@ -231,6 +243,7 @@ async function openDrawer(id) {
   $('#drawer-body').innerHTML = mdToHtml(card.body);
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
   $('#route-agent').value = card.data.agent || 'claude';
+  setModelOptions($('#route-agent').value); // suggestions match the card's vendor
   $('#route-model').value = card.data.model || '';
   $('#route-skill').value = card.data.skill || '';
   $('#route-assignee').value = card.data.assignee || '';
@@ -651,9 +664,14 @@ $('#qr-close').addEventListener('click', () => { $('#qr-backdrop').hidden = true
 $('#qr-backdrop').addEventListener('click', (e) => { if (e.target.id === 'qr-backdrop') $('#qr-backdrop').hidden = true; });
 
 /* ── new card modal ── */
+// keep model suggestions in sync with the selected vendor (drawer + new-card modal)
+$('#route-agent').addEventListener('change', () => setModelOptions($('#route-agent').value));
+$('#card-form [name=agent]').addEventListener('change', (e) => setModelOptions(e.target.value));
+
 const backdrop = $('#modal-backdrop');
 $('#new-card').addEventListener('click', () => {
   $('#card-form').reset();
+  setModelOptions($('#card-form [name=agent]').value); // suggestions for the default vendor
   backdrop.hidden = false;
   $('#card-form [name=title]').focus();
 });

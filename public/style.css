@@ -404,6 +404,11 @@ body.viewer .card { cursor: default; }
 .drawer-delete.armed { background: var(--red); color: var(--bg); border-color: var(--red); }
 .card.archived { border-style: dashed; opacity: .8; }
 
+/* routing precedence hint under the drawer's agent/model/skill row */
+.route-hint { color: var(--dim); font-size: 10.5px; line-height: 1.5; margin: 4px 2px 12px; }
+.route-hint b { color: var(--ink); font-weight: 600; }
+body.viewer .route-hint { display: none; }
+
 @media (max-width: 640px) {
   .topbar { padding: 9px 10px; flex-wrap: wrap; gap: 7px; align-items: center; }
   .wordmark { font-size: 20px; }
