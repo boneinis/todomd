@@ -79,7 +79,12 @@ async function loadProjects() {
 async function loadBoard() {
   if (!currentProject) { // no projects (e.g. the last one was removed) — show an empty state
     boardData = null;
-    boardEl.innerHTML = '<p class="col-empty">no projects — add one with the ⊕ button</p>';
+    boardEl.innerHTML = `<div class="empty-board">
+      <h2>No project yet</h2>
+      <p>Add a git repo with the <b>⊕</b> button (paste its path), or run <code>todomd init</code> in a repo's terminal — then refresh.</p>
+      <p><button id="empty-guide" class="modal-submit">open the Getting Started guide</button></p>
+    </div>`;
+    $('#empty-guide')?.addEventListener('click', openGuide);
     return;
   }
   boardData = await api(`board?project=${encodeURIComponent(currentProject)}${showArchived ? '&archived=1' : ''}`);

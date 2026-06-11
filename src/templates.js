@@ -132,6 +132,7 @@ dependencies: []
 created_date: ${new Date().toISOString().slice(0, 10)}
 source: ui
 agent: claude
+triaged: n/a (guide card)
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
@@ -139,13 +140,22 @@ verification: { attempts: 0, max_attempts: 3, last_verdict: }
 
 ## Description
 
-This card is a markdown file at \`.todomd/tasks/task-0001-welcome.md\`. Drag it between columns and watch the \`status:\` line change — every move is a path-scoped git commit, so your board history lives in \`git log\`.
+👋 Welcome. This card is a plain markdown file at \`.todomd/tasks/task-0001-welcome.md\` — the whole board is files under \`.todomd/\`, and every move is a path-scoped git commit, so your history lives in \`git log\`. (Click the **todomd** wordmark up top for the Getting Started guide, or the **?** on any column.)
+
+**Try the real flow with a small task** — this card is only a guide, so don't send *it* down the pipeline (it has nothing to build):
+
+1. Click **+ card** and describe one small change you actually want in this repo.
+2. It lands in **Review**, where an agent auto-annotates it with insight + a proposed plan (read the \`## Triage\` section it adds).
+3. Drag it to **Plan** → an agent writes a full implementation plan. Review it in **Planned**.
+4. Drag **Planned → Queue** to *approve* → an agent builds it in an isolated worktree, an independent agent verifies it, and it merges to **Done** (or stops at **Needs Human** if it needs a decision).
+
+Those two drags — **Review→Plan** and **Planned→Queue** — are the only steps you do by hand.
 
 ## Acceptance Criteria
 
-- [ ] Dragged this card to another column
-- [ ] Saw the frontmatter change in the file
-- [ ] Wrote a real task card of your own
+- [ ] Opened the Getting Started guide (click the **todomd** wordmark)
+- [ ] Created a real task card with **+ card**
+- [ ] Took that card all the way to **Done** (or answered it in **Needs Human**)
 
 ## Implementation Plan
 
