@@ -1,3 +1,6 @@
 node_modules/
 spike/demo-repo/
 .DS_Store
+.todomd/worktrees/
+.todomd/runs/
+.todomd/.lock/
