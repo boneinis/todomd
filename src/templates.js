@@ -76,7 +76,7 @@ stages:
     allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)"]
 `;
 
-const CMD_PLAN = `---
+export const CMD_PLAN = `---
 description: Produce an implementation plan for a todomd task card
 ---
 
@@ -101,7 +101,7 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
 Finish with a one-line summary (say whether you split into N chunks or wrote a single plan).
 `;
 
-const CMD_BUILD = `---
+export const CMD_BUILD = `---
 description: Implement a todomd task card inside its dedicated worktree
 ---
 
@@ -118,7 +118,7 @@ You are running inside a dedicated git worktree branch for this task. Rules:
 Finish with a one-line summary of what you changed.
 `;
 
-const CMD_VERIFY = `---
+export const CMD_VERIFY = `---
 description: Independently verify a todomd task card against its acceptance criteria
 ---
 
@@ -177,7 +177,7 @@ Those two drags — **Review→Plan** and **Planned→Queue** — are the only s
 ## Run Log
 `;
 
-const CMD_TRIAGE = `---
+export const CMD_TRIAGE = `---
 description: Triage an incoming todomd card — codebase insight + proposed plan of action
 ---
 
@@ -196,7 +196,7 @@ You are the todomd TRIAGE agent. A new card just arrived for human review. The t
 Finish with a one-line summary.
 `;
 
-const CMD_DISPATCH = `---
+export const CMD_DISPATCH = `---
 description: Budget-mode dispatcher — process pending todomd cards in this session
 ---
 
@@ -233,18 +233,18 @@ Unless config \`triage.enabled\` is false: for each card with \`status: Review\`
 
 For each card in \`.todomd/tasks/*.md\` with \`status: Plan\` and no fresh lease: first **LOCK**, re-check it's still \`Plan\` and unleased, set \`lease: "<epoch> <worker>"\`, commit, **UNLOCK** (claim it so no other dispatcher plans it). Then run the plan/skill UNLOCKED and record the result under **LOCK**, clearing the lease:
 - If it has \`skill: <name>\`: invoke /<name> with the card id, save output worth keeping under \`## Findings\` in the card; then **LOCK**, if status is still \`Plan\` set \`status: Review\`, clear \`lease\`, append a Run Log line, commit, **UNLOCK** (else discard).
-- Otherwise follow \`.claude/commands/todomd-plan.md\` for it — but instruct it to write a single \`## Implementation Plan\` and NOT split into \`## Chunks\` (chunk fan-out into sequential child cards runs only under the launcher server, not in budget mode); then **LOCK**, if status is still \`Plan\` set \`status: Planned\`, clear \`lease\`, Run Log line, commit, **UNLOCK** (else discard).
+- Otherwise follow \`.claude/commands/todomd-plan.md\` for it; then **LOCK**, if status is still \`Plan\` set \`status: Planned\`, clear \`lease\`, Run Log line, commit, **UNLOCK** (else discard). After the commit, if the card's \`## Chunks\` section is non-empty, shell out \`npx todomd fanout <id>\` — this materializes the chunk cards in Planned state and moves the epic to Planned; it then awaits your human approval (drag Planned → Queue) before its chunk children begin building.
 
 ## 2. Build work (ONE card per tick)
 
-**Select + claim under LOCK so two dispatchers never grab the same card.** **LOCK**, then re-read the board and take the oldest card with \`status: Queue\` (none → **UNLOCK**, skip). Still holding the lock, do steps 1–3, then **UNLOCK** before building:
+**Select + claim under LOCK so two dispatchers never grab the same card.** **LOCK**, then re-read the board and take the oldest card with \`status: Queue\` that does **not** have \`epic: true\` in its frontmatter (none → **UNLOCK**, skip). Cards with \`epic: true\` are epic tracker cards that complete automatically when all their chunk children are Done — never build them directly. Still holding the lock, do steps 1–3, then **UNLOCK** before building:
 1. attempts = verification.attempts + 1. If attempts > max_attempts → \`status: Needs Human\`, \`needs_human_reason: attempts_exhausted\`, commit, **UNLOCK**, stop.
 2. **Coordination** (only if config \`coordination.enabled\`): read \`.todomd/ACTIVE.md\` (see format below). Work out the files this card touches from its \`## Implementation Plan\`. If another worker's claim (a line whose \`worker\` differs from yours) lists any of the same files: append \`  - ⚠ file overlap: <who/which files>\` to the Run Log, and if config \`coordination.block\` is true set \`status: Needs Human\`, \`needs_human_reason: work_conflict\`, commit, **UNLOCK**, and stop. Otherwise add your claim to \`.todomd/ACTIVE.md\` (remove any existing line for this card first) and commit it, then continue.
 3. Set \`status: Build\` and verification.attempts, commit. **UNLOCK.** Then create the worktree if missing: \`git worktree add <worktree_dir>/<id> -b <branch_prefix><id>\`.
 4. Inside the worktree follow \`.claude/commands/todomd-build.md\` for the card (UNLOCKED — this is the long part). Never touch \`.todomd/\` inside the worktree.
 5. **LOCK**, set \`status: Verify\`, commit, **UNLOCK**. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of \`.claude/commands/todomd-verify.md\`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings, and a \`setup_error\` if the verify command couldn't run at all (missing dep/file/env/service, not a test assertion).
 6. **setup_error** (the verify command couldn't even run) → **LOCK**, set \`status: Needs Human\`, \`needs_human_reason: worktree_env\`, quote the cause in the Run Log with the hint "add the missing gitignored file/dep to \`worktree_link\` in .todomd/config.yml, then move the card back to Queue", commit, **release your coordination claim (step C)**, **UNLOCK**. (Don't retry — another build won't fix a missing env file.)
-   **pass** → **LOCK**, then: confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering, commit, release claim step C, **UNLOCK**); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit; **release your coordination claim (step C)**; **UNLOCK**.
+   **pass** → **LOCK**, then: confirm \`git diff --name-only HEAD...<branch> -- .todomd\` is empty (not empty → Needs Human, reason board_tampering, commit, release claim step C, **UNLOCK**); \`git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"\`; remove worktree, delete branch; set \`status: Done\` + verification.last_verdict, commit; **release your coordination claim (step C)**; **UNLOCK**. Then, if the card's frontmatter has a \`parent:\` field, shell out \`npx todomd advance <parent-id>\` (outside the lock) to cascade the next chunk to Queue and allow the epic to auto-complete when all chunks are Done.
    **fail** (on the merits) → if attempts < max_attempts: fix the findings in the worktree (UNLOCKED), re-run step 5. Else **LOCK**, Needs Human as in step 1 with the findings quoted in the Run Log, **release your coordination claim (step C)**, **UNLOCK**.
 
 ### Coordination manifest — \`.todomd/ACTIVE.md\` (only if \`coordination.enabled\`)
