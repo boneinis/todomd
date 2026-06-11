@@ -409,6 +409,14 @@ body.viewer .card { cursor: default; }
 .route-hint b { color: var(--ink); font-weight: 600; }
 body.viewer .route-hint { display: none; }
 
+/* agent question → human answer block */
+.drawer-question { border: 1px solid var(--amber); border-radius: 6px; padding: 10px 12px; margin: 8px 0 14px; background: var(--panel-2); }
+.drawer-question .run-title { color: var(--amber); margin: 0 0 6px; }
+.question-text { color: var(--ink); margin: 4px 0 8px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+.answer-input { width: 100%; box-sizing: border-box; background: var(--panel); border: 1px solid var(--dim); color: var(--ink); border-radius: 4px; padding: 6px 8px; font: inherit; font-size: 12px; resize: vertical; margin-bottom: 8px; }
+.answer-input:focus { outline: none; border-color: var(--amber); }
+body.viewer .drawer-question { display: none; }
+
 @media (max-width: 640px) {
   .topbar { padding: 9px 10px; flex-wrap: wrap; gap: 7px; align-items: center; }
   .wordmark { font-size: 20px; }

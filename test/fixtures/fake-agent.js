@@ -105,6 +105,12 @@ if (stage === 'verify') {
   };
   // simulate "the verify command couldn't even run" (missing gitignored dep/env)
   if (process.env.FAKE_SETUP_ERROR) structured.setup_error = process.env.FAKE_SETUP_ERROR;
+  // simulate "the agent needs a human decision" ONCE (marker), then behave
+  if (process.env.FAKE_QUESTION && process.env.FAKE_QUESTION_MARKER && !fs.existsSync(process.env.FAKE_QUESTION_MARKER)) {
+    fs.writeFileSync(process.env.FAKE_QUESTION_MARKER, '1');
+    structured.verdict = 'fail';
+    structured.question = process.env.FAKE_QUESTION;
+  }
   process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: structured })));
   process.exit(0);
 }

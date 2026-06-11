@@ -117,6 +117,29 @@ test('cancel mid-build cleans the worktree and clears the worktree frontmatter',
   clearFakeAgent();
 });
 
+test('agent question → Needs Human (needs_answer); answering re-drives the build → Done', async () => {
+  isolateHome();
+  const marker = path.join(tmp('q'), 'asked');
+  useFakeAgent({ build: 'good', verdict: 'pass', question: 'default the widget on or off?', question_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Assigned'); // build → verify asks a question
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+  let card = readCard(repo, 'task-0001');
+  assert.equal(card.data.needs_human_reason, 'needs_answer');
+  assert.match(card.data.question || '', /on or off/);
+
+  // answer → threads the decision into the next build → verify passes → Done
+  assert.equal((await pipeline.answerCard(p, 'task-0001', 'default to ON')).ok, true);
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  card = readCard(repo, 'task-0001');
+  assert.equal(card.data.question || '', '', 'question cleared after answering');
+  clearFakeAgent();
+});
+
 test('agent error → Needs Human (agent_error)', async () => {
   isolateHome();
   useFakeAgent({ fail: 1 });

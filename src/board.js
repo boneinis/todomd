@@ -74,6 +74,25 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
   return { config, cards };
 }
 
+// The most recent run's streamed events, for back-filling the drawer's live log
+// when you open a card mid-run (or to review a finished run). Reads the newest
+// .todomd/runs/<id>/<stage>-<n>.jsonl. Returns the raw stream-json events.
+export function readRunLog(repoPath, id, { maxEvents = 800 } = {}) {
+  const dir = path.join(repoPath, '.todomd', 'runs', id);
+  let files;
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')); } catch { return { stage: null, events: [] }; }
+  if (!files.length) return { stage: null, events: [] };
+  const latest = files
+    .map((f) => ({ f, m: fs.statSync(path.join(dir, f)).mtimeMs }))
+    .sort((a, b) => b.m - a.m)[0].f;
+  const events = [];
+  for (const line of fs.readFileSync(path.join(dir, latest), 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try { events.push(JSON.parse(line)); } catch { /* skip a garbled line */ }
+  }
+  return { stage: latest.replace(/-\d+\.jsonl$/, ''), events: events.slice(-maxEvents) };
+}
+
 // The repo's invocable commands (.claude/commands/*.md) — the values a card's
 // `skill:` can take (a card can also use a user/plugin skill not listed here).
 export function listSkills(repoPath) {

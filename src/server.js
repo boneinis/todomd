@@ -8,7 +8,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig, setArchived, deleteCard, listSkills } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig, setArchived, deleteCard, listSkills, readRunLog } from './board.js';
 import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
@@ -286,6 +286,13 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const card = readCard(project.path, cardMatch[1]);
       return card ? json(res, 200, card) : json(res, 404, { error: 'card not found' });
     }
+    // the streamed events of the card's most recent run, to back-fill the drawer
+    const runlogMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/runlog$/);
+    if (runlogMatch && req.method === 'GET') {
+      const card = readCard(project.path, runlogMatch[1]);
+      const agent = card?.data?.agent || 'claude';
+      return json(res, 200, { agent, ...readRunLog(project.path, runlogMatch[1]) });
+    }
     if (cardMatch && req.method === 'DELETE') {
       if (pipeline.hasLiveRun(project.name, cardMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
       await pipeline.releaseCardResources(project, cardMatch[1]); // free worktree/claim/queue before removing files
@@ -349,6 +356,17 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const cancelMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/cancel$/);
     if (cancelMatch && req.method === 'POST') {
       const result = await pipeline.cancel(project, cancelMatch[1]);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    // answer an agent's pending question → threads the answer into the next build
+    const answerMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/answer$/);
+    if (answerMatch && req.method === 'POST') {
+      if (pipeline.hasLiveRun(project.name, answerMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let answer;
+      try { ({ answer } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = await pipeline.answerCard(project, answerMatch[1], answer);
       return json(res, result.ok ? 200 : 400, result);
     }
     const archiveMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/archive$/);

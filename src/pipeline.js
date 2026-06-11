@@ -25,6 +25,9 @@ const VERDICT_SCHEMA = {
     // set ONLY when the verify command couldn't run at all (missing dep/file/env
     // var/service) — a worktree-environment problem, not a test-assertion failure
     setup_error: { type: 'string' },
+    // set ONLY when a genuine human decision is required to proceed (ambiguous
+    // spec, a product choice) — not a code defect you can describe as a finding
+    question: { type: 'string' },
   },
 };
 
@@ -201,6 +204,24 @@ export async function releaseCardResources(project, id) {
     const wtDir = loadConfig(project.path).worktree_dir || '.todomd/worktrees';
     await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
   }
+}
+
+// The human answered the card's pending question (needs_answer). Thread the Q&A
+// into the next build (via the retry-findings channel the build prompt already
+// injects) and re-drive the card back into the build queue. No live run expected.
+export async function answerCard(project, id, answer) {
+  const card = readCard(project.path, id);
+  if (!card) return { ok: false, error: `card not found: ${id}` };
+  const text = String(answer || '').trim();
+  if (!text) return { ok: false, error: 'answer is required' };
+  const question = card.data.question || '';
+  retryFindings.set(runKey(project.name, id),
+    `A human answered your earlier question — use this decision to proceed.\nQuestion: ${question}\nAnswer: ${text}`);
+  await patchFrontmatter(project.path, id, { question: '', needs_human_reason: '' });
+  await appendRunLog(project.path, id, `- ${now()} · human answered: ${text.slice(0, 200)}`);
+  await orchMove(project, id, 'Assigned', 'answered; resuming');
+  enqueueBuild(project, id);
+  return { ok: true };
 }
 
 function runLogFile(project, id, stage, attempt) {
@@ -629,6 +650,18 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     await releaseCoordination(project, id);
     await orchMove(project, id, 'Done', `verdict: pass, attempt ${attempt}`);
     return sendState(project, id, 'idle');
+  }
+
+  // the verifier needs a human DECISION — record the question, roll the attempt
+  // back (a pause, not a failed try), and escalate to needs_answer so the drawer
+  // shows the question and the answer feeds the next build
+  if (verdict.question) {
+    await patchFrontmatter(project.path, id, {
+      question: verdict.question,
+      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: verdict.verdict },
+    });
+    await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · needs a human decision`);
+    return toNeedsHuman(project, id, 'Verify', 'needs_answer', verdict.question);
   }
 
   // a setup error means the verify command couldn't even RUN — retrying the

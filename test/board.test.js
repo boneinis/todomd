@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills } from '../src/board.js';
+import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog } from '../src/board.js';
 
 test('loadBoard parses cards and criteria progress', () => {
   const repo = makeRepo();
@@ -239,4 +239,20 @@ test('listSkills returns the repo command basenames (the skill picker options)',
   // add a custom command → it shows up
   fs.writeFileSync(path.join(repo, '.claude/commands/code-review.md'), '---\n---\nreview\n');
   assert.ok(listSkills(repo).includes('code-review'), 'a custom command is listed');
+});
+
+test('readRunLog returns the newest run jsonl events (for drawer back-fill)', () => {
+  const repo = makeRepo();
+  const dir = path.join(repo, '.todomd/runs/task-0001');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'build-1.jsonl'),
+    JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1' }) + '\n' +
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } }) + '\n' +
+    'garbled-non-json-line\n');
+  const { stage, events } = readRunLog(repo, 'task-0001');
+  assert.equal(stage, 'build');
+  assert.equal(events.length, 2, 'parses valid lines, skips garbled');
+  assert.equal(events[0].session_id, 's1');
+  // no runs dir → empty, not a throw
+  assert.deepEqual(readRunLog(repo, 'task-9999'), { stage: null, events: [] });
 });

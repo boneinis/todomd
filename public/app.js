@@ -242,8 +242,9 @@ function wireDrop(colEl) {
 async function openDrawer(id) {
   drawerCard = id;
   $('#run-log').textContent = '';
-  $('#drawer-run').hidden = runStates[id]?.state !== 'running';
+  $('#drawer-run').hidden = true;
   $('#drawer-cancel').hidden = !runStates[id];
+  backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
   const card = await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`);
   $('#drawer-id').textContent = card.data.id;
   $('#drawer-title').textContent = card.data.title;
@@ -267,8 +268,30 @@ async function openDrawer(id) {
   drawerArchived = !!card.data.archived;
   $('#drawer-archive').textContent = drawerArchived ? 'restore' : 'archive';
   resetDeleteBtn();
+  // pending agent question
+  const q = card.data.question;
+  $('#drawer-question').hidden = !q;
+  if (q) { $('#question-text').textContent = q; $('#answer-input').value = ''; }
   $('#drawer').hidden = false;
 }
+
+$('#answer-submit').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  const answer = $('#answer-input').value.trim();
+  if (!answer) return toast('type an answer first');
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/answer?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ answer }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'failed');
+    toast('answered — resuming the build');
+    $('#drawer').hidden = true;
+    loadBoard();
+  } catch { toast('server unreachable'); }
+});
 
 function resetDeleteBtn() {
   deleteArmed = false;
@@ -392,6 +415,22 @@ $('#drawer-cancel').addEventListener('click', async () => {
   toast(res.ok ? 'run cancelled' : out.error || 'cancel failed');
 });
 
+// fetch the most recent run's events so the drawer shows the whole run, not just
+// what streams in after you open it (works for a finished run too)
+async function backfillRunLog(id) {
+  const running = runStates[id]?.state === 'running';
+  try {
+    const { agent, events } = await api(`cards/${id}/runlog?project=${encodeURIComponent(currentProject)}`);
+    if (id !== drawerCard) return; // the drawer moved on while we were fetching
+    $('#run-log').textContent = '';
+    for (const ev of events) appendRunEvent(agent === 'codex' ? { vendor: 'codex', ...ev } : ev);
+    $('#drawer-run').hidden = !(running || events.length);
+    $('#drawer-run .run-title').textContent = running ? 'live run' : 'last run';
+  } catch {
+    $('#drawer-run').hidden = !running;
+  }
+}
+
 function appendRunEvent(event) {
   const log = $('#run-log');
   if (event.vendor === 'codex') {
@@ -486,8 +525,9 @@ function connectWs() {
       if (msg.state === 'idle') delete runStates[msg.card];
       else runStates[msg.card] = { state: msg.state, stage: msg.stage };
       if (msg.card === drawerCard) {
-        $('#drawer-run').hidden = msg.state !== 'running';
         $('#drawer-cancel').hidden = msg.state === 'idle' || !runStates[msg.card];
+        if (msg.state === 'running') $('#drawer-run').hidden = false;
+        else backfillRunLog(drawerCard); // run ended — keep its log, now as "last run"
       }
       renderBoard();
     } else if (msg.type === 'run-event' && msg.project === currentProject && msg.card === drawerCard) {
