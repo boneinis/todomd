@@ -116,3 +116,28 @@ test('budget: advanceEpicChildren cascades to next chunk', async () => {
   assert.ok(moved.includes(childIds[1]), 'chunk-2 should be in the moved list');
   assert.equal(status(repo, childIds[1]), 'Queue', 'chunk-2 should be Queue after advance');
 });
+
+/* ── D. budget-mode epic auto-completion ── */
+
+test('budget: advanceEpicChildren auto-completes epic when all chunks are Done', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = budgetRepo();
+  const p = project(repo);
+
+  writeEpicCard(repo, 'task-epic5');
+  const card = readCard(repo, 'task-epic5');
+  const chunks = parseChunks(card.body || '');
+  const childIds = await materializeChunks(repo, 'task-epic5', chunks);
+  assert.equal(childIds.length, 2);
+
+  // approve epic → chunk-1 goes to Queue
+  await pipeline.humanMove(p, 'task-epic5', 'Queue');
+
+  // simulate both chunks finishing
+  await moveCard(repo, childIds[0], 'Done', { reason: 'test' });
+  await moveCard(repo, childIds[1], 'Done', { reason: 'test' });
+
+  await advanceEpicChildren(repo, 'task-epic5');
+  assert.equal(status(repo, 'task-epic5'), 'Done', 'epic should be Done when all chunks are complete');
+});

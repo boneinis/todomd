@@ -523,11 +523,6 @@ async function maybeAdvanceEpic(project, childId) {
   const parentId = readCard(project.path, childId)?.data?.parent;
   if (!parentId) return;
   await advanceChildren(project, parentId);
-  const board = loadBoard(project.path, { includeArchived: true });
-  const kids = board.cards.filter((c) => c.parent === parentId);
-  if (kids.length && kids.every((c) => c.status === 'Done')) {
-    await orchMove(project, parentId, 'Done', 'all chunks complete');
-  }
 }
 
 /* ── build/verify chain ── */

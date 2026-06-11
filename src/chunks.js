@@ -57,5 +57,10 @@ export async function advanceEpicChildren(repoPath, epicId) {
     const mv = await moveCard(repoPath, child.id, 'Queue', { reason: 'chunk ready' });
     if (mv.ok && !mv.unchanged) moved.push(child.id);
   }
+  const fresh = loadBoard(repoPath, { includeArchived: true });
+  const kids = fresh.cards.filter((c) => c.parent === epicId && !c.epic);
+  if (kids.length && kids.every((c) => c.status === 'Done')) {
+    await moveCard(repoPath, epicId, 'Done', { reason: 'all chunks complete' });
+  }
   return moved;
 }
