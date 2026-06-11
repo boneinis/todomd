@@ -814,14 +814,19 @@ export async function reconcileOnBoot() {
           // a fresh retry must not build on the abandoned worktree's rejected commits
           await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, card.id), `${branchPrefix}${card.id}`));
         }
-        if (card.triaged === 'running') {
-          await patchFrontmatter(project.path, card.id, { triaged: '' }); // interrupted triage — retry via sweep
+        // interrupted triage, OR a triage that failed on a TRANSIENT problem
+        // (claude not on PATH, a usage limit, an auth blip) — clear the stamp so
+        // it's retried now that the environment may have recovered
+        if (card.triaged === 'running' || /^failed \((cli_missing|quota|auth)\)$/.test(String(card.triaged || ''))) {
+          await patchFrontmatter(project.path, card.id, { triaged: '' });
         }
       }
       await withRepoLock(project.path, () => git(project.path, ['worktree', 'prune']));
       // Queue cards (quota-parked, or approved just before a restart) have
       // no live run and no in-memory queue entry — re-drive them.
       enqueueQueue(project);
+      // re-triage anything now eligible (incl. the transient-failure cards just reset)
+      triageSweep(project);
       // prune stale coordination claims for cards no longer in the build flow
       // (e.g. moved out while the server was down) so ACTIVE.md doesn't leak
       if ((config.coordination || {}).enabled) {

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp } from './helpers.js';
 import { readCard } from '../src/board.js';
+import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
 
 const noop = () => {};
@@ -288,4 +289,23 @@ test('coordination: reconcileOnBoot prunes a stale claim for a card no longer bu
   await claim(repo, { card: 'task-0001', title: 'x', branch: 'b', worker: 'me@h', files: ['src/a.js'] }, {});
   await pipeline.reconcileOnBoot();
   assert.equal((await readAllClaims(repo, {})).length, 0, 'stale claim pruned on boot');
+});
+
+test('reconcileOnBoot retries a transient-failure triage (cli_missing) once the CLI is back', async () => {
+  isolateHome();
+  useFakeAgent(); // triage now succeeds
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo({ triage: true });
+  addProject(repo); // reconcileOnBoot iterates registered projects
+  // a Review card whose triage failed earlier because claude wasn't on PATH
+  writeCard(repo, 'task-0001', { extra: 'triaged: failed (cli_missing)\n' });
+
+  await pipeline.reconcileOnBoot(); // resets the transient stamp + re-sweeps
+  await until(() => {
+    const t = readCard(repo, 'task-0001').data.triaged;
+    return t && !String(t).startsWith('failed') && t !== 'running';
+  }, { timeout: 12000 });
+  const t = readCard(repo, 'task-0001').data.triaged; // a date (success), not a failure marker
+  assert.ok(t && !String(t).startsWith('failed') && t !== 'running', 're-triaged after the transient failure');
+  clearFakeAgent();
 });
