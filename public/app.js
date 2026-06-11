@@ -141,6 +141,15 @@ $('#archived-toggle').addEventListener('click', () => {
   loadBoard(); // re-fetch: archived cards aren't in the default board payload
 });
 
+// the command a column's prompt edits: a stage command, or triage for Review
+function columnCommand(col) {
+  const cfg = boardData.config || {};
+  if ((cfg.stages || {})[col]) return cfg.stages[col].command || `todomd-${col.toLowerCase()}`;
+  if (col === 'Review' && cfg.triage) return cfg.triage.command || 'todomd-triage';
+  if (['Plan', 'Build', 'Verify'].includes(col)) return `todomd-${col.toLowerCase()}`;
+  return null;
+}
+
 function renderBoard() {
   if (!boardData) return;
   const filter = filterInput.value.trim().toLowerCase();
@@ -158,11 +167,11 @@ function renderBoard() {
     colEl.className = 'column';
     colEl.style.setProperty('--col', color);
     colEl.dataset.status = col;
-    // columns that run a prompt get an inline edit affordance (full-access only)
-    const stages = boardData.config.stages || {};
-    const cmd = stages[col]?.command || (['Plan', 'Build', 'Verify'].includes(col) ? `todomd-${col.toLowerCase()}` : null);
+    // columns that run a prompt get an inline edit affordance (full-access only).
+    // Review maps to the triage (auto-review) prompt, which isn't a stage.
+    const cmd = columnCommand(col);
     const editBtn = (cmd && boardData.access !== 'viewer')
-      ? `<button class="col-edit" data-cmd="${esc(cmd)}" title="edit the ${esc(col)} prompt">✎ prompt</button>` : '';
+      ? `<button class="col-edit" data-cmd="${esc(cmd)}" title="edit the ${col === 'Review' ? 'review (triage)' : esc(col)} prompt">✎ prompt</button>` : '';
     colEl.innerHTML = `<header class="col-head"><span>${esc(col)}</span><span class="col-head-right"><span class="col-count">[${cards.length}]</span>${editBtn}</span></header>`;
     colEl.querySelector('.col-edit')?.addEventListener('click', (e) => { e.stopPropagation(); openPromptEditor(e.currentTarget.dataset.cmd); });
     const list = document.createElement('div');
