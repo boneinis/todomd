@@ -264,6 +264,14 @@ body.viewer .col-edit { display: none; }
 .drawer-body li.done { color: var(--dim); text-decoration: line-through; }
 .drawer-body code { background: var(--panel-2); border: 1px solid var(--line); padding: 1px 5px; font-size: 11.5px; }
 .drawer-body a { color: var(--cyan); }
+/* click-to-open file references: keep the monospace look, hint it's actionable */
+.drawer-body a.file-link { text-decoration: none; cursor: pointer; }
+.drawer-body a.file-link code {
+  color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 35%, var(--line));
+  border-bottom-style: dashed; transition: background .12s, border-color .12s;
+}
+.drawer-body a.file-link:hover code { background: color-mix(in srgb, var(--cyan) 14%, var(--panel-2)); border-color: var(--cyan); }
+.drawer-body a.file-link:not(:has(code)) { border-bottom: 1px dashed color-mix(in srgb, var(--cyan) 45%, transparent); }
 .card-img {
   display: block; max-width: 100%; margin: 10px 0;
   border: 1px solid var(--line); border-radius: 2px;

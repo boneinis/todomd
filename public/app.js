@@ -453,6 +453,21 @@ drawerEl.addEventListener('drop', (e) => {
   if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
 });
 
+// click a file reference in the rendered card body → open it with the OS default app
+$('#drawer-body').addEventListener('click', async (e) => {
+  const a = e.target.closest('.file-link');
+  if (!a) return;
+  e.preventDefault();
+  const p = a.dataset.path;
+  try {
+    const res = await fetch(`/api/open?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ path: p }),
+    });
+    const out = await res.json();
+    toast(res.ok ? `opening ${p}…` : (out.error || 'could not open'));
+  } catch { toast('server unreachable'); }
+});
+
 $('#drawer-close').addEventListener('click', () => { $('#drawer').hidden = true; drawerCard = null; });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#drawer').hidden = true; drawerCard = null; } });
 $('#drawer-cancel').addEventListener('click', async () => {
@@ -512,6 +527,24 @@ function safeUrl(rawUrl) {
   if (/^https?:\/\//i.test(u)) return u;
   return null;
 }
+// Extensions that mark a bare filename (no slash) as a file worth linking — a
+// path with a slash is treated as a file regardless. Keeps prose like "e.g."
+// or "v1.0" from turning into links.
+const FILE_EXT = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'json', 'html', 'htm', 'css', 'scss', 'sass', 'less', 'md', 'markdown', 'txt', 'py', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'php', 'swift', 'sh', 'bash', 'zsh', 'fish', 'yml', 'yaml', 'toml', 'ini', 'cfg', 'conf', 'xml', 'svg', 'sql', 'vue', 'svelte', 'astro', 'env', 'lock', 'gradle', 'csv', 'tsv', 'log', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico']);
+// Does a token look like a repo-relative file path? Returns { path } or null.
+// (a trailing :line / :line:col is tolerated but dropped — the OS open ignores it)
+function looksLikeFile(raw) {
+  const m = (raw || '').trim().match(/^([\w./@+-]+\.[A-Za-z0-9]{1,10})(?::\d+){0,2}$/);
+  if (!m) return null;
+  const p = m[1];
+  if (p.length > 200 || p.startsWith('/') || p.includes('..')) return null;
+  if (!p.includes('/') && !FILE_EXT.has(p.split('.').pop().toLowerCase())) return null;
+  return { path: p };
+}
+function fileLinkHtml(label, info) {
+  const p = String(info.path).replace(/"/g, '&quot;');
+  return `<a href="#" class="file-link" data-path="${p}" title="open ${p}">${label}</a>`;
+}
 function inline(s) {
   return esc(s)
     // images: ![alt](url) — alt is already escaped; url sanitized
@@ -519,14 +552,21 @@ function inline(s) {
       const href = safeUrl(url);
       return href ? `<img class="card-img" alt="${alt}" src="${href}" loading="lazy" />` : esc(m);
     })
-    // links: [text](url)
+    // links: [text](url) — http/attachment links; else a repo file path → open-link
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) => {
       const href = safeUrl(url);
-      if (!href) return text;
-      const ext = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : '';
-      return `<a href="${href}"${ext}>${text}</a>`;
+      if (href) {
+        const ext = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : '';
+        return `<a href="${href}"${ext}>${text}</a>`;
+      }
+      const f = looksLikeFile(url);
+      return f ? fileLinkHtml(text, f) : text;
     })
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // inline code — a `path/to/file.ext` becomes a click-to-open link
+    .replace(/`([^`]+)`/g, (m, content) => {
+      const f = looksLikeFile(content);
+      return f ? fileLinkHtml(`<code>${content}</code>`, f) : `<code>${content}</code>`;
+    })
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
 }
 function mdToHtml(md) {

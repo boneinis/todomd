@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
@@ -38,6 +39,43 @@ function loadToken(name) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, t + '\n', { mode: 0o600 });
   return t;
+}
+
+// File types whose OS handler would *execute* rather than just display them —
+// refused by /api/open so a card's text can't turn a click into code execution.
+const NO_OPEN_EXT = new Set([
+  '.command', '.app', '.scpt', '.applescript', '.osascript', '.workflow', '.terminal',
+  '.action', '.prefpane', '.webloc', '.inetloc', '.url', '.desktop',
+  '.bat', '.cmd', '.ps1', '.exe', '.msi', '.com', '.scr', '.vbs', '.jar', '.pkg', '.dmg',
+]);
+
+// Open a repo-relative file with the OS default handler. Strictly confined to
+// the repo (realpath both sides so a symlink can't escape), regular files only,
+// and execution-capable types are refused. Returns {ok} or {ok:false,error}.
+function openInRepo(repoPath, rel) {
+  rel = String(rel || '').replace(/^[/\\]+/, '');
+  if (!rel || rel.includes('\0')) return { ok: false, error: 'bad path' };
+  const abs = path.resolve(repoPath, rel);
+  let realRoot, real;
+  try { realRoot = fs.realpathSync(repoPath); } catch { return { ok: false, error: 'repo not found' }; }
+  try { real = fs.realpathSync(abs); } catch { return { ok: false, error: `no such file: ${rel}` }; }
+  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return { ok: false, error: 'outside the repo' };
+  let st;
+  try { st = fs.statSync(real); } catch { return { ok: false, error: `no such file: ${rel}` }; }
+  if (!st.isFile()) return { ok: false, error: 'not a file' };
+  if (NO_OPEN_EXT.has(path.extname(real).toLowerCase())) return { ok: false, error: `won't open an executable file type` };
+  // TODOMD_OPENER overrides the OS default opener (a power-user escape hatch; the
+  // tests point it at a harmless command so they don't actually launch apps)
+  const [cmd, args] = process.env.TODOMD_OPENER ? [process.env.TODOMD_OPENER, [real]]
+    : process.platform === 'darwin' ? ['open', [real]]
+    : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', real]]
+    : ['xdg-open', [real]];
+  try {
+    const child = execFile(cmd, args, { windowsHide: true }, () => {});
+    child.on('error', () => {}); // detached; failures (no opener) are non-fatal
+    child.unref?.();
+  } catch (e) { return { ok: false, error: `couldn't open: ${e.message}` }; }
+  return { ok: true, path: rel };
 }
 
 function lanAddress() {
@@ -252,6 +290,17 @@ export function startServer({ port = 7337, lan = false } = {}) {
       }
       if ('model' in fields) updates.model = String(fields.model || '');
       const result = await setStageRouting(project.path, col, updates);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    // open a repo file the card references, with the OS default app. Full token
+    // only (it runs the OS opener on the host) and same-origin (enforced above).
+    if (url.pathname === '/api/open' && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let p;
+      try { ({ path: p } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = openInRepo(project.path, p);
       return json(res, result.ok ? 200 : 400, result);
     }
     if (url.pathname === '/api/board') {

@@ -219,6 +219,41 @@ test('API per-column routing: /api/commands carries stage routing; /api/stages s
   } finally { srv.close(); }
 });
 
+test('API /api/open: opens a referenced repo file via the OS opener, with containment + type guards', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const tok = srv.token, viewer = deviceToken('token-viewer');
+  const h = { 'x-todomd-token': tok, 'content-type': 'application/json', origin: base };
+  // point the opener at a harmless script that records the file it was handed
+  const home = process.env.TODOMD_HOME;
+  const marker = path.join(home, 'opened.txt');
+  const opener = path.join(home, 'opener.sh');
+  fs.writeFileSync(opener, `#!/bin/sh\nprintf '%s\\n' "$1" >> "${marker}"\n`, { mode: 0o755 });
+  process.env.TODOMD_OPENER = opener;
+  try {
+    // an existing repo file → 200, and the opener was invoked on the resolved path
+    let r = await fetch(`${base}/api/open${q}`, { method: 'POST', headers: h, body: JSON.stringify({ path: 'src/calc.js' }) });
+    assert.equal(r.status, 200);
+    for (let i = 0; i < 25 && !fs.existsSync(marker); i++) await new Promise((res) => setTimeout(res, 40));
+    assert.match(fs.readFileSync(marker, 'utf8'), /src\/calc\.js\s*$/m);
+
+    // path traversal is refused (stays inside the repo)
+    r = await fetch(`${base}/api/open${q}`, { method: 'POST', headers: h, body: JSON.stringify({ path: '../../../../etc/hosts' }) });
+    assert.equal(r.status, 400);
+    // a nonexistent file → 400
+    r = await fetch(`${base}/api/open${q}`, { method: 'POST', headers: h, body: JSON.stringify({ path: 'nope/missing.js' }) });
+    assert.equal(r.status, 400);
+    // an execution-capable type is refused even though it exists
+    fs.writeFileSync(path.join(repo, 'danger.command'), '#!/bin/sh\necho hi\n');
+    r = await fetch(`${base}/api/open${q}`, { method: 'POST', headers: h, body: JSON.stringify({ path: 'danger.command' }) });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /executable/);
+    // viewer cannot open files → 403
+    r = await fetch(`${base}/api/open${q}`, { method: 'POST', headers: { 'x-todomd-token': viewer, 'content-type': 'application/json', origin: base }, body: JSON.stringify({ path: 'src/calc.js' }) });
+    assert.equal(r.status, 403);
+  } finally { delete process.env.TODOMD_OPENER; srv.close(); }
+});
+
 test('API archive hides/restores a card; DELETE removes it; viewer cannot', async () => {
   isolateHome();
   const { base, srv, q } = await boot();
