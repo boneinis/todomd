@@ -19,7 +19,7 @@ Every transition is a path-scoped git commit — board history is `git log`. Run
 ## Prerequisites
 
 - **Node ≥ 20** and **git** (each board change is a git commit — run `todomd init` inside a git repo).
-- A logged-in **`claude`** CLI — install Claude Code and run `claude` once to sign in. Driving Codex cards also needs **`codex`** logged in (`codex login`). todomd never sees your credentials; it spawns the CLIs you've already authenticated.
+- A logged-in **agent CLI** — **`claude`** (the default) and/or **`codex`**; install whichever you'll use and run it once to sign in (`claude`, or `codex login`). Set the default with `default_agent` in `.todomd/config.yml`, or choose per card. todomd never sees your credentials; it spawns the CLIs you've already authenticated.
 
 > **Vendor support is uneven.** `claude` is the primary, fully-featured path (the Stop-hook build quality-gate is claude-only). `codex` works, but its build stage has no Stop-hook gate — the independent **Verify** stage is the only gate, and its reported cost shows as $0. Other vendors (Copilot, Antigravity) aren't implemented yet. Set a card's vendor with `agent:` frontmatter or the column's `stages:` config.
 

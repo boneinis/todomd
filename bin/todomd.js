@@ -41,8 +41,8 @@ const isGitRepo = (dir) => {
   try { execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, stdio: 'ignore' }); return true; }
   catch { return false; }
 };
-const claudeAvailable = () => {
-  try { execFileSync('claude', ['--version'], { stdio: 'ignore' }); return true; }
+const onPath = (bin) => {
+  try { execFileSync(bin, ['--version'], { stdio: 'ignore' }); return true; }
   catch { return false; }
 };
 
@@ -60,9 +60,13 @@ if (cmd === 'init') {
     console.log('\nnote: this repo gitignores .claude/ — the pipeline commands work locally but');
     console.log('      won\'t be committed/shared. `git add -f .claude/commands` to share them.');
   } catch { /* not ignored — good */ }
-  if (!claudeAvailable()) {
-    console.log('\nnote: the `claude` CLI isn\'t on PATH. Install it and run `claude` once to log in');
-    console.log('      before driving the pipeline (Codex cards need `codex` logged in too).');
+  const haveClaude = onPath('claude'), haveCodex = onPath('codex');
+  if (!haveClaude && !haveCodex) {
+    console.log('\nnote: no agent CLI on PATH. Install `claude` (the default) or `codex`, run it once');
+    console.log('      to log in, then drive the pipeline. todomd just spawns the CLI you authenticate.');
+  } else if (!haveClaude) {
+    console.log('\nnote: using `codex` (claude not on PATH) — set `default_agent: codex` in .todomd/config.yml,');
+    console.log('      or pick the agent per card. (`claude` is the default; install it for claude cards.)');
   }
   console.log('\nrun `todomd` to open the board.');
   process.exit(0);
