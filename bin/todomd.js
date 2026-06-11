@@ -11,7 +11,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|intake-test <project>] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
 const VALUE_FLAGS = new Set(['--port']);
@@ -120,6 +120,30 @@ if (cmd === 'intake-test') {
     console.log(`✓ connected to ${name} (${r.kind}): folder "${r.folder}", ${r.unseen} unseen message(s)${routing}`);
   } else console.error(`✗ ${r.error}`);
   process.exit(r.ok ? 0 : 1);
+}
+
+if (cmd === 'upgrade-commands') {
+  if (!isGitRepo(process.cwd())) {
+    console.error('⚠ not a git repo — run from inside a repo with an existing board.');
+    process.exit(1);
+  }
+  const { CMD_PLAN, CMD_BUILD, CMD_VERIFY, CMD_DISPATCH, CMD_TRIAGE } = await import('../src/templates.js');
+  const commands = [
+    ['todomd-plan', CMD_PLAN],
+    ['todomd-build', CMD_BUILD],
+    ['todomd-verify', CMD_VERIFY],
+    ['todomd-dispatch', CMD_DISPATCH],
+    ['todomd-triage', CMD_TRIAGE],
+  ];
+  const updated = [];
+  for (const [name, content] of commands) {
+    const dest = path.join(process.cwd(), '.claude', 'commands', `${name}.md`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, content);
+    updated.push(path.relative(process.cwd(), dest));
+  }
+  console.log(`upgraded ${updated.length} command file(s):\n  ${updated.join('\n  ')}`);
+  process.exit(0);
 }
 
 if (cmd === 'fanout') {
