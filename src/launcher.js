@@ -12,17 +12,32 @@ function copyIfPresent(src, dest) {
 // The shell body shared by every platform's launcher: ensure the server is up
 // (start it detached if not), then open the board in the browser. Re-launching
 // just re-opens the board — the detached server keeps running.
-function unixScript(nodeBin, todomdBin, port, openCmd) {
+function unixScript(nodeBin, todomdBin, root, port, openCmd) {
   // port check uses bash's /dev/tcp (no curl dependency); server.log is created
-  // 0600 since `serve` prints the token in its URL line.
+  // 0600 since `serve` prints the token in its URL line. Auto-restart: if any
+  // source file is newer than the running server (a git pull / code change), the
+  // detached server is stale — stop and relaunch it so the new code takes effect.
   return `#!/bin/bash
 PORT=${port}
+NODE="${nodeBin}"
+BIN="${todomdBin}"
+ROOT="${root}"
+PIDFILE="$HOME/.todomd/server.pid"
 mkdir -p "$HOME/.todomd"
 up() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
-if ! up; then
+start() {
   touch "$HOME/.todomd/server.log"; chmod 600 "$HOME/.todomd/server.log"
-  nohup "${nodeBin}" "${todomdBin}" serve --no-open --port $PORT >> "$HOME/.todomd/server.log" 2>&1 &
+  nohup "$NODE" "$BIN" serve --no-open --port $PORT >> "$HOME/.todomd/server.log" 2>&1 &
   for i in $(seq 1 20); do up && break; sleep 0.5; done
+}
+if up; then
+  if [ -f "$PIDFILE" ] && [ -n "$(find "$ROOT/src" "$ROOT/bin" "$ROOT/public" -type f -newer "$PIDFILE" -print -quit 2>/dev/null)" ]; then
+    "$NODE" "$BIN" stop >/dev/null 2>&1
+    for i in $(seq 1 20); do up || break; sleep 0.3; done
+    start
+  fi
+else
+  start
 fi
 TOKEN=$(cat "$HOME/.todomd/token" 2>/dev/null)
 ${openCmd} "http://127.0.0.1:$PORT/?token=$TOKEN"
@@ -34,7 +49,8 @@ function macApp(nodeBin, todomdBin, port, home) {
   const macos = path.join(appDir, 'Contents', 'MacOS');
   fs.mkdirSync(macos, { recursive: true });
   const exe = path.join(macos, 'todomd');
-  fs.writeFileSync(exe, unixScript(nodeBin, todomdBin, port, 'open'));
+  const root = path.dirname(path.dirname(todomdBin)); // <checkout>/bin/todomd.js → <checkout>
+  fs.writeFileSync(exe, unixScript(nodeBin, todomdBin, root, port, 'open'));
   fs.chmodSync(exe, 0o755);
   // ship the prebuilt .icns so the .app shows the todomd icon (no rasterizer
   // needed on the user's machine) — only declare CFBundleIconFile if it copied
@@ -64,7 +80,8 @@ function linuxDesktop(nodeBin, todomdBin, port, home) {
   const scriptDir = path.join(home, '.todomd');
   fs.mkdirSync(scriptDir, { recursive: true });
   const script = path.join(scriptDir, 'launch.sh');
-  fs.writeFileSync(script, unixScript(nodeBin, todomdBin, port, 'xdg-open'));
+  const root = path.dirname(path.dirname(todomdBin));
+  fs.writeFileSync(script, unixScript(nodeBin, todomdBin, root, port, 'xdg-open'));
   fs.chmodSync(script, 0o755);
   // ship the SVG into ~/.todomd and point the entry at it (.desktop supports SVG)
   const iconPath = path.join(scriptDir, 'icon.svg');
