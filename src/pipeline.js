@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
-import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, createCard, parseChunks } from './board.js';
+import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks } from './board.js';
+import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
@@ -306,19 +307,24 @@ export async function humanMove(project, id, to) {
       // approving an epic starts the cascade — it never builds itself; it parks
       // in Queue as a tracker while its chunk children build in sequence
       const moved = await moveCard(project.path, id, 'Queue', { reason: 'epic approved — chunks building' });
-      if (moved.ok && !moved.unchanged && (config.mode || 'launcher') !== 'budget') await advanceChildren(project, id);
+      if (moved.ok && !moved.unchanged) {
+        if ((config.mode || 'launcher') !== 'budget') {
+          await advanceChildren(project, id);
+        } else {
+          // budget mode: move chunk-1 to Queue so the dispatcher picks it up;
+          // enqueueBuild is not called — the /loop dispatcher drives builds
+          await advanceEpicChildren(project.path, id);
+        }
+      }
       return moved;
     }
     // a plan that was SPLIT into chunks but never fanned out into child cards has
-    // no epic flag — fan-out is launcher-only (in budget mode the dispatcher just
-    // sets Planned). Approving it would build the whole epic as one monolith, so
-    // refuse with a clear path forward. A real launcher epic carries epic:true and
-    // already returned above, so this only catches the unmaterialized case.
+    // no epic flag. Approving it would build the whole epic as one monolith, so
+    // refuse with a clear path forward. A real launcher/budget epic that was
+    // properly fanned out carries epic:true and already returned above, so this
+    // only catches the unmaterialized case.
     if (parseChunks(card.body).length >= 2) {
-      const why = (config.mode || 'launcher') === 'budget'
-        ? 'chunk fan-out runs only under the launcher server, not in budget mode'
-        : 'the plan was split into chunks but no chunk cards were created';
-      return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (${why}). Re-plan it as a single task, or build this board under the launcher.` };
+      return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
     }
     const deps = card.data.dependencies || [];
     // include archived cards so a completed-then-archived dependency still counts
@@ -500,57 +506,15 @@ async function handleRunFailure(project, id, stageName, result, revertTo) {
 // tracker. Because each chunk is gated behind its predecessor's Done (= merged),
 // its build worktree forks from a main that already contains the earlier chunks.
 async function fanOutChunks(project, epicId, chunks) {
-  const epic = readCard(project.path, epicId);
-  const epicType = epic?.data?.type;
-  const epicAgent = epic?.data?.agent;
-  const epicModel = epic?.data?.model;
-  const ids = [];
-  let prev = null;
-  for (let i = 0; i < chunks.length; i++) {
-    const c = chunks[i];
-    const res = await createCard(project.path, {
-      title: c.title,
-      description: c.title,
-      type: c.type || epicType,
-      criteria: c.criteria,
-      plan: c.plan,
-      dependencies: prev ? [prev] : [],
-      parent: epicId,
-      status: 'Planned',
-      triaged: `n/a (chunk ${i + 1}/${chunks.length} of ${epicId})`,
-      agent: epicAgent,
-      model: epicModel,
-      source: 'chunk',
-    });
-    if (!res.ok) {
-      await appendRunLog(project.path, epicId, `  - ⚠ chunk ${i + 1} create failed: ${res.error || 'unknown'}`);
-      continue;
-    }
-    ids.push(res.id);
-    prev = res.id;
-  }
-  if (!ids.length) {
-    // nothing materialized — don't strand the epic; keep it as a normal plan card
-    await orchMove(project, epicId, 'Planned', 'split produced no chunks; kept as one card');
-    return;
-  }
-  await patchFrontmatter(project.path, epicId, { epic: true, children: ids });
-  await appendRunLog(project.path, epicId,
-    `- ${now()} · Plan · split into ${ids.length} sequential chunks: ${ids.join(' → ')}`);
-  await orchMove(project, epicId, 'Planned', `split into ${ids.length} chunks`);
+  return materializeChunks(project.path, epicId, chunks);
 }
 
 // Release every chunk child of an epic whose dependencies are all Done — move it
 // Planned → Queue and enqueue its build. Called when the epic is approved
 // (releases chunk 1) and each time a chunk finishes (releases the next one).
 async function advanceChildren(project, epicId) {
-  const board = loadBoard(project.path, { includeArchived: true });
-  for (const child of board.cards.filter((c) => c.parent === epicId && c.status === 'Planned' && !c.epic)) {
-    const blocked = (child.dependencies || []).filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
-    if (blocked.length) continue;
-    const mv = await moveCard(project.path, child.id, 'Queue', { reason: 'chunk ready' });
-    if (mv.ok && !mv.unchanged) enqueueBuild(project, child.id);
-  }
+  const moved = await advanceEpicChildren(project.path, epicId);
+  for (const id of moved) enqueueBuild(project, id);
 }
 
 // A chunk child reached Done: release the next ready chunk and, once every chunk
