@@ -8,7 +8,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig, setArchived, deleteCard, listSkills, readRunLog } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, setArchived, deleteCard, listSkills, readRunLog } from './board.js';
 import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
@@ -216,15 +216,16 @@ export function startServer({ port = 7337, lan = false } = {}) {
     if (cmdMatch) {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
       if (req.method === 'GET') {
-        const content = readCommandFile(project.path, cmdMatch[1]);
-        return content === null ? json(res, 400, { error: 'bad command name' }) : json(res, 200, { name: cmdMatch[1], content });
+        const parts = readCommandParts(project.path, cmdMatch[1]);
+        return parts === null ? json(res, 400, { error: 'bad command name' }) : json(res, 200, parts);
       }
       if (req.method === 'POST') {
+        // only the editable region is writable — the locked core is preserved
         let body = '';
         for await (const chunk of req) body += chunk;
-        let content;
-        try { ({ content } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-        const result = await writeCommandFile(project.path, cmdMatch[1], content);
+        let custom;
+        try { ({ custom } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        const result = await writeCommandCustom(project.path, cmdMatch[1], custom);
         return json(res, result.ok ? 200 : 400, result);
       }
     }

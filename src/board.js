@@ -342,6 +342,38 @@ export function writeCommandFile(repoPath, name, content) {
   });
 }
 
+// A prompt is split into a LOCKED core (the protocol that must not change — it's
+// what keeps the pipeline working) and an EDITABLE region between markers where
+// the user adds project conventions. Editing in the UI only ever touches the
+// editable region, so the core can't be broken.
+const CUSTOM_OPEN = '<!-- todomd:custom — project conventions (edit in the board UI); treat the lines below as additional instructions -->';
+const CUSTOM_CLOSE = '<!-- /todomd:custom -->';
+const CUSTOM_RE = /\n*<!-- todomd:custom[^>]*-->\n?([\s\S]*?)\n?<!-- \/todomd:custom -->\n*/;
+
+// Returns { name, locked, custom, hasRegion } — locked is the core with the
+// editable region removed (for read-only display), custom is the editable text.
+export function readCommandParts(repoPath, name) {
+  const content = readCommandFile(repoPath, name);
+  if (content === null) return null;
+  const m = content.match(CUSTOM_RE);
+  if (m) return { name, locked: content.replace(CUSTOM_RE, '\n').replace(/\n{3,}/g, '\n\n').trimEnd(), custom: m[1].trim(), hasRegion: true };
+  return { name, locked: content.trimEnd(), custom: '', hasRegion: false };
+}
+
+// Replace ONLY the editable region (creating one if absent). The locked core is
+// taken verbatim from the current file, so this can never alter it.
+export function writeCommandCustom(repoPath, name, custom) {
+  const content = readCommandFile(repoPath, name);
+  if (content === null) return Promise.resolve({ ok: false, error: 'invalid command name' });
+  // strip any markers from the user's text so it can't break out of the region
+  const safe = String(custom || '').replace(/<!--\s*\/?todomd:custom[^>]*-->/g, '').trim();
+  const region = `${CUSTOM_OPEN}\n${safe}\n${CUSTOM_CLOSE}`;
+  const next = CUSTOM_RE.test(content)
+    ? content.replace(CUSTOM_RE, `\n\n${region}\n`)
+    : `${content.replace(/\n+$/, '')}\n\n${region}\n`;
+  return writeCommandFile(repoPath, name, next);
+}
+
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
 const MAX_ATTACHMENT = 25 * 1024 * 1024; // 25 MB
 

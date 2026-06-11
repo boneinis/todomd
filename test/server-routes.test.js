@@ -151,15 +151,19 @@ test('API attachments + /api/file containment, projects, commands, resume-queues
     r = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: '{"path":""}' });
     assert.equal(r.status, 400);
 
-    // commands: list, read, write a column prompt
+    // commands: list, read the locked core + editable region, write ONLY the custom region
     r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
     assert.ok(Array.isArray((await r.json()).commands));
     r = await fetch(`${base}/api/commands/todomd-plan${q}`, { headers: { 'x-todomd-token': tok } });
+    const before = await r.json();
     assert.equal(r.status, 200);
-    r = await fetch(`${base}/api/commands/todomd-plan${q}`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: '{"content":"---\\n---\\ncustom plan body\\n"}' });
+    assert.ok(before.locked.includes('stub'), 'returns the locked core');
+    r = await fetch(`${base}/api/commands/todomd-plan${q}`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: '{"custom":"follow our naming conventions"}' });
     assert.equal(r.status, 200);
     r = await fetch(`${base}/api/commands/todomd-plan${q}`, { headers: { 'x-todomd-token': tok } });
-    assert.match((await r.json()).content, /custom plan body/, 'the edited prompt persisted');
+    const after = await r.json();
+    assert.match(after.custom, /naming conventions/, 'the custom region persisted');
+    assert.ok(after.locked.includes('stub'), 'the locked core is preserved');
     // a bad command name (not [\w-]) is not routed → 404
     assert.equal((await fetch(`${base}/api/commands/todomd..evil${q}`, { headers: { 'x-todomd-token': tok } })).status, 404);
 

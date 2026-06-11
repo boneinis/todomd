@@ -256,3 +256,26 @@ test('readRunLog returns the newest run jsonl events (for drawer back-fill)', ()
   // no runs dir → empty, not a throw
   assert.deepEqual(readRunLog(repo, 'task-9999'), { stage: null, events: [] });
 });
+
+test('writeCommandCustom edits ONLY the editable region; the locked core is protected', async () => {
+  const { readCommandParts, writeCommandCustom } = await import('../src/board.js');
+  const repo = makeRepo(); // stub command is "---\n---\nstub $ARGUMENTS"
+  let parts = readCommandParts(repo, 'todomd-build');
+  assert.match(parts.locked, /stub \$ARGUMENTS/);
+  assert.equal(parts.custom, '');
+
+  assert.equal((await writeCommandCustom(repo, 'todomd-build', 'always add a unit test')).ok, true);
+  parts = readCommandParts(repo, 'todomd-build');
+  assert.equal(parts.custom, 'always add a unit test');
+  assert.match(parts.locked, /stub \$ARGUMENTS/, 'core preserved on first edit');
+
+  await writeCommandCustom(repo, 'todomd-build', 'use 2-space indent'); // replaces region, not core
+  parts = readCommandParts(repo, 'todomd-build');
+  assert.equal(parts.custom, 'use 2-space indent');
+  assert.match(parts.locked, /stub \$ARGUMENTS/);
+
+  // a close-marker injected by the user can't escape the region into the core
+  await writeCommandCustom(repo, 'todomd-build', 'x <!-- /todomd:custom --> CORE-INJECTION');
+  parts = readCommandParts(repo, 'todomd-build');
+  assert.ok(!parts.locked.includes('CORE-INJECTION'), 'injected close-marker cannot reach the locked core');
+});

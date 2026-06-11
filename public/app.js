@@ -158,7 +158,13 @@ function renderBoard() {
     colEl.className = 'column';
     colEl.style.setProperty('--col', color);
     colEl.dataset.status = col;
-    colEl.innerHTML = `<header class="col-head"><span>${esc(col)}</span><span class="col-count">[${cards.length}]</span></header>`;
+    // columns that run a prompt get an inline edit affordance (full-access only)
+    const stages = boardData.config.stages || {};
+    const cmd = stages[col]?.command || (['Plan', 'Build', 'Verify'].includes(col) ? `todomd-${col.toLowerCase()}` : null);
+    const editBtn = (cmd && boardData.access !== 'viewer')
+      ? `<button class="col-edit" data-cmd="${esc(cmd)}" title="edit the ${esc(col)} prompt">✎ prompt</button>` : '';
+    colEl.innerHTML = `<header class="col-head"><span>${esc(col)}</span><span class="col-head-right"><span class="col-count">[${cards.length}]</span>${editBtn}</span></header>`;
+    colEl.querySelector('.col-edit')?.addEventListener('click', (e) => { e.stopPropagation(); openPromptEditor(e.currentTarget.dataset.cmd); });
     const list = document.createElement('div');
     list.className = 'col-cards';
     if (!cards.length) list.innerHTML = `<p class="col-empty">empty</p>`;
@@ -550,24 +556,28 @@ $('#theme-btn').addEventListener('click', () => {
   localStorage.setItem('todomd-theme', light ? 'light' : 'dark');
 });
 
-/* ── edit column prompts ── */
+/* ── edit column prompts (locked core + editable custom region) ── */
 let promptCommands = [];
 async function loadPromptCommand(command) {
   const out = await api(`commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`);
-  $('#prompt-text').value = out.content;
+  $('#prompt-locked').textContent = out.locked || '';
+  $('#prompt-custom').value = out.custom || '';
   const item = promptCommands.find((c) => c.command === command);
-  $('#prompt-meta').textContent = item ? `${item.command}.md${item.model ? ` · model ${item.model}` : ''}${item.exists ? '' : ' · (new)'}` : '';
+  $('#prompt-meta').textContent = item ? `${item.command}.md${item.model ? ` · model ${item.model}` : ''}${item.exists ? '' : ' · (new)'}` : `${command}.md`;
 }
-$('#prompts-btn').addEventListener('click', async () => {
+// open the editor, optionally pre-targeted to a column's command
+async function openPromptEditor(command) {
   if (!currentProject) return;
   try {
     const { commands } = await api(`commands?project=${encodeURIComponent(currentProject)}`);
     promptCommands = commands;
     $('#prompt-select').innerHTML = commands.map((c) => `<option value="${esc(c.command)}">${esc(c.column)} — ${esc(c.command)}</option>`).join('');
-    if (commands.length) await loadPromptCommand(commands[0].command);
+    const target = (command && commands.some((c) => c.command === command)) ? command : commands[0]?.command;
+    if (target) { $('#prompt-select').value = target; await loadPromptCommand(target); }
     $('#prompts-backdrop').hidden = false;
   } catch (e) { toast(e.message); }
-});
+}
+$('#prompts-btn').addEventListener('click', () => openPromptEditor());
 $('#prompt-select').addEventListener('change', (e) => loadPromptCommand(e.target.value).catch((x) => toast(x.message)));
 $('#prompts-close').addEventListener('click', () => { $('#prompts-backdrop').hidden = true; });
 $('#prompts-backdrop').addEventListener('click', (e) => { if (e.target.id === 'prompts-backdrop') $('#prompts-backdrop').hidden = true; });
@@ -575,7 +585,7 @@ $('#prompt-save').addEventListener('click', async () => {
   const command = $('#prompt-select').value;
   try {
     const res = await fetch(`/api/commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`, {
-      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ content: $('#prompt-text').value }),
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ custom: $('#prompt-custom').value }),
     });
     const out = await res.json();
     toast(res.ok ? `saved ${command}` : (out.error || 'save failed'));

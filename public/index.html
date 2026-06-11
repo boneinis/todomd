@@ -136,13 +136,16 @@
 
 <div id="prompts-backdrop" class="modal-backdrop" hidden>
   <div class="modal prompts-modal">
-    <h2>column prompts</h2>
-    <p class="qr-note">Each pipeline column runs a command — its <code>.claude/commands/*.md</code> file is the prompt the agent executes (<code>$ARGUMENTS</code> = the task id). Edit and save; it's committed to the repo.</p>
+    <h2>edit prompt</h2>
     <div class="prompts-row">
       <select id="prompt-select"></select>
       <span id="prompt-meta" class="qr-note"></span>
     </div>
-    <textarea id="prompt-text" class="prompt-text" spellcheck="false"></textarea>
+    <p class="qr-note">The <b>core protocol</b> is locked (read-only) — changing it could break the pipeline. Add your project conventions in the <b>editable</b> box; the agent reads them as extra instructions. Saved &amp; committed to the repo.</p>
+    <label class="prompt-lbl">core protocol — read-only</label>
+    <pre id="prompt-locked" class="prompt-locked"></pre>
+    <label class="prompt-lbl">your custom instructions — editable</label>
+    <textarea id="prompt-custom" class="prompt-text" spellcheck="false" placeholder="e.g. follow our commit conventions · always add a unit test · the API base is https://…"></textarea>
     <div class="modal-actions">
       <button type="button" id="prompts-close" class="drawer-close">close</button>
       <button type="button" id="prompt-save" class="modal-submit">save</button>
