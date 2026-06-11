@@ -23,6 +23,11 @@ NODE="${nodeBin}"
 BIN="${todomdBin}"
 ROOT="${root}"
 PIDFILE="$HOME/.todomd/server.pid"
+# a GUI launch (the .app) gets a minimal PATH, so the detached server can't find
+# agent CLIs installed in user-local dirs — add the common ones so claude/codex
+# (and the install-time PATH) resolve. ~/.local/bin = claude native installer;
+# ~/.npm-global|.npm-packages/bin = npm globals; homebrew dirs too.
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.npm-packages/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}:$PATH"
 mkdir -p "$HOME/.todomd"
 up() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
 start() {
