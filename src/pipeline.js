@@ -447,7 +447,22 @@ async function runTriggerStage(project, id, stageName) {
           await fanOutChunks(project, id, chunks);
         } else {
           if (chunks.length === 1) {
-            await appendRunLog(project.path, id, '  - note: plan proposed a single chunk — kept as one card');
+            await withRepoLock(project.path, async () => {
+              const card = readCard(project.path, id);
+              if (card) {
+                const plan = (chunks[0].plan || '').trimEnd();
+                const header = '## Implementation Plan\n';
+                const idx = card.raw.indexOf(header);
+                if (idx !== -1) {
+                  const afterHeader = idx + header.length;
+                  const nextSection = card.raw.indexOf('\n## ', afterHeader);
+                  const end = nextSection >= 0 ? nextSection + 1 : card.raw.length;
+                  const updated = card.raw.slice(0, afterHeader) + `\n${plan}\n\n` + card.raw.slice(end);
+                  fs.writeFileSync(path.join(project.path, '.todomd', 'tasks', card.file), updated);
+                }
+              }
+            });
+            await appendRunLog(project.path, id, '  - note: single-chunk plan folded into Implementation Plan');
           }
           await orchMove(project, id, 'Planned', 'plan complete');
         }
