@@ -46,10 +46,12 @@ export function makeRepo({ triage = false } = {}) {
   fs.writeFileSync(path.join(repo, '.todomd/config.yml'),
     `columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]\n` +
     `mode: launcher\nverify_command: npm test\nmax_attempts: 3\nconcurrency: 1\n` +
+    `default_agent: claude\n` +
     `triage:\n  enabled: ${triage}\n  model: sonnet\n` +
-    `stages:\n  Plan: { command: todomd-plan, model: sonnet }\n` +
-    `  Build: { command: todomd-build, model: sonnet }\n` +
-    `  Verify: { command: todomd-verify, model: haiku }\n`);
+    `stages:\n` +
+    `  Plan:\n    command: todomd-plan\n    model: sonnet\n` +
+    `  Build:\n    command: todomd-build\n    model: sonnet\n` +
+    `  Verify:\n    command: todomd-verify\n    model: haiku\n`);
   // pipeline commands referenced by name (the fake agent ignores their content)
   fs.mkdirSync(path.join(repo, '.claude/commands'), { recursive: true });
   for (const c of ['plan', 'build', 'verify', 'triage', 'dispatch']) {

@@ -201,8 +201,9 @@ function renderBoard() {
     // columns that run a prompt get an inline edit affordance (full-access only).
     // Review maps to the triage (auto-review) prompt, which isn't a stage.
     const cmd = columnCommand(col);
+    const stageCol = !!(boardData.config.stages || {})[col];
     const editBtn = (cmd && boardData.access !== 'viewer')
-      ? `<button class="col-edit" data-cmd="${esc(cmd)}" title="edit the ${col === 'Review' ? 'review (triage)' : esc(col)} prompt">✎ prompt</button>` : '';
+      ? `<button class="col-edit" data-cmd="${esc(cmd)}" title="${col === 'Review' ? 'edit the review (triage) prompt' : stageCol ? `${esc(col)} settings — prompt, agent & model` : `edit the ${esc(col)} prompt`}">⚙ ${stageCol ? 'settings' : 'prompt'}</button>` : '';
     colEl.innerHTML = `<header class="col-head"><span class="col-name">${esc(col)} <button class="col-help-btn" title="what does this column do?">?</button></span><span class="col-head-right"><span class="col-count">[${cards.length}]</span>${editBtn}</span></header>`;
     colEl.querySelector('.col-help-btn')?.addEventListener('click', (e) => { e.stopPropagation(); showColHelp(col, e.currentTarget); });
     colEl.querySelector('.col-edit')?.addEventListener('click', (e) => { e.stopPropagation(); openPromptEditor(e.currentTarget.dataset.cmd); });
@@ -597,29 +598,77 @@ $('#theme-btn').addEventListener('click', () => {
   localStorage.setItem('todomd-theme', light ? 'light' : 'dark');
 });
 
-/* ── edit column prompts (locked core + editable custom region) ── */
+/* ── column settings: locked-core/editable prompt + per-column agent/model ── */
 let promptCommands = [];
+let promptDefaults = { agent: 'claude', model: '' };
+let routingColumn = null;
+// the column's effective agent/model = its own override, else the board default
+function renderRoutingNote(item) {
+  const agent = item.agent || `${promptDefaults.agent} (board)`;
+  const model = item.model || (promptDefaults.model ? `${promptDefaults.model} (board)` : 'CLI default');
+  $('#stage-routing-note').textContent = `runs as ${agent} · ${model} — a card can still override per-card`;
+}
+async function updateRoutingRow(item) {
+  const row = $('#prompt-routing');
+  if (!item || !item.stage) { row.hidden = true; routingColumn = null; return; }
+  routingColumn = item.column;
+  $('#stage-agent').value = item.agent || '';
+  $('#stage-model').value = item.model || '';
+  row.hidden = false;
+  await setModelOptions(item.agent || promptDefaults.agent); // suggestions match the effective vendor
+  renderRoutingNote(item);
+}
 async function loadPromptCommand(command) {
   const out = await api(`commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`);
   $('#prompt-locked').textContent = out.locked || '';
   $('#prompt-custom').value = out.custom || '';
   const item = promptCommands.find((c) => c.command === command);
-  $('#prompt-meta').textContent = item ? `${item.command}.md${item.model ? ` · model ${item.model}` : ''}${item.exists ? '' : ' · (new)'}` : `${command}.md`;
+  $('#prompt-meta').textContent = item ? `${item.command}.md${item.exists ? '' : ' · (new)'}` : `${command}.md`;
+  await updateRoutingRow(item);
 }
 // open the editor, optionally pre-targeted to a column's command
 async function openPromptEditor(command) {
   if (!currentProject) return;
   try {
-    const { commands } = await api(`commands?project=${encodeURIComponent(currentProject)}`);
+    const { commands, defaultAgent, defaultModel } = await api(`commands?project=${encodeURIComponent(currentProject)}`);
     promptCommands = commands;
+    promptDefaults = { agent: defaultAgent || 'claude', model: defaultModel || '' };
     $('#prompt-select').innerHTML = commands.map((c) => `<option value="${esc(c.command)}">${esc(c.column)} — ${esc(c.command)}</option>`).join('');
     const target = (command && commands.some((c) => c.command === command)) ? command : commands[0]?.command;
     if (target) { $('#prompt-select').value = target; await loadPromptCommand(target); }
     $('#prompts-backdrop').hidden = false;
   } catch (e) { toast(e.message); }
 }
+// per-column routing saves immediately on change (like the per-card drawer)
+async function saveRouting(patch) {
+  if (!routingColumn || !currentProject) return false;
+  try {
+    const res = await fetch(`/api/stages?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ column: routingColumn, ...patch }),
+    });
+    const out = await res.json();
+    if (!res.ok) { toast(out.error || 'save failed'); return false; }
+    return true;
+  } catch { toast('server unreachable'); return false; }
+}
 $('#prompts-btn').addEventListener('click', () => openPromptEditor());
 $('#prompt-select').addEventListener('change', (e) => loadPromptCommand(e.target.value).catch((x) => toast(x.message)));
+$('#stage-agent').addEventListener('change', async (e) => {
+  const col = routingColumn, item = promptCommands.find((c) => c.column === col);
+  if (await saveRouting({ agent: e.target.value }) && item) {
+    item.agent = e.target.value;
+    await setModelOptions(item.agent || promptDefaults.agent);
+    renderRoutingNote(item); toast(`${col} agent saved`);
+  }
+});
+$('#stage-model').addEventListener('change', async (e) => {
+  const col = routingColumn, item = promptCommands.find((c) => c.column === col);
+  if (await saveRouting({ model: e.target.value }) && item) {
+    item.model = e.target.value.replace(/[^\w.-]/g, '');
+    renderRoutingNote(item); toast(`${col} model saved`);
+  }
+});
 $('#prompts-close').addEventListener('click', () => { $('#prompts-backdrop').hidden = true; });
 $('#prompts-backdrop').addEventListener('click', (e) => { if (e.target.id === 'prompts-backdrop') $('#prompts-backdrop').hidden = true; });
 $('#prompt-save').addEventListener('click', async () => {

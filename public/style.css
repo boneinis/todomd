@@ -376,6 +376,19 @@ body.viewer #manage-projects, body.viewer #intake-btn, body.viewer #prompts-btn 
 .prompts-modal { width: min(760px, 94vw); }
 .prompts-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
 .prompts-row select { background: var(--bg); border: 1px solid var(--line); color: var(--ink); font: inherit; font-size: 12px; padding: 6px 10px; }
+.prompt-routing {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+  margin: 0 0 12px; padding: 10px 12px;
+  background: var(--bg); border: 1px solid var(--line); border-left: 2px solid var(--amber);
+}
+.prompt-routing-title { color: var(--dim); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.prompt-routing label { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
+.prompt-routing select, .prompt-routing input {
+  background: var(--panel, var(--bg)); border: 1px solid var(--line); color: var(--ink);
+  font: inherit; font-size: 12px; padding: 5px 8px; min-width: 130px;
+}
+.prompt-routing select:focus, .prompt-routing input:focus { outline: none; border-color: var(--amber); }
+.prompt-routing #stage-routing-note { flex-basis: 100%; margin: 0; }
 .prompt-text {
   width: 100%; height: 46vh; resize: vertical; box-sizing: border-box;
   background: var(--bg); border: 1px solid var(--line); color: var(--ink);

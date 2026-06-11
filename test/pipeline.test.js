@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp } from './helpers.js';
-import { readCard } from '../src/board.js';
+import { readCard, setStageRouting, patchFrontmatter } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
 
@@ -34,6 +34,31 @@ test('happy path: Review → Plan → Planned → Queue → Build → Verify →
   assert.match(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/);
   assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')));
   assert.equal(readCard(repo, 'task-0001').data.verification.last_verdict, 'pass');
+  clearFakeAgent();
+});
+
+test('stage routing precedence: a column agent gates the queue; a card agent overrides it', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+
+  // column-level Build agent is an unsupported vendor — proves the gate reads the
+  // column tier (the board default_agent is the supported `claude`, yet it fails)
+  await setStageRouting(repo, 'Build', { agent: 'gemini' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  await patchFrontmatter(repo, 'task-0001', { agent: '' }); // clear card override → column tier applies
+  let r = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /gemini.*not supported/);
+  assert.equal(status(repo, 'task-0001'), 'Planned'); // didn't move
+
+  // a card-level agent overrides the column → gate passes → chain runs to Done
+  await patchFrontmatter(repo, 'task-0001', { agent: 'claude' });
+  r = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(r.ok, true);
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
   clearFakeAgent();
 });
 

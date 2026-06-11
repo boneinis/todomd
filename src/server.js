@@ -8,7 +8,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, setArchived, deleteCard, listSkills, readRunLog } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, setArchived, deleteCard, listSkills, readRunLog, setStageRouting } from './board.js';
 import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
@@ -207,13 +207,15 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
       const cfg = loadConfig(project.path);
       const list = [];
+      // stage columns carry per-column agent/model routing (the "column" tier);
+      // triage/dispatch don't, so they're flagged stage:false to hide selectors
       for (const [col, s] of Object.entries(cfg.stages || {})) {
-        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '' });
+        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', agent: s.agent || '', stage: true });
       }
-      if (cfg.triage) list.push({ column: 'Triage (auto)', command: cfg.triage.command || 'todomd-triage', model: cfg.triage.model || '' });
-      list.push({ column: 'Dispatch (budget mode)', command: 'todomd-dispatch', model: '' });
+      if (cfg.triage) list.push({ column: 'Triage (auto)', command: cfg.triage.command || 'todomd-triage', model: cfg.triage.model || '', stage: false });
+      list.push({ column: 'Dispatch (budget mode)', command: 'todomd-dispatch', model: '', stage: false });
       for (const it of list) it.exists = fs.existsSync(path.join(project.path, '.claude', 'commands', `${it.command}.md`));
-      return json(res, 200, { commands: list });
+      return json(res, 200, { commands: list, defaultAgent: cfg.default_agent || 'claude', defaultModel: cfg.default_model || '' });
     }
     const cmdMatch = url.pathname.match(/^\/api\/commands\/([\w-]+)$/);
     if (cmdMatch) {
@@ -233,6 +235,25 @@ export function startServer({ port = 7337, lan = false } = {}) {
       }
     }
 
+    // per-column agent/model routing (the "column" tier). Full token only.
+    if (url.pathname === '/api/stages' && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let fields;
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const col = String(fields.column || '');
+      const cfg = loadConfig(project.path);
+      if (!(cfg.stages || {})[col]) return json(res, 400, { error: `unknown stage column: ${col}` });
+      const updates = {};
+      if ('agent' in fields) {
+        if (fields.agent && !['claude', 'codex'].includes(fields.agent)) return json(res, 400, { error: 'agent must be claude or codex' });
+        updates.agent = fields.agent || '';
+      }
+      if ('model' in fields) updates.model = String(fields.model || '');
+      const result = await setStageRouting(project.path, col, updates);
+      return json(res, result.ok ? 200 : 400, result);
+    }
     if (url.pathname === '/api/board') {
       const board = loadBoard(project.path, { includeArchived: url.searchParams.get('archived') === '1' });
       return json(res, 200, {

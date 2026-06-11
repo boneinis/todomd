@@ -137,10 +137,24 @@
 
 <div id="prompts-backdrop" class="modal-backdrop" hidden>
   <div class="modal prompts-modal">
-    <h2>edit prompt</h2>
+    <h2>column settings</h2>
     <div class="prompts-row">
       <select id="prompt-select"></select>
       <span id="prompt-meta" class="qr-note"></span>
+    </div>
+    <div id="prompt-routing" class="prompt-routing" hidden>
+      <span class="prompt-routing-title">runs on</span>
+      <label>agent
+        <select id="stage-agent">
+          <option value="">board default</option>
+          <option value="claude">claude</option>
+          <option value="codex">codex</option>
+        </select>
+      </label>
+      <label>model
+        <input id="stage-model" list="model-options" placeholder="board default" autocomplete="off" />
+      </label>
+      <span id="stage-routing-note" class="qr-note"></span>
     </div>
     <p class="qr-note">The <b>core protocol</b> is locked (read-only) — changing it could break the pipeline. Add your project conventions in the <b>editable</b> box; the agent reads them as extra instructions. Saved &amp; committed to the repo.</p>
     <label class="prompt-lbl">core protocol — read-only</label>

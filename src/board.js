@@ -33,6 +33,101 @@ export function loadConfig(repoPath) {
   }
 }
 
+// Per-column agent/model override — the "column" tier of card → column → board.
+// A comment-preserving, block-format line patch of .todomd/config.yml's
+// `stages.<col>` map: sets the agent/model line, or removes it when the value is
+// empty (so the column falls back to the board default). js-yaml.dump would
+// strip the file's comments, so we patch the lines in place instead.
+export function setStageRouting(repoPath, col, updates) {
+  return withRepoLock(repoPath, async () => {
+    const file = path.join(repoPath, '.todomd', 'config.yml');
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); }
+    catch { return { ok: false, error: 'no config.yml' }; }
+    const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+    const lines = raw.split(/\r?\n/);
+
+    // sanitize: agent is an enum-ish slug, model is [\w.-]; '' clears the override
+    const clean = {};
+    if ('agent' in updates) clean.agent = String(updates.agent || '').replace(/[^\w-]/g, '');
+    if ('model' in updates) clean.model = String(updates.model || '').replace(/[^\w.-]/g, '');
+    if (!Object.keys(clean).length) return { ok: true, unchanged: true };
+
+    const commit = () => commitPaths(repoPath, [path.join('.todomd', 'config.yml')],
+      `chore(todomd): ${col} stage routing`);
+
+    // find the top-level `stages:` key and the extent of its indented block
+    const esc = col.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let si = lines.findIndex((l) => /^stages:\s*$/.test(l));
+    if (si === -1) {
+      const block = [`  ${col}:`];
+      for (const [k, v] of Object.entries(clean)) if (v) block.push(`    ${k}: ${v}`);
+      if (block.length === 1) return { ok: true, unchanged: true };
+      const body = raw.replace(/\s*$/, '') + eol + eol + 'stages:' + eol + block.join(eol) + eol;
+      fs.writeFileSync(file, body);
+      return { ok: true, commit: await commit() };
+    }
+    let se = lines.length;
+    for (let i = si + 1; i < lines.length; i++) {
+      if (lines[i].trim() === '') continue;     // blanks stay inside the block
+      if (/^\s/.test(lines[i])) continue;       // indented → still inside stages
+      se = i; break;                            // first column-0 non-blank ends it
+    }
+    while (se > si + 1 && lines[se - 1].trim() === '') se--; // ignore trailing blanks
+
+    // locate this column's header line within the block
+    const headerRe = new RegExp(`^(\\s+)${esc}:(.*)$`);
+    let ci = -1, colIndent = 2, propIndent = '    ';
+    for (let i = si + 1; i < se; i++) {
+      const m = lines[i].match(headerRe);
+      if (!m) continue;
+      if (m[2].trim() !== '') {
+        return { ok: false, error: `stages.${col} is written inline — convert it to a block to edit routing here` };
+      }
+      ci = i; colIndent = m[1].length;
+      break;
+    }
+
+    if (ci === -1) {
+      const block = [`  ${col}:`];
+      for (const [k, v] of Object.entries(clean)) if (v) block.push(`    ${k}: ${v}`);
+      if (block.length === 1) return { ok: true, unchanged: true };
+      lines.splice(se, 0, ...block);
+      fs.writeFileSync(file, lines.join(eol));
+      return { ok: true, commit: await commit() };
+    }
+
+    // column sub-block extent [ci+1, ce); adopt its existing child indent
+    let ce = se;
+    for (let i = ci + 1; i < se; i++) {
+      if (lines[i].trim() === '') continue;
+      if (lines[i].search(/\S/) <= colIndent) { ce = i; break; }
+    }
+    for (let i = ci + 1; i < ce; i++) {
+      if (lines[i].trim() !== '') { propIndent = lines[i].match(/^\s*/)[0]; break; }
+    }
+
+    let insertAt = ci + 1;
+    for (const [k, v] of Object.entries(clean)) {
+      const keyRe = new RegExp(`^\\s+${k}:`);
+      let found = -1;
+      for (let i = ci + 1; i < ce; i++) {
+        if (keyRe.test(lines[i]) && lines[i].search(/\S/) > colIndent) { found = i; break; }
+      }
+      if (v) {
+        const newLine = `${propIndent}${k}: ${v}`;
+        if (found >= 0) lines[found] = newLine;
+        else { lines.splice(insertAt, 0, newLine); insertAt++; ce++; }
+      } else if (found >= 0) {
+        lines.splice(found, 1); ce--;
+        if (found < insertAt) insertAt--;
+      }
+    }
+    fs.writeFileSync(file, lines.join(eol));
+    return { ok: true, commit: await commit() };
+  });
+}
+
 function tasksDir(repoPath) {
   return path.join(repoPath, '.todomd', 'tasks');
 }

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog } from '../src/board.js';
+import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig } from '../src/board.js';
 
 test('loadBoard parses cards and criteria progress', () => {
   const repo = makeRepo();
@@ -278,4 +278,57 @@ test('writeCommandCustom edits ONLY the editable region; the locked core is prot
   await writeCommandCustom(repo, 'todomd-build', 'x <!-- /todomd:custom --> CORE-INJECTION');
   parts = readCommandParts(repo, 'todomd-build');
   assert.ok(!parts.locked.includes('CORE-INJECTION'), 'injected close-marker cannot reach the locked core');
+});
+
+test('setStageRouting sets a column agent/model and config still parses', async () => {
+  const repo = makeRepo();
+  const r = await setStageRouting(repo, 'Build', { agent: 'codex', model: 'gpt-5-codex' });
+  assert.equal(r.ok, true);
+  const cfg = loadConfig(repo);
+  assert.equal(cfg.stages.Build.agent, 'codex');
+  assert.equal(cfg.stages.Build.model, 'gpt-5-codex');
+  // a sibling column is untouched
+  assert.equal(cfg.stages.Verify.model, 'haiku');
+  assert.equal(cfg.stages.Verify.agent, undefined);
+});
+
+test('setStageRouting updates an existing model line in place (no duplicate key)', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/config.yml');
+  const before = (fs.readFileSync(file, 'utf8').match(/^\s+model:/gm) || []).length; // triage + 3 stages
+  await setStageRouting(repo, 'Plan', { model: 'opus' });
+  const raw = fs.readFileSync(file, 'utf8');
+  assert.equal((raw.match(/^\s+model:/gm) || []).length, before); // in-place update — no new line
+  assert.equal((raw.match(/model: opus/g) || []).length, 1);
+  assert.equal(loadConfig(repo).stages.Plan.model, 'opus');
+});
+
+test('setStageRouting with empty value clears the override (falls back to board)', async () => {
+  const repo = makeRepo();
+  await setStageRouting(repo, 'Build', { agent: 'codex' });
+  await setStageRouting(repo, 'Build', { agent: '' });
+  const cfg = loadConfig(repo);
+  assert.equal(cfg.stages.Build.agent, undefined); // cleared
+  assert.equal(cfg.stages.Build.model, 'sonnet');  // model line preserved
+});
+
+test('setStageRouting preserves comments and unrelated keys', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + '# trailing note\n');
+  await setStageRouting(repo, 'Verify', { agent: 'claude' });
+  const raw = fs.readFileSync(file, 'utf8');
+  assert.match(raw, /# trailing note/);
+  assert.equal(loadConfig(repo).default_agent, 'claude');
+});
+
+test('setStageRouting refuses an inline stage map rather than corrupting it', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8')
+    .replace(/  Build:\n    command: todomd-build\n    model: sonnet\n/, '  Build: { command: todomd-build, model: sonnet }\n'));
+  const r = await setStageRouting(repo, 'Build', { agent: 'codex' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /inline/);
+  assert.equal(loadConfig(repo).stages.Build.command, 'todomd-build'); // untouched, still valid
 });

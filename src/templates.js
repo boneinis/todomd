@@ -18,7 +18,11 @@ worktree_dir: .todomd/worktrees
 # command can run (add .env, .env.local, etc. if your tests need them)
 worktree_link: [node_modules]
 branch_prefix: todomd/
+# Board-wide defaults — the bottom of the card → column → board override chain.
+# A card's own agent/model wins; else the stage column's (stages.<col>.agent|
+# model); else these. default_model is the fallback where a stage sets no model.
 default_agent: claude
+# default_model: sonnet
 
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
 # in-flight work (which card/files each worker is building), so several people
@@ -39,8 +43,10 @@ triage:
   max_turns: 15
 
 # Each pipeline stage maps a column to the command it invokes, the model it
-# runs on, and its tool allowlist. Cards can override agent/model in their
-# own frontmatter. Add custom columns + commands for your own stages.
+# runs on, and its tool allowlist. A stage may also pin its own agent
+# (claude | codex) — the per-column tier of the override chain. A card's own
+# agent/model still wins; an unset agent/model falls back to the board default.
+# Edit these per-column from the board (the gear on each stage column).
 stages:
   Plan:
     command: todomd-plan

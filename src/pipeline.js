@@ -106,15 +106,20 @@ async function orchMove(project, id, to, reason) {
 
 const SUPPORTED_VENDORS = new Set(['claude', 'codex']);
 
-function cardVendor(config, card) {
-  return card?.data?.agent || config.default_agent || 'claude';
+// Override precedence is card → column → board: a card's own `agent`/`model`
+// wins; else the stage column's (`stages.<col>.agent|model`); else the board
+// default (`default_agent` / `default_model`). Pass the stage so the column
+// level resolves; omit it (e.g. triage) to fall straight through to the board.
+function cardVendor(config, card, stageName) {
+  const stageAgent = stageName && (config.stages || {})[stageName]?.agent;
+  return card?.data?.agent || stageAgent || config.default_agent || 'claude';
 }
 
 function stageConfig(config, stageName, card) {
   const stage = (config.stages || {})[stageName] || {};
   return {
     command: stage.command || `todomd-${stageName.toLowerCase()}`,
-    model: card?.data?.model || stage.model,
+    model: card?.data?.model || stage.model || config.default_model,
     maxTurns: stage.max_turns || 30,
     allowedTools: stage.allowed_tools || [],
   };
@@ -292,7 +297,7 @@ export async function humanMove(project, id, to) {
   if (to === 'Queue') {
     if (from !== 'Planned') return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
     if (!(await isGitRepo(project.path))) return { ok: false, error: 'pipeline needs a git repo' };
-    const agent = cardVendor(config, card);
+    const agent = cardVendor(config, card, 'Build');
     if (!SUPPORTED_VENDORS.has(agent)) {
       return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
     }
@@ -379,7 +384,7 @@ async function runTriggerStage(project, id, stageName) {
   const config = loadConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, stageName, card);
-  const vendor = cardVendor(config, card);
+  const vendor = cardVendor(config, card, stageName);
   const skill = card.data.skill;
 
   let prompt;
@@ -529,7 +534,7 @@ async function buildChain(project, id, retry = null) {
   }
 
   const stage = stageConfig(config, 'Build', card);
-  const vendor = cardVendor(config, card);
+  const vendor = cardVendor(config, card, 'Build');
   const buildOpts = {
     vendor,
     cwd: worktreeAbs,
@@ -586,7 +591,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const config = loadConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, 'Verify', card);
-  const vendor = cardVendor(config, card);
+  const vendor = cardVendor(config, card, 'Verify');
 
   const { result, run } = await spawnTracked(project, id, 'Verify', 'Build', attempt, {
     vendor,

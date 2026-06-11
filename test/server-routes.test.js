@@ -176,6 +176,49 @@ test('API attachments + /api/file containment, projects, commands, resume-queues
   } finally { srv.close(); }
 });
 
+test('API per-column routing: /api/commands carries stage routing; /api/stages saves it', async () => {
+  isolateHome();
+  const { name, base, srv, q } = await boot();
+  const tok = srv.token, viewer = deviceToken('token-viewer');
+  const h = { 'x-todomd-token': tok, 'content-type': 'application/json', origin: base };
+  try {
+    // the commands list flags stage columns (with agent/model) vs triage/dispatch,
+    // and exposes the board defaults for the "inherits" hint
+    let r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
+    let body = await r.json();
+    assert.equal(body.defaultAgent, 'claude');
+    const build = body.commands.find((c) => c.column === 'Build');
+    assert.equal(build.stage, true);
+    assert.equal(build.agent, ''); // no column override yet → inherits
+    assert.equal(body.commands.find((c) => c.column === 'Triage (auto)').stage, false);
+
+    // set Build → codex / gpt-5-codex
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'codex', model: 'gpt-5-codex' }) });
+    assert.equal(r.status, 200);
+    r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
+    body = await r.json();
+    const build2 = body.commands.find((c) => c.column === 'Build');
+    assert.equal(build2.agent, 'codex');
+    assert.equal(build2.model, 'gpt-5-codex');
+
+    // clearing the agent falls back to inherit
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: '' }) });
+    assert.equal(r.status, 200);
+    r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
+    assert.equal((await r.json()).commands.find((c) => c.column === 'Build').agent, '');
+
+    // unknown column → 400; bad agent → 400
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Nope', agent: 'codex' }) });
+    assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'gemini' }) });
+    assert.equal(r.status, 400);
+
+    // viewer cannot write routing → 403
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: { 'x-todomd-token': viewer, 'content-type': 'application/json', origin: base }, body: JSON.stringify({ column: 'Build', agent: 'codex' }) });
+    assert.equal(r.status, 403);
+  } finally { srv.close(); }
+});
+
 test('API archive hides/restores a card; DELETE removes it; viewer cannot', async () => {
   isolateHome();
   const { base, srv, q } = await boot();
