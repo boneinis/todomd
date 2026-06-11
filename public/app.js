@@ -818,6 +818,7 @@ applyViewToggle();
 /* ── getting started ── */
 function openGuide() { $('#welcome-backdrop').hidden = false; }
 $('#wordmark').addEventListener('click', openGuide);
+$('#help-btn').addEventListener('click', openGuide);
 $('#welcome-close').addEventListener('click', () => {
   $('#welcome-backdrop').hidden = true;
   localStorage.setItem('todomd-guided', '1');
