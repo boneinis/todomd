@@ -16,7 +16,7 @@
 <div class="scanlines" aria-hidden="true"></div>
 
 <header class="topbar">
-  <h1 class="wordmark">todo<span>md</span></h1>
+  <h1 class="wordmark" id="wordmark" title="getting started">todo<span>md</span></h1>
   <div class="topbar-right">
     <button id="theme-btn" class="qr-btn" title="toggle light / dark">◐</button>
     <button id="qr-btn" class="qr-btn" title="mobile monitor link">▦</button>
@@ -223,6 +223,32 @@ todomd init             # scaffolds the board + registers it</code></pre>
         <button type="button" id="qr-disable" class="drawer-close">turn off network access</button>
         <button type="button" id="qr-close" class="drawer-close">close</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="welcome-backdrop" class="modal-backdrop" hidden>
+  <div class="modal welcome-modal">
+    <h2>welcome to <span class="wordmark">todo<span>md</span></span></h2>
+    <p class="qr-note">A kanban board whose database is markdown files in your repo. You drive coding agents through a verified pipeline — on the AI subscription you already pay for. Two human decisions take a card from idea to merged code.</p>
+
+    <h3 class="welcome-h">1 · Before you start</h3>
+    <p class="qr-note">Make sure the <code>claude</code> CLI is installed and logged in (run <code>claude</code> once to sign in). That's the agent todomd spawns. Driving Codex cards also needs <code>codex</code> logged in.</p>
+
+    <h3 class="welcome-h">2 · The flow</h3>
+    <ol class="welcome-flow">
+      <li><b>Review</b> — new cards land here and an agent <b>auto-triages</b> each one (codebase insight + a proposed plan). You read it and decide.</li>
+      <li>Drag to <b>Plan</b> → an agent writes the implementation plan into the card.</li>
+      <li>Read the plan in <b>Planned</b>, then drag to <b>Queue</b> to <b>approve</b> — an agent builds it in an isolated git worktree and an independent agent verifies it.</li>
+      <li>It merges to <b>Done</b> — or stops at <b>Needs Human</b> if it needs a decision (open the card to answer).</li>
+    </ol>
+    <p class="qr-note">Those two drags — <b>Review→Plan</b> and <b>Planned→Queue</b> — are the only steps you do by hand. Click the <b>?</b> on any column header for what it does.</p>
+
+    <h3 class="welcome-h">3 · Add your work</h3>
+    <p class="qr-note"><b>+ card</b> creates a task · <b>⊕</b> adds another repo (paste its path) · email can become cards via <b>✉</b> (IMAP). Per card you can pick the <b>agent / model / skill</b> in its drawer; edit a column's prompt with <b>✎ prompt</b>; open it on your phone with <b>▦</b>; archive or delete from the card drawer.</p>
+
+    <div class="modal-actions">
+      <button type="button" id="welcome-close" class="modal-submit">got it — let's go</button>
     </div>
   </div>
 </div>

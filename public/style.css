@@ -143,6 +143,16 @@ body.viewer .col-edit { display: none; }
 .col-help-btn:hover { color: var(--amber); border-color: var(--amber); }
 #col-help { position: fixed; z-index: 60; max-width: 300px; background: var(--panel); border: 1px solid var(--amber); border-radius: 6px; color: var(--ink); font-family: var(--mono); font-size: 11.5px; line-height: 1.6; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.45); text-transform: none; letter-spacing: normal; font-weight: 400; }
 
+/* getting-started guide */
+#wordmark { cursor: pointer; }
+.welcome-modal { width: min(620px, 94vw); max-height: 88vh; overflow-y: auto; }
+.welcome-modal .wordmark { font: inherit; }
+.welcome-modal .wordmark span { color: var(--amber); }
+.welcome-h { color: var(--amber); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; margin: 16px 0 4px; }
+.welcome-flow { margin: 4px 0 10px; padding-left: 20px; color: var(--ink); font-size: 12.5px; line-height: 1.7; }
+.welcome-flow li { margin-bottom: 6px; }
+.welcome-flow b, .qr-note b { color: var(--ink); }
+
 .col-cards { padding: 4px 8px 14px; overflow-y: auto; flex: 1; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 
 /* ── cards ── */

@@ -810,6 +810,19 @@ projectSel.addEventListener('change', () => { currentProject = projectSel.value;
 filterInput.addEventListener('input', renderBoard);
 applyViewToggle();
 
-loadProjects().then(loadBoard).then(connectWs).catch((e) => {
+/* ── getting started ── */
+function openGuide() { $('#welcome-backdrop').hidden = false; }
+$('#wordmark').addEventListener('click', openGuide);
+$('#welcome-close').addEventListener('click', () => {
+  $('#welcome-backdrop').hidden = true;
+  localStorage.setItem('todomd-guided', '1');
+});
+$('#welcome-backdrop').addEventListener('click', (e) => {
+  if (e.target.id === 'welcome-backdrop') { $('#welcome-backdrop').hidden = true; localStorage.setItem('todomd-guided', '1'); }
+});
+
+loadProjects().then(loadBoard).then(connectWs).then(() => {
+  if (!localStorage.getItem('todomd-guided')) openGuide(); // first visit → show the guide
+}).catch((e) => {
   boardEl.innerHTML = `<p class="col-empty">${esc(e.message)} — is the token in the URL?</p>`;
 });
