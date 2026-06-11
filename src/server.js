@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
 import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig, setArchived, deleteCard, listSkills } from './board.js';
+import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 
@@ -239,6 +240,10 @@ export function startServer({ port = 7337, lan = false } = {}) {
         usage: pipeline.usage(project.name),
         skills: listSkills(project.path), // available command/skill names for the picker
       });
+    }
+    if (url.pathname === '/api/models') { // model suggestions for the chosen vendor (CLI --help + config)
+      const agent = (url.searchParams.get('agent') || 'claude').replace(/[^\w-]/g, '');
+      return json(res, 200, { agent, models: listModels(agent, loadConfig(project.path)) });
     }
     if (url.pathname === '/api/cards' && req.method === 'POST') {
       let body = '';

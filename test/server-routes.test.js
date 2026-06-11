@@ -105,6 +105,11 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
 
     // GET a missing card → 404
     assert.equal((await fetch(`${base}/api/cards/task-9999${q}`, { headers: { 'x-todomd-token': srv.token } })).status, 404);
+
+    // model picker pulls suggestions for the chosen vendor (CLI --help + fallback)
+    r = await fetch(`${base}/api/models${q}&agent=claude`, { headers: { 'x-todomd-token': srv.token } });
+    const { models } = await r.json();
+    assert.ok(Array.isArray(models) && models.includes('sonnet'), 'models list returned for the vendor');
   } finally { srv.close(); }
 });
 

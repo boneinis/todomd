@@ -36,11 +36,23 @@ let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
 
-// model suggestions per vendor (a datalist — the user can still type a custom id)
-const MODELS = { claude: ['opus', 'sonnet', 'haiku'], codex: ['gpt-5-codex', 'gpt-5'] };
-function setModelOptions(vendor) {
-  const list = MODELS[vendor] || MODELS.claude;
-  $('#model-options').innerHTML = list.map((m) => `<option value="${esc(m)}"></option>`).join('');
+// model suggestions per vendor — pulled from the provider CLI (server reads
+// `<cli> --help` + config), cached per vendor. Still a datalist, so a custom
+// id is allowed. Falls back to a sane default until the fetch resolves.
+const modelCache = {};
+function fillModels(list) {
+  $('#model-options').innerHTML = (list || []).map((m) => `<option value="${esc(m)}"></option>`).join('');
+}
+async function setModelOptions(vendor) {
+  vendor = vendor || 'claude';
+  if (modelCache[vendor]) { fillModels(modelCache[vendor]); return; }
+  fillModels(vendor === 'codex' ? ['gpt-5-codex', 'gpt-5'] : ['opus', 'sonnet', 'haiku']); // instant default
+  if (!currentProject) return;
+  try {
+    const { models } = await api(`models?agent=${encodeURIComponent(vendor)}&project=${encodeURIComponent(currentProject)}`);
+    modelCache[vendor] = models;
+    fillModels(models);
+  } catch { /* keep the default */ }
 }
 function setSkillOptions() { // the repo's available commands (from the board payload)
   $('#skill-options').innerHTML = ((boardData && boardData.skills) || [])
