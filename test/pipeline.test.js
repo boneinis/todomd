@@ -280,6 +280,26 @@ test('chunking: a splitting plan fans out sequential child cards; approving the 
   clearFakeAgent();
 });
 
+test('chunking: a single-chunk plan is folded into Implementation Plan (not fanned out)', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good', chunks: 1 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { title: 'single chunk feature' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Plan');
+  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: 12000 });
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.status, 'Planned');
+  assert.equal(card.data.epic, undefined);
+  assert.equal(card.data.children, undefined);
+  assert.match(card.body, /## Implementation Plan\n\n1\. Implement part 1\./);
+  assert.match(card.raw, /single-chunk plan folded into Implementation Plan/);
+  clearFakeAgent();
+});
+
 test('chunking: approving a split-but-unmaterialized plan is refused (budget-mode safety net)', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });
