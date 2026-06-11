@@ -145,11 +145,14 @@ test('API attachments + /api/file containment, projects, commands, resume-queues
     r = await fetch(`${base}/api/projects`, { headers: { 'x-todomd-token': tok } });
     assert.ok((await r.json()).projects.includes(name));
     const repo2 = makeRepo();
-    r = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: JSON.stringify({ path: repo2 }) });
+    // paste artifacts are forgiven: wrapping quotes + surrounding whitespace
+    r = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: JSON.stringify({ path: `  "${repo2}"  ` }) });
     assert.equal(r.status, 200);
-    // add with a missing path → 400
+    // add with a missing path → 400 with the clearer message
     r = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: '{"path":""}' });
     assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: '{"path":"/no/such/folder/xyz123"}' });
+    assert.match((await r.json()).error, /couldn't find that folder/);
 
     // commands: list, read the locked core + editable region, write ONLY the custom region
     r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });

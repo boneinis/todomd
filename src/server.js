@@ -110,12 +110,15 @@ export function startServer({ port = 7337, lan = false } = {}) {
         let body = '';
         for await (const chunk of req) body += chunk;
         let dir;
-        try { dir = String(JSON.parse(body || '{}').path || '').trim(); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        try { dir = String(JSON.parse(body || '{}').path || ''); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        // forgive common paste artifacts: zero-width junk, non-breaking / odd
+        // spaces (a nbsp pasted into "web dev" is the usual culprit), wrapping quotes
+        dir = dir.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").replace(/[\u00A0\u2007\u2009\u202F]/g, " ").trim().replace(/^['"]|['"]$/g, "").trim();
         if (!dir) return json(res, 400, { error: 'path is required' });
         if (dir.startsWith('~')) dir = path.join(os.homedir(), dir.slice(1));
         // realpath so a symlinked path can't redirect the scaffold writes elsewhere
-        try { dir = fs.realpathSync(path.resolve(dir)); } catch { return json(res, 400, { error: 'not a folder on this machine' }); }
-        if (!fs.statSync(dir).isDirectory()) return json(res, 400, { error: 'not a folder on this machine' });
+        try { dir = fs.realpathSync(path.resolve(dir)); } catch { return json(res, 400, { error: `couldn't find that folder — check for typos or stray spaces. Got: ${dir}` }); }
+        if (!fs.statSync(dir).isDirectory()) return json(res, 400, { error: `that path is a file, not a folder: ${dir}` });
         if (!(await isGitRepo(dir))) return json(res, 400, { error: 'not a git repo — run `git init` there first' });
         try {
           initProject(dir);                 // idempotent: scaffolds a board or no-ops
