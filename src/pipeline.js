@@ -187,6 +187,22 @@ async function releaseCoordination(project, id) {
   if (coord.enabled) { try { await coordRelease(project.path, id, { sync: coord.sync }); } catch {} }
 }
 
+// Free a card's build resources (queue slot, retry findings, coordination claim,
+// worktree) so it can be archived or deleted without leaking anything. The
+// caller must ensure there's no LIVE run first (cancel it).
+export async function releaseCardResources(project, id) {
+  const q = queues.get(project.name);
+  const qi = q ? q.indexOf(id) : -1;
+  if (qi >= 0) q.splice(qi, 1);
+  retryFindings.delete(runKey(project.name, id));
+  await releaseCoordination(project, id);
+  const card = readCard(project.path, id);
+  if (card?.data?.worktree) {
+    const wtDir = loadConfig(project.path).worktree_dir || '.todomd/worktrees';
+    await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
+  }
+}
+
 function runLogFile(project, id, stage, attempt) {
   return path.join(project.path, '.todomd', 'runs', id, `${stage.toLowerCase()}-${attempt || Date.now()}.jsonl`);
 }
@@ -260,7 +276,8 @@ export async function humanMove(project, id, to) {
       return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
     }
     const deps = card.data.dependencies || [];
-    const board = loadBoard(project.path);
+    // include archived cards so a completed-then-archived dependency still counts
+    const board = loadBoard(project.path, { includeArchived: true });
     const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
     if (blocked.length) return { ok: false, error: `blocked by: ${blocked.join(', ')}` };
     const moved = await moveCard(project.path, id, 'Assigned', { reason: 'approved' });

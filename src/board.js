@@ -50,7 +50,7 @@ function criteriaProgress(body) {
   return total ? { done, total } : null;
 }
 
-export function loadBoard(repoPath) {
+export function loadBoard(repoPath, { includeArchived = false } = {}) {
   const config = loadConfig(repoPath);
   const dir = tasksDir(repoPath);
   const cards = [];
@@ -58,6 +58,9 @@ export function loadBoard(repoPath) {
     for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort()) {
       try {
         const parsed = parseCard(fs.readFileSync(path.join(dir, file), 'utf8'));
+        // archived cards are hidden from the board (and skipped by the pipeline)
+        // unless explicitly requested — the "show archived" view passes the flag
+        if (!includeArchived && parsed.data.archived) continue;
         cards.push({
           file,
           ...parsed.data,
@@ -138,6 +141,49 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
     const result = { ok: true, oldStatus, newStatus, commit };
     if (!commit.committed) result.warning = `moved, but not committed: ${commit.reason}`;
     return result;
+  });
+}
+
+// Hide a card from the board (reversible) — set or clear the `archived`
+// frontmatter flag and commit. Archived cards are skipped by loadBoard (and so
+// by the whole pipeline) unless explicitly included.
+export function setArchived(repoPath, id, on) {
+  return withRepoLock(repoPath, async () => {
+    const card = readCard(repoPath, id);
+    if (!card) return { ok: false, error: `card not found: ${id}` };
+    const m = card.raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!m) return { ok: false, error: `${id} has no frontmatter block; fix the file manually` };
+    let fm = m[1];
+    if (on) {
+      // quote the date so YAML keeps it a string (an unquoted date parses to a Date object)
+      const line = `archived: "${new Date().toISOString().slice(0, 10)}"`;
+      fm = /^archived:.*$/m.test(fm) ? fm.replace(/^archived:.*$/m, () => line) : `${fm}\n${line}`;
+    } else {
+      fm = fm.replace(/^archived:.*\r?\n?/m, ''); // drop the flag to restore
+    }
+    const updated = `---\n${fm}\n---` + card.raw.slice(m[0].length);
+    const relFile = path.join('.todomd', 'tasks', card.file);
+    fs.writeFileSync(path.join(repoPath, relFile), updated);
+    const commit = await commitCard(repoPath, relFile, `chore(todomd): ${id} ${on ? 'archived' : 'unarchived'}`);
+    return { ok: true, archived: !!on, commit };
+  });
+}
+
+// Permanently remove a card — its task file and any attachments — in one
+// path-scoped commit. git history still has it, so it's recoverable.
+export function deleteCard(repoPath, id) {
+  return withRepoLock(repoPath, async () => {
+    const dir = tasksDir(repoPath);
+    const file = findCardFile(dir, id);
+    if (!file) return { ok: false, error: `card not found: ${id}` };
+    const relFile = path.join('.todomd', 'tasks', file);
+    const relAtt = path.join('.todomd', 'attachments', id);
+    fs.rmSync(path.join(repoPath, relFile), { force: true });
+    const hadAtt = fs.existsSync(path.join(repoPath, relAtt));
+    if (hadAtt) fs.rmSync(path.join(repoPath, relAtt), { recursive: true, force: true });
+    const paths = hadAtt ? [relFile, relAtt] : [relFile];
+    const commit = await commitPaths(repoPath, paths, `chore(todomd): ${id} deleted`);
+    return { ok: true, commit };
   });
 }
 

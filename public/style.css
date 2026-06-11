@@ -393,8 +393,16 @@ body.viewer #manage-projects, body.viewer #intake-btn, body.viewer #prompts-btn 
 
 body.viewer .new-card, body.viewer .qr-btn, body.viewer .drawer-move,
 body.viewer .drawer-routing, body.viewer #drawer-cancel,
-body.viewer #drawer-attach { display: none !important; }
+body.viewer #drawer-attach, body.viewer #drawer-archive,
+body.viewer #drawer-delete { display: none !important; }
 body.viewer .card { cursor: default; }
+
+/* archive / delete card controls */
+#archived-toggle.active { color: var(--amber); border-color: var(--amber); }
+.drawer-delete { color: var(--red); }
+.drawer-delete:hover { color: var(--red); border-color: var(--red); }
+.drawer-delete.armed { background: var(--red); color: var(--bg); border-color: var(--red); }
+.card.archived { border-style: dashed; opacity: .8; }
 
 @media (max-width: 640px) {
   .topbar { padding: 9px 10px; flex-wrap: wrap; gap: 7px; align-items: center; }

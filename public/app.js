@@ -32,6 +32,9 @@ let runStates = {};
 let drawerCard = null;
 let myName = localStorage.getItem('todomd-me') || '';
 let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'mine' : 'all';
+let showArchived = false;   // the "archived" view shows only archived cards
+let drawerArchived = false; // is the open card archived?
+let deleteArmed = false;    // two-click confirm for delete
 
 async function api(path) {
   const res = await fetch(`/api/${path}`, { headers });
@@ -56,7 +59,7 @@ async function loadBoard() {
     boardEl.innerHTML = '<p class="col-empty">no projects — add one with the ⊕ button</p>';
     return;
   }
-  boardData = await api(`board?project=${encodeURIComponent(currentProject)}`);
+  boardData = await api(`board?project=${encodeURIComponent(currentProject)}${showArchived ? '&archived=1' : ''}`);
   runStates = boardData.runStates || {};
   renderBanners(boardData.banners || []);
   const usage = boardData.usage || {};
@@ -103,6 +106,17 @@ $('#view-toggle').addEventListener('click', (e) => {
   renderBoard();
 });
 
+/* ── archived view ── */
+function applyArchivedToggle() {
+  $('#archived-toggle').classList.toggle('active', showArchived);
+  document.body.classList.toggle('archived-view', showArchived);
+}
+$('#archived-toggle').addEventListener('click', () => {
+  showArchived = !showArchived;
+  applyArchivedToggle();
+  loadBoard(); // re-fetch: archived cards aren't in the default board payload
+});
+
 function renderBoard() {
   if (!boardData) return;
   const filter = filterInput.value.trim().toLowerCase();
@@ -112,6 +126,7 @@ function renderBoard() {
     const color = COL_COLORS[col] || 'var(--dim)';
     const cards = boardData.cards.filter(
       (c) => c.status === col &&
+        (showArchived ? c.archived : true) && // archived view shows only archived cards
         (!mine || (c.assignee || '').toLowerCase() === mine) &&
         (!filter || `${c.id} ${c.title} ${(c.labels || []).join(' ')} ${c.assignee || ''}`.toLowerCase().includes(filter))
     );
@@ -136,6 +151,7 @@ function renderCard(card, color, i) {
   el.style.setProperty('--col', color);
   el.style.setProperty('--i', i);
   el.dataset.id = card.id;
+  if (card.archived) el.classList.add('archived');
   el.querySelector('.card-id').textContent = card.id || card.file;
   const prio = el.querySelector('.card-prio');
   prio.textContent = card.priority || '';
@@ -222,8 +238,57 @@ async function openDrawer(id) {
   $('#move-select').innerHTML = cols
     .filter((c) => c !== card.data.status)
     .map((c) => `<option>${esc(c)}</option>`).join('');
+  // archive / delete controls
+  drawerArchived = !!card.data.archived;
+  $('#drawer-archive').textContent = drawerArchived ? 'restore' : 'archive';
+  resetDeleteBtn();
   $('#drawer').hidden = false;
 }
+
+function resetDeleteBtn() {
+  deleteArmed = false;
+  const b = $('#drawer-delete');
+  b.textContent = 'delete';
+  b.classList.remove('armed');
+}
+
+$('#drawer-archive').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  const archiving = !drawerArchived;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/archive?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ archived: archiving }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'failed');
+    toast(archiving ? 'archived' : 'restored');
+    $('#drawer').hidden = true;
+    loadBoard();
+  } catch { toast('server unreachable'); }
+});
+
+// delete is a two-click confirm: first click arms, second deletes (auto-disarms)
+$('#drawer-delete').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  if (!deleteArmed) {
+    deleteArmed = true;
+    $('#drawer-delete').textContent = 'confirm delete?';
+    $('#drawer-delete').classList.add('armed');
+    setTimeout(resetDeleteBtn, 3500);
+    return;
+  }
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}?project=${encodeURIComponent(currentProject)}`, { method: 'DELETE', headers });
+    const out = await res.json();
+    if (!res.ok) { resetDeleteBtn(); return toast(out.error || 'delete failed'); }
+    toast('deleted');
+    resetDeleteBtn();
+    $('#drawer').hidden = true;
+    loadBoard();
+  } catch { toast('server unreachable'); }
+});
 
 $('#move-apply').addEventListener('click', async () => {
   if (!drawerCard) return;

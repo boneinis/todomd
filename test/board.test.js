@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard } from '../src/board.js';
+import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard } from '../src/board.js';
 
 test('loadBoard parses cards and criteria progress', () => {
   const repo = makeRepo();
@@ -187,4 +187,45 @@ test('readCommandFile / writeCommandFile round-trip and reject path traversal', 
   // traversal / bad names are refused (name constrained to [\w-])
   assert.equal(readCommandFile(repo, '../../etc/passwd'), null);
   assert.equal((await writeCommandFile(repo, '../evil', 'x')).ok, false);
+});
+
+test('setArchived hides a card from the board; unarchive restores it (flag committed)', async () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001');
+  writeCard(repo, 'task-0002');
+
+  const r = await setArchived(repo, 'task-0001', true);
+  assert.equal(r.ok, true);
+  assert.equal(r.archived, true);
+
+  // hidden from the default board, kept for the dependency check / archived view
+  let ids = loadBoard(repo).cards.map((c) => c.id);
+  assert.ok(!ids.includes('task-0001'), 'archived card hidden by default');
+  assert.ok(ids.includes('task-0002'));
+  ids = loadBoard(repo, { includeArchived: true }).cards.map((c) => c.id);
+  assert.ok(ids.includes('task-0001'), 'visible with includeArchived');
+  assert.match(readCard(repo, 'task-0001').data.archived || '', /^\d{4}-\d{2}-\d{2}$/, 'flag is a date');
+
+  await setArchived(repo, 'task-0001', false); // restore
+  ids = loadBoard(repo).cards.map((c) => c.id);
+  assert.ok(ids.includes('task-0001'), 'restored to the board');
+  assert.equal(readCard(repo, 'task-0001').data.archived ?? '', '', 'flag removed on restore');
+});
+
+test('deleteCard removes the task file + its attachments and commits the removal', async () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'card']);
+  await attachCard(repo, 'task-0001', 'note.txt', Buffer.from('hi')); // attachCard commits the attachment
+  assert.ok(fs.existsSync(path.join(repo, '.todomd/attachments/task-0001')));
+
+  const r = await deleteCard(repo, 'task-0001');
+  assert.equal(r.ok, true);
+  assert.equal(r.commit.committed, true);
+  assert.equal(readCard(repo, 'task-0001'), null, 'card file gone');
+  assert.ok(!fs.existsSync(path.join(repo, '.todomd/attachments/task-0001')), 'attachments gone');
+  assert.equal(git(repo, ['status', '--porcelain']).trim(), '', 'clean tree — deletion committed');
+
+  assert.equal((await deleteCard(repo, 'task-0001')).ok, false, 'deleting a missing card errors');
 });

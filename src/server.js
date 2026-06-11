@@ -8,7 +8,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandFile, writeCommandFile, loadConfig, setArchived, deleteCard } from './board.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 
@@ -229,7 +229,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
 
     if (url.pathname === '/api/board') {
-      const board = loadBoard(project.path);
+      const board = loadBoard(project.path, { includeArchived: url.searchParams.get('archived') === '1' });
       return json(res, 200, {
         ...board,
         mode: board.config.mode || 'launcher',
@@ -279,6 +279,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
     if (cardMatch && req.method === 'GET') {
       const card = readCard(project.path, cardMatch[1]);
       return card ? json(res, 200, card) : json(res, 404, { error: 'card not found' });
+    }
+    if (cardMatch && req.method === 'DELETE') {
+      if (pipeline.hasLiveRun(project.name, cardMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
+      await pipeline.releaseCardResources(project, cardMatch[1]); // free worktree/claim/queue before removing files
+      const result = await deleteCard(project.path, cardMatch[1]);
+      return json(res, result.ok ? 200 : 400, result);
     }
     const attachMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/attach$/);
     if (attachMatch && req.method === 'POST') {
@@ -337,6 +343,17 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const cancelMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/cancel$/);
     if (cancelMatch && req.method === 'POST') {
       const result = await pipeline.cancel(project, cancelMatch[1]);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    const archiveMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/archive$/);
+    if (archiveMatch && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let on;
+      try { ({ archived: on } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      if (on && pipeline.hasLiveRun(project.name, archiveMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
+      if (on) await pipeline.releaseCardResources(project, archiveMatch[1]); // taking it off the board frees its build resources
+      const result = await setArchived(project.path, archiveMatch[1], !!on);
       return json(res, result.ok ? 200 : 400, result);
     }
     if (url.pathname === '/api/resume-queues' && req.method === 'POST') {

@@ -161,3 +161,37 @@ test('API attachments + /api/file containment, projects, commands, resume-queues
     assert.equal(r.status, 200);
   } finally { srv.close(); }
 });
+
+test('API archive hides/restores a card; DELETE removes it; viewer cannot', async () => {
+  isolateHome();
+  const { base, srv, q } = await boot();
+  const tok = srv.token, viewer = deviceToken('token-viewer');
+  const h = { 'x-todomd-token': tok, 'content-type': 'application/json', origin: base };
+  const ids = async (extra = '') => (await (await fetch(`${base}/api/board${q}${extra}`, { headers: { 'x-todomd-token': tok } })).json()).cards.map((c) => c.id);
+  const mk = async (t) => (await (await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: h, body: JSON.stringify({ title: t }) })).json()).id;
+  try {
+    const a = await mk('archive me');
+    const d = await mk('delete me');
+
+    // archive → hidden from the default board, visible with ?archived=1
+    let r = await fetch(`${base}/api/cards/${a}/archive${q}`, { method: 'POST', headers: h, body: '{"archived":true}' });
+    assert.equal(r.status, 200);
+    assert.ok(!(await ids()).includes(a), 'archived card hidden from the board');
+    assert.ok((await ids('&archived=1')).includes(a), 'archived card shown with ?archived=1');
+
+    // restore
+    r = await fetch(`${base}/api/cards/${a}/archive${q}`, { method: 'POST', headers: h, body: '{"archived":false}' });
+    assert.equal(r.status, 200);
+    assert.ok((await ids()).includes(a), 'restored to the board');
+
+    // viewer cannot delete (read-only) → 403
+    r = await fetch(`${base}/api/cards/${d}${q}`, { method: 'DELETE', headers: { 'x-todomd-token': viewer, origin: base } });
+    assert.equal(r.status, 403);
+
+    // full token deletes → 200, then gone (404)
+    r = await fetch(`${base}/api/cards/${d}${q}`, { method: 'DELETE', headers: { 'x-todomd-token': tok, origin: base } });
+    assert.equal(r.status, 200);
+    assert.equal((await fetch(`${base}/api/cards/${d}${q}`, { headers: { 'x-todomd-token': tok } })).status, 404);
+    assert.ok(!(await ids('&archived=1')).includes(d), 'deleted card gone even from the archived view');
+  } finally { srv.close(); }
+});
