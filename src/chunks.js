@@ -2,7 +2,7 @@ import { readCard, loadBoard, createCard, patchFrontmatter, appendRunLog, moveCa
 
 const now = () => new Date().toISOString().slice(0, 16).replace('T', ' ') + 'Z';
 
-// Materialize a `## Chunks` breakdown into sequential child card files.
+// Materialize a `## Chunks` breakdown into child card files.
 // Sets epic:true and children:[ids] on the epic, moves it to Planned.
 // Returns the array of created child card IDs.
 export async function materializeChunks(repoPath, epicId, chunks) {
@@ -11,16 +11,30 @@ export async function materializeChunks(repoPath, epicId, chunks) {
   const epicAgent = epic?.data?.agent;
   const epicModel = epic?.data?.model;
   const ids = [];
+  const titleToId = new Map();
   let prev = null;
+  let usedDag = false;
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
+    const hasNeeds = Object.prototype.hasOwnProperty.call(c, 'needs');
+    const dependencies = [];
+    if (hasNeeds) {
+      usedDag = true;
+      for (const title of Array.isArray(c.needs) ? c.needs : []) {
+        const depId = titleToId.get(title);
+        if (depId) dependencies.push(depId);
+        else await appendRunLog(repoPath, epicId, `  - ⚠ chunk ${i + 1} needs unknown earlier chunk: ${title}`);
+      }
+    } else if (prev) {
+      dependencies.push(prev);
+    }
     const res = await createCard(repoPath, {
       title: c.title,
       description: c.title,
       type: c.type || epicType,
       criteria: c.criteria,
       plan: c.plan,
-      dependencies: prev ? [prev] : [],
+      dependencies,
       parent: epicId,
       status: 'Planned',
       triaged: `n/a (chunk ${i + 1}/${chunks.length} of ${epicId})`,
@@ -33,6 +47,7 @@ export async function materializeChunks(repoPath, epicId, chunks) {
       continue;
     }
     ids.push(res.id);
+    titleToId.set(c.title, res.id);
     prev = res.id;
   }
   if (!ids.length) {
@@ -41,7 +56,7 @@ export async function materializeChunks(repoPath, epicId, chunks) {
   }
   await patchFrontmatter(repoPath, epicId, { epic: true, children: ids });
   await appendRunLog(repoPath, epicId,
-    `- ${now()} · Plan · split into ${ids.length} sequential chunks: ${ids.join(' → ')}`);
+    `- ${now()} · Plan · split into ${ids.length} ${usedDag ? 'chunks (DAG)' : 'sequential chunks'}: ${ids.join(' → ')}`);
   await moveCard(repoPath, epicId, 'Planned', { reason: `split into ${ids.length} chunks` });
   return ids;
 }

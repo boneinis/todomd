@@ -370,6 +370,58 @@ test('parseChunks: a valid ## Chunks yaml block yields ordered, validated chunks
   assert.equal(chunks[1].type, undefined); // optional, omitted
 });
 
+test('parseChunks: needs field is parsed only when declared', () => {
+  const chunks = parseChunks(`## Chunks
+
+\`\`\`yaml
+- title: DB migration
+  plan: |
+    1. add migration
+  criteria:
+    - applies cleanly
+- title: API wiring
+  needs: [DB migration]
+  plan: |
+    1. wire endpoint
+  criteria:
+    - returns 200
+- title: UI wiring
+  needs: []
+  plan: |
+    1. wire screen
+  criteria:
+    - renders
+\`\`\`
+`);
+  assert.equal(chunks.length, 3);
+  assert.ok(!Object.hasOwn(chunks[0], 'needs'));
+  assert.deepEqual(chunks[1].needs, ['DB migration']);
+  assert.deepEqual(chunks[2].needs, []);
+});
+
+test('parseChunks: malformed needs field is ignored', () => {
+  const chunks = parseChunks(`## Chunks
+
+\`\`\`yaml
+- title: API wiring
+  needs: DB migration
+  plan: |
+    1. wire endpoint
+  criteria:
+    - returns 200
+- title: UI wiring
+  needs: [""]
+  plan: |
+    1. wire screen
+  criteria:
+    - renders
+\`\`\`
+`);
+  assert.equal(chunks.length, 2);
+  assert.ok(!Object.hasOwn(chunks[0], 'needs'));
+  assert.ok(!Object.hasOwn(chunks[1], 'needs'));
+});
+
 test('parseChunks: absent section, malformed yaml, and items missing required fields return nothing usable', () => {
   assert.deepEqual(parseChunks('## Implementation Plan\n\n1. just a normal plan\n'), []);
   assert.deepEqual(parseChunks('## Chunks\n\n```yaml\n: : not yaml : :\n```\n'), []);
