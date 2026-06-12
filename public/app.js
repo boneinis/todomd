@@ -297,6 +297,24 @@ function wireDrop(colEl) {
   });
 }
 
+/* ── drawer relationship helpers ── */
+function findBoardCard(id) {
+  return boardData?.cards?.find((c) => c.id === id);
+}
+
+function relChip(id, label) {
+  const bc = findBoardCard(id);
+  const status = bc ? esc(bc.status) : '?';
+  const displayLabel = label || id;
+  return `<button type="button" class="rel-chip" data-id="${esc(id)}">${esc(displayLabel)} <span class="rel-status">${status}</span></button>`;
+}
+
+function depChip(id) {
+  const bc = findBoardCard(id);
+  const done = bc?.status === 'Done';
+  return `<span class="dep-chip ${done ? 'dep-done' : 'dep-blocked'}">${done ? '' : '🔒 '}${esc(id)} <span class="rel-status">${bc ? esc(bc.status) : '?'}</span></span>`;
+}
+
 /* ── drawer ── */
 async function openDrawer(id) {
   drawerCard = id;
@@ -312,6 +330,26 @@ async function openDrawer(id) {
     ['agent', card.data.agent], ['source', card.data.source],
     ['labels', (card.data.labels || []).join(', ') || null],
   ].filter(([, v]) => v).map(([k, v]) => `<span class="meta-chip">${esc(k)} <b>${esc(String(v))}</b></span>`).join('');
+  // relationship section: epic → children, chunk → parent + deps
+  const relEl = $('#drawer-rel');
+  if (card.data.epic) {
+    const children = card.data.children || [];
+    const chipsHtml = children.length
+      ? children.map((cid) => relChip(cid, cid)).join('')
+      : '<span class="rel-empty">no chunks</span>';
+    relEl.innerHTML = `<span class="rel-label">chunks</span>${chipsHtml}`;
+    relEl.hidden = false;
+  } else if (card.data.parent) {
+    const deps = card.data.dependencies || [];
+    const depsHtml = deps.length
+      ? `<span class="rel-label">depends on</span>${deps.map(depChip).join('')}`
+      : '';
+    relEl.innerHTML = `<span class="rel-label">epic</span>${relChip(card.data.parent, card.data.parent)}${depsHtml}`;
+    relEl.hidden = false;
+  } else {
+    relEl.innerHTML = '';
+    relEl.hidden = true;
+  }
   $('#drawer-body').innerHTML = mdToHtml(card.body);
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
   $('#route-agent').value = card.data.agent || 'claude';
@@ -333,6 +371,13 @@ async function openDrawer(id) {
   if (q) { $('#question-text').textContent = q; $('#answer-input').value = ''; }
   $('#drawer').hidden = false;
 }
+
+$('#drawer-rel').addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-id]');
+  if (!chip) return;
+  e.preventDefault();
+  openDrawer(chip.dataset.id);
+});
 
 $('#answer-submit').addEventListener('click', async () => {
   if (!drawerCard) return;
