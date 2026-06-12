@@ -409,6 +409,60 @@ test('coordination: reconcileOnBoot prunes a stale claim for a card no longer bu
   assert.equal((await readAllClaims(repo, {})).length, 0, 'stale claim pruned on boot');
 });
 
+test('chunking cleanup: humanMove Review on an epic archives non-Done chunks, preserves Done chunks', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001, chunk-002]\n' });
+  writeCard(repo, 'chunk-001', { status: 'Done', extra: 'parent: epic-001\n' });
+  writeCard(repo, 'chunk-002', { status: 'Queue', extra: 'parent: epic-001\n' });
+
+  const r = await pipeline.humanMove(p, 'epic-001', 'Review');
+  assert.equal(r.ok, true);
+
+  const c1 = readCard(repo, 'chunk-001');
+  const c2 = readCard(repo, 'chunk-002');
+  assert.equal(c1.data.status, 'Done', 'Done chunk status unchanged');
+  assert.ok(!c1.data.archived, 'Done chunk not archived');
+  assert.ok(c2.data.archived, 'non-Done chunk was archived');
+});
+
+test('chunking cleanup: cascadeEpicCleanup archives all non-Done children directly', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001, chunk-002, chunk-003]\n' });
+  writeCard(repo, 'chunk-001', { status: 'Done', extra: 'parent: epic-001\n' });
+  writeCard(repo, 'chunk-002', { status: 'Queue', extra: 'parent: epic-001\n' });
+  writeCard(repo, 'chunk-003', { status: 'Build', extra: 'parent: epic-001\n' });
+
+  await pipeline.cascadeEpicCleanup(p, 'epic-001');
+
+  assert.ok(!readCard(repo, 'chunk-001').data.archived, 'Done chunk not archived');
+  assert.ok(readCard(repo, 'chunk-002').data.archived, 'Queue chunk archived');
+  assert.ok(readCard(repo, 'chunk-003').data.archived, 'Build chunk archived');
+});
+
+test('chunking cleanup: Done children preserved when epic is pulled back to Review', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001, chunk-002, chunk-003]\n' });
+  writeCard(repo, 'chunk-001', { status: 'Done', extra: 'parent: epic-001\n' });
+  writeCard(repo, 'chunk-002', { status: 'Done', extra: 'parent: epic-001\n' });
+  writeCard(repo, 'chunk-003', { status: 'Needs Human', extra: 'parent: epic-001\n' });
+
+  const r = await pipeline.humanMove(p, 'epic-001', 'Review');
+  assert.equal(r.ok, true);
+
+  assert.ok(!readCard(repo, 'chunk-001').data.archived, 'Done chunk-001 not archived');
+  assert.ok(!readCard(repo, 'chunk-002').data.archived, 'Done chunk-002 not archived');
+  assert.ok(readCard(repo, 'chunk-003').data.archived, 'Needs Human chunk archived');
+});
+
 test('reconcileOnBoot retries a transient-failure triage (cli_missing) once the CLI is back', async () => {
   isolateHome();
   useFakeAgent(); // triage now succeeds
