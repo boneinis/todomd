@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
-import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks } from './board.js';
+import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
@@ -213,6 +213,29 @@ export async function releaseCardResources(project, id) {
   }
 }
 
+export async function cascadeEpicCleanup(project, epicId) {
+  const board = loadBoard(project.path); // active (non-archived) children only
+  const pending = board.cards.filter((c) => c.parent === epicId && c.status !== 'Done' && !c.epic);
+  for (const child of pending) {
+    const childKey = runKey(project.name, child.id);
+    const childLive = children.get(childKey);
+    if (childLive) {
+      const run = runs.get(childKey);
+      run.cancelled = true;
+      run.revertTo = 'Review';
+      childLive.kill('SIGTERM');
+      // cancel handler releases resources async; setArchived below serializes via withRepoLock
+    } else {
+      await releaseCardResources(project, child.id);
+    }
+    await setArchived(project.path, child.id, true);
+  }
+  if (pending.length) {
+    await appendRunLog(project.path, epicId,
+      `- ${now()} · cascade-archive: archived ${pending.length} pending child(ren)`);
+  }
+}
+
 // The human answered the card's pending question (needs_answer). Thread the Q&A
 // into the next build (via the retry-findings channel the build prompt already
 // injects) and re-drive the card back into the build queue. No live run expected.
@@ -292,7 +315,9 @@ export async function humanMove(project, id, to) {
     retryFindings.delete(key);
     await releaseCoordination(project, id); // a card pulled back out of the build flow drops its claim
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
-    return moveCard(project.path, id, 'Review', { reason: 'retriage' });
+    const result = await moveCard(project.path, id, 'Review', { reason: 'retriage' });
+    if (card.data.epic) await cascadeEpicCleanup(project, id);
+    return result;
   }
 
   // approval gate: Planned → Queue
