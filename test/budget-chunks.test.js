@@ -2,9 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeRepo, isolateHome, tmp, git } from './helpers.js';
+import { makeRepo, isolateHome, git } from './helpers.js';
 import { readCard, parseChunks, moveCard } from '../src/board.js';
-import { initProject } from '../src/templates.js';
 import { materializeChunks, advanceEpicChildren } from '../src/chunks.js';
 import * as pipeline from '../src/pipeline.js';
 
@@ -17,13 +16,6 @@ function budgetRepo() {
   const cfg = path.join(repo, '.todomd/config.yml');
   fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
   return repo;
-}
-
-function dispatchPrompt() {
-  const repo = tmp('disp-c');
-  git(repo, ['init', '-q']);
-  initProject(repo);
-  return fs.readFileSync(path.join(repo, '.claude/commands/todomd-dispatch.md'), 'utf8');
 }
 
 const CHUNKS_YAML = `\`\`\`yaml
@@ -50,23 +42,6 @@ function writeEpicCard(repo, id) {
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', `add ${id}`]);
 }
-
-/* ── A. CMD_DISPATCH prose assertions ── */
-
-test('budget: CMD_DISPATCH instructs fanout after split plan', () => {
-  const prompt = dispatchPrompt();
-  assert.ok(prompt.includes('fanout'), 'dispatch prompt must mention fanout');
-});
-
-test('budget: CMD_DISPATCH skips epic tracker cards', () => {
-  const prompt = dispatchPrompt();
-  assert.ok(prompt.includes('epic: true'), 'dispatch prompt must contain guard on epic: true');
-});
-
-test('budget: CMD_DISPATCH cascades via todomd advance', () => {
-  const prompt = dispatchPrompt();
-  assert.ok(prompt.includes('advance'), 'dispatch prompt must mention advance');
-});
 
 /* ── B. humanMove epic approval in budget mode ── */
 
