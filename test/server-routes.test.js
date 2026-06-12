@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
-import { isolateHome, makeRepo } from './helpers.js';
+import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
+import * as pipeline from '../src/pipeline.js';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -286,4 +287,38 @@ test('API archive hides/restores a card; DELETE removes it; viewer cannot', asyn
     assert.equal((await fetch(`${base}/api/cards/${d}${q}`, { headers: { 'x-todomd-token': tok } })).status, 404);
     assert.ok(!(await ids('&archived=1')).includes(d), 'deleted card gone even from the archived view');
   } finally { srv.close(); }
+});
+
+test('API DELETE epic with a building child returns 400', async () => {
+  isolateHome();
+  const marker = path.join(tmp('del-epic'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  const repo = makeRepo(); // launcher mode
+  addProject(repo);
+  const name = path.basename(repo);
+  const srv = await startServer({ port: await freePort() });
+  const base = `http://127.0.0.1:${srv.port}`;
+  const q = `?project=${encodeURIComponent(name)}`;
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  const p = { name, path: repo };
+
+  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001]\n' });
+  writeCard(repo, 'chunk-001', { status: 'Planned', extra: 'parent: epic-001\n' });
+
+  try {
+    // start the child build (hangs until SIGTERM)
+    await pipeline.humanMove(p, 'chunk-001', 'Queue');
+    await until(() => fs.existsSync(marker), { timeout: 30000 });
+
+    // DELETE on the epic should be refused while a child is building
+    const r = await fetch(`${base}/api/cards/epic-001${q}`, { method: 'DELETE', headers: h });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /child card is building/);
+
+    // cancel the hanging build to clean up
+    await pipeline.humanMove(p, 'chunk-001', 'Review');
+  } finally {
+    srv.close();
+    clearFakeAgent();
+  }
 });

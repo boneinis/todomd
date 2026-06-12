@@ -223,12 +223,13 @@ export async function cascadeEpicCleanup(project, epicId) {
       const run = runs.get(childKey);
       run.cancelled = true;
       run.revertTo = 'Review';
+      run.cascadeArchive = true;
       childLive.kill('SIGTERM');
-      // cancel handler releases resources async; setArchived below serializes via withRepoLock
+      // cancel handler will setArchived after cleanup (cascadeArchive flag), skipping orchMove
     } else {
       await releaseCardResources(project, child.id);
+      await setArchived(project.path, child.id, true);
     }
-    await setArchived(project.path, child.id, true);
   }
   if (pending.length) {
     await appendRunLog(project.path, epicId,
@@ -670,6 +671,10 @@ async function buildChain(project, id, retry = null) {
     // the card's worktree: frontmatter isn't left stale) — a re-approval starts fresh
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
     await patchFrontmatter(project.path, id, { worktree: '' });
+    if (run.cascadeArchive) {
+      await setArchived(project.path, id, true);
+      return sendState(project, id, 'idle');
+    }
     await orchMove(project, id, run.revertTo, 'cancelled');
     return sendState(project, id, 'idle');
   }
@@ -714,6 +719,10 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     // abandon the worktree (see Build cancel) so nothing stale is left behind
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
     await patchFrontmatter(project.path, id, { worktree: '' });
+    if (run.cascadeArchive) {
+      await setArchived(project.path, id, true);
+      return sendState(project, id, 'idle');
+    }
     await orchMove(project, id, run.revertTo, 'cancelled');
     return sendState(project, id, 'idle');
   }
@@ -1004,6 +1013,13 @@ export function getRunStates(projectName) {
 
 export function hasLiveRun(projectName, id) {
   return children.has(runKey(projectName, id));
+}
+
+export function hasLiveBuildingChild(project, epicId) {
+  const board = loadBoard(project.path, { includeArchived: false });
+  return board.cards
+    .filter((c) => c.parent === epicId && !c.epic)
+    .some((c) => hasLiveRun(project.name, c.id));
 }
 
 // Any live agent run for this project (used to refuse removing a busy project).

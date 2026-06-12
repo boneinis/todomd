@@ -369,8 +369,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     if (cardMatch && req.method === 'DELETE') {
       if (pipeline.hasLiveRun(project.name, cardMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
-      await pipeline.releaseCardResources(project, cardMatch[1]); // free worktree/claim/queue before removing files
       const delCard = readCard(project.path, cardMatch[1]);
+      if (delCard?.data?.epic && pipeline.hasLiveBuildingChild(project, cardMatch[1])) return json(res, 400, { error: 'a child card is building — cancel it first' });
+      await pipeline.releaseCardResources(project, cardMatch[1]); // free worktree/claim/queue before removing files
       if (delCard?.data?.epic) await pipeline.cascadeEpicCleanup(project, cardMatch[1]);
       const result = await deleteCard(project.path, cardMatch[1]);
       return json(res, result.ok ? 200 : 400, result);
@@ -452,8 +453,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
       let on;
       try { ({ archived: on } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
       if (on && pipeline.hasLiveRun(project.name, archiveMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
-      if (on) await pipeline.releaseCardResources(project, archiveMatch[1]); // taking it off the board frees its build resources
       const archCard = readCard(project.path, archiveMatch[1]);
+      if (on && archCard?.data?.epic && pipeline.hasLiveBuildingChild(project, archiveMatch[1])) return json(res, 400, { error: 'a child card is building — cancel it first' });
+      if (on) await pipeline.releaseCardResources(project, archiveMatch[1]); // taking it off the board frees its build resources
       if (on && archCard?.data?.epic) await pipeline.cascadeEpicCleanup(project, archiveMatch[1]);
       const result = await setArchived(project.path, archiveMatch[1], !!on);
       return json(res, result.ok ? 200 : 400, result);

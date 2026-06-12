@@ -463,6 +463,31 @@ test('chunking cleanup: Done children preserved when epic is pulled back to Revi
   assert.ok(readCard(repo, 'chunk-003').data.archived, 'Needs Human chunk archived');
 });
 
+test('cascadeEpicCleanup: live building child is archived (not Review) after cleanup', async () => {
+  isolateHome();
+  const marker = path.join(tmp('cascade'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001]\n' });
+  writeCard(repo, 'chunk-001', { status: 'Planned', extra: 'parent: epic-001\n' });
+
+  // start the child build — it hangs until SIGTERM
+  await pipeline.humanMove(p, 'chunk-001', 'Queue');
+  await until(() => status(repo, 'chunk-001') === 'Build' && fs.existsSync(marker), { timeout: 30000 });
+
+  // trigger cascade while the child run is live
+  await pipeline.cascadeEpicCleanup(p, 'epic-001');
+
+  // cancel handler archives asynchronously after cleanup
+  await until(() => readCard(repo, 'chunk-001').data.archived, { timeout: 15000 });
+  const child = readCard(repo, 'chunk-001');
+  assert.ok(child.data.archived, 'child is archived');
+  assert.notEqual(child.data.status, 'Review', 'child never entered Review');
+  clearFakeAgent();
+});
+
 test('reconcileOnBoot retries a transient-failure triage (cli_missing) once the CLI is back', async () => {
   isolateHome();
   useFakeAgent(); // triage now succeeds
