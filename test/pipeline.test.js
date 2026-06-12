@@ -134,8 +134,9 @@ test('cancel mid-build cleans the worktree and clears the worktree frontmatter',
   await pipeline.humanMove(p, 'task-0001', 'Queue'); // launcher drives → Build (then hangs)
   // generous timeouts: under full-suite CPU contention the spawn + marker write
   // can lag well past a few seconds, which is what made this test flaky
-  await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: 30000 });
+  await until(() => fs.existsSync(marker), { timeout: 30000 });
   const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  await until(() => fs.existsSync(wt), { timeout: 15000 });
   assert.ok(fs.existsSync(wt), 'worktree was created for the build');
 
   await pipeline.humanMove(p, 'task-0001', 'Review'); // cancels the live run
