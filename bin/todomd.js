@@ -51,7 +51,7 @@ if (cmd === 'init') {
     console.error('⚠ not a git repo. todomd commits each board change to git — run `git init` first, then `todomd init`.');
     process.exit(1);
   }
-  const created = initProject(process.cwd());
+  const created = initProject(process.cwd(), { nodeBin: process.execPath, todomdBin: TODOMD_BIN });
   addProject(process.cwd());
   console.log(created.length ? `created:\n  ${created.join('\n  ')}` : 'board already initialized');
   // warn if .claude/commands won't be shared (repo ignores .claude/)
@@ -127,13 +127,13 @@ if (cmd === 'upgrade-commands') {
     console.error('⚠ not a git repo — run from inside a repo with an existing board.');
     process.exit(1);
   }
-  const { CMD_PLAN, CMD_BUILD, CMD_VERIFY, CMD_DISPATCH, CMD_TRIAGE } = await import('../src/templates.js');
+  const { CMD_PLAN, CMD_BUILD, CMD_VERIFY, cmdDispatch, CMD_TRIAGE } = await import('../src/templates.js');
   const { readCommandParts, writeCommandCustom } = await import('../src/board.js');
   const commands = [
     ['todomd-plan', CMD_PLAN],
     ['todomd-build', CMD_BUILD],
     ['todomd-verify', CMD_VERIFY],
-    ['todomd-dispatch', CMD_DISPATCH],
+    ['todomd-dispatch', cmdDispatch(process.execPath, TODOMD_BIN)],
     ['todomd-triage', CMD_TRIAGE],
   ];
   const updated = [];

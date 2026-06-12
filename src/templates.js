@@ -196,7 +196,7 @@ You are the todomd TRIAGE agent. A new card just arrived for human review. The t
 Finish with a one-line summary.
 `;
 
-export const CMD_DISPATCH = `---
+const CMD_DISPATCH_TMPL = `---
 description: Budget-mode dispatcher — process pending todomd cards in this session
 ---
 
@@ -270,6 +270,13 @@ Cards left in \`Build\`/\`Verify\` by an interrupted earlier tick: treat as Queu
 - Nothing to do → reply "board idle" and finish.
 `;
 
+export function cmdDispatch(nodeBin, todomdBin) {
+  return CMD_DISPATCH_TMPL.replaceAll('npx todomd', `"${nodeBin}" "${todomdBin}"`);
+}
+
+// Backward-compat shim for callers that haven't switched yet.
+export const CMD_DISPATCH = cmdDispatch('npx', 'todomd');
+
 // Gitignored runtime deps the build worktree needs symlinked so the verify
 // command can actually run. node_modules is the near-universal case (kept even
 // if absent, since it appears after `npm install`); we additionally detect any
@@ -291,7 +298,7 @@ export function detectWorktreeLinks(repoPath) {
   return links;
 }
 
-export function initProject(repoPath) {
+export function initProject(repoPath, { nodeBin, todomdBin } = {}) {
   const links = detectWorktreeLinks(repoPath);
   const configYml = CONFIG_YML.replace('worktree_link: [node_modules]', `worktree_link: [${links.join(', ')}]`);
   const writes = [
@@ -300,7 +307,7 @@ export function initProject(repoPath) {
     ['.claude/commands/todomd-plan.md', CMD_PLAN],
     ['.claude/commands/todomd-build.md', CMD_BUILD],
     ['.claude/commands/todomd-verify.md', CMD_VERIFY],
-    ['.claude/commands/todomd-dispatch.md', CMD_DISPATCH],
+    ['.claude/commands/todomd-dispatch.md', cmdDispatch(nodeBin ?? 'npx', todomdBin ?? 'todomd')],
     ['.claude/commands/todomd-triage.md', CMD_TRIAGE],
   ];
   const created = [];

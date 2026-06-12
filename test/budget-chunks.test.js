@@ -55,7 +55,7 @@ function writeEpicCard(repo, id) {
 
 test('budget: CMD_DISPATCH instructs fanout after split plan', () => {
   const prompt = dispatchPrompt();
-  assert.ok(prompt.includes('todomd fanout'), 'dispatch prompt must mention todomd fanout');
+  assert.ok(prompt.includes('fanout'), 'dispatch prompt must mention fanout');
 });
 
 test('budget: CMD_DISPATCH skips epic tracker cards', () => {
@@ -65,7 +65,7 @@ test('budget: CMD_DISPATCH skips epic tracker cards', () => {
 
 test('budget: CMD_DISPATCH cascades via todomd advance', () => {
   const prompt = dispatchPrompt();
-  assert.ok(prompt.includes('todomd advance'), 'dispatch prompt must mention todomd advance');
+  assert.ok(prompt.includes('advance'), 'dispatch prompt must mention advance');
 });
 
 /* ── B. humanMove epic approval in budget mode ── */
