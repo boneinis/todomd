@@ -128,6 +128,7 @@ if (cmd === 'upgrade-commands') {
     process.exit(1);
   }
   const { CMD_PLAN, CMD_BUILD, CMD_VERIFY, CMD_DISPATCH, CMD_TRIAGE } = await import('../src/templates.js');
+  const { readCommandParts, writeCommandCustom } = await import('../src/board.js');
   const commands = [
     ['todomd-plan', CMD_PLAN],
     ['todomd-build', CMD_BUILD],
@@ -139,7 +140,11 @@ if (cmd === 'upgrade-commands') {
   for (const [name, content] of commands) {
     const dest = path.join(process.cwd(), '.claude', 'commands', `${name}.md`);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const existing = readCommandParts(process.cwd(), name);
     fs.writeFileSync(dest, content);
+    if (existing && (existing.hasRegion || existing.custom)) {
+      await writeCommandCustom(process.cwd(), name, existing.custom);
+    }
     updated.push(path.relative(process.cwd(), dest));
   }
   console.log(`upgraded ${updated.length} command file(s):\n  ${updated.join('\n  ')}`);
