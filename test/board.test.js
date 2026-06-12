@@ -399,3 +399,42 @@ test('createCard: child fields render frontmatter + pre-filled plan; defaults un
   assert.match(String(cc.data.triaged), /chunk 2\/2/);
   assert.match(cc.body, /## Implementation Plan\n\n1\. do the second part\n/);
 });
+
+test('upgrade-commands sequence: fresh template overwrites core but preserves custom region', async () => {
+  const { readCommandParts, writeCommandCustom } = await import('../src/board.js');
+  const repo = makeRepo();
+
+  // Seed a custom region into the existing stub command file
+  await writeCommandCustom(repo, 'todomd-build', 'always run lint before committing');
+
+  // Capture the custom region (as upgrade-commands would)
+  const existing = readCommandParts(repo, 'todomd-build');
+  assert.equal(existing.custom, 'always run lint before committing');
+
+  // Simulate upgrade: overwrite with a new template core
+  const newCore = '---\n---\nnew-template $ARGUMENTS';
+  const dest = path.join(repo, '.claude', 'commands', 'todomd-build.md');
+  fs.writeFileSync(dest, newCore);
+
+  // Re-apply custom region (as upgrade-commands would when hasRegion || custom)
+  assert.ok(existing.hasRegion || existing.custom);
+  await writeCommandCustom(repo, 'todomd-build', existing.custom);
+
+  // Verify: new core is present, custom text survived
+  const parts = readCommandParts(repo, 'todomd-build');
+  assert.match(parts.locked, /new-template \$ARGUMENTS/, 'new template core is in place');
+  assert.equal(parts.custom, 'always run lint before committing', 'custom region survived');
+});
+
+test('upgrade-commands sequence: no custom region on brand-new install → no empty block injected', async () => {
+  const { readCommandParts } = await import('../src/board.js');
+  const repo = makeRepo();
+
+  // File exists (stub) but has no custom region
+  const existing = readCommandParts(repo, 'todomd-build');
+  assert.equal(existing.hasRegion, false);
+  assert.equal(existing.custom, '');
+
+  // The upgrade condition is false — no writeCommandCustom call
+  assert.ok(!(existing.hasRegion || existing.custom), 'should skip re-injection for new installs');
+});
