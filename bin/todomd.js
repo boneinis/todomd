@@ -158,6 +158,10 @@ if (cmd === 'fanout') {
   const { readCard, parseChunks } = await import('../src/board.js');
   const card = readCard(process.cwd(), id);
   if (!card) { console.error(`card not found: ${id}`); process.exit(1); }
+  if (card.data?.epic === true || (card.data?.children?.length ?? 0) > 0) {
+    console.error(`already fanned out: ${id}`);
+    process.exit(1);
+  }
   const chunks = parseChunks(card.body || '');
   if (chunks.length < 2) { console.error(`no multi-chunk breakdown found in ${id}`); process.exit(1); }
   const ids = await materializeChunks(process.cwd(), id, chunks);
@@ -169,6 +173,9 @@ if (cmd === 'advance') {
   const id = positional[1];
   if (!id) { console.error('usage: todomd advance <id>'); process.exit(1); }
   const { advanceEpicChildren } = await import('../src/chunks.js');
+  const { readCard } = await import('../src/board.js');
+  const card = readCard(process.cwd(), id);
+  if (!card || !card.data?.epic) { console.error(`not an epic: ${id}`); process.exit(1); }
   const moved = await advanceEpicChildren(process.cwd(), id);
   console.log(moved.length ? `advanced: ${moved.join(', ')}` : 'no cards ready to advance');
   process.exit(0);
