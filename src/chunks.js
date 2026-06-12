@@ -1,4 +1,4 @@
-import { readCard, loadBoard, createCard, patchFrontmatter, appendRunLog, moveCard } from './board.js';
+import { readCard, loadBoard, createCard, patchFrontmatter, appendRunLog, moveCard, deleteCard } from './board.js';
 
 const now = () => new Date().toISOString().slice(0, 16).replace('T', ' ') + 'Z';
 
@@ -44,7 +44,10 @@ export async function materializeChunks(repoPath, epicId, chunks) {
     });
     if (!res.ok) {
       await appendRunLog(repoPath, epicId, `  - ⚠ chunk ${i + 1} create failed: ${res.error || 'unknown'}`);
-      continue;
+      for (let j = ids.length - 1; j >= 0; j--) {
+        await deleteCard(repoPath, ids[j]);
+      }
+      return [];
     }
     ids.push(res.id);
     titleToId.set(c.title, res.id);
@@ -64,7 +67,7 @@ export async function materializeChunks(repoPath, epicId, chunks) {
 // Move every Planned child of epicId whose dependencies are all Done to Queue.
 // Returns the array of moved card IDs. Does NOT call enqueueBuild.
 export async function advanceEpicChildren(repoPath, epicId) {
-  const board = loadBoard(repoPath, { includeArchived: true });
+  const board = loadBoard(repoPath, { includeArchived: false });
   const moved = [];
   for (const child of board.cards.filter((c) => c.parent === epicId && c.status === 'Planned' && !c.epic)) {
     const blocked = (child.dependencies || []).filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
@@ -72,9 +75,12 @@ export async function advanceEpicChildren(repoPath, epicId) {
     const mv = await moveCard(repoPath, child.id, 'Queue', { reason: 'chunk ready' });
     if (mv.ok && !mv.unchanged) moved.push(child.id);
   }
-  const fresh = loadBoard(repoPath, { includeArchived: true });
+  const fresh = loadBoard(repoPath, { includeArchived: false });
   const kids = fresh.cards.filter((c) => c.parent === epicId && !c.epic);
-  if (kids.length && kids.every((c) => c.status === 'Done')) {
+  const epic = readCard(repoPath, epicId);
+  const epicStatus = epic?.data?.status;
+  const completable = ['Planned', 'Queue', 'Build'].includes(epicStatus);
+  if (completable && kids.length && kids.every((c) => c.status === 'Done')) {
     await moveCard(repoPath, epicId, 'Done', { reason: 'all chunks complete' });
   }
   return moved;
