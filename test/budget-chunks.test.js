@@ -31,14 +31,34 @@ const CHUNKS_YAML = `\`\`\`yaml
     - another thing done
 \`\`\``;
 
-function writeEpicCard(repo, id) {
+const DAG_CHUNKS_YAML = `\`\`\`yaml
+- title: chunk-A
+  plan: |
+    1. do first independent thing
+  criteria:
+    - first thing done
+- title: chunk-B
+  needs: []
+  plan: |
+    1. do second independent thing
+  criteria:
+    - second thing done
+- title: chunk-C
+  needs: [chunk-A, chunk-B]
+  plan: |
+    1. combine both things
+  criteria:
+    - combined thing done
+\`\`\``;
+
+function writeEpicCard(repo, id, chunksYaml = CHUNKS_YAML) {
   const file = path.join(repo, '.todomd/tasks', `${id}-card.md`);
   fs.writeFileSync(file,
     `---\nid: ${id}\ntitle: Epic card\nstatus: Review\ntype: module\npriority: low\n` +
     `labels: []\ndependencies: []\ncreated_date: 2026-01-01\nsource: ui\nagent: claude\n` +
     `verification: { attempts: 0, max_attempts: 3, last_verdict: }\n---\n\n` +
     `## Description\n\nEpic card\n\n## Acceptance Criteria\n\n- [ ] done\n\n` +
-    `## Chunks\n\n${CHUNKS_YAML}\n\n## Implementation Plan\n\n## Run Log\n`);
+    `## Chunks\n\n${chunksYaml}\n\n## Implementation Plan\n\n## Run Log\n`);
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', `add ${id}`]);
 }
@@ -115,4 +135,37 @@ test('budget: advanceEpicChildren auto-completes epic when all chunks are Done',
 
   await advanceEpicChildren(repo, 'task-epic5');
   assert.equal(status(repo, 'task-epic5'), 'Done', 'epic should be Done when all chunks are complete');
+});
+
+test('budget: DAG chunks release all children with no unmet dependencies', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = budgetRepo();
+
+  writeEpicCard(repo, 'task-epic-dag', DAG_CHUNKS_YAML);
+  const card = readCard(repo, 'task-epic-dag');
+  const chunks = parseChunks(card.body || '');
+  const childIds = await materializeChunks(repo, 'task-epic-dag', chunks);
+  assert.equal(childIds.length, 3);
+
+  const [chunkA, chunkB, chunkC] = childIds;
+  assert.deepEqual(readCard(repo, chunkA).data.dependencies, []);
+  assert.deepEqual(readCard(repo, chunkB).data.dependencies, []);
+  assert.deepEqual(readCard(repo, chunkC).data.dependencies, [chunkA, chunkB]);
+
+  const firstMoved = await advanceEpicChildren(repo, 'task-epic-dag');
+  assert.deepEqual(firstMoved.sort(), [chunkA, chunkB].sort());
+  assert.equal(status(repo, chunkA), 'Queue');
+  assert.equal(status(repo, chunkB), 'Queue');
+  assert.equal(status(repo, chunkC), 'Planned');
+
+  await moveCard(repo, chunkA, 'Done', { reason: 'test' });
+  const secondMoved = await advanceEpicChildren(repo, 'task-epic-dag');
+  assert.deepEqual(secondMoved, []);
+  assert.equal(status(repo, chunkC), 'Planned');
+
+  await moveCard(repo, chunkB, 'Done', { reason: 'test' });
+  const thirdMoved = await advanceEpicChildren(repo, 'task-epic-dag');
+  assert.deepEqual(thirdMoved, [chunkC]);
+  assert.equal(status(repo, chunkC), 'Queue');
 });

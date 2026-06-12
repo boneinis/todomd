@@ -147,8 +147,8 @@ function criteriaProgress(body) {
 
 // Parse the Plan agent's optional `## Chunks` breakdown — a single fenced yaml
 // block listing ordered, independently-buildable sub-tasks. The orchestrator
-// turns each into a sequential child card. Returns a validated array of
-// { title, plan, criteria, type? }, or [] if the section is absent or malformed
+// turns each into a child card. Returns a validated array of
+// { title, plan, criteria, type?, needs? }, or [] if the section is absent or malformed
 // (caller decides the >=2 threshold for an actual split).
 export function parseChunks(body = '') {
   const section = body.split(/^## /m).find((s) => /^Chunks\s*(\r?\n|$)/.test(s));
@@ -169,6 +169,10 @@ export function parseChunks(body = '') {
     if (!title || !plan || !criteria.length) continue;
     const chunk = { title, plan, criteria };
     if (item.type) chunk.type = String(item.type).trim();
+    if (Array.isArray(item.needs)) {
+      const needs = item.needs.map((n) => String(n).trim()).filter(Boolean);
+      if (item.needs.length === 0 || needs.length) chunk.needs = needs;
+    }
     chunks.push(chunk);
   }
   return chunks;
