@@ -228,6 +228,20 @@ body.viewer .col-edit { display: none; }
 .meta-chip { border: 1px solid var(--line); color: var(--dim); padding: 3px 9px; font-size: 10.5px; letter-spacing: .07em; }
 .meta-chip b { color: var(--ink); font-weight: 500; }
 
+.drawer-rel { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 16px; }
+.rel-label { color: var(--faint); font-size: 10px; letter-spacing: .1em; margin-right: 2px; }
+.rel-empty { color: var(--faint); font-size: 10.5px; font-style: italic; }
+.rel-chip {
+  background: none; border: 1px solid var(--line); color: var(--dim);
+  font: inherit; font-size: 10.5px; letter-spacing: .06em;
+  padding: 3px 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+}
+.rel-chip:hover { color: var(--ink); border-color: var(--amber); }
+.rel-status { color: var(--faint); font-size: 9.5px; }
+.dep-chip { border: 1px solid var(--line); padding: 3px 8px; font-size: 10.5px; letter-spacing: .06em; display: inline-flex; align-items: center; gap: 5px; }
+.dep-done { color: var(--faint); border-color: var(--line); text-decoration: line-through; }
+.dep-blocked { color: var(--amber); border-color: var(--amber); }
+
 .drawer-routing {
   display: grid; grid-template-columns: 0.8fr 1fr 1fr 1fr auto; gap: 8px;
   align-items: end; margin-bottom: 18px; padding: 10px 12px;
