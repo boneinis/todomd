@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmp, git, makeRepo } from './helpers.js';
-import { detectWorktreeLinks, initProject } from '../src/templates.js';
+import { detectWorktreeLinks, initProject, CMD_BUILD } from '../src/templates.js';
+
+test('CMD_BUILD rule 5 prohibits git add -A and committing under .todomd/', () => {
+  assert.match(CMD_BUILD, /git add -A/, 'rule mentions git add -A');
+  assert.ok(CMD_BUILD.includes('Never use `git add -A`') || CMD_BUILD.includes('never use `git add -A`'), 'rule prohibits git add -A');
+  assert.match(CMD_BUILD, /\.todomd\//, 'rule mentions .todomd/');
+  assert.ok(CMD_BUILD.includes('never add or commit anything under `.todomd/`'), 'rule prohibits committing .todomd/');
+});
 
 test('detectWorktreeLinks: always node_modules; adds present+gitignored deps, skips tracked ones', () => {
   const repo = makeRepo();
