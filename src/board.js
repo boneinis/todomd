@@ -151,7 +151,14 @@ function criteriaProgress(body) {
 // { title, plan, criteria, type?, needs? }, or [] if the section is absent or malformed
 // (caller decides the >=2 threshold for an actual split).
 export function parseChunks(body = '') {
-  const section = body.split(/^## /m).find((s) => /^Chunks\s*(\r?\n|$)/.test(s));
+  let fenced = false;
+  const sections = [''];
+  for (const ln of body.split('\n')) {
+    if (/^\s*(```|~~~)/.test(ln)) fenced = !fenced;
+    if (!fenced && /^## /.test(ln)) sections.push(ln.slice(3) + '\n');
+    else sections[sections.length - 1] += ln + '\n';
+  }
+  const section = sections.find((s) => /^Chunks\s*(\r?\n|$)/.test(s));
   if (!section) return [];
   const fence = section.match(/```(?:ya?ml)?\r?\n([\s\S]*?)\r?\n```/);
   if (!fence) return [];
@@ -410,7 +417,7 @@ export function createCard(repoPath, fields) {
     const deps = (fields.dependencies || []).map((d) => String(d).replace(/[^\w-]/g, '')).filter(Boolean);
     const parent = fields.parent ? String(fields.parent).replace(/[^\w-]/g, '') : '';
     const triaged = fields.triaged ? String(fields.triaged).replace(/[\r\n:]/g, ' ').trim() : '';
-    const plan = fields.plan ? String(fields.plan).trim() : '';
+    const plan = fields.plan ? String(fields.plan).trim().replace(/^(#{1,6}) /gm, (_, h) => '\\' + h + ' ') : '';
     const content = `---
 id: ${id}
 title: ${title.replace(/[:#[\]{}]/g, ' ').replace(/\s+/g, ' ')}
