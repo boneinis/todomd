@@ -478,6 +478,30 @@ test('upgrade-commands sequence: fresh template overwrites core but preserves cu
   assert.equal(parts.custom, 'always run lint before committing', 'custom region survived');
 });
 
+test('createCard: plan heading markers are escaped to prevent section injection', async () => {
+  const repo = makeRepo();
+  const r = await createCard(repo, {
+    title: 'Injected headings',
+    plan: '## Foo\n\n1. do it\n\n## Bar\n\nsome more',
+    criteria: ['done'],
+  });
+  assert.equal(r.ok, true);
+  const card = readCard(repo, r.id);
+  assert.doesNotMatch(card.body, /^## Foo$/m);
+  assert.doesNotMatch(card.body, /^## Bar$/m);
+  assert.match(card.body, /\\## Foo/);
+  assert.match(card.body, /\\## Bar/);
+});
+
+test('parseChunks: ## Chunks and yaml inside a fenced code block are ignored', () => {
+  // Without fence-aware splitting, the ## Chunks inside the ~~~ block would be
+  // found and the yaml exposed by the inner ``` toggle would be parsed as real chunks.
+  const body =
+    '## Description\n\nExample:\n\n~~~\n## Chunks\n\n```yaml\n' +
+    '- title: x\n  plan: do it\n  criteria:\n    - done\n```\n~~~\n\n## Run Log\n';
+  assert.deepEqual(parseChunks(body), []);
+});
+
 test('upgrade-commands sequence: no custom region on brand-new install → no empty block injected', async () => {
   const { readCommandParts } = await import('../src/board.js');
   const repo = makeRepo();
