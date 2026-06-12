@@ -13,7 +13,8 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
    - `plan:` a block scalar (`|`) with that chunk's own numbered, concrete implementation steps (files to change, what to add where, tests to write)
    - `criteria:` a list of 1+ acceptance criteria, each checkable on its own by the verify command
    - `type:` (optional) one of fix | improvement | module | troubleshoot
-   **Order matters: each chunk may assume every earlier chunk is already built and merged to the main branch.** Do NOT list dependencies — they are implicit by order. Each chunk becomes its own card that an agent builds and verifies in sequence, so keep them coarse (2-5 chunks is typical) and independently shippable.
+   - `needs:` (optional) list of earlier chunk `title` values this chunk depends on; use `needs: []` for no dependencies, or omit to depend on the immediately preceding chunk
+   **Sequential by default:** omitting `needs` wires each chunk to its predecessor. Use `needs: [title1, title2]` for a DAG — chunks with no unmet dependencies are released in parallel at `concurrency>1`. Each chunk becomes its own card, so keep them coarse (2-5 chunks is typical) and independently shippable.
 6. **Single plan** (not splitting) — replace the empty `## Implementation Plan` section with:
    - Numbered, concrete steps (files to change, what to add where, tests to write)
    - A `Risks:` line if anything could break existing behavior (include unresolved triage Flags / human decisions)
