@@ -132,13 +132,19 @@ test('cancel mid-build cleans the worktree and clears the worktree frontmatter',
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue'); // launcher drives → Build (then hangs)
-  await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: 15000 });
+  // generous timeouts: under full-suite CPU contention the spawn + marker write
+  // can lag well past a few seconds, which is what made this test flaky
+  await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: 30000 });
   const wt = path.join(repo, '.todomd/worktrees/task-0001');
   assert.ok(fs.existsSync(wt), 'worktree was created for the build');
 
   await pipeline.humanMove(p, 'task-0001', 'Review'); // cancels the live run
-  await until(() => status(repo, 'task-0001') === 'Review', { timeout: 15000 });
+  // cancel cleanup is async (SIGTERM → child exit → worktree removal → status flip);
+  // poll the end state instead of asserting on a single sample so load can't race it
+  await until(() => status(repo, 'task-0001') === 'Review', { timeout: 30000 });
+  await until(() => !fs.existsSync(wt), { timeout: 15000 });
   assert.ok(!fs.existsSync(wt), 'worktree removed on cancel (no leak)');
+  await until(() => (readCard(repo, 'task-0001').data.worktree || '') === '', { timeout: 5000 });
   assert.equal(readCard(repo, 'task-0001').data.worktree || '', '', 'worktree frontmatter cleared');
   clearFakeAgent();
 });
