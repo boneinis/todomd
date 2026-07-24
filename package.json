@@ -31,6 +31,12 @@
   },
   "license": "MIT",
   "author": "Irvin Bowman <bowman.irvin@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boneinis/todomd.git"
+  },
+  "homepage": "https://github.com/boneinis/todomd#readme",
+  "bugs": "https://github.com/boneinis/todomd/issues",
   "keywords": [
     "kanban",
     "markdown",
