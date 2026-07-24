@@ -29,5 +29,15 @@
     "qrcode": "^1.5.4",
     "ws": "^8.18.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Irvin Bowman <bowman.irvin@gmail.com>",
+  "keywords": [
+    "kanban",
+    "markdown",
+    "ai-agents",
+    "claude",
+    "codex",
+    "task-board",
+    "git"
+  ]
 }

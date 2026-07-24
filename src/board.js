@@ -132,6 +132,15 @@ function tasksDir(repoPath) {
   return path.join(repoPath, '.todomd', 'tasks');
 }
 
+// Crash-safe card write: tmp file in the SAME dir (rename is atomic within a
+// filesystem), then rename over the target — a crash mid-write leaves a .tmp
+// behind instead of a truncated card. Same pattern as registry/runstore.
+function writeFileAtomic(file, content) {
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, content);
+  fs.renameSync(tmp, file);
+}
+
 // exact id match only: task-0001 must not resolve task-00010-*.md
 function findCardFile(dir, id) {
   return fs.readdirSync(dir).sort().find((f) => f === `${id}.md` || f.startsWith(`${id}-`));
@@ -298,7 +307,7 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
       return { ok: false, error: `${id} has no frontmatter block; fix the file manually` };
     }
     const relFile = path.join('.todomd', 'tasks', card.file);
-    fs.writeFileSync(path.join(repoPath, relFile), updated);
+    writeFileAtomic(path.join(repoPath, relFile), updated);
 
     // chore(todomd): passes Conventional Commits gates (husky/commitlint)
     const msg = `chore(todomd): ${id} ${oldStatus ?? '(none)'} -> ${newStatus}${reason ? ` (${reason})` : ''}`;
@@ -328,7 +337,7 @@ export function setArchived(repoPath, id, on) {
     }
     const updated = `---\n${fm}\n---` + card.raw.slice(m[0].length);
     const relFile = path.join('.todomd', 'tasks', card.file);
-    fs.writeFileSync(path.join(repoPath, relFile), updated);
+    writeFileAtomic(path.join(repoPath, relFile), updated);
     const commit = await commitCard(repoPath, relFile, `chore(todomd): ${id} ${on ? 'archived' : 'unarchived'}`);
     return { ok: true, archived: !!on, commit };
   });
@@ -386,7 +395,7 @@ export function patchFrontmatter(repoPath, id, updates) {
       fm = re.test(fm) ? fm.replace(re, () => line) : `${fm}\n${line}`;
     }
     const updated = `---\n${fm}\n---` + card.raw.slice(m[0].length);
-    fs.writeFileSync(path.join(repoPath, '.todomd', 'tasks', card.file), updated);
+    writeFileAtomic(path.join(repoPath, '.todomd', 'tasks', card.file), updated);
     return { ok: true, file: card.file };
   });
 }
@@ -447,7 +456,7 @@ ${criteria.length ? criteria.map((c) => `- [ ] ${c}`).join('\n') : '- [ ] Implem
 
 ${plan ? `${plan}\n\n` : ''}## Run Log
 `;
-    fs.writeFileSync(path.join(dir, file), content);
+    writeFileAtomic(path.join(dir, file), content);
     const relFile = path.join('.todomd', 'tasks', file);
     const commit = await commitCard(repoPath, relFile, `chore(todomd): ${id} created (${fields.source || 'ui'})`);
     return { ok: true, id, file, commit };
@@ -553,7 +562,7 @@ export function attachCard(repoPath, id, filename, buffer) {
     } else {
       raw = raw.replace(/\n*$/, '') + `\n\n## Attachments\n\n${ref}\n`;
     }
-    fs.writeFileSync(path.join(repoPath, '.todomd', 'tasks', card.file), raw);
+    writeFileAtomic(path.join(repoPath, '.todomd', 'tasks', card.file), raw);
 
     const relCard = path.join('.todomd', 'tasks', card.file);
     const relAtt = path.join(relDir, name);
@@ -591,7 +600,7 @@ export function appendRunLog(repoPath, id, line) {
       // keep the blank line before a following heading (slice from the newline)
       raw = `${before}${line}\n` + (nextNl < 0 ? '' : raw.slice(nextNl));
     }
-    fs.writeFileSync(path.join(repoPath, '.todomd', 'tasks', card.file), raw);
+    writeFileAtomic(path.join(repoPath, '.todomd', 'tasks', card.file), raw);
     return { ok: true };
   });
 }

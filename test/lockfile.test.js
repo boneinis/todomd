@@ -57,6 +57,32 @@ test('a stale lock (owner timestamp older than 5 min) is stolen', async () => {
   releaseFileLock(a.dir, a.nonce);
 });
 
+test('an ownerless lock (crashed between mkdir and owner write) is stolen via dir mtime', async () => {
+  const repo = repoWithTodomd();
+  const lock = path.join(repo, '.todomd', '.lock');
+  fs.mkdirSync(lock, { recursive: true }); // no owner file — the crash window
+  const old = new Date(Date.now() - 400_000); // > 300s STALE_SEC
+  fs.utimesSync(lock, old, old);
+  // Must not deadlock: the mtime fallback proves it can't be mid-creation.
+  const a = await acquireFileLock(repo);
+  assert.ok(fs.existsSync(path.join(lock, 'owner')), 'lock re-acquired with a fresh owner');
+  releaseFileLock(a.dir, a.nonce);
+  assert.equal(fs.existsSync(lock), false, 'released cleanly');
+});
+
+test('a FRESH ownerless lock (holder mid-creation) is not stolen', async () => {
+  const repo = repoWithTodomd();
+  const lock = path.join(repo, '.todomd', '.lock');
+  fs.mkdirSync(lock, { recursive: true }); // just created — mtime is now
+  let got = false;
+  const waiter = acquireFileLock(repo).then((r) => { got = true; return r; });
+  await sleep(300); // a few poll cycles
+  assert.equal(got, false, 'fresh ownerless dir still reads as mid-creation');
+  releaseFileLock(lock, null); // simulate the holder finishing/cleaning up
+  const a = await waiter;
+  releaseFileLock(a.dir, a.nonce);
+});
+
 test('release is nonce-fenced: a foreign nonce will NOT delete the held lock', async () => {
   const repo = repoWithTodomd();
   const a = await acquireFileLock(repo);

@@ -24,6 +24,22 @@ function midOperation(repoPath) {
 
 export { git, isGitRepo };
 
+// The branch currently checked out in the main working tree, or null on a
+// detached HEAD (rev-parse prints literal "HEAD" there).
+export async function currentBranch(repoPath) {
+  const res = await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  return res.ok && res.stdout && res.stdout !== 'HEAD' ? res.stdout : null;
+}
+
+// The repo's base branch: origin/HEAD ("origin/main" → "main") when the repo
+// has an origin remote, else the branch checked out right now (a local-only
+// repo merges back into whatever the worktree forked from).
+export async function baseBranch(repoPath) {
+  const res = await git(repoPath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  if (res.ok && res.stdout) return res.stdout.replace(/^origin\//, '');
+  return currentBranch(repoPath);
+}
+
 export async function addWorktree(repoPath, worktreePath, branch) {
   const res = await git(repoPath, ['worktree', 'add', worktreePath, '-b', branch]);
   return res.ok ? { ok: true } : { ok: false, reason: res.stderr };

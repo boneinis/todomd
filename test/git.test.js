@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeRepo, git } from './helpers.js';
-import { commitCard, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard } from '../src/git.js';
+import { makeRepo, git, tmp } from './helpers.js';
+import { commitCard, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, baseBranch, currentBranch } from '../src/git.js';
 
 test('commitCard is path-scoped: leaves the user\'s other changes untouched', async () => {
   const repo = makeRepo();
@@ -98,6 +98,25 @@ test('linkIntoWorktree makes the symlink un-stageable (git add -A skips it)', as
   const staged = git(wt, ['diff', '--cached', '--name-only']);
   assert.match(staged, /real\.js/);
   assert.doesNotMatch(staged, /node_modules/); // the symlink must NOT be staged
+});
+
+test('baseBranch falls back to the checked-out branch when the repo has no origin', async () => {
+  const repo = makeRepo();
+  const head = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  assert.equal(await currentBranch(repo), head);
+  assert.equal(await baseBranch(repo), head);
+  git(repo, ['checkout', '-qb', 'feature']);
+  assert.equal(await baseBranch(repo), 'feature', 'no origin → follow the current branch');
+});
+
+test('baseBranch prefers origin/HEAD over the checked-out branch', async () => {
+  const origin = makeRepo();
+  const base = git(origin, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const repo = tmp('clone'); // empty dir — clone into it
+  git(repo, ['clone', '-q', origin, '.']);
+  git(repo, ['checkout', '-qb', 'switched']);
+  assert.equal(await currentBranch(repo), 'switched');
+  assert.equal(await baseBranch(repo), base, 'origin/HEAD wins over the checked-out branch');
 });
 
 test('branchAddedForbidden catches a committed node_modules, passes a clean branch', async () => {

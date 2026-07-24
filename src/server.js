@@ -21,6 +21,24 @@ const FILE_MIME = {
   '.csv': 'text/csv', '.json': 'application/json',
 };
 const INLINE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif', '.pdf', '.txt', '.md']);
+
+// JSON API bodies are tiny (the attachment endpoint has its own 25 MB cap) —
+// cap everything else so a client can't exhaust memory with an unbounded body.
+const MAX_BODY = 1024 * 1024; // 1 MB
+// Returns the body string, or null when it exceeds MAX_BODY (caller sends 413).
+async function readBody(req) {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > MAX_BODY) return null;
+  }
+  return body;
+}
+
+// Real card ids come from createCard: task-0001 (zero-padded, growing past 4
+// digits). Enforced at the route layer — before any filesystem use — so `..`
+// or other junk in a card route is a clean 400, not a filename-lookup accident.
+const CARD_ID = /^task-\d{1,6}(-[\w-]*)?$/;
 import * as pipeline from './pipeline.js';
 import { startIntake, restartIntake, publicIntake, saveBoardIntake, testIntake } from './intake.js';
 
@@ -145,8 +163,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (req.method === 'GET') return json(res, 200, { projects: listProjects().map((p) => p.name) });
       if (req.method === 'POST') {
         // add a repo: validate it's a git repo, scaffold the board, register it
-        let body = '';
-        for await (const chunk of req) body += chunk;
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
         let dir;
         try { dir = String(JSON.parse(body || '{}').path || ''); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
         // forgive common paste artifacts: zero-width junk, non-breaking / odd
@@ -189,8 +207,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
         return json(res, 200, publicIntake(name));
       }
       if (url.pathname === '/api/intake' && req.method === 'POST') {
-        let body = '';
-        for await (const chunk of req) body += chunk;
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
         let f;
         try { f = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
         saveBoardIntake(name, {
@@ -218,8 +236,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (req.method === 'GET') return json(res, 200, { enabled: lanEnabled, canToggle: primary(req), ip: lanAddress() });
       if (req.method === 'POST') {
         if (!primary(req)) return json(res, 403, { error: 'enable LAN from the computer running todomd' });
-        let body = '';
-        for await (const chunk of req) body += chunk;
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
         let on;
         try { on = !!JSON.parse(body || '{}').enabled; } catch { return json(res, 400, { error: 'invalid JSON body' }); }
         const r = setLan(on);
@@ -264,8 +282,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
       }
       if (req.method === 'POST') {
         // only the editable region is writable — the locked core is preserved
-        let body = '';
-        for await (const chunk of req) body += chunk;
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
         let custom;
         try { ({ custom } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
         const result = await writeCommandCustom(project.path, cmdMatch[1], custom);
@@ -276,8 +294,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     // per-column agent/model routing (the "column" tier). Full token only.
     if (url.pathname === '/api/stages' && req.method === 'POST') {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let fields;
       try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
       const col = String(fields.column || '');
@@ -296,8 +314,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     // only (it runs the OS opener on the host) and same-origin (enforced above).
     if (url.pathname === '/api/open' && req.method === 'POST') {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let p;
       try { ({ path: p } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
       const result = openInRepo(project.path, p);
@@ -320,8 +338,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
       return json(res, 200, { agent, models: listModels(agent, loadConfig(project.path)) });
     }
     if (url.pathname === '/api/cards' && req.method === 'POST') {
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let fields;
       try {
         fields = JSON.parse(body || '{}');
@@ -354,6 +372,15 @@ export function startServer({ port = 7337, lan = false } = {}) {
         'x-content-type-options': 'nosniff',
       });
       return res.end(fs.readFileSync(real));
+    }
+    // Validate the card id BEFORE any card route touches the filesystem — a
+    // non-conforming id (e.g. `..`) is a clean 400 here, not a 404 that happens
+    // to fall out of board.js's filename lookup.
+    const cardIdInPath = url.pathname.match(/^\/api\/cards\/([^/]+)/);
+    if (cardIdInPath) {
+      let cid = cardIdInPath[1];
+      try { cid = decodeURIComponent(cid); } catch { return json(res, 400, { error: 'invalid card id' }); }
+      if (!CARD_ID.test(cid)) return json(res, 400, { error: 'invalid card id' });
     }
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
     if (cardMatch && req.method === 'GET') {
@@ -392,8 +419,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     const moveMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/move$/);
     if (moveMatch && req.method === 'POST') {
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let status;
       try {
         ({ status } = JSON.parse(body || '{}'));
@@ -407,8 +434,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     // human-owned routing fields, editable from the drawer
     const setMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/set$/);
     if (setMatch && req.method === 'POST') {
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let fields;
       try {
         fields = JSON.parse(body || '{}');
@@ -439,8 +466,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const answerMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/answer$/);
     if (answerMatch && req.method === 'POST') {
       if (pipeline.hasLiveRun(project.name, answerMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let answer;
       try { ({ answer } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
       const result = await pipeline.answerCard(project, answerMatch[1], answer);
@@ -448,8 +475,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     const archiveMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/archive$/);
     if (archiveMatch && req.method === 'POST') {
-      let body = '';
-      for await (const chunk of req) body += chunk;
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let on;
       try { ({ archived: on } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
       if (on && pipeline.hasLiveRun(project.name, archiveMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });

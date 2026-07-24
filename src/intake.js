@@ -186,6 +186,10 @@ async function pollSource(source, getProject) {
     auth: { user: conf.user, pass: conf.pass },
     logger: false,
   });
+  // ImapFlow is an EventEmitter: errors raised outside awaited calls (socket
+  // drops mid-idle) surface as 'error' events — without a listener they become
+  // unhandled and crash the process. Log and let the awaited calls reject.
+  client.on('error', (e) => log(`intake: "${label}" connection error: ${e.message}`));
   let lock;
   let created = 0;
   let processed = 0;
@@ -287,6 +291,7 @@ export async function testIntake(name) {
     host: conf.host, port: conf.port || 993, secure: conf.secure !== false,
     auth: { user: conf.user, pass: conf.pass }, logger: false,
   });
+  client.on('error', () => {}); // out-of-call errors are non-fatal; awaited calls reject on their own
   try {
     await client.connect();
     const lock = await client.getMailboxLock(conf.folder || 'INBOX');

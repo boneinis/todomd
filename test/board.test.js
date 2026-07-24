@@ -65,6 +65,26 @@ test('patchFrontmatter writes nested object flow style', async () => {
   assert.deepEqual(v, { attempts: 2, max_attempts: 3, last_verdict: 'fail' });
 });
 
+test('card writes are atomic (tmp+rename): content intact, no .tmp litter', async () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001');
+  await moveCard(repo, 'task-0001', 'Done');
+  await patchFrontmatter(repo, 'task-0001', { assignee: 'alice' });
+  await appendRunLog(repo, 'task-0001', '- atomic line');
+  await attachCard(repo, 'task-0001', 'note.txt', Buffer.from('hi'));
+  await setArchived(repo, 'task-0001', true);
+  const created = await createCard(repo, { title: 'second card' });
+  assert.equal(created.ok, true);
+  const tasks = path.join(repo, '.todomd', 'tasks');
+  assert.ok(!fs.readdirSync(tasks).some((f) => f.endsWith('.tmp')), 'no .tmp litter in tasks/');
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.status, 'Done');
+  assert.equal(card.data.assignee, 'alice');
+  assert.ok(card.data.archived, 'archived flag persisted');
+  assert.match(card.body, /- atomic line/);
+  assert.match(card.body, /note\.txt/);
+});
+
 test('appendRunLog inserts under the heading and keeps the blank line before a following section', async () => {
   const repo = makeRepo();
   // card whose Run Log is NOT the last section

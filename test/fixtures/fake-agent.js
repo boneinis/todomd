@@ -9,6 +9,12 @@
 //   FAKE_BUILD=good|bad|noop — whether build writes passing/failing/no code
 //   FAKE_FAIL=1              — exit non-zero (agent error)
 //   FAKE_MAXTURNS=1         — emit an error_max_turns envelope
+//   FAKE_HANG=1|<stage>     — hang a stage until SIGTERM (1 = build; once per
+//                             FAKE_HANG_MARKER so a re-driven run proceeds)
+//   FAKE_IGNORE_TERM=1      — while hanging, ignore SIGTERM (forces a SIGKILL)
+//   FAKE_SWITCH_REPO/FAKE_SWITCH_BRANCH — on verify, checkout -b this branch in
+//                             the given repo (simulates the user switching
+//                             branches mid-run before the merge)
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -62,13 +68,19 @@ const stage = prompt.includes('plan') ? 'plan'
   : prompt.includes('build') ? 'build'
   : prompt.includes('verify') ? 'verify' : 'other';
 
-// ── hang during build until SIGTERM, so a test can cancel a LIVE run mid-build ──
-if (process.env.FAKE_HANG && stage === 'build') {
+// ── hang a stage until SIGTERM, so a test can cancel/timeout a LIVE run ──
+// FAKE_HANG=1 hangs the build (legacy); FAKE_HANG=<stage> hangs that stage.
+// With FAKE_HANG_MARKER set it hangs only ONCE (the marker records the first
+// hang), so a re-driven run proceeds normally. The hang is terminal: the stage
+// dispatch below is an else-chain so a hanging run never falls through and
+// completes on its own.
+const hangStage = process.env.FAKE_HANG === '1' ? 'build' : process.env.FAKE_HANG;
+if (hangStage && stage === hangStage &&
+    !(process.env.FAKE_HANG_MARKER && fs.existsSync(process.env.FAKE_HANG_MARKER))) {
   if (process.env.FAKE_HANG_MARKER) fs.writeFileSync(process.env.FAKE_HANG_MARKER, '1');
-  setInterval(() => {}, 1 << 30); // keep alive; the runner SIGTERMs us on cancel
-}
-
-if (stage === 'plan') {
+  if (process.env.FAKE_IGNORE_TERM) process.on('SIGTERM', () => {}); // stubborn child — only SIGKILL stops it
+  setInterval(() => {}, 1 << 30); // keep alive; the runner SIGTERMs us on cancel/timeout
+} else if (stage === 'plan') {
   const file = findCard(taskId);
   if (file) {
     const raw = fs.readFileSync(file, 'utf8');
@@ -87,9 +99,7 @@ if (stage === 'plan') {
   }
   emitStream([{ type: 'system', subtype: 'init' }, { type: 'assistant', message: { content: [{ type: 'text', text: 'planned' }] } }, resultEnvelope()]);
   process.exit(0);
-}
-
-if (stage === 'build') {
+} else if (stage === 'build') {
   // cwd is the worktree; write code + test, commit on the branch
   const mode = process.env.FAKE_BUILD || 'good';
   if (mode !== 'noop') {
@@ -104,9 +114,12 @@ if (stage === 'build') {
   }
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
   process.exit(0);
-}
-
-if (stage === 'verify') {
+} else if (stage === 'verify') {
+  // simulate the user switching branches in the main repo mid-run, just before
+  // the orchestrator would merge
+  if (process.env.FAKE_SWITCH_REPO && process.env.FAKE_SWITCH_BRANCH) {
+    execFileSync('git', ['-C', process.env.FAKE_SWITCH_REPO, 'checkout', '-qb', process.env.FAKE_SWITCH_BRANCH], { stdio: 'ignore' });
+  }
   // buffered mode (--json-schema): emit one envelope with structured_output
   const verdict = process.env.FAKE_VERDICT || 'pass';
   const structured = {
@@ -124,6 +137,6 @@ if (stage === 'verify') {
   }
   process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: structured })));
   process.exit(0);
+} else {
+  emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
 }
-
-emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);

@@ -289,6 +289,28 @@ test('API archive hides/restores a card; DELETE removes it; viewer cannot', asyn
   } finally { srv.close(); }
 });
 
+test('API guards: oversized JSON body → 413; malformed card id → 400', async () => {
+  isolateHome();
+  const { base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    // a >1 MB JSON body is refused before parsing
+    let r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: h, body: JSON.stringify({ title: 'x'.repeat(1024 * 1024) }) });
+    assert.equal(r.status, 413);
+    // a normal body still works
+    r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: h, body: '{"title":"fine"}' });
+    assert.equal(r.status, 200);
+    // ids that don't match the generator's format (task-NNNN) are 400 before any fs use
+    for (const bad of ['bogus', '..x', 'task', 'task-', 'task-0001.md']) {
+      r = await fetch(`${base}/api/cards/${bad}${q}`, { headers: { 'x-todomd-token': srv.token } });
+      assert.equal(r.status, 400, `id ${bad}`);
+    }
+    // a well-formed but missing id is still a 404
+    r = await fetch(`${base}/api/cards/task-9999${q}`, { headers: { 'x-todomd-token': srv.token } });
+    assert.equal(r.status, 404);
+  } finally { srv.close(); }
+});
+
 test('API DELETE epic with a building child returns 400', async () => {
   isolateHome();
   const marker = path.join(tmp('del-epic'), 'started');
@@ -302,21 +324,21 @@ test('API DELETE epic with a building child returns 400', async () => {
   const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
   const p = { name, path: repo };
 
-  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001]\n' });
-  writeCard(repo, 'chunk-001', { status: 'Planned', extra: 'parent: epic-001\n' });
+  writeCard(repo, 'task-0001', { status: 'Queue', extra: 'epic: true\nchildren: [task-0002]\n' });
+  writeCard(repo, 'task-0002', { status: 'Planned', extra: 'parent: task-0001\n' });
 
   try {
     // start the child build (hangs until SIGTERM)
-    await pipeline.humanMove(p, 'chunk-001', 'Queue');
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
     await until(() => fs.existsSync(marker), { timeout: 30000 });
 
     // DELETE on the epic should be refused while a child is building
-    const r = await fetch(`${base}/api/cards/epic-001${q}`, { method: 'DELETE', headers: h });
+    const r = await fetch(`${base}/api/cards/task-0001${q}`, { method: 'DELETE', headers: h });
     assert.equal(r.status, 400);
     assert.match((await r.json()).error, /child card is building/);
 
     // cancel the hanging build to clean up
-    await pipeline.humanMove(p, 'chunk-001', 'Review');
+    await pipeline.humanMove(p, 'task-0002', 'Review');
   } finally {
     srv.close();
     clearFakeAgent();

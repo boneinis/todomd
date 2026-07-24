@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { addProject, listProjects } from '../src/registry.js';
 import { initProject } from '../src/templates.js';
 import { startServer } from '../src/server.js';
+import { killAllChildren } from '../src/pipeline.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
@@ -98,7 +99,8 @@ if (cmd === 'install-launcher') {
 
 if (cmd === 'stop') {
   try {
-    const pid = Number(fs.readFileSync(PID_FILE, 'utf8').trim());
+    // the pid file is "<pid> <port>" (older versions wrote just the pid)
+    const pid = Number(fs.readFileSync(PID_FILE, 'utf8').trim().split(/\s+/)[0]);
     process.kill(pid, 0); // throws if the pid is dead → don't signal a recycled pid
     process.kill(pid);
     fs.rmSync(PID_FILE, { force: true });
@@ -194,19 +196,52 @@ if (cmd === 'serve') {
     console.error(`invalid --port: ${flag('--port')}`);
     process.exit(1);
   }
-  const { url, lanUrl } = await startServer({ port, lan: args.includes('--lan') });
+  // Single-instance guard: a second serve's boot reconciliation would kill the
+  // first instance's agents. If the pid file names a live process that still
+  // looks like a todomd server (same `ps` style check pipeline uses), point the
+  // user at it and bail. A dead pid — or a recycled pid owned by an unrelated
+  // process — means a stale file: proceed as today.
+  try {
+    const [pidStr, portStr] = fs.readFileSync(PID_FILE, 'utf8').trim().split(/\s+/);
+    const pid = Number(pidStr);
+    if (pid && pid !== process.pid) {
+      process.kill(pid, 0); // throws if dead → stale pid file, fall through
+      const cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      if (cmdline.includes('todomd')) {
+        const runningPort = Number(portStr) || port;
+        console.error(`todomd is already running on port ${runningPort} — open http://127.0.0.1:${runningPort} or run \`todomd stop\``);
+        process.exit(1);
+      }
+    }
+  } catch { /* no pid file, dead process, or no ps — proceed */ }
+  // backstop: a stray rejection (IMAP socket, watcher, pipeline sweep) must
+  // never take the board down
+  process.on('unhandledRejection', (e) => console.error('todomd: unhandled rejection:', e));
+  const { url, lanUrl, close } = await startServer({ port, lan: args.includes('--lan') });
   // record the pid so `todomd stop` can stop a detached (launcher-started) server
   try {
     fs.mkdirSync(TODOMD_DIR, { recursive: true });
-    fs.writeFileSync(PID_FILE, String(process.pid));
+    fs.writeFileSync(PID_FILE, `${process.pid} ${port}`);
     // only remove the pid file if it's still OURS — never clobber another
     // running instance's pid (e.g. a terminal serve exiting on EADDRINUSE)
     const cleanup = () => {
-      try { if (fs.readFileSync(PID_FILE, 'utf8').trim() === String(process.pid)) fs.rmSync(PID_FILE, { force: true }); } catch {}
+      try { if (fs.readFileSync(PID_FILE, 'utf8').trim().split(/\s+/)[0] === String(process.pid)) fs.rmSync(PID_FILE, { force: true }); } catch {}
+    };
+    // graceful shutdown: kill tracked agent CLIs first (an orphan keeps running
+    // and billing), then close the server, then remove the pid file. Guarded so
+    // a second signal while the first is still shutting down doesn't re-enter.
+    let shuttingDown = false;
+    const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      try { await killAllChildren(); } catch {}
+      try { close?.(); } catch {}
+      cleanup();
+      process.exit(0);
     };
     process.on('exit', cleanup);
-    process.on('SIGINT', () => { cleanup(); process.exit(0); });
-    process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
   } catch {}
   console.log(`todomd board: ${url}`);
   if (lanUrl) console.log(`mobile monitor (read-only, this network): ${lanUrl}`);

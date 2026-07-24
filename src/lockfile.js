@@ -46,19 +46,32 @@ function tryAcquire(dir, nonce) {
   }
 }
 
-// Steal a stale lock (owner older than STALE_SEC) ATOMICALLY: rename the dir
-// aside, and only the one racer whose rename succeeds gets to remove it — so two
-// processes can't both `rm` and then both `mkdir` into a double-acquire. A
-// missing owner means the holder is mid-creation (not stale) — leave it.
-function stealIfStale(dir) {
-  let raw;
-  try { raw = fs.readFileSync(path.join(dir, 'owner'), 'utf8'); }
-  catch { return; }
-  const ts = parseInt(raw.split(' ')[0], 10);
-  if (!Number.isFinite(ts) || nowSec() - ts <= STALE_SEC) return;
+// Steal ATOMICALLY: rename the dir aside, and only the one racer whose rename
+// succeeds gets to remove it — so two processes can't both `rm` and then both
+// `mkdir` into a double-acquire.
+function steal(dir) {
   const dead = `${dir}.dead.${process.pid}.${nowSec()}`;
   try { fs.renameSync(dir, dead); } catch { return; } // lost the race — another stealer moved it
   try { fs.rmSync(dead, { recursive: true, force: true }); } catch {}
+}
+
+// Steal a stale lock (owner older than STALE_SEC). A missing owner means the
+// holder crashed between mkdir and the owner write (a live holder finishes
+// that window in milliseconds) — fall back to the lock dir's own mtime, which
+// mkdir set at creation; older than STALE_SEC can't be mid-creation, so steal.
+function stealIfStale(dir) {
+  let raw;
+  try { raw = fs.readFileSync(path.join(dir, 'owner'), 'utf8'); }
+  catch {
+    try {
+      if (nowSec() - Math.floor(fs.statSync(dir).mtimeMs / 1000) <= STALE_SEC) return;
+    } catch { return; }
+    steal(dir);
+    return;
+  }
+  const ts = parseInt(raw.split(' ')[0], 10);
+  if (!Number.isFinite(ts) || nowSec() - ts <= STALE_SEC) return;
+  steal(dir);
 }
 
 export async function acquireFileLock(repoPath) {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
-import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, git } from './git.js';
+import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
@@ -224,7 +224,7 @@ export async function cascadeEpicCleanup(project, epicId) {
       run.cancelled = true;
       run.revertTo = 'Review';
       run.cascadeArchive = true;
-      childLive.kill('SIGTERM');
+      killWithEscalation(childLive);
       // cancel handler will setArchived after cleanup (cascadeArchive flag), skipping orchMove
     } else {
       await releaseCardResources(project, child.id);
@@ -274,14 +274,26 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
       }
     },
   });
-  runs.set(key, {
+  const run = {
     project: project.name, card: id, stage, pid: child.pid,
     startedAt: new Date().toISOString(), prevStatus, attempt,
-  });
+  };
+  runs.set(key, run);
   children.set(key, child);
   persistRuns();
   sendState(project, id, 'running', stage);
+  // wall-clock cap: a hung agent must not hold a concurrency slot forever. On
+  // expiry the child is killed (TERM → KILL backstop) and the stage's caller
+  // routes the card to Needs Human (run.timedOut).
+  const timeoutMin = Number(loadConfig(project.path).stage_timeout_min) || 45;
+  run.timeoutMin = timeoutMin;
+  const stageTimer = setTimeout(() => {
+    run.timedOut = true;
+    killWithEscalation(child);
+  }, timeoutMin * 60_000);
+  stageTimer.unref?.();
   return done.then((result) => {
+    clearTimeout(stageTimer);
     const run = runs.get(key);
     runs.delete(key);
     children.delete(key);
@@ -310,7 +322,7 @@ export async function humanMove(project, id, to) {
       const run = runs.get(key);
       run.cancelled = true;
       run.revertTo = 'Review';
-      live.kill('SIGTERM');
+      killWithEscalation(live);
       return { ok: true, cancelled: true };
     }
     retryFindings.delete(key);
@@ -380,6 +392,7 @@ export async function humanMove(project, id, to) {
     await patchFrontmatter(project.path, id, {
       needs_human_reason: '',
       worktree: '',
+      base_branch: '',
       verification: { attempts: 0, max_attempts: ver.max_attempts || config.max_attempts || 3, last_verdict: '' },
     });
     return moveCard(project.path, id, 'Planned', { reason: 'human retry' });
@@ -406,6 +419,17 @@ export async function humanMove(project, id, to) {
   return moveCard(project.path, id, to);
 }
 
+// SIGTERM a child with a SIGKILL backstop: a child that ignores TERM would
+// otherwise hold its concurrency slot (and keep billing) forever. The kill
+// timer is cleared when the child's close fires. (TODOMD_KILL_GRACE_MS is a
+// test steering knob, like TODOMD_CLAUDE_BIN.)
+function killWithEscalation(child, { graceMs = Number(process.env.TODOMD_KILL_GRACE_MS) || 10000 } = {}) {
+  try { child.kill('SIGTERM'); } catch { /* already gone */ }
+  const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, graceMs);
+  killTimer.unref?.();
+  child.once('close', () => clearTimeout(killTimer));
+}
+
 export function cancel(project, id) {
   const key = runKey(project.name, id);
   const live = children.get(key);
@@ -425,8 +449,36 @@ export function cancel(project, id) {
   // a cancelled Verify run would revert to Build (prevStatus), which humanMove
   // then refuses to leave — send it back to Queue so it can be re-driven
   run.revertTo = run.stage === 'Verify' ? 'Queue' : run.prevStatus;
-  live.kill('SIGTERM');
+  killWithEscalation(live);
   return { ok: true };
+}
+
+// Server shutdown: SIGTERM every tracked agent child, then SIGKILL any still
+// alive after a short grace — an exiting server must never orphan a running
+// (billing) agent CLI. Each child goes through the normal cancel path (run
+// flagged cancelled so its exit handler reverts the card instead of treating
+// the kill as an agent failure). Resolves once all children are dead or
+// force-killed.
+export async function killAllChildren({ graceMs = 5000 } = {}) {
+  for (const [key, child] of children) {
+    const run = runs.get(key);
+    if (run) {
+      run.cancelled = true;
+      run.revertTo = run.stage === 'Verify' ? 'Queue' : run.prevStatus;
+      // shutdown: the card parks in Queue and the next boot's reconcile
+      // re-enqueues it — the verify cancel handler must not respawn a build
+      // into a dying process
+      run.noRequeue = true;
+    }
+    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+  }
+  const waitForExit = async (ms) => {
+    const deadline = Date.now() + ms;
+    while (children.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  };
+  await waitForExit(graceMs);
+  for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  await waitForExit(1000); // let the close handlers reap and drop tracking entries
 }
 
 /* ── plan & custom trigger stages ── */
@@ -462,6 +514,11 @@ async function runTriggerStage(project, id, stageName) {
     await orchMove(project, id, run.revertTo, 'cancelled');
     sendState(project, id, 'idle');
     return;
+  }
+  if (run?.timedOut) {
+    await recordRun(project, id, stageName, 0, result, 'run timeout');
+    return toNeedsHuman(project, id, stageName, 'run_timeout',
+      `${stageName} exceeded the ${run.timeoutMin}m stage timeout`);
   }
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (ok) {
@@ -572,12 +629,22 @@ function processQueue(project) {
     const id = q.shift();
     active.set(project.name, (active.get(project.name) || 0) + 1);
     buildChain(project, id)
-      .catch(() => {})
+      .catch((err) => pipelineError(project, id, err))
       .finally(() => {
         active.set(project.name, (active.get(project.name) || 0) - 1);
         processQueue(project);
       });
   }
+}
+
+// An unexpected throw anywhere in the build→verify chain would otherwise
+// strand the card in Build/Verify with no live run, no banner, and no log.
+async function pipelineError(project, id, err) {
+  const detail = String(err?.stack || err || 'unknown error');
+  setBanner(`pipeline:${project.name}:${id}`, 'error', `${id}: unexpected pipeline error — routed to Needs Human`);
+  try {
+    await toNeedsHuman(project, id, 'Build', 'pipeline_error', detail);
+  } catch { /* a failed recovery must not rethrow into the same catch chain */ }
 }
 
 async function buildChain(project, id, retry = null) {
@@ -605,7 +672,12 @@ async function buildChain(project, id, retry = null) {
   const fromStatus = retry ? 'Verify' : 'Queue';
 
   // worktree exists across retries; create on first attempt
+  let forkedFrom = null;
   if (!fs.existsSync(worktreeAbs)) {
+    // capture the base branch BEFORE forking: the merge at the end must land on
+    // this same branch — if the user switches branches mid-run, merging would
+    // silently drop verified work on the wrong branch
+    forkedFrom = await baseBranch(project.path);
     const wt = await withRepoLock(project.path, () => addWorktree(project.path, worktreeAbs, branch));
     if (!wt.ok) return toNeedsHuman(project, id, fromStatus, 'worktree_failed', wt.reason);
     // make the worktree runnable: link gitignored runtime deps from the repo
@@ -614,6 +686,7 @@ async function buildChain(project, id, retry = null) {
 
   await patchFrontmatter(project.path, id, {
     worktree: branch,
+    ...(forkedFrom ? { base_branch: forkedFrom } : {}),
     verification: { attempts: attempt, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
   });
   await orchMove(project, id, 'Build', `attempt ${attempt}`);
@@ -670,13 +743,18 @@ async function buildChain(project, id, retry = null) {
     // abandon the worktree so the cancelled attempt's commits don't linger (and
     // the card's worktree: frontmatter isn't left stale) — a re-approval starts fresh
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
-    await patchFrontmatter(project.path, id, { worktree: '' });
+    await patchFrontmatter(project.path, id, { worktree: '', base_branch: '' });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
       return sendState(project, id, 'idle');
     }
     await orchMove(project, id, run.revertTo, 'cancelled');
     return sendState(project, id, 'idle');
+  }
+  if (run?.timedOut) {
+    await recordRun(project, id, 'Build', attempt, result, 'run timeout');
+    return toNeedsHuman(project, id, 'Build', 'run_timeout',
+      `Build exceeded the ${run.timeoutMin}m stage timeout`);
   }
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (!ok) {
@@ -718,13 +796,25 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     await releaseCoordination(project, id);
     // abandon the worktree (see Build cancel) so nothing stale is left behind
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
-    await patchFrontmatter(project.path, id, { worktree: '' });
+    await patchFrontmatter(project.path, id, { worktree: '', base_branch: '' });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
       return sendState(project, id, 'idle');
     }
     await orchMove(project, id, run.revertTo, 'cancelled');
-    return sendState(project, id, 'idle');
+    sendState(project, id, 'idle');
+    // a user-cancelled Verify reverts to Queue — re-drive it through the normal
+    // queue (dedup/quota guards inside) so the card isn't stranded until a
+    // restart. killAllChildren opts out (noRequeue): nothing spawns on shutdown.
+    if (run.revertTo === 'Queue' && !run.noRequeue && (config.mode || 'launcher') !== 'budget') {
+      enqueueBuild(project, id);
+    }
+    return;
+  }
+  if (run?.timedOut) {
+    await recordRun(project, id, 'Verify', attempt, result, 'run timeout');
+    return toNeedsHuman(project, id, 'Verify', 'run_timeout',
+      `Verify exceeded the ${run.timeoutMin}m stage timeout`);
   }
 
   const verdict = result.envelope?.structured_output;
@@ -762,10 +852,20 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     if (forbidden) {
       return toNeedsHuman(project, id, 'Verify', 'committed_dependency', `branch added ${forbidden}`);
     }
+    // base-branch guard: only merge onto the branch this run forked from. The
+    // user may have switched branches mid-run — merging now would silently land
+    // the work on the wrong branch. Route to Needs Human and KEEP the worktree.
+    const forkedFrom = card.data.base_branch;
+    const head = await currentBranch(project.path);
+    if (forkedFrom && head !== forkedFrom) {
+      return toNeedsHuman(project, id, 'Verify', 'base_branch_moved',
+        `repo is on "${head || 'detached HEAD'}" but this run forked from "${forkedFrom}" — ` +
+        `merge refused. Check out ${forkedFrom}, then drag the card back to Planned to retry.`);
+    }
     const merged = await withRepoLock(project.path, () => mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`));
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
-    await patchFrontmatter(project.path, id, { worktree: '' });
+    await patchFrontmatter(project.path, id, { worktree: '', base_branch: '' });
     await releaseCoordination(project, id);
     await orchMove(project, id, 'Done', `verdict: pass, attempt ${attempt}`);
     // if this card is a chunk of an epic, release the next chunk (and complete
@@ -843,22 +943,33 @@ async function runTriage(project, id, config, t, vendor) {
     return patchFrontmatter(project.path, id, { triaged: 'skipped (no command)' });
   }
 
+  // triage auto-fires on cards that may arrive from outside the UI (git pull,
+  // email). It runs in the main checkout, so confine its writes to the board:
+  // a poisoned card can't make it edit source via prompt injection.
+  //  - claude: allowedTools paren-scoping restricts Edit to the cards dir.
+  //  - codex: its CLI has no allowedTools scoping (the runner never passes the
+  //    list) — its confinement is `--sandbox workspace-write`, which keys the
+  //    writable workspace on the cwd (reads stay repo-wide). So run codex
+  //    triage with the tasks dir as cwd: writes are confined to the cards
+  //    themselves, and the inlined command's board-relative paths are rewritten
+  //    to match the new cwd.
+  const codexTriage = vendor === 'codex';
   const { result, run } = await spawnTracked(project, id, 'Triage', 'Review', 0, {
     vendor,
-    cwd: project.path,
-    prompt,
+    cwd: codexTriage ? path.join(project.path, '.todomd', 'tasks') : project.path,
+    prompt: codexTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
     model: t.model,
     maxTurns: t.max_turns || 15,
-    // triage auto-fires on cards that may arrive from outside the UI (git pull,
-    // email). It runs in the main checkout, so confine its writes to the board:
-    // a poisoned card can't make it edit source via prompt injection.
-    allowedTools: vendor === 'codex' ? ['Read', 'Glob', 'Grep', 'Edit'] : ['Read', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'],
+    allowedTools: ['Read', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'], // claude-only; codex ignores this
     logFile: runLogFile(project, id, 'Triage'),
   });
 
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (run?.cancelled) {
     await patchFrontmatter(project.path, id, { triaged: '' });
+  } else if (run?.timedOut) {
+    await recordRun(project, id, 'Triage', 0, result, 'run timeout');
+    await patchFrontmatter(project.path, id, { triaged: 'failed (run_timeout)' });
   } else if (ok) {
     await recordRun(project, id, 'Triage', 0, result, 'ok');
     await patchFrontmatter(project.path, id, { triaged: new Date().toISOString().slice(0, 10) });
