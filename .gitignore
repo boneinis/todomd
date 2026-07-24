@@ -4,3 +4,6 @@ spike/demo-repo/
 .todomd/worktrees/
 .todomd/runs/
 .todomd/.lock/
+.todomd/
+spike/
+RECOMMENDATIONS.md
