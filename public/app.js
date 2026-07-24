@@ -204,7 +204,7 @@ function renderBoard() {
     const stageCol = !!(boardData.config.stages || {})[col];
     const editBtn = (cmd && boardData.access !== 'viewer')
       ? `<button class="col-edit" data-cmd="${esc(cmd)}" title="${col === 'Review' ? 'edit the review (triage) prompt' : stageCol ? `${esc(col)} settings — prompt, agent & model` : `edit the ${esc(col)} prompt`}">⚙ ${stageCol ? 'settings' : 'prompt'}</button>` : '';
-    colEl.innerHTML = `<header class="col-head"><span class="col-name">${esc(col)} <button class="col-help-btn" title="what does this column do?">?</button></span><span class="col-head-right"><span class="col-count">[${cards.length}]</span>${editBtn}</span></header>`;
+    colEl.innerHTML = `<header class="col-head"><span class="col-name">${esc(col)} <button class="col-help-btn" title="what does this column do?">?</button></span><span class="col-head-right"><span class="col-count">${cards.length}</span>${editBtn}</span></header>`;
     colEl.querySelector('.col-help-btn')?.addEventListener('click', (e) => { e.stopPropagation(); showColHelp(col, e.currentTarget); });
     colEl.querySelector('.col-edit')?.addEventListener('click', (e) => { e.stopPropagation(); openPromptEditor(e.currentTarget.dataset.cmd); });
     const list = document.createElement('div');
@@ -215,6 +215,18 @@ function renderBoard() {
     wireDrop(colEl);
     boardEl.appendChild(colEl);
   }
+}
+
+// label pills: a stable hue per label text (chip-c0..chip-c5 in the stylesheet)
+function labelHue(s) {
+  let h = 0;
+  for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h % 6;
+}
+// avatar disc shows 1–2 initials ("Sam Ortiz" → SO, "sam.ortiz" → SO, "sam" → S)
+function initials(name) {
+  const parts = String(name).trim().split(/[\s.@_-]+/).filter(Boolean);
+  return (parts[0]?.[0] || '?').toUpperCase() + (parts[1]?.[0] || '').toUpperCase();
 }
 
 function renderCard(card, color, i) {
@@ -229,14 +241,18 @@ function renderCard(card, color, i) {
   prio.textContent = card.priority || '';
   prio.className = `card-prio ${card.priority || ''}`;
   el.querySelector('.card-title').textContent = card.title || card.file;
-  el.querySelector('.card-chips').textContent =
-    [card.type, ...(card.labels || [])].filter(Boolean).join(' · ');
-  if (card.assignee) {
-    const a = document.createElement('span');
-    a.className = 'card-assignee';
-    a.textContent = `@${card.assignee}`;
-    el.querySelector('header').appendChild(a);
+  // label pills — a needs-human flag replaces them with a warning pill
+  const chips = el.querySelector('.card-chips');
+  if (card.needs_human_reason) {
+    chips.innerHTML = `<span class="chip chip-warn">⚠ ${esc(card.needs_human_reason)}</span>`;
+  } else {
+    const pills = [];
+    if (card.type) pills.push(`<span class="chip chip-type">${esc(card.type)}</span>`);
+    for (const l of card.labels || []) pills.push(`<span class="chip chip-c${labelHue(l)}">${esc(l)}</span>`);
+    chips.innerHTML = pills.join('');
   }
+  const av = el.querySelector('.card-assignee');
+  if (card.assignee) { av.textContent = initials(card.assignee); av.title = `@${card.assignee}`; }
   const crit = el.querySelector('.card-criteria');
   if (card.criteria) {
     crit.textContent = `☑ ${card.criteria.done}/${card.criteria.total}`;
@@ -259,10 +275,8 @@ function renderCard(card, color, i) {
     el.classList.add('running');
     runEl.textContent = `● ${rs.stage}`;
   } else if (rs?.state === 'queued') {
+    el.classList.add('queued');
     runEl.textContent = '◌ queued';
-  }
-  if (card.needs_human_reason) {
-    el.querySelector('.card-chips').textContent = `⚠ ${card.needs_human_reason}`;
   }
   el.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('text/todomd-id', card.id);
@@ -349,6 +363,16 @@ async function openDrawer(id) {
   } else {
     relEl.innerHTML = '';
     relEl.hidden = true;
+  }
+  // acceptance-criteria progress bar (parsed from the card body's checkboxes)
+  const crits = [...card.body.matchAll(/^- \[( |x)\]/gim)];
+  const critTotal = crits.length;
+  const critDone = crits.filter((m) => m[1].toLowerCase() === 'x').length;
+  $('#drawer-criteria').hidden = !critTotal;
+  if (critTotal) {
+    $('#criteria-fill').style.width = `${(critDone / critTotal) * 100}%`;
+    $('#criteria-fill').classList.toggle('full', critDone === critTotal);
+    $('#criteria-label').textContent = `${critDone}/${critTotal} criteria`;
   }
   $('#drawer-body').innerHTML = mdToHtml(card.body);
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
@@ -550,23 +574,30 @@ async function backfillRunLog(id) {
   }
 }
 
-function appendRunEvent(event) {
+// one feed row per event; the gutter bar color marks the kind (see .log-line in css)
+function logLine(cls, text) {
   const log = $('#run-log');
+  const div = document.createElement('div');
+  div.className = `log-line ${cls}`;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendRunEvent(event) {
   if (event.vendor === 'codex') {
     const text = event.item?.text || event.item?.command || event.message || '';
-    log.textContent += `▸ ${event.type}${text ? `: ${String(text).slice(0, 200)}` : ''}\n`;
-    log.scrollTop = log.scrollHeight;
+    logLine('log-tool', `▸ ${event.type}${text ? `: ${String(text).slice(0, 200)}` : ''}`);
     return;
   }
   if (event.type === 'system' && event.subtype === 'init') {
-    log.textContent += `· session ${event.session_id}\n`;
+    logLine('log-sys', `· session ${event.session_id}`);
   } else if (event.type === 'assistant') {
     for (const block of event.message?.content || []) {
-      if (block.type === 'text' && block.text) log.textContent += block.text + '\n';
-      else if (block.type === 'tool_use') log.textContent += `▸ ${block.name}\n`;
+      if (block.type === 'text' && block.text) logLine('log-text', block.text);
+      else if (block.type === 'tool_use') logLine('log-tool', `▸ ${block.name}`);
     }
   }
-  log.scrollTop = log.scrollHeight;
 }
 
 /* minimal markdown renderer: headings, checkboxes, lists, code, bold/inline code */

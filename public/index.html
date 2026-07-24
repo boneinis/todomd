@@ -13,7 +13,6 @@
 </head>
 <body>
 <script>if (localStorage.getItem('todomd-theme') === 'light') document.body.classList.add('light');</script>
-<div class="scanlines" aria-hidden="true"></div>
 
 <header class="topbar">
   <h1 class="wordmark" id="wordmark" title="getting started">todo<span>md</span></h1>
@@ -41,46 +40,51 @@
 <aside id="drawer" class="drawer" hidden>
   <header class="drawer-head">
     <span class="card-id" id="drawer-id"></span>
-    <span>
-      <button id="drawer-attach" class="drawer-close" title="attach a file">＋ file</button>
-      <button id="drawer-archive" class="drawer-close" title="archive — hide from the board (reversible)">archive</button>
-      <button id="drawer-delete" class="drawer-close drawer-delete" title="delete permanently">delete</button>
-      <button id="drawer-cancel" class="drawer-close drawer-cancel" hidden>cancel run</button>
-      <button id="drawer-close" class="drawer-close" title="close">✕</button>
-    </span>
-    <input id="attach-input" type="file" hidden multiple />
+    <button id="drawer-close" class="drawer-close" title="close">✕</button>
   </header>
   <h2 id="drawer-title"></h2>
-  <div class="drawer-meta" id="drawer-meta"></div>
-  <section id="drawer-rel" class="drawer-rel" hidden></section>
-  <section id="drawer-question" class="drawer-question" hidden>
-    <h2 class="run-title">⚠ the agent needs a decision</h2>
-    <p id="question-text" class="question-text"></p>
-    <textarea id="answer-input" class="answer-input" rows="2" placeholder="your answer — fed into the next build…" spellcheck="false"></textarea>
-    <button id="answer-submit" class="route-save">answer &amp; resume</button>
-  </section>
-  <div class="drawer-move">
-    <label>move to
-      <select id="move-select"></select>
-    </label>
-    <button id="move-apply" class="route-save">move</button>
+  <input id="attach-input" type="file" hidden multiple />
+  <div class="drawer-cols">
+    <div class="drawer-main">
+      <div class="drawer-meta" id="drawer-meta"></div>
+      <section id="drawer-rel" class="drawer-rel" hidden></section>
+      <div id="drawer-criteria" class="criteria-bar" hidden>
+        <div class="criteria-track"><div class="criteria-fill" id="criteria-fill"></div></div>
+        <span id="criteria-label"></span>
+      </div>
+      <section id="drawer-question" class="drawer-question" hidden>
+        <h2 class="run-title">⚠ the agent needs a decision</h2>
+        <p id="question-text" class="question-text"></p>
+        <textarea id="answer-input" class="answer-input" rows="2" placeholder="your answer — fed into the next build…" spellcheck="false"></textarea>
+        <button id="answer-submit" class="route-save">answer &amp; resume</button>
+      </section>
+      <article class="drawer-body" id="drawer-body"></article>
+      <section id="drawer-run" class="drawer-run" hidden>
+        <h2 class="run-title">live run</h2>
+        <div id="run-log" class="run-log"></div>
+      </section>
+      <footer class="drawer-foot" id="drawer-file"></footer>
+    </div>
+    <div class="drawer-rail">
+      <span class="rail-label">actions</span>
+      <button id="drawer-attach" class="rail-btn" title="attach a file">＋ attachment</button>
+      <button id="drawer-archive" class="rail-btn" title="archive — hide from the board (reversible)">archive</button>
+      <button id="drawer-delete" class="rail-btn drawer-delete" title="delete permanently">delete</button>
+      <button id="drawer-cancel" class="rail-btn drawer-cancel" hidden>cancel run</button>
+      <span class="rail-label">move to</span>
+      <select id="move-select" class="rail-input"></select>
+      <button id="move-apply" class="rail-btn rail-primary">move</button>
+      <span class="rail-label">routing</span>
+      <label class="rail-field">agent
+        <select id="route-agent" class="rail-input"><option>claude</option><option>codex</option></select>
+      </label>
+      <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
+      <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
+      <label class="rail-field">assignee <input id="route-assignee" class="rail-input" placeholder="developer" autocomplete="off" /></label>
+      <button id="route-save" class="rail-btn rail-primary">save</button>
+      <p class="route-hint">agent / model / skill set here override the column for <b>every</b> stage this card runs (leave blank to use each column's default). skill swaps the command run in trigger columns.</p>
+    </div>
   </div>
-  <div class="drawer-routing">
-    <label>agent
-      <select id="route-agent"><option>claude</option><option>codex</option></select>
-    </label>
-    <label>model <input id="route-model" list="model-options" placeholder="stage default" autocomplete="off" /></label>
-    <label>skill <input id="route-skill" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
-    <label>assignee <input id="route-assignee" placeholder="developer" autocomplete="off" /></label>
-    <button id="route-save" class="route-save">save</button>
-  </div>
-  <p class="route-hint">agent / model / skill set here override the column for <b>every</b> stage this card runs (leave blank to use each column's default). skill swaps the command run in trigger columns.</p>
-  <article class="drawer-body" id="drawer-body"></article>
-  <section id="drawer-run" class="drawer-run" hidden>
-    <h2 class="run-title">live run</h2>
-    <pre id="run-log" class="run-log"></pre>
-  </section>
-  <footer class="drawer-foot" id="drawer-file"></footer>
 </aside>
 
 <template id="card-tpl">
@@ -88,10 +92,11 @@
     <span class="card-notch" aria-hidden="true"></span>
     <header><span class="card-id"></span><span class="card-run"></span><span class="card-prio"></span></header>
     <h3 class="card-title"></h3>
+    <div class="card-chips"></div>
     <footer>
-      <span class="card-chips"></span>
       <span class="card-rel"></span>
       <span class="card-criteria"></span>
+      <span class="card-assignee"></span>
     </footer>
   </article>
 </template>
