@@ -15,7 +15,9 @@
   ],
   "scripts": {
     "start": "node bin/todomd.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js && node --test test/ui/*.test.js",
+    "test:unit": "node --test test/*.test.js",
+    "test:ui": "node --test test/ui/*.test.js"
   },
   "engines": {
     "node": ">=20"
