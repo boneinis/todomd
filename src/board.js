@@ -154,8 +154,15 @@ function writeFileAtomic(file, content) {
 }
 
 // exact id match only: task-0001 must not resolve task-00010-*.md
+// `.md` only: writeFileAtomic stages `<card>.md.tmp` in this same directory, and
+// `task-0001-x.md.tmp` starts with `task-0001-` too. Normally the real file
+// sorts first and wins, but a crash mid-createCard leaves ONLY the .tmp — and
+// then every readCard for that id returns a half-written card that loadBoard
+// (which filters on .md) never shows. A mutation would also write back through
+// card.file, landing on the .tmp instead of the card.
 function findCardFile(dir, id) {
-  return fs.readdirSync(dir).sort().find((f) => f === `${id}.md` || f.startsWith(`${id}-`));
+  return fs.readdirSync(dir).sort()
+    .find((f) => f.endsWith('.md') && (f === `${id}.md` || f.startsWith(`${id}-`)));
 }
 
 function criteriaProgress(body) {

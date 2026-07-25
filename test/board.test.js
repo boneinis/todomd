@@ -582,6 +582,30 @@ test('createCard: scalars that would break the YAML parse are neutralized, not j
 // Every reader does `(card.dependencies || []).filter(...)`. A scalar there
 // throws and takes down whatever is iterating — advanceEpicChildren strands the
 // epic, and the board payload blanked the whole UI (one bad card, no board).
+// writeFileAtomic stages `<card>.md.tmp` beside the card, and that name starts
+// with the id too. A crash mid-createCard leaves only the .tmp: readCard must
+// not hand back a half-written card that the board never displays, and a
+// later write must not land on the .tmp instead of the real file.
+test('readCard ignores a .md.tmp left by an interrupted atomic write', async () => {
+  const repo = makeRepo();
+  const dir = path.join(repo, '.todomd/tasks');
+  // crashed before the rename: only the staging file exists
+  const orphan = path.join(dir, 'task-0001-half.md.tmp');
+  fs.writeFileSync(orphan, '---\nid: task-0001\ntitle: half-writ');
+  assert.equal(readCard(repo, 'task-0001'), null, 'a staging file is not a card');
+  assert.equal(loadBoard(repo).cards.length, 0, 'and the board agrees it does not exist');
+  fs.rmSync(orphan);
+
+  // a stale staging file beside a real card must never be the one resolved
+  const r = await createCard(repo, { title: 'real card' });
+  fs.writeFileSync(path.join(dir, `${r.file}.tmp`), '---\nid: task-0001\ntitle: STALE\n---\n');
+  const real = readCard(repo, r.id);
+  assert.match(real.file, /\.md$/, 'resolved the card, not the staging file');
+  assert.equal(real.data.title, 'real card');
+  await patchFrontmatter(repo, r.id, { priority: 'high' });
+  assert.equal(readCard(repo, r.id).data.priority, 'high', 'the write landed on the card');
+});
+
 test('loadBoard coerces scalar list fields so no reader can throw on them', () => {
   const repo = makeRepo();
   fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0001-scalars.md'),

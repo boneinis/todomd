@@ -87,13 +87,53 @@ export function clearFakeAgent() {
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Poll a predicate until true or timeout.
-export async function until(fn, { timeout = 8000, step = 40 } = {}) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
+// Three budgets instead of a ladder of magic numbers. Pick by what you're
+// waiting for, not by what happened to pass on the machine you wrote it on.
+export const BUDGET = {
+  quick: 12_000,  // a board mutation lands, a file appears, a flag flips
+  stage: 20_000,  // one agent stage finishes (plan, build, verify)
+  chain: 40_000,  // a whole build→verify→merge, or a cancel plus its re-drive
+};
+
+// These tests spawn git and agent CLIs, so their wall-clock cost tracks how
+// oversubscribed the machine is — measured on this suite: a median 19.9x and a
+// worst 45.8x stretch at load 120 on 10 cores. Fixed deadlines calibrated on an
+// idle box therefore turn any busy machine into a wave of identical timeouts,
+// which is worse than useless when `npm test` is also todomd's verify_command:
+// it reads as "your change broke the pipeline". Scale the budget by load, the
+// way Node's own suite does with common.platformTimeout().
+// TODOMD_TEST_TIMEOUT_SCALE overrides (CI can pin it); loadavg is 0 on Windows,
+// which floors the scale at 1 — the original behavior.
+const CORES = os.cpus().length || 1;
+export function timeoutScale() {
+  const override = Number(process.env.TODOMD_TEST_TIMEOUT_SCALE);
+  if (Number.isFinite(override) && override > 0) return override;
+  return Math.min(12, Math.max(1, os.loadavg()[0] / CORES));
+}
+
+// Poll a predicate until it returns truthy, or the (scaled) budget runs out.
+export async function until(fn, { timeout = BUDGET.quick, step = 40, label = '' } = {}) {
+  const scale = timeoutScale();
+  const budget = Math.round(timeout * scale);
+  const started = Date.now();
+  let last, lastErr;
+  while (Date.now() - started < budget) {
+    // A predicate that throws means "not yet", not "fail the test": the card it
+    // reads may be mid-write, or the server may not be listening yet. A
+    // persistent error still surfaces — it's reported in the timeout below.
+    try {
+      const v = await fn();
+      if (v) return v;
+      last = v; lastErr = null;
+    } catch (e) { lastErr = e; }
     await sleep(step);
   }
-  throw new Error('until() timed out');
+  // The old message was just 'until() timed out', which made every failure in a
+  // run indistinguishable — with no hint of what was being waited for.
+  const what = label || String(fn).replace(/\s+/g, ' ').replace(/^\(\)\s*=>\s*/, '').slice(0, 140);
+  const budgetNote = scale > 1 ? `${budget}ms (${timeout}ms x${scale.toFixed(1)} for load)` : `${budget}ms`;
+  const outcome = lastErr
+    ? `last threw: ${lastErr.message}`
+    : `last value: ${JSON.stringify(last) ?? String(last)}`;
+  throw new Error(`until() gave up after ${Date.now() - started}ms of ${budgetNote} — waiting for: ${what} — ${outcome}`);
 }

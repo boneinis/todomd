@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isolateHome, makeRepo } from './helpers.js';
+import { isolateHome, makeRepo, BUDGET, timeoutScale } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
 
@@ -70,9 +70,15 @@ test('close() releases every handle — the process exits on its own', async () 
   });
   let stderr = '';
   child.stderr.on('data', (c) => { stderr += c; });
+  // scaled like until(): this child boots a whole server, and a fixed 15s
+  // deadline reported "handle leak" (exit=null) on a machine that was merely
+  // busy — the exact false alarm this scaling exists to prevent
+  const deadline = Math.round(BUDGET.stage * timeoutScale());
   const exited = await new Promise((resolve) => {
-    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(null); }, 15_000);
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(null); }, deadline);
     child.on('exit', (code) => { clearTimeout(timer); resolve(code); });
   });
-  assert.equal(exited, 0, `server process must exit after close() (exit=${exited}) ${stderr}`);
+  assert.equal(exited, 0, exited === null
+    ? `server process was still alive ${deadline}ms after close() — a handle was leaked (or the machine is too busy; scale was ${timeoutScale().toFixed(1)}x)`
+    : `server process exited ${exited} instead of 0 after close(): ${stderr}`);
 });

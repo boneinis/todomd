@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { isolateHome, makeRepo, until } from '../helpers.js';
+import { isolateHome, makeRepo, until, BUDGET } from '../helpers.js';
 import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
 import { openPage } from '../browser.js';
@@ -86,7 +86,7 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     // all five cards render — a throw anywhere in the render path drops the
     // whole board, so the COUNT is the assertion that catches it
     const count = await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null,
-      { timeout: 20000 });
+      { timeout: BUDGET.stage });
     assert.equal(count, 5, 'every card rendered (a render throw would blank the board)');
     assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0005-broken"]')`), true,
       'the unparseable card is surfaced rather than swallowed');
@@ -115,7 +115,7 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     // the drawer is the other place a bad shape aborted mid-render — and this
     // one is NOT masked by the server: /api/cards/:id returns raw frontmatter
     await page.eval(`document.querySelector('[data-id="task-0002"]').click()`);
-    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: 10000 });
+    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
     assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /YAML mapping/);
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
@@ -127,13 +127,13 @@ test('UI smoke: a viewer is not told its session expired when it opens a card', 
   {
     page.errors.length = 0; // fresh slate: assert only on this flow
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${viewerToken}&project=${encodeURIComponent(name)}`);
-    await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: 20000 });
+    await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
 
     // The drawer fetches the run log, which viewers may not read. That denial
     // must be a 403: the UI turns ANY 401 into "session expired — restart
     // todomd", which nagged every viewer on the default QR link.
     await page.eval(`document.querySelector('[data-id="task-0001"]').click()`);
-    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: 10000 });
+    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
     const toast = await page.eval(
       `document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent`);
     assert.doesNotMatch(toast, /session expired/, 'a permitted-but-limited viewer is never told to restart todomd');

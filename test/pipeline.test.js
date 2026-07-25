@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep } from './helpers.js';
+import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
 import { readCard, setStageRouting, patchFrontmatter } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
@@ -35,7 +35,7 @@ test('happy path: Review → Plan → Planned → Queue → Build → Verify →
   // approve → the full automatic chain
   r = await pipeline.humanMove(p, 'task-0001', 'Queue');
   assert.equal(r.ok, true);
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
 
   // the build's code was merged to main, the worktree was pruned
   assert.match(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/);
@@ -65,7 +65,7 @@ test('stage routing precedence: a column agent gates the queue; a card agent ove
   await patchFrontmatter(repo, 'task-0001', { agent: 'claude' });
   r = await pipeline.humanMove(p, 'task-0001', 'Queue');
   assert.equal(r.ok, true);
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   clearFakeAgent();
 });
 
@@ -83,9 +83,9 @@ test('verification loop: fail then pass on retry → Done', async () => {
   await pipeline.humanMove(p, 'task-0002', 'Queue');
 
   // wait until at least one verify failed and a retry incremented attempts
-  await until(() => (readCard(repo, 'task-0002').data.verification?.attempts || 0) >= 2, { timeout: 15000 });
+  await until(() => (readCard(repo, 'task-0002').data.verification?.attempts || 0) >= 2, { timeout: BUDGET.stage });
   process.env.FAKE_VERDICT = 'pass'; // next verify passes
-  await until(() => status(repo, 'task-0002') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0002') === 'Done', { timeout: BUDGET.stage });
   clearFakeAgent();
 });
 
@@ -100,7 +100,7 @@ test('attempt cap: persistent fail → Needs Human with a reason, attempts not e
   await pipeline.humanMove(p, 'task-0003', 'Plan');
   await until(() => status(repo, 'task-0003') === 'Planned');
   await pipeline.humanMove(p, 'task-0003', 'Queue');
-  await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: 25000 });
+  await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: BUDGET.chain });
 
   const card = readCard(repo, 'task-0003');
   assert.equal(card.data.needs_human_reason, 'attempts_exhausted');
@@ -121,7 +121,7 @@ test('worktree env: a verify setup_error → Needs Human (worktree_env) on attem
   await pipeline.humanMove(p, 'task-0003', 'Plan');
   await until(() => status(repo, 'task-0003') === 'Planned');
   await pipeline.humanMove(p, 'task-0003', 'Queue');
-  await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: 25000 });
+  await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: BUDGET.chain });
 
   const card = readCard(repo, 'task-0003');
   assert.equal(card.data.needs_human_reason, 'worktree_env');
@@ -141,18 +141,18 @@ test('cancel mid-build cleans the worktree and clears the worktree frontmatter',
   await pipeline.humanMove(p, 'task-0001', 'Queue'); // launcher drives → Build (then hangs)
   // generous timeouts: under full-suite CPU contention the spawn + marker write
   // can lag well past a few seconds, which is what made this test flaky
-  await until(() => fs.existsSync(marker), { timeout: 30000 });
+  await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
   const wt = path.join(repo, '.todomd/worktrees/task-0001');
-  await until(() => fs.existsSync(wt), { timeout: 15000 });
+  await until(() => fs.existsSync(wt), { timeout: BUDGET.stage });
   assert.ok(fs.existsSync(wt), 'worktree was created for the build');
 
   await pipeline.humanMove(p, 'task-0001', 'Review'); // cancels the live run
   // cancel cleanup is async (SIGTERM → child exit → worktree removal → status flip);
   // poll the end state instead of asserting on a single sample so load can't race it
-  await until(() => status(repo, 'task-0001') === 'Review', { timeout: 30000 });
-  await until(() => !fs.existsSync(wt), { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Review', { timeout: BUDGET.chain });
+  await until(() => !fs.existsSync(wt), { timeout: BUDGET.stage });
   assert.ok(!fs.existsSync(wt), 'worktree removed on cancel (no leak)');
-  await until(() => (readCard(repo, 'task-0001').data.worktree || '') === '', { timeout: 5000 });
+  await until(() => (readCard(repo, 'task-0001').data.worktree || '') === '', { timeout: BUDGET.quick });
   assert.equal(readCard(repo, 'task-0001').data.worktree || '', '', 'worktree frontmatter cleared');
   clearFakeAgent();
 });
@@ -167,14 +167,14 @@ test('agent question → Needs Human (needs_answer); answering re-drives the bui
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue'); // build → verify asks a question
-  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
   let card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'needs_answer');
   assert.match(card.data.question || '', /on or off/);
 
   // answer → threads the decision into the next build → verify passes → Done
   assert.equal((await pipeline.answerCard(p, 'task-0001', 'default to ON')).ok, true);
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   card = readCard(repo, 'task-0001');
   assert.equal(card.data.question || '', '', 'question cleared after answering');
   clearFakeAgent();
@@ -189,7 +189,7 @@ test('agent error → Needs Human (agent_error)', async () => {
   writeCard(repo, 'task-0004');
 
   await pipeline.humanMove(p, 'task-0004', 'Plan');
-  await until(() => status(repo, 'task-0004') === 'Needs Human', { timeout: 12000 });
+  await until(() => status(repo, 'task-0004') === 'Needs Human', { timeout: BUDGET.quick });
   clearFakeAgent();
 });
 
@@ -232,14 +232,14 @@ test('quota: build hits a usage limit → card parks in Queue + project paused; 
 
   // approve → build hits quota → parked back in Queue, project paused
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => pipeline.usage(p.name).quota_paused === true, { timeout: 10000 });
+  await until(() => pipeline.usage(p.name).quota_paused === true, { timeout: BUDGET.quick });
   assert.equal(status(repo, 'task-0001'), 'Queue'); // parked, not Needs Human
   const ver = readCard(repo, 'task-0001').data.verification;
   assert.ok((ver.attempts || 0) <= 1, 'quota must not burn an attempt'); // rolled back
 
   // resume → build now succeeds → full chain to Done
   pipeline.resumeQueues([p]);
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   assert.equal(pipeline.usage(p.name).quota_paused, false);
   clearFakeAgent();
 });
@@ -254,7 +254,7 @@ test('triage commits the card so the working tree stays clean (with triage enabl
   const { createCard } = await import('../src/board.js');
   const card = await createCard(repo, { title: 'Triage commit test', description: 'x', criteria: ['y'] });
   await pipeline.maybeTriage(p, card.id);
-  await until(() => readCard(repo, card.id).data.triaged && readCard(repo, card.id).data.triaged !== 'running', { timeout: 12000 });
+  await until(() => readCard(repo, card.id).data.triaged && readCard(repo, card.id).data.triaged !== 'running', { timeout: BUDGET.quick });
   // after triage, the working tree must have no uncommitted .todomd changes
   const { execFileSync } = await import('node:child_process');
   const dirty = execFileSync('git', ['status', '--porcelain', '--', '.todomd'], { cwd: repo, encoding: 'utf8' }).trim();
@@ -271,7 +271,7 @@ test('chunking: a splitting plan fans out sequential child cards; approving the 
 
   // drag to Plan → the plan agent emits ## Chunks → orchestrator fans out children
   await pipeline.humanMove(p, 'task-0001', 'Plan');
-  await until(() => readCard(repo, 'task-0001').data.epic === true && status(repo, 'task-0001') === 'Planned', { timeout: 12000 });
+  await until(() => readCard(repo, 'task-0001').data.epic === true && status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.quick });
 
   const epic = readCard(repo, 'task-0001').data;
   assert.equal(epic.children.length, 2);
@@ -286,9 +286,9 @@ test('chunking: a splitting plan fans out sequential child cards; approving the 
   const r = await pipeline.humanMove(p, 'task-0001', 'Queue');
   assert.equal(r.ok, true);
   assert.equal(status(repo, 'task-0001'), 'Queue'); // epic parks as a tracker
-  await until(() => status(repo, c1) === 'Done', { timeout: 20000 });
-  await until(() => status(repo, c2) === 'Done', { timeout: 20000 });
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, c1) === 'Done', { timeout: BUDGET.stage });
+  await until(() => status(repo, c2) === 'Done', { timeout: BUDGET.stage });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   // the epic tracker itself never built — no worktree was ever created for it
   assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')));
   clearFakeAgent();
@@ -303,7 +303,7 @@ test('chunking: a single-chunk plan is folded into Implementation Plan (not fann
   writeCard(repo, 'task-0001', { title: 'single chunk feature' });
 
   await pipeline.humanMove(p, 'task-0001', 'Plan');
-  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: 12000 });
+  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.quick });
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.status, 'Planned');
@@ -342,8 +342,8 @@ test('chunking: reconcileOnBoot re-releases an approved epic\'s ready chunk and 
   writeCard(repo, 'task-0002', { status: 'Planned', title: 'chunk', extra: 'parent: task-0001\n' });
 
   await pipeline.reconcileOnBoot();
-  await until(() => status(repo, 'task-0002') === 'Done', { timeout: 20000 });
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0002') === 'Done', { timeout: BUDGET.stage });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), 'epic tracker is never built');
   clearFakeAgent();
 });
@@ -375,7 +375,7 @@ test('coordination: a card claims ACTIVE.md while building and releases it on Do
   }, 50);
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   clearInterval(watch);
 
   assert.ok(claimedDuringBuild, 'card should appear in ACTIVE.md while building');
@@ -483,13 +483,13 @@ test('cascadeEpicCleanup: live building child is archived (not Review) after cle
 
   // start the child build — it hangs until SIGTERM
   await pipeline.humanMove(p, 'chunk-001', 'Queue');
-  await until(() => status(repo, 'chunk-001') === 'Build' && fs.existsSync(marker), { timeout: 30000 });
+  await until(() => status(repo, 'chunk-001') === 'Build' && fs.existsSync(marker), { timeout: BUDGET.chain });
 
   // trigger cascade while the child run is live
   await pipeline.cascadeEpicCleanup(p, 'epic-001');
 
   // cancel handler archives asynchronously after cleanup
-  await until(() => readCard(repo, 'chunk-001').data.archived, { timeout: 15000 });
+  await until(() => readCard(repo, 'chunk-001').data.archived, { timeout: BUDGET.stage });
   const child = readCard(repo, 'chunk-001');
   assert.ok(child.data.archived, 'child is archived');
   assert.notEqual(child.data.status, 'Review', 'child never entered Review');
@@ -506,14 +506,14 @@ test('killAllChildren stops a live agent child and reverts its card', async () =
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => fs.existsSync(marker), { timeout: 30000 });
+  await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
   assert.ok(pipeline.hasLiveRun(p.name, 'task-0001'), 'build is live');
 
   await pipeline.killAllChildren();
   // hasLiveRun covers the settling chain too (pending) — poll until it fully reverts
-  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
   // the kill went through the normal cancel path: the card reverts out of Build
-  await until(() => status(repo, 'task-0001') === 'Queue', { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Queue', { timeout: BUDGET.stage });
   clearFakeAgent();
 });
 
@@ -527,11 +527,11 @@ test('killAllChildren SIGKILLs a child that ignores SIGTERM', async () => {
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => fs.existsSync(marker), { timeout: 30000 });
+  await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
 
   const t0 = Date.now();
   await pipeline.killAllChildren({ graceMs: 300 });
-  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
   assert.ok(Date.now() - t0 < 5000, 'did not hang on the stubborn child');
   clearFakeAgent();
 });
@@ -548,7 +548,7 @@ test('base-branch guard: switching branches mid-run blocks the merge, work prese
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'base_branch_moved');
@@ -575,7 +575,7 @@ test('reconcileOnBoot retries a transient-failure triage (cli_missing) once the 
   await until(() => {
     const t = readCard(repo, 'task-0001').data.triaged;
     return t && !String(t).startsWith('failed') && t !== 'running';
-  }, { timeout: 12000 });
+  }, { timeout: BUDGET.quick });
   const t = readCard(repo, 'task-0001').data.triaged; // a date (success), not a failure marker
   assert.ok(t && !String(t).startsWith('failed') && t !== 'running', 're-triaged after the transient failure');
   clearFakeAgent();
@@ -594,12 +594,12 @@ test('stage timeout: a hung build is killed and the card lands in Needs Human (r
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => fs.existsSync(marker), { timeout: 30000 }); // build is live and hung
-  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 15000 });
+  await until(() => fs.existsSync(marker), { timeout: BUDGET.chain }); // build is live and hung
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'run_timeout');
-  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
   clearFakeAgent();
 });
 
@@ -614,12 +614,12 @@ test('cancel escalates to SIGKILL when the child ignores SIGTERM', async () => {
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => fs.existsSync(marker), { timeout: 30000 });
+  await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
 
   await pipeline.humanMove(p, 'task-0001', 'Review'); // cancels the stubborn run
   // without the SIGKILL backstop the close handler never fires and the card
   // never reverts — poll the end state, don't sample once
-  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
   delete process.env.TODOMD_KILL_GRACE_MS;
   clearFakeAgent();
 });
@@ -647,7 +647,7 @@ test('an executable key MISSING from the committed config is not taken from the 
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Planned' });
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => fs.existsSync(dump), { timeout: 30000 });
+  await until(() => fs.existsSync(dump), { timeout: BUDGET.chain });
 
   const armed = fs.readFileSync(dump, 'utf8');
   assert.doesNotMatch(armed, /POISONED_HOOK/, 'an uncommitted verify_command must never be armed as the Stop hook');
@@ -665,12 +665,12 @@ test('cancel during Verify re-enqueues the build — the card resumes to Done on
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Verify' && fs.existsSync(marker), { timeout: 30000 });
+  await until(() => status(repo, 'task-0001') === 'Verify' && fs.existsSync(marker), { timeout: BUDGET.chain });
 
   assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
   // the cancel reverts to Queue and re-enqueues: build #2 runs (the hang fired
   // once), verify passes, the card lands in Done with no human action
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 30000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
   assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
     'the cancelled attempt was rolled back — the resumed build is attempt 1 again');
   clearFakeAgent();
@@ -686,12 +686,12 @@ test('cancel during Build re-enqueues — the card resumes to Done on its own, n
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: 30000 });
+  await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: BUDGET.chain });
 
   assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
   // the cancel reverts to Queue and re-enqueues (like the Verify cancel): build
   // #2 runs (the hang fired once), verify passes, Done with no human action
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 30000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
   assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
     'the cancelled attempt was rolled back — the resumed build is attempt 1 again');
   clearFakeAgent();
@@ -710,13 +710,13 @@ test('cancel during a retry Build requeues the card instead of idling in Verify'
   await pipeline.humanMove(p, 'task-0001', 'Queue');
   // build #1 ok → verify fails → the retry build starts and hangs
   await until(() => fs.existsSync(counter) && fs.readFileSync(counter, 'utf8') === '2' &&
-    status(repo, 'task-0001') === 'Build', { timeout: 30000 });
+    status(repo, 'task-0001') === 'Build', { timeout: BUDGET.chain });
 
   assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
   process.env.FAKE_VERDICT = 'pass'; // the resumed build verifies clean
   // a retry build's prevStatus is Verify — the cancel must still land it in
   // Queue and re-enqueue (a Verify revert would strand it with no live run)
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 30000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
   assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2,
     'verify-fail attempt + rolled-back cancelled retry + resumed build = attempt 2');
   clearFakeAgent();
@@ -740,7 +740,7 @@ test('a retriage in the queue-shift→spawn window reverts safely — the chain 
   const r = await pipeline.humanMove(p, 'task-0001', 'Review');
   assert.equal(r.ok, true);
 
-  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
   // give the cancelled chain every chance to stomp the card back into the flow
   await sleep(1000);
   assert.equal(status(repo, 'task-0001'), 'Review', 'the chain did not stomp the retriage');
@@ -760,7 +760,7 @@ test('stage_timeout_min: 0 disables the stage timer (a hung agent is never timed
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => fs.existsSync(marker), { timeout: 30000 }); // build is live and hung
+  await until(() => fs.existsSync(marker), { timeout: BUDGET.chain }); // build is live and hung
   const { runs } = await import('../src/runstore.js');
   assert.equal(runs.get(`${p.name}:task-0001`)?.timeoutMin, 0, 'no timer was armed');
   await sleep(1200); // long enough that any small-value timer would have fired
@@ -768,7 +768,7 @@ test('stage_timeout_min: 0 disables the stage timer (a hung agent is never timed
   assert.equal(status(repo, 'task-0001'), 'Build');
 
   await pipeline.humanMove(p, 'task-0001', 'Review'); // cleanup: cancel the hung run
-  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
   clearFakeAgent();
 });
 
@@ -784,7 +784,7 @@ test('stage_timeout_min: a huge value clamps under the setTimeout ceiling instea
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   clearFakeAgent();
 });
 
@@ -797,7 +797,7 @@ test('a verify spawn failing on a deleted worktree cwd is worktree_failed, not c
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'worktree_failed',
@@ -820,11 +820,11 @@ test('pipeline error: an unexpected throw in buildChain lands in Needs Human (pi
 
   const r = await pipeline.humanMove(p, 'task-0001', 'Queue'); // codex is a supported vendor → gate passes
   assert.equal(r.ok, true);
-  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'pipeline_error');
-  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
   assert.ok(pipeline.getBanners().some((b) => b.level === 'error' && /pipeline error/.test(b.text)),
     'an error banner is set instead of vanishing silently');
   clearFakeAgent();
@@ -840,7 +840,7 @@ test('detached HEAD at fork stamps base_branch "unknown" and refuses the merge (
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.base_branch, 'unknown', 'detached fork records the unknown marker');
@@ -865,7 +865,7 @@ test('a stale worktree checked out on the wrong branch is recreated, not reused'
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
   await pipeline.humanMove(p, 'task-0001', 'Queue');
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
 
   // the build ran in a fresh worktree on todomd/task-0001 and merged cleanly
   assert.match(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/);
@@ -893,7 +893,7 @@ test('a merge that lands nothing ("Already up to date", branch not an ancestor) 
   process.env.PATH = `${shimDir}:${oldPath}`;
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');
-    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
   } finally {
     process.env.PATH = oldPath;
   }
@@ -977,7 +977,7 @@ test('stage tools resolve from the committed config (HEAD:), not a working-tree 
   writeCard(repo, 'task-0001');
 
   await pipeline.humanMove(p, 'task-0001', 'Plan');
-  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: 15000 });
+  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
 
   const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
   const planCall = calls.find((a) => a.includes('--allowedTools'));

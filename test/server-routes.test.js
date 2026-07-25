@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
-import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp } from './helpers.js';
+import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
 import * as pipeline from '../src/pipeline.js';
@@ -336,7 +336,7 @@ test('API DELETE epic with a building child returns 400', async () => {
   try {
     // start the child build (hangs until SIGTERM)
     await pipeline.humanMove(p, 'task-0002', 'Queue');
-    await until(() => fs.existsSync(marker), { timeout: 30000 });
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
 
     // DELETE on the epic should be refused while a child is building
     const r = await fetch(`${base}/api/cards/task-0001${q}`, { method: 'DELETE', headers: h });
