@@ -12,7 +12,13 @@ const FALLBACK = {
 const bin = (vendor) =>
   (vendor === 'codex' ? process.env.TODOMD_CODEX_BIN : process.env.TODOMD_CLAUDE_BIN) || vendor;
 
-const cache = new Map();
+// `<cli> --help` is a BLOCKING spawn (up to the 4s timeout) on the server's
+// event loop. Cache the answer either way — a missing/hanging CLI used to be
+// re-probed on every picker open, stalling the whole board each time. A failed
+// read is cached briefly so installing the CLI is picked up without a restart.
+const cache = new Map();       // vendor → models
+const missUntil = new Map();   // vendor → ts after which a failed read is retried
+const MISS_TTL_MS = 60_000;
 
 // Pull quoted model tokens out of the `--model` help block only (so we don't
 // scrape unrelated quoted examples elsewhere in --help).
@@ -39,8 +45,10 @@ export function listModels(vendor = 'claude', config = {}) {
   if (Array.isArray(override) && override.length) return override.map(String); // config wins, uncached
   if (cache.has(vendor)) return cache.get(vendor);
   const fallback = FALLBACK[vendor] || FALLBACK.claude;
+  if (Date.now() < (missUntil.get(vendor) || 0)) return fallback; // recent failed probe
   const fromCli = modelsFromHelp(helpText(vendor));
   const merged = [...new Set([...fromCli, ...fallback])];
-  if (fromCli.length) cache.set(vendor, merged); // only cache a real CLI read
+  if (fromCli.length) cache.set(vendor, merged); // a real CLI read is cached for good
+  else missUntil.set(vendor, Date.now() + MISS_TTL_MS); // back off, don't re-block per request
   return merged;
 }

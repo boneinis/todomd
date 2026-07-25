@@ -109,14 +109,25 @@ test('baseBranch falls back to the checked-out branch when the repo has no origi
   assert.equal(await baseBranch(repo), 'feature', 'no origin → follow the current branch');
 });
 
-test('baseBranch prefers origin/HEAD over the checked-out branch', async () => {
+test('baseBranch prefers the checked-out branch; origin/HEAD is only the detached-HEAD fallback', async () => {
   const origin = makeRepo();
   const base = git(origin, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const repo = tmp('clone'); // empty dir — clone into it
   git(repo, ['clone', '-q', origin, '.']);
   git(repo, ['checkout', '-qb', 'switched']);
   assert.equal(await currentBranch(repo), 'switched');
-  assert.equal(await baseBranch(repo), base, 'origin/HEAD wins over the checked-out branch');
+  // worktrees fork from HEAD, so HEAD-at-fork is the truth — NOT origin/HEAD
+  assert.equal(await baseBranch(repo), 'switched', 'the checked-out branch wins over origin/HEAD');
+
+  // detached HEAD → fall back to origin/HEAD
+  git(repo, ['checkout', '-q', '--detach', 'HEAD']);
+  assert.equal(await currentBranch(repo), null);
+  assert.equal(await baseBranch(repo), base, 'detached HEAD falls back to origin/HEAD');
+
+  // detached HEAD with no origin at all → null (the pipeline stamps 'unknown')
+  const local = makeRepo();
+  git(local, ['checkout', '-q', '--detach', 'HEAD']);
+  assert.equal(await baseBranch(local), null);
 });
 
 test('branchAddedForbidden catches a committed node_modules, passes a clean branch', async () => {

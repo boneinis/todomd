@@ -151,7 +151,9 @@ export function loadIntakeConfig() {
 // Pure, testable: a parsed email → card fields. Untrusted content; createCard
 // sanitizes the title and the body is escaped on render.
 export function emailToCardFields(parsed) {
-  const subject = String(parsed.subject || '(no subject)').replace(/\s+/g, ' ').trim();
+  const subject = String(parsed.subject || '(no subject)')
+    .replace(/[\x00-\x1f]/g, ' ') // control chars (\s below only covers \t\n\v\f\r)
+    .replace(/\s+/g, ' ').trim();
   const from = parsed.from?.text || 'unknown sender';
   const body = String(parsed.text || '').trim()
     || (parsed.html ? '(HTML-only email — open the original to see formatting)' : '(empty body)');

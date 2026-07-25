@@ -55,22 +55,25 @@ function steal(dir) {
   try { fs.rmSync(dead, { recursive: true, force: true }); } catch {}
 }
 
-// Steal a stale lock (owner older than STALE_SEC). A missing owner means the
-// holder crashed between mkdir and the owner write (a live holder finishes
-// that window in milliseconds) — fall back to the lock dir's own mtime, which
-// mkdir set at creation; older than STALE_SEC can't be mid-creation, so steal.
+// Steal a stale lock (owner older than STALE_SEC). A missing owner — or an
+// unreadable one (empty/partially written → non-finite ts) — means the holder
+// crashed around the owner write (a live holder finishes that window in
+// milliseconds) — fall back to the lock dir's own mtime, which mkdir set at
+// creation; older than STALE_SEC can't be mid-creation, so steal.
+function stealByMtime(dir) {
+  try {
+    if (nowSec() - Math.floor(fs.statSync(dir).mtimeMs / 1000) <= STALE_SEC) return;
+  } catch { return; }
+  steal(dir);
+}
+
 function stealIfStale(dir) {
   let raw;
   try { raw = fs.readFileSync(path.join(dir, 'owner'), 'utf8'); }
-  catch {
-    try {
-      if (nowSec() - Math.floor(fs.statSync(dir).mtimeMs / 1000) <= STALE_SEC) return;
-    } catch { return; }
-    steal(dir);
-    return;
-  }
+  catch { stealByMtime(dir); return; }
   const ts = parseInt(raw.split(' ')[0], 10);
-  if (!Number.isFinite(ts) || nowSec() - ts <= STALE_SEC) return;
+  if (!Number.isFinite(ts)) { stealByMtime(dir); return; } // empty/partial owner
+  if (nowSec() - ts <= STALE_SEC) return;
   steal(dir);
 }
 

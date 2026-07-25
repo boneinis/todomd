@@ -8,7 +8,12 @@ const regFile = () => path.join(regDir(), 'projects.json');
 
 function readRegistry() {
   try {
-    return JSON.parse(fs.readFileSync(regFile(), 'utf8'));
+    const reg = JSON.parse(fs.readFileSync(regFile(), 'utf8'));
+    // a hand-edited/foreign file may parse but not be the shape we expect —
+    // every caller does reg.projects.filter/some, so normalize instead of
+    // throwing on each of them (which would 500 every board request)
+    if (!reg || !Array.isArray(reg.projects)) return { projects: [] };
+    return { ...reg, projects: reg.projects.filter((p) => p && typeof p.path === 'string' && typeof p.name === 'string') };
   } catch {
     return { projects: [] };
   }

@@ -3,6 +3,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+// A stage's jsonl tee is best-effort telemetry: an unwritable runs dir (full
+// disk, read-only mount, a path the user chmod'd) must never take the board
+// server down. Without the 'error' listener a stream error is an UNCAUGHT
+// exception — this whole process dies mid-run.
+function openLog(logFile) {
+  try {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const s = fs.createWriteStream(logFile);
+    s.on('error', () => {}); // the run keeps going; only the transcript is lost
+    return s;
+  } catch { return null; }
+}
+
+// A CLI that never emits a newline (or floods stdout) would otherwise buffer
+// without bound and OOM the server. Past the cap the run keeps going, but the
+// oversized chunk is dropped — the stage then fails its normal "no envelope"
+// path instead of taking the process with it.
+const MAX_BUF = 32 * 1024 * 1024;
+
 // Vendor dispatch: every stage run returns the same shape —
 // { envelope: {subtype, is_error, total_cost_usd, num_turns, structured_output?},
 //   sessionId, exitCode, stderr } — regardless of which CLI did the work.
@@ -46,17 +65,16 @@ function runClaude({
   let settingsFile;
   if (settings) {
     settingsFile = path.join(os.tmpdir(), `todomd-settings-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-    fs.writeFileSync(settingsFile, JSON.stringify(settings));
+    // 0600: this file carries the repo's verify_command as a Stop hook — on a
+    // shared machine /tmp is world-readable, and another user must not be able
+    // to read (or, on a lax umask, rewrite) a command this process runs
+    fs.writeFileSync(settingsFile, JSON.stringify(settings), { mode: 0o600 });
     args.push('--settings', settingsFile);
   }
 
   const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 
-  let log;
-  if (streaming && logFile) {
-    fs.mkdirSync(path.dirname(logFile), { recursive: true });
-    log = fs.createWriteStream(logFile);
-  }
+  const log = streaming && logFile ? openLog(logFile) : null;
 
   child.stdout.setEncoding('utf8'); // decode multibyte chars across chunk boundaries
   const done = new Promise((resolve) => {
@@ -78,15 +96,19 @@ function runClaude({
     };
 
     child.stdout.on('data', (chunk) => {
-      if (!streaming) { stdoutBuf += chunk; return; }
+      if (!streaming) {
+        if (stdoutBuf.length < MAX_BUF) stdoutBuf += chunk;
+        return;
+      }
       lineBuf += chunk;
       let nl;
       while ((nl = lineBuf.indexOf('\n')) >= 0) {
         handleLine(lineBuf.slice(0, nl));
         lineBuf = lineBuf.slice(nl + 1);
       }
+      if (lineBuf.length > MAX_BUF) lineBuf = ''; // newline-less flood — drop it
     });
-    child.stderr.on('data', (c) => { stderr += c; });
+    child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
 
     child.on('error', (err) => {
       cleanup();
@@ -152,11 +174,7 @@ function runCodex({
 
   const child = spawn(process.env.TODOMD_CODEX_BIN || 'codex', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 
-  let log;
-  if (logFile) {
-    fs.mkdirSync(path.dirname(logFile), { recursive: true });
-    log = fs.createWriteStream(logFile);
-  }
+  const log = logFile ? openLog(logFile) : null;
 
   const done = new Promise((resolve) => {
     let sessionId = null;
@@ -185,8 +203,9 @@ function runCodex({
         handleLine(lineBuf.slice(0, nl));
         lineBuf = lineBuf.slice(nl + 1);
       }
+      if (lineBuf.length > MAX_BUF) lineBuf = ''; // newline-less flood — drop it
     });
-    child.stderr.on('data', (c) => { stderr += c; });
+    child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
 
     child.on('error', (err) => {
       cleanup();

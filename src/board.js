@@ -22,14 +22,26 @@ function parseCard(raw) {
   return parsed;
 }
 
+// Columns the pipeline hard-requires — if a config edit drops one, its cards
+// would become invisible/stuck, so union it back in (user order preserved).
+const REQUIRED_COLUMNS = ['Queue', 'Build', 'Verify', 'Needs Human', 'Done'];
+
+// Shared by loadConfig (working tree) and the pipeline's execConfig (the
+// committed copy) so the column invariants hold for both, and neither has to
+// borrow the other's values to get them.
+export function normalizeConfig(cfg) {
+  const out = { columns: DEFAULT_COLUMNS, ...(cfg || {}) };
+  out.columns = Array.isArray(out.columns) && out.columns.length ? [...out.columns] : [...DEFAULT_COLUMNS];
+  for (const col of REQUIRED_COLUMNS) if (!out.columns.includes(col)) out.columns.push(col);
+  return out;
+}
+
 export function loadConfig(repoPath) {
   try {
     const raw = fs.readFileSync(path.join(repoPath, '.todomd', 'config.yml'), 'utf8');
-    const cfg = yaml.load(raw) || {};
-    if (!Array.isArray(cfg.columns) || !cfg.columns.length) cfg.columns = DEFAULT_COLUMNS;
-    return { columns: DEFAULT_COLUMNS, ...cfg };
+    return normalizeConfig(yaml.load(raw) || {});
   } catch {
-    return { columns: DEFAULT_COLUMNS };
+    return normalizeConfig({});
   }
 }
 
@@ -64,7 +76,7 @@ export function setStageRouting(repoPath, col, updates) {
       for (const [k, v] of Object.entries(clean)) if (v) block.push(`    ${k}: ${v}`);
       if (block.length === 1) return { ok: true, unchanged: true };
       const body = raw.replace(/\s*$/, '') + eol + eol + 'stages:' + eol + block.join(eol) + eol;
-      fs.writeFileSync(file, body);
+      writeFileAtomic(file, body);
       return { ok: true, commit: await commit() };
     }
     let se = lines.length;
@@ -93,7 +105,7 @@ export function setStageRouting(repoPath, col, updates) {
       for (const [k, v] of Object.entries(clean)) if (v) block.push(`    ${k}: ${v}`);
       if (block.length === 1) return { ok: true, unchanged: true };
       lines.splice(se, 0, ...block);
-      fs.writeFileSync(file, lines.join(eol));
+      writeFileAtomic(file, lines.join(eol));
       return { ok: true, commit: await commit() };
     }
 
@@ -123,7 +135,7 @@ export function setStageRouting(repoPath, col, updates) {
         if (found < insertAt) insertAt--;
       }
     }
-    fs.writeFileSync(file, lines.join(eol));
+    writeFileAtomic(file, lines.join(eol));
     return { ok: true, commit: await commit() };
   });
 }
@@ -194,6 +206,21 @@ export function parseChunks(body = '') {
   return chunks;
 }
 
+// A card's list fields come from YAML a human hand-edits or an agent writes, so
+// any of them can arrive as a scalar, a mapping, or missing. Every reader then
+// does `(card.dependencies || []).filter(...)` — which throws on a scalar and
+// takes down whatever was iterating: advanceEpicChildren strands an epic, and
+// the board payload blanked the entire UI. Normalize once, here, so no reader
+// has to remember. (readCard returns raw frontmatter by design — callers that
+// hand it straight to a client normalize on their own side.)
+const asArray = (x) => (Array.isArray(x) ? x : x === undefined || x === null || x === '' ? [] : [x]);
+const CARD_LIST_FIELDS = ['labels', 'dependencies', 'children'];
+function listFields(data) {
+  const out = {};
+  for (const f of CARD_LIST_FIELDS) if (f in data) out[f] = asArray(data[f]).map(String);
+  return out;
+}
+
 export function loadBoard(repoPath, { includeArchived = false } = {}) {
   const config = loadConfig(repoPath);
   const dir = tasksDir(repoPath);
@@ -208,10 +235,11 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
         cards.push({
           file,
           ...parsed.data,
+          ...listFields(parsed.data),
           criteria: criteriaProgress(parsed.content),
         });
       } catch {
-        cards.push({ file, id: file.replace(/\.md$/, ''), title: `(unparseable) ${file}`, status: 'Review' });
+        cards.push({ file, id: file.replace(/\.md$/, ''), title: `(unparseable) ${file}`, status: 'Review', unparseable: true });
       }
     }
   }
@@ -404,6 +432,25 @@ function slugify(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task';
 }
 
+// Frontmatter scalars below are interpolated UNQUOTED — strip newlines and
+// YAML-significant chars so a hostile value can't inject keys or break the
+// parse. Not only UI input: a chunk card's title/type come from the Plan
+// agent's `## Chunks` yaml, so a poisoned plan reaches here.
+// Blocking key injection isn't enough — a value that merely fails to PARSE
+// writes a card nothing can read (it loads as "(unparseable)"), so the run is
+// wasted either way. Two shapes do that on their own:
+//   - a leading '-' or '?' ("- x") → parsed as a sequence/complex key, not a
+//     scalar: "bad indentation of a mapping entry"
+//   - control characters → js-yaml refuses the whole stream as non-printable
+const fmScalar = (value, fallback) =>
+  String(value || fallback)
+    .replace(/[\x00-\x1f\x7f]/g, ' ')            // non-printables kill the parse
+    .replace(/[:#\[\]{},&*!|>'"%@`]/g, ' ')      // YAML-significant
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[-?\s]+/, '')                     // leading '- ' would start a sequence
+    .trim();
+
 export function createCard(repoPath, fields) {
   return withRepoLock(repoPath, async () => {
     const dir = tasksDir(repoPath);
@@ -418,25 +465,28 @@ export function createCard(repoPath, fields) {
     const id = `task-${String(max + 1).padStart(4, '0')}`;
     const file = `${id}-${slugify(title)}.md`;
 
-    const labels = (fields.labels || []).map((l) => String(l).trim()).filter(Boolean);
-    const criteria = (fields.criteria || []).map((c) => String(c).trim()).filter(Boolean);
+    // asArray: chunk cards are created from the Plan agent's yaml, where any of
+    // these can come back as a bare scalar instead of a list — .map would throw
+    // and take the whole Plan stage with it
+    const labels = asArray(fields.labels).map((l) => fmScalar(l, '')).filter(Boolean);
+    const criteria = asArray(fields.criteria).map((c) => String(c).trim()).filter(Boolean);
     // optional fields for orchestrator-created child cards (chunks of an epic);
     // omitted by the UI/email callers, which keep today's defaults
     const status = String(fields.status || 'Review').replace(/[^\w ]/g, '').trim() || 'Review';
-    const deps = (fields.dependencies || []).map((d) => String(d).replace(/[^\w-]/g, '')).filter(Boolean);
+    const deps = asArray(fields.dependencies).map((d) => String(d).replace(/[^\w-]/g, '')).filter(Boolean);
     const parent = fields.parent ? String(fields.parent).replace(/[^\w-]/g, '') : '';
     const triaged = fields.triaged ? String(fields.triaged).replace(/[\r\n:]/g, ' ').trim() : '';
     const plan = fields.plan ? String(fields.plan).trim().replace(/^(#{1,6}) /gm, (_, h) => '\\' + h + ' ') : '';
     const content = `---
 id: ${id}
-title: ${title.replace(/[:#[\]{}]/g, ' ').replace(/\s+/g, ' ')}
+title: ${fmScalar(title, 'untitled')}
 status: ${status}
-type: ${fields.type || 'improvement'}
-priority: ${fields.priority || 'medium'}
+type: ${fmScalar(fields.type, 'improvement')}
+priority: ${fmScalar(fields.priority, 'medium')}
 labels: [${labels.join(', ')}]
 dependencies: [${deps.join(', ')}]${parent ? `\nparent: ${parent}` : ''}
 created_date: ${new Date().toISOString().slice(0, 10)}
-source: ${fields.source || 'ui'}
+source: ${fmScalar(fields.source, 'ui')}
 assignee: ${fields.assignee ? String(fields.assignee).replace(/[^\w.@ -]/g, '').trim() : ''}
 agent: ${fields.agent === 'codex' ? 'codex' : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
 session_id:

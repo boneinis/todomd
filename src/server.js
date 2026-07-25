@@ -25,6 +25,10 @@ const INLINE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.
 // JSON API bodies are tiny (the attachment endpoint has its own 25 MB cap) —
 // cap everything else so a client can't exhaust memory with an unbounded body.
 const MAX_BODY = 1024 * 1024; // 1 MB
+// Bound concurrent attachment uploads (each buffers its body in memory, up to
+// the 25 MB per-request cap) — beyond the cap the extra upload gets a 429.
+const MAX_UPLOADS = 4;
+let uploadsInFlight = 0;
 // Returns the body string, or null when it exceeds MAX_BODY (caller sends 413).
 async function readBody(req) {
   let body = '';
@@ -334,6 +338,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
       });
     }
     if (url.pathname === '/api/models') { // model suggestions for the chosen vendor (CLI --help + config)
+      // full token only: this spawns blocking CLI --help processes
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
       const agent = (url.searchParams.get('agent') || 'claude').replace(/[^\w-]/g, '');
       return json(res, 200, { agent, models: listModels(agent, loadConfig(project.path)) });
     }
@@ -390,6 +396,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
     // the streamed events of the card's most recent run, to back-fill the drawer
     const runlogMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/runlog$/);
     if (runlogMatch && req.method === 'GET') {
+      // full access only — the raw run stream can carry command output/secrets.
+      // 403, not 401: a viewer IS authenticated, just not permitted. The UI
+      // turns any 401 into "session expired — restart todomd", so a 401 here
+      // told every viewer on the default QR link to restart the server each
+      // time they opened a card drawer.
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
       const card = readCard(project.path, runlogMatch[1]);
       const agent = card?.data?.agent || 'claude';
       return json(res, 200, { agent, ...readRunLog(project.path, runlogMatch[1]) });
@@ -405,17 +417,21 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     const attachMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/attach$/);
     if (attachMatch && req.method === 'POST') {
-      let name = req.headers['x-filename'] || url.searchParams.get('name') || 'file';
-      try { name = decodeURIComponent(name); } catch { /* keep raw — attachCard sanitizes */ }
-      const chunks = [];
-      let size = 0;
-      for await (const c of req) {
-        size += c.length;
-        if (size > 25 * 1024 * 1024) return json(res, 413, { error: 'file too large (25 MB max)' });
-        chunks.push(c);
-      }
-      const result = await attachCard(project.path, attachMatch[1], name, Buffer.concat(chunks));
-      return json(res, result.ok ? 200 : 400, result);
+      if (uploadsInFlight >= MAX_UPLOADS) return json(res, 429, { error: 'too many concurrent uploads' });
+      uploadsInFlight++;
+      try {
+        let name = req.headers['x-filename'] || url.searchParams.get('name') || 'file';
+        try { name = decodeURIComponent(name); } catch { /* keep raw — attachCard sanitizes */ }
+        const chunks = [];
+        let size = 0;
+        for await (const c of req) {
+          size += c.length;
+          if (size > 25 * 1024 * 1024) return json(res, 413, { error: 'file too large (25 MB max)' });
+          chunks.push(c);
+        }
+        const result = await attachCard(project.path, attachMatch[1], name, Buffer.concat(chunks));
+        return json(res, result.ok ? 200 : 400, result);
+      } finally { uploadsInFlight--; }
     }
     const moveMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/move$/);
     if (moveMatch && req.method === 'POST') {
@@ -518,13 +534,15 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
   };
   const wss = new WebSocketServer({ noServer: true });
-  const upgradeHandler = (req, socket, head) => {
+  // isLan tags sockets that arrived via the LAN listener — setLan(false) drops
+  // them explicitly (closeAllConnections() doesn't see upgraded WS sockets)
+  const upgradeHandler = (isLan) => (req, socket, head) => {
     if (!hostOk(req) || !originOk(req) || !viewerAuthed(req)) return socket.destroy();
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    wss.handleUpgrade(req, socket, head, (ws) => { ws.todomdLan = isLan; wss.emit('connection', ws, req); });
   };
 
   const server = http.createServer(requestHandler);
-  server.on('upgrade', upgradeHandler);
+  server.on('upgrade', upgradeHandler(false));
 
   // Toggle a second listener bound to the LAN ip (port stays free on loopback
   // because the two listeners bind distinct addresses). Never touches the main
@@ -534,37 +552,47 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const ip = lanAddress();
       if (!ip) return { ok: false, error: 'no LAN connection found' };
       lanServer = http.createServer(requestHandler);
-      lanServer.on('upgrade', upgradeHandler);
+      lanServer.on('upgrade', upgradeHandler(true));
       lanServer.on('error', () => { lanServer = null; lanEnabled = false; });
       lanEnabled = true; // hostOk must allow the LAN host before the socket accepts
       lanServer.listen(port, ip);
     } else if (!on && lanServer) {
       try { lanServer.close(); lanServer.closeAllConnections?.(); } catch {}
+      for (const ws of wss.clients) if (ws.todomdLan) ws.terminate(); // upgraded WS sockets outlive closeAllConnections
       lanServer = null; lanEnabled = false;
     }
     return { ok: true, enabled: lanEnabled, url: lanUrl() };
   }
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     ws.isAlive = true;
+    ws.todomdAccess = authed(req) ? 'full' : 'viewer'; // the run-event stream is full-only
     ws.on('pong', () => { ws.isAlive = true; });
   });
-  setInterval(() => {
+  const pingTimer = setInterval(() => {
     for (const ws of wss.clients) {
       if (ws.isAlive === false) { ws.terminate(); continue; }
       ws.isAlive = false;
       ws.ping();
     }
-  }, 30_000).unref();
+  }, 30_000);
+  pingTimer.unref();
 
   const broadcast = (msg) => {
     const data = JSON.stringify(msg);
-    for (const client of wss.clients) if (client.readyState === 1) client.send(data);
+    for (const client of wss.clients) {
+      // the raw run-event stream can carry command output — full access only;
+      // viewers still get board-changed / run-state / banners
+      if (msg.type === 'run-event' && client.todomdAccess !== 'full') continue;
+      if (client.readyState === 1) client.send(data);
+    }
   };
 
   // watch every registered project's tasks dir; reconcile with the registry
   // so removed projects release their watchers (chokidar v4: plain paths only)
   const watchers = new Map();
+  let closed = false;
   const watchProjects = () => {
+    if (closed) return; // a rescan after close() would re-open watchers we just released
     const current = new Map(
       listProjects().map((p) => [path.join(p.path, '.todomd', 'tasks'), p.name])
     );
@@ -588,7 +616,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
   };
   watchProjects();
-  setInterval(watchProjects, 10_000).unref();
+  const watchTimer = setInterval(watchProjects, 10_000);
+  watchTimer.unref();
 
   pipeline.init({ broadcast });
   pipeline.reconcileOnBoot().catch(() => {});
@@ -600,15 +629,32 @@ export function startServer({ port = 7337, lan = false } = {}) {
     log: (m) => console.log(m),
   });
 
-  // Clean shutdown: stop both listeners, file watchers, and intake.
+  // Clean shutdown: stop both listeners, every open WebSocket, the rescan/ping
+  // timers, file watchers, and intake. Everything here holds an event-loop
+  // handle — leaving any of it behind keeps the process alive after close()
+  // (and the 10s rescan would re-open the watchers we just released).
   const close = () => {
+    closed = true;
+    clearInterval(watchTimer);
+    clearInterval(pingTimer);
     try { server.close(); server.closeAllConnections?.(); } catch {}
     setLan(false);
+    // upgraded WS sockets survive closeAllConnections — drop them explicitly
+    for (const ws of wss.clients) { try { ws.terminate(); } catch {} }
+    try { wss.close(); } catch {}
     for (const w of watchers.values()) { try { w.close(); } catch {} }
+    watchers.clear();
     try { stopIntake(); } catch {}
   };
 
   return new Promise((resolve) => {
+    // a port conflict on the MAIN listener is fatal — say why and bail (the
+    // LAN listener already has its own quiet error handler above)
+    server.on('error', (e) => {
+      if (e.code === 'EADDRINUSE') console.error(`port ${port} already in use — is todomd already running? (\`todomd stop\`)`);
+      else console.error(`todomd server error: ${e.message}`);
+      process.exit(1);
+    });
     // main listener is ALWAYS loopback-only; LAN is a separate, toggleable listener
     server.listen(port, '127.0.0.1', () => {
       if (lan) setLan(true); // honor the --lan start flag

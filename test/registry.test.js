@@ -39,6 +39,26 @@ test('listProjects skips registered dirs that no longer have a board', () => {
   assert.equal(listProjects().some((p) => p.path === gone), false);
 });
 
+// projects.json is a plain file a user can edit (or another tool can clobber).
+// Every caller does reg.projects.filter/some — a shape that isn't {projects:[]}
+// used to throw out of listProjects, which 500s every board request.
+test('a malformed projects.json degrades to an empty registry instead of throwing', () => {
+  const home = isolateHome();
+  const file = path.join(home, '.todomd', 'projects.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (const bad of ['[]', '{}', 'null', '{"projects":"nope"}', 'not json at all']) {
+    fs.writeFileSync(file, bad);
+    assert.deepEqual(listProjects(), [], `shape: ${bad}`);
+  }
+  // entries that aren't {name, path} are dropped; the good one survives
+  const ok = boardDir(path.join(os.tmpdir(), `reg-${process.pid}-mixed`));
+  fs.writeFileSync(file, JSON.stringify({ projects: [null, 'x', { name: 'n' }, { name: 'ok', path: ok }] }));
+  assert.deepEqual(listProjects().map((p) => p.name), ['ok']);
+  // and a later write repairs the file rather than compounding the damage
+  addProject(boardDir(path.join(os.tmpdir(), `reg-${process.pid}-repair`)));
+  assert.equal(listProjects().length, 2);
+});
+
 test('removeProject unregisters by name without touching board files', async () => {
   isolateHome();
   const a = boardDir(path.join(os.tmpdir(), `reg-${process.pid}-rm`));

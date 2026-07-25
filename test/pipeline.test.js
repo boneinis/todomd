@@ -1,8 +1,9 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git } from './helpers.js';
+import { execFileSync } from 'node:child_process';
+import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep } from './helpers.js';
 import { readCard, setStageRouting, patchFrontmatter } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
@@ -11,6 +12,12 @@ const noop = () => {};
 // unique project name per repo — the pipeline module keys queue/run state by name
 function project(repo) { return { name: path.basename(repo), path: repo }; }
 const status = (repo, id) => readCard(repo, id).data.status;
+
+// Several tests here spawn an agent that hangs until it's signalled. A live
+// child process is a ref'd handle: if any test leaves one behind (a cancel path
+// that didn't fire, an early assertion failure), this process never exits and
+// the whole suite stalls with no failure to point at. Sweep at the end.
+after(async () => { try { await pipeline.killAllChildren({ graceMs: 1000 }); } catch { /* best effort */ } });
 
 test('happy path: Review → Plan → Planned → Queue → Build → Verify → Done, merged + worktree pruned', async () => {
   isolateHome();
@@ -503,7 +510,8 @@ test('killAllChildren stops a live agent child and reverts its card', async () =
   assert.ok(pipeline.hasLiveRun(p.name, 'task-0001'), 'build is live');
 
   await pipeline.killAllChildren();
-  assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false, 'no live run after killAllChildren');
+  // hasLiveRun covers the settling chain too (pending) — poll until it fully reverts
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
   // the kill went through the normal cancel path: the card reverts out of Build
   await until(() => status(repo, 'task-0001') === 'Queue', { timeout: 15000 });
   clearFakeAgent();
@@ -523,7 +531,7 @@ test('killAllChildren SIGKILLs a child that ignores SIGTERM', async () => {
 
   const t0 = Date.now();
   await pipeline.killAllChildren({ graceMs: 300 });
-  assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false, 'stubborn child force-killed');
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
   assert.ok(Date.now() - t0 < 5000, 'did not hang on the stubborn child');
   clearFakeAgent();
 });
@@ -591,7 +599,7 @@ test('stage timeout: a hung build is killed and the card lands in Needs Human (r
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'run_timeout');
-  assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false, 'hung child was killed, slot freed');
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
   clearFakeAgent();
 });
 
@@ -616,6 +624,37 @@ test('cancel escalates to SIGKILL when the child ignores SIGTERM', async () => {
   clearFakeAgent();
 });
 
+// The HEAD: guard must cover keys the committed config OMITS, not just the ones
+// it defines. verify_command is optional — if a run inherited it from the
+// working tree whenever HEAD's config left it out, an injected edit would arm an
+// arbitrary shell command as the build's Stop hook, which is the exact attack
+// the guard exists to stop.
+test('an executable key MISSING from the committed config is not taken from the working tree', async () => {
+  isolateHome();
+  const dump = path.join(tmp('hook'), 'settings.json');
+  useFakeAgent({ build: 'good', verdict: 'pass', dump_settings: dump });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfgPath = path.join(repo, '.todomd/config.yml');
+  // commit a config with NO verify_command at all
+  const committed = fs.readFileSync(cfgPath, 'utf8').replace(/^verify_command:.*\n/m, '');
+  fs.writeFileSync(cfgPath, committed);
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'config without verify_command']);
+  assert.doesNotMatch(git(repo, ['show', 'HEAD:.todomd/config.yml']), /verify_command/, 'committed config has none');
+  // …then inject one into the working tree only (a git pull / a poisoned agent edit)
+  fs.writeFileSync(cfgPath, `${committed}verify_command: echo POISONED_HOOK\n`);
+
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => fs.existsSync(dump), { timeout: 30000 });
+
+  const armed = fs.readFileSync(dump, 'utf8');
+  assert.doesNotMatch(armed, /POISONED_HOOK/, 'an uncommitted verify_command must never be armed as the Stop hook');
+  assert.match(armed, /npm test/, 'the code default applies instead');
+  clearFakeAgent();
+});
+
 test('cancel during Verify re-enqueues the build — the card resumes to Done on its own', async () => {
   isolateHome();
   const marker = path.join(tmp('verifyhang'), 'started');
@@ -632,10 +671,140 @@ test('cancel during Verify re-enqueues the build — the card resumes to Done on
   // the cancel reverts to Queue and re-enqueues: build #2 runs (the hang fired
   // once), verify passes, the card lands in Done with no human action
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: 30000 });
-  assert.ok((readCard(repo, 'task-0001').data.verification.attempts || 0) >= 2,
-    'a second build attempt ran after the cancel');
+  assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
+    'the cancelled attempt was rolled back — the resumed build is attempt 1 again');
   clearFakeAgent();
 });
+
+test('cancel during Build re-enqueues — the card resumes to Done on its own, no attempt burned', async () => {
+  isolateHome();
+  const marker = path.join(tmp('buildhang'), 'started');
+  useFakeAgent({ build: 'good', verdict: 'pass', hang: '1', hang_marker: marker }); // build hangs once
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: 30000 });
+
+  assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
+  // the cancel reverts to Queue and re-enqueues (like the Verify cancel): build
+  // #2 runs (the hang fired once), verify passes, Done with no human action
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 30000 });
+  assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
+    'the cancelled attempt was rolled back — the resumed build is attempt 1 again');
+  clearFakeAgent();
+});
+
+test('cancel during a retry Build requeues the card instead of idling in Verify', async () => {
+  isolateHome();
+  const counter = path.join(tmp('retryhang'), 'builds');
+  // the RETRY build (2nd build-stage run) hangs until cancelled
+  useFakeAgent({ build: 'good', verdict: 'fail', hang: 'build', hang_on: '2', hang_counter: counter });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  // build #1 ok → verify fails → the retry build starts and hangs
+  await until(() => fs.existsSync(counter) && fs.readFileSync(counter, 'utf8') === '2' &&
+    status(repo, 'task-0001') === 'Build', { timeout: 30000 });
+
+  assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
+  process.env.FAKE_VERDICT = 'pass'; // the resumed build verifies clean
+  // a retry build's prevStatus is Verify — the cancel must still land it in
+  // Queue and re-enqueue (a Verify revert would strand it with no live run)
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 30000 });
+  assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2,
+    'verify-fail attempt + rolled-back cancelled retry + resumed build = attempt 2');
+  clearFakeAgent();
+});
+
+test('a retriage in the queue-shift→spawn window reverts safely — the chain never stomps it', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  // the chain is claimed (pending) but the build hasn't spawned yet: other
+  // moves are refused as a live run, and a retriage has no child to SIGTERM —
+  // it flags the chain, which must revert at its pre-spawn checkpoint
+  const refused = await pipeline.humanMove(p, 'task-0001', 'Plan');
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /run in progress/);
+  const r = await pipeline.humanMove(p, 'task-0001', 'Review');
+  assert.equal(r.ok, true);
+
+  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  // give the cancelled chain every chance to stomp the card back into the flow
+  await sleep(1000);
+  assert.equal(status(repo, 'task-0001'), 'Review', 'the chain did not stomp the retriage');
+  assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false);
+  assert.equal(readCard(repo, 'task-0001').data.worktree || '', '', 'no stale worktree frontmatter');
+  clearFakeAgent();
+});
+
+test('stage_timeout_min: 0 disables the stage timer (a hung agent is never timed out)', async () => {
+  isolateHome();
+  const marker = path.join(tmp('timeout0'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker }); // build hangs forever
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  fs.appendFileSync(path.join(repo, '.todomd/config.yml'), 'stage_timeout_min: 0\n');
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => fs.existsSync(marker), { timeout: 30000 }); // build is live and hung
+  const { runs } = await import('../src/runstore.js');
+  assert.equal(runs.get(`${p.name}:task-0001`)?.timeoutMin, 0, 'no timer was armed');
+  await sleep(1200); // long enough that any small-value timer would have fired
+  assert.ok(pipeline.hasLiveRun(p.name, 'task-0001'), 'hung child NOT killed — the timer is disabled');
+  assert.equal(status(repo, 'task-0001'), 'Build');
+
+  await pipeline.humanMove(p, 'task-0001', 'Review'); // cleanup: cancel the hung run
+  await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
+  clearFakeAgent();
+});
+
+test('stage_timeout_min: a huge value clamps under the setTimeout ceiling instead of overflow-killing the run', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  // 1e12 minutes ≈ 1.9M years; unclamped it overflows setTimeout's 32-bit
+  // delay, which Node silently truncates to 1ms — instantly killing every run
+  fs.appendFileSync(path.join(repo, '.todomd/config.yml'), 'stage_timeout_min: 1000000000000\n');
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+  clearFakeAgent();
+});
+
+test('a verify spawn failing on a deleted worktree cwd is worktree_failed, not cli_missing', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good', rm_worktree: '1' }); // build deletes its own worktree
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.needs_human_reason, 'worktree_failed',
+    'ENOENT on the spawn cwd is a worktree failure, not a missing CLI');
+  clearFakeAgent();
+});
+
 
 test('pipeline error: an unexpected throw in buildChain lands in Needs Human (pipeline_error) with a banner', async () => {
   isolateHome();
@@ -655,8 +824,166 @@ test('pipeline error: an unexpected throw in buildChain lands in Needs Human (pi
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'pipeline_error');
-  assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false, 'no phantom live run');
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: 15000 });
   assert.ok(pipeline.getBanners().some((b) => b.level === 'error' && /pipeline error/.test(b.text)),
     'an error banner is set instead of vanishing silently');
+  clearFakeAgent();
+});
+
+test('detached HEAD at fork stamps base_branch "unknown" and refuses the merge (base_branch_unknown)', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  git(repo, ['checkout', '-q', '--detach', 'HEAD']); // fork happens on a detached HEAD
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.base_branch, 'unknown', 'detached fork records the unknown marker');
+  assert.equal(card.data.needs_human_reason, 'base_branch_unknown');
+  // work preserved: nothing merged, worktree + branch kept
+  assert.ok(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), 'worktree preserved');
+  assert.match(git(repo, ['branch', '--list', 'todomd/task-0001']), /todomd\/task-0001/, 'task branch preserved');
+  clearFakeAgent();
+});
+
+test('a stale worktree checked out on the wrong branch is recreated, not reused', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  // a leftover dir at the worktree path, switched to another branch (e.g. by
+  // the user) — the build must NOT run inside it
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  git(repo, ['worktree', 'add', '-q', wt, '-b', 'stale-branch']);
+  fs.writeFileSync(path.join(wt, 'SENTINEL'), 'stale\n');
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: 20000 });
+
+  // the build ran in a fresh worktree on todomd/task-0001 and merged cleanly
+  assert.match(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/);
+  assert.ok(!fs.existsSync(wt), 'worktree pruned after Done');
+  assert.match(git(repo, ['branch', '--list', 'stale-branch']), /stale-branch/, 'the unrelated branch is untouched');
+  clearFakeAgent();
+});
+
+test('a merge that lands nothing ("Already up to date", branch not an ancestor) → Needs Human, never Done', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  // shim `git merge` to fake success without merging (everything else passes
+  // through to the real git) — the orchestrator must not mark Done on a noop
+  const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+  const shimDir = tmp('gitshim');
+  fs.writeFileSync(path.join(shimDir, 'git'),
+    `#!/bin/sh\nfor a in "$@"; do if [ "$a" = "merge" ]; then echo "Already up to date."; exit 0; fi; done\nexec "${realGit}" "$@"\n`);
+  fs.chmodSync(path.join(shimDir, 'git'), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${shimDir}:${oldPath}`;
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: 20000 });
+  } finally {
+    process.env.PATH = oldPath;
+  }
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.needs_human_reason, 'merge_noop');
+  assert.doesNotMatch(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/,
+    'nothing landed on the base branch');
+  assert.match(git(repo, ['branch', '--list', 'todomd/task-0001']), /todomd\/task-0001/, 'work preserved on the branch');
+  clearFakeAgent();
+});
+
+test('orphan sweep: merged branch finishes as Done; unmerged work is preserved as Needs Human', async () => {
+  isolateHome();
+  useFakeAgent();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  addProject(repo); // reconcileOnBoot iterates registered projects
+
+  // both cards committed on the base first, so the branch dance below never
+  // sweeps an untracked card file into a branch commit
+  writeCard(repo, 'task-0001', { status: 'Build' });
+  writeCard(repo, 'task-0002', { status: 'Verify' });
+  git(repo, ['add', '.todomd/tasks']); git(repo, ['commit', '-qm', 'cards']);
+
+  // card A: left in Build by a crash AFTER its branch was merged into the base
+  git(repo, ['checkout', '-qb', 'todomd/task-0001']);
+  fs.appendFileSync(path.join(repo, 'src/calc.js'), 'export const a = 1;\n');
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'work A']);
+  git(repo, ['checkout', '-q', '-']);
+  git(repo, ['merge', '-q', '--no-ff', 'todomd/task-0001', '-m', 'merged A']);
+
+  // card B: left in Verify by a crash with its branch NOT merged
+  git(repo, ['checkout', '-qb', 'todomd/task-0002']);
+  fs.appendFileSync(path.join(repo, 'src/calc.js'), 'export const b = 1;\n');
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'work B']);
+  git(repo, ['checkout', '-q', '-']);
+
+  await pipeline.reconcileOnBoot();
+
+  assert.equal(status(repo, 'task-0001'), 'Done', 'merged work completes instead of being deleted');
+  const cardB = readCard(repo, 'task-0002');
+  assert.equal(cardB.data.status, 'Needs Human');
+  assert.equal(cardB.data.needs_human_reason, 'orphaned_run');
+  assert.match(git(repo, ['branch', '--list', 'todomd/task-0002']), /todomd\/task-0002/, 'unmerged branch is KEPT');
+  clearFakeAgent();
+});
+
+test('triageSweep skips unparseable cards and banners once per file', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo({ triage: true });
+  const p = project(repo);
+  // a card whose frontmatter can't be parsed (the billing-loop case)
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0009-broken.md'), '---\nbad: [unclosed\n---\n');
+
+  pipeline.triageSweep(p);
+  pipeline.triageSweep(p); // a second sweep must not add a second banner
+
+  const banners = pipeline.getBanners().filter((b) => b.text.includes('task-0009-broken.md'));
+  assert.equal(banners.length, 1, 'one banner per unparseable file');
+  assert.equal(banners[0].level, 'error');
+  assert.deepEqual(pipeline.getRunStates(p.name), {}, 'no triage run spawned for the unparseable card');
+});
+
+test('stage tools resolve from the committed config (HEAD:), not a working-tree edit', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('argv'), 'argv.jsonl');
+  useFakeAgent({ argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  // commit a config whose Plan stage carries a sentinel tool, then poison the
+  // working-tree copy — the run must see the COMMITTED allowlist
+  const cfgPath = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfgPath, fs.readFileSync(cfgPath, 'utf8')
+    .replace('  Plan:\n    command: todomd-plan\n    model: sonnet\n',
+      '  Plan:\n    command: todomd-plan\n    model: sonnet\n    allowed_tools: [Read, "SentinelCommitted"]\n'));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'config']);
+  fs.writeFileSync(cfgPath, fs.readFileSync(cfgPath, 'utf8').replace('SentinelCommitted', 'SentinelPoisoned'));
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  await pipeline.humanMove(p, 'task-0001', 'Plan');
+  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: 15000 });
+
+  const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+  const planCall = calls.find((a) => a.includes('--allowedTools'));
+  assert.ok(planCall, 'the plan run received an allowlist');
+  const tools = planCall[planCall.indexOf('--allowedTools') + 1];
+  assert.match(tools, /SentinelCommitted/, 'the committed config drives the run');
+  assert.doesNotMatch(tools, /SentinelPoisoned/, 'a working-tree config edit is not armed mid-run');
   clearFakeAgent();
 });

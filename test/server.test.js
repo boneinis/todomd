@@ -1,9 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import net from 'node:net';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { isolateHome, makeRepo } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // grab an OS-assigned free port so parallel/repeated runs never collide (a fixed
 // port EADDRINUSE's a second concurrent instance)
@@ -43,4 +49,30 @@ test('runtime LAN toggle: off at start, status gated by token, primary-only POST
   } finally {
     close();
   }
+});
+
+// close() must release EVERY event-loop handle: the listeners, open WebSockets,
+// the ping/rescan timers and the chokidar watchers (a live rescan timer would
+// re-open watchers right after close). Asserted the only way that can't be
+// faked from inside the same process: a child that boots the server against a
+// registered board, closes it, and must exit on its own. A regression here
+// doesn't fail a test — it hangs whatever process embeds the server.
+test('close() releases every handle — the process exits on its own', async () => {
+  const home = isolateHome();
+  const repo = makeRepo();
+  addProject(repo);
+  const script = path.join(ROOT, 'test/fixtures/boot-and-close.mjs');
+
+  const child = spawn(process.execPath, [script], {
+    cwd: ROOT,
+    env: { ...process.env, TODOMD_HOME: home, TODOMD_TEST_REPO: repo },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (c) => { stderr += c; });
+  const exited = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(null); }, 15_000);
+    child.on('exit', (code) => { clearTimeout(timer); resolve(code); });
+  });
+  assert.equal(exited, 0, `server process must exit after close() (exit=${exited}) ${stderr}`);
 });

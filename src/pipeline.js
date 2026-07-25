@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
-import { loadConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived } from './board.js';
+import yaml from 'js-yaml';
+import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
@@ -39,6 +40,11 @@ const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human'])
 
 let broadcast = () => {};
 const children = new Map();          // runKey → ChildProcess
+// runKey → { cancelled, revertTo, cascadeArchive, noRequeue } — a build chain
+// claimed by processQueue but not yet fully settled. Covers the windows where
+// `children` has no entry (queue shift → spawn, build done → verify spawn,
+// verify done → merge) so hasLiveRun/cancel/humanMove never see a false "idle".
+const pending = new Map();
 const queues = new Map();            // project name → [cardId]
 const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
@@ -72,7 +78,8 @@ function enqueueQueue(project) {
   try {
     for (const card of loadBoard(project.path).cards) {
       // epics sit in Queue as trackers — they never build (their chunks do)
-      if (card.status === 'Queue' && card.id && !card.epic && !children.has(runKey(project.name, card.id))) {
+      if (card.status === 'Queue' && card.id && !card.epic &&
+          !children.has(runKey(project.name, card.id)) && !pending.has(runKey(project.name, card.id))) {
         enqueueBuild(project, card.id);
       }
     }
@@ -127,6 +134,50 @@ function stageConfig(config, stageName, card) {
   };
 }
 
+// Config for EXECUTION (stage tools/models, the verify_command Stop hook) is
+// read from the COMMITTED config at HEAD, not the working tree. Otherwise a
+// `git pull` or a mid-run agent edit to .todomd/config.yml would arm a new
+// verify_command (a shell hook) or widen a stage's tool allowlist for a run
+// that was resolved under the old rules. Board display paths keep reading the
+// working tree. Falls back to the working-tree file when it isn't committed
+// yet (fresh `todomd init` before the first commit).
+// Keys that can make something RUN, or widen what a run is allowed to do:
+// verify_command is a shell hook; stages carries each column's command, model
+// and allowed_tools; default_agent picks the CLI (and codex ignores the tool
+// allowlist entirely); worktree_link decides which gitignored paths get linked
+// into the worktree an agent reads. These are taken from the COMMITTED config
+// ALONE — including when it omits them, in which case the caller's own default
+// applies and NOT the working-tree value. Add any new key here that can execute
+// something or loosen a guard.
+const EXEC_KEYS = ['verify_command', 'stages', 'default_agent', 'worktree_link'];
+
+async function execConfig(repoPath) {
+  const workingTree = loadConfig(repoPath);
+  const res = await git(repoPath, ['show', 'HEAD:.todomd/config.yml']);
+  // no committed config at all (fresh `init` before the first commit) — the
+  // working tree is all there is
+  if (!res.ok || !res.stdout) return workingTree;
+  let committed;
+  try {
+    committed = normalizeConfig(yaml.load(res.stdout) || {});
+  } catch {
+    return workingTree; // an unparseable committed config must not crash a run
+  }
+  // Operational keys (mode, concurrency, max_attempts, columns …) still let an
+  // uncommitted edit through, so the board behaves as it displays — and so an
+  // uncommitted `mode: budget` is honored rather than auto-spending credits.
+  // A plain spread can't express the rule for EXEC_KEYS: it would let any of
+  // them that the committed config OMITS be supplied by the working tree, which
+  // is how a poisoned edit ADDING a verify_command armed the next build's Stop
+  // hook with arbitrary shell.
+  const out = { ...workingTree, ...committed };
+  for (const key of EXEC_KEYS) {
+    delete out[key];
+    if (key in committed) out[key] = committed[key];
+  }
+  return out;
+}
+
 // claude invokes the repo's command file as a slash command; codex doesn't
 // read .claude/commands, so the command body is inlined with the id filled in.
 function stagePrompt(project, vendor, stage, id) {
@@ -155,8 +206,15 @@ function skillPrompt(project, vendor, skill, id, card) {
   return body.replaceAll('$ARGUMENTS', id) + ctx;
 }
 
-function classifyFailure({ envelope, exitCode, spawnError, stderr }) {
-  if (spawnError === 'ENOENT') return { kind: 'cli_missing', detail: 'claude CLI not found on PATH' };
+function classifyFailure({ envelope, exitCode, spawnError, stderr }, cwd) {
+  if (spawnError === 'ENOENT') {
+    // spawn ENOENT is ambiguous: the CLI binary is missing, OR the cwd (the
+    // worktree) was deleted out from under the run — the runner only forwards
+    // err.code, so disambiguate here. Only a missing binary means the CLI is
+    // gone; a vanished worktree is an environment failure, not a banner.
+    if (cwd && !fs.existsSync(cwd)) return { kind: 'worktree_failed', detail: `worktree is gone: ${cwd}` };
+    return { kind: 'cli_missing', detail: 'claude CLI not found on PATH' };
+  }
   const text = `${envelope?.result || ''} ${envelope?.subtype || ''} ${stderr || ''}`;
   if (/rate.?limit|quota|credit|usage limit|exhausted|exceeded/i.test(text)) {
     return { kind: 'quota', detail: 'usage limit reached' };
@@ -215,10 +273,11 @@ export async function releaseCardResources(project, id) {
 
 export async function cascadeEpicCleanup(project, epicId) {
   const board = loadBoard(project.path); // active (non-archived) children only
-  const pending = board.cards.filter((c) => c.parent === epicId && c.status !== 'Done' && !c.epic);
-  for (const child of pending) {
+  const remaining = board.cards.filter((c) => c.parent === epicId && c.status !== 'Done' && !c.epic);
+  for (const child of remaining) {
     const childKey = runKey(project.name, child.id);
     const childLive = children.get(childKey);
+    const childPend = pending.get(childKey);
     if (childLive) {
       const run = runs.get(childKey);
       run.cancelled = true;
@@ -226,14 +285,18 @@ export async function cascadeEpicCleanup(project, epicId) {
       run.cascadeArchive = true;
       killWithEscalation(childLive);
       // cancel handler will setArchived after cleanup (cascadeArchive flag), skipping orchMove
+    } else if (childPend) {
+      // claimed but between spawns — the chain's cancel checkpoint archives it
+      childPend.cancelled = true;
+      childPend.cascadeArchive = true;
     } else {
       await releaseCardResources(project, child.id);
       await setArchived(project.path, child.id, true);
     }
   }
-  if (pending.length) {
+  if (remaining.length) {
     await appendRunLog(project.path, epicId,
-      `- ${now()} · cascade-archive: archived ${pending.length} pending child(ren)`);
+      `- ${now()} · cascade-archive: archived ${remaining.length} pending child(ren)`);
   }
 }
 
@@ -285,13 +348,22 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   // wall-clock cap: a hung agent must not hold a concurrency slot forever. On
   // expiry the child is killed (TERM → KILL backstop) and the stage's caller
   // routes the card to Needs Human (run.timedOut).
-  const timeoutMin = Number(loadConfig(project.path).stage_timeout_min) || 45;
+  const cfgTimeout = loadConfig(project.path).stage_timeout_min;
+  const n = cfgTimeout == null ? NaN : Number(cfgTimeout);
+  // 0 disables the cap; a missing/non-numeric/negative value falls back to the
+  // 45m default; clamp under the setTimeout 32-bit ceiling (~24.8 days in
+  // minutes) so a huge value doesn't overflow into a ~1ms timer that would
+  // instantly kill every run
+  const timeoutMin = n === 0 ? 0 : !Number.isFinite(n) || n < 0 ? 45 : Math.min(n, 35791);
   run.timeoutMin = timeoutMin;
-  const stageTimer = setTimeout(() => {
-    run.timedOut = true;
-    killWithEscalation(child);
-  }, timeoutMin * 60_000);
-  stageTimer.unref?.();
+  let stageTimer;
+  if (timeoutMin > 0) {
+    stageTimer = setTimeout(() => {
+      run.timedOut = true;
+      killWithEscalation(child);
+    }, timeoutMin * 60_000);
+    stageTimer.unref?.();
+  }
   return done.then((result) => {
     clearTimeout(stageTimer);
     const run = runs.get(key);
@@ -311,8 +383,9 @@ export async function humanMove(project, id, to) {
   const config = loadConfig(project.path);
   const key = runKey(project.name, id);
   const live = children.get(key);
+  const pend = pending.get(key);
 
-  if (live && to !== 'Review') {
+  if ((live || pend) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
@@ -325,9 +398,23 @@ export async function humanMove(project, id, to) {
       killWithEscalation(live);
       return { ok: true, cancelled: true };
     }
+    if (pend) {
+      // chain claimed but between spawns — nothing to SIGTERM. Flag it and let
+      // the chain's cancel checkpoint do the revert, so there is a single
+      // writer and the chain can't stomp this move by continuing.
+      pend.cancelled = true;
+      pend.revertTo = 'Review';
+      return { ok: true, cancelled: true };
+    }
     retryFindings.delete(key);
     await releaseCoordination(project, id); // a card pulled back out of the build flow drops its claim
-    await patchFrontmatter(project.path, id, { needs_human_reason: '' });
+    // discard any stale worktree (like the Planned retry path) so a re-driven
+    // card starts fresh instead of building on abandoned commits
+    if (card.data.worktree) {
+      const wtDir = config.worktree_dir || '.todomd/worktrees';
+      await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
+    }
+    await patchFrontmatter(project.path, id, { needs_human_reason: '', worktree: '', base_branch: '' });
     const result = await moveCard(project.path, id, 'Review', { reason: 'retriage' });
     if (card.data.epic) await cascadeEpicCleanup(project, id);
     return result;
@@ -434,6 +521,18 @@ export function cancel(project, id) {
   const key = runKey(project.name, id);
   const live = children.get(key);
   if (!live) {
+    // chain claimed but between spawns (pre-spawn, or post-verify/pre-merge) —
+    // nothing to SIGTERM. Flag it so the chain reverts at its next checkpoint
+    // instead of proceeding, and drop any queued re-entry so the abort sticks.
+    const pend = pending.get(key);
+    if (pend) {
+      pend.cancelled = true;
+      pend.revertTo = 'Queue';
+      const q = queues.get(project.name) || [];
+      const qi = q.indexOf(id);
+      if (qi >= 0) q.splice(qi, 1);
+      return { ok: true };
+    }
     // not running — maybe just queued
     const q = queues.get(project.name) || [];
     const qi = q.indexOf(id);
@@ -446,9 +545,10 @@ export function cancel(project, id) {
   }
   const run = runs.get(key);
   run.cancelled = true;
-  // a cancelled Verify run would revert to Build (prevStatus), which humanMove
-  // then refuses to leave — send it back to Queue so it can be re-driven
-  run.revertTo = run.stage === 'Verify' ? 'Queue' : run.prevStatus;
+  // a cancelled Verify run — or a retry Build (prevStatus Verify) — would
+  // revert to a column humanMove refuses to leave, with no run to re-drive it;
+  // send it back to Queue so the cancel handler re-enqueues it
+  run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
   killWithEscalation(live);
   return { ok: true };
 }
@@ -464,13 +564,21 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
     const run = runs.get(key);
     if (run) {
       run.cancelled = true;
-      run.revertTo = run.stage === 'Verify' ? 'Queue' : run.prevStatus;
+      run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
       // shutdown: the card parks in Queue and the next boot's reconcile
       // re-enqueues it — the verify cancel handler must not respawn a build
       // into a dying process
       run.noRequeue = true;
     }
     try { child.kill('SIGTERM'); } catch { /* already gone */ }
+  }
+  // chains claimed but between spawns have no child to kill — flag them so they
+  // park in Queue at their next checkpoint instead of spawning into a dying
+  // process
+  for (const pend of pending.values()) {
+    pend.cancelled = true;
+    pend.revertTo = 'Queue';
+    pend.noRequeue = true;
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
@@ -484,7 +592,7 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
 /* ── plan & custom trigger stages ── */
 
 async function runTriggerStage(project, id, stageName) {
-  const config = loadConfig(project.path);
+  const config = await execConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, stageName, card);
   const vendor = cardVendor(config, card, stageName);
@@ -627,13 +735,52 @@ function processQueue(project) {
   const q = queues.get(project.name) || [];
   while (q.length && (active.get(project.name) || 0) < limit) {
     const id = q.shift();
+    // claim the card synchronously (before any await) so the shift→spawn
+    // window still counts as a live run; cleared only when the WHOLE chain
+    // settles (the finally below — success: after merge + the Done move;
+    // failure: after toNeedsHuman/revert completes)
+    const key = runKey(project.name, id);
+    const entry = { cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false };
+    pending.set(key, entry);
     active.set(project.name, (active.get(project.name) || 0) + 1);
     buildChain(project, id)
       .catch((err) => pipelineError(project, id, err))
       .finally(() => {
+        // a re-enqueue (e.g. a verify-cancel at concurrency>1) may already have
+        // shifted a FRESH entry for this card — don't clear that one
+        if (pending.get(key) === entry) pending.delete(key);
         active.set(project.name, (active.get(project.name) || 0) - 1);
         processQueue(project);
       });
+  }
+}
+
+// A cancel that landed while the chain was between spawns (no live child to
+// SIGTERM) is flagged on the pending entry; chain checkpoints honor it.
+function pendingCancelled(project, id) {
+  const p = pending.get(runKey(project.name, id));
+  return p?.cancelled ? p : null;
+}
+
+// Revert for a between-spawns cancel, mirroring the spawn-path cancel handlers:
+// abandon the worktree, roll the burned attempt back (a cancel is an abort,
+// not a failed try), honor cascadeArchive, and re-drive a Queue revert unless
+// shutdown (noRequeue) or budget mode opted out.
+async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict }) {
+  await releaseCoordination(project, id);
+  await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
+  await patchFrontmatter(project.path, id, {
+    worktree: '', base_branch: '',
+    verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict || '' },
+  });
+  if (pc.cascadeArchive) {
+    await setArchived(project.path, id, true);
+    return sendState(project, id, 'idle');
+  }
+  await orchMove(project, id, pc.revertTo || 'Queue', 'cancelled');
+  sendState(project, id, 'idle');
+  if (pc.revertTo === 'Queue' && !pc.noRequeue && (config.mode || 'launcher') !== 'budget') {
+    enqueueBuild(project, id);
   }
 }
 
@@ -647,8 +794,18 @@ async function pipelineError(project, id, err) {
   } catch { /* a failed recovery must not rethrow into the same catch chain */ }
 }
 
+// A leftover worktree dir is reusable only if it's a live git worktree checked
+// out on this task's branch. A dir the user switched to another branch (or a
+// stale copy whose gitlink is broken) must be recreated, never built upon.
+async function worktreeValid(worktreeAbs, branch) {
+  const inside = await git(worktreeAbs, ['rev-parse', '--is-inside-work-tree']);
+  if (!inside.ok || inside.stdout !== 'true') return false;
+  const head = await git(worktreeAbs, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  return head.ok && head.stdout === branch;
+}
+
 async function buildChain(project, id, retry = null) {
-  const config = loadConfig(project.path);
+  const config = await execConfig(project.path);
   const card = readCard(project.path, id);
   if (!card) return;
   const key = runKey(project.name, id);
@@ -671,13 +828,28 @@ async function buildChain(project, id, retry = null) {
   const worktreeAbs = path.join(project.path, worktreeRel);
   const fromStatus = retry ? 'Verify' : 'Queue';
 
-  // worktree exists across retries; create on first attempt
+  // worktree exists across retries; create on first attempt. A leftover dir is
+  // only reusable if it's a real git worktree checked out on THIS task's branch
+  // — a user-switched or half-removed one must be recreated, not built upon.
   let forkedFrom = null;
+  if (fs.existsSync(worktreeAbs) && !(await worktreeValid(worktreeAbs, branch))) {
+    await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
+    if (fs.existsSync(worktreeAbs)) {
+      // a dir at the worktree path that isn't a registered worktree can't be
+      // git-removed — never build inside it (its git ops would hit the main
+      // checkout); refuse and let a human clear it
+      return toNeedsHuman(project, id, fromStatus, 'worktree_failed',
+        'a stale directory at the worktree path is not a git worktree and could not be removed — remove it manually, then drag the card back to Queue');
+    }
+  }
   if (!fs.existsSync(worktreeAbs)) {
     // capture the base branch BEFORE forking: the merge at the end must land on
     // this same branch — if the user switches branches mid-run, merging would
-    // silently drop verified work on the wrong branch
-    forkedFrom = await baseBranch(project.path);
+    // silently drop verified work on the wrong branch. A detached HEAD resolves
+    // to nothing → stamp the literal 'unknown' so the merge step escalates to
+    // Needs Human instead of silently skipping the guard (a MISSING base_branch
+    // stays legacy-skip for cards created before this stamping existed).
+    forkedFrom = (await baseBranch(project.path)) || 'unknown';
     const wt = await withRepoLock(project.path, () => addWorktree(project.path, worktreeAbs, branch));
     if (!wt.ok) return toNeedsHuman(project, id, fromStatus, 'worktree_failed', wt.reason);
     // make the worktree runnable: link gitignored runtime deps from the repo
@@ -735,6 +907,14 @@ async function buildChain(project, id, retry = null) {
     }
   }
 
+  // a cancel that landed while the chain was claimed-but-between-spawns (no
+  // live child to SIGTERM) is honored right before any work starts
+  const pc = pendingCancelled(project, id);
+  if (pc) {
+    return revertPendingCancel(project, id, pc,
+      { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: ver.last_verdict });
+  }
+
   const { result, run } = await spawnTracked(project, id, 'Build', fromStatus, attempt, buildOpts);
 
   if (run?.cancelled) {
@@ -743,13 +923,25 @@ async function buildChain(project, id, retry = null) {
     // abandon the worktree so the cancelled attempt's commits don't linger (and
     // the card's worktree: frontmatter isn't left stale) — a re-approval starts fresh
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
-    await patchFrontmatter(project.path, id, { worktree: '', base_branch: '' });
+    // roll the burned attempt back (like the quota park): a cancel is an
+    // abort, not a failed try — it must not count toward attempts_exhausted
+    await patchFrontmatter(project.path, id, {
+      worktree: '', base_branch: '',
+      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
+    });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
       return sendState(project, id, 'idle');
     }
     await orchMove(project, id, run.revertTo, 'cancelled');
-    return sendState(project, id, 'idle');
+    sendState(project, id, 'idle');
+    // same re-drive as the Verify cancel below: a cancel that reverts to Queue
+    // (a plain Build cancel, or a retry-Build cancel) re-enqueues through the
+    // normal queue so the card resumes on its own; killAllChildren opts out
+    if (run.revertTo === 'Queue' && !run.noRequeue && (config.mode || 'launcher') !== 'budget') {
+      enqueueBuild(project, id);
+    }
+    return;
   }
   if (run?.timedOut) {
     await recordRun(project, id, 'Build', attempt, result, 'run timeout');
@@ -758,7 +950,7 @@ async function buildChain(project, id, retry = null) {
   }
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (!ok) {
-    const failure = classifyFailure(result);
+    const failure = classifyFailure(result, worktreeAbs);
     await recordRun(project, id, 'Build', attempt, result, `failed: ${failure.kind}`);
     if (failure.kind === 'quota') {
       // park back in Queue (attempt rolled back); resume re-enqueues it
@@ -776,10 +968,18 @@ async function buildChain(project, id, retry = null) {
 }
 
 async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
-  const config = loadConfig(project.path);
+  const config = await execConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, 'Verify', card);
   const vendor = cardVendor(config, card, 'Verify');
+
+  // same between-spawns cancel window as buildChain (build done, verify not
+  // yet spawned) — honor it before spawning
+  const pc = pendingCancelled(project, id);
+  if (pc) {
+    return revertPendingCancel(project, id, pc,
+      { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: card?.data?.verification?.last_verdict });
+  }
 
   const { result, run } = await spawnTracked(project, id, 'Verify', 'Build', attempt, {
     vendor,
@@ -796,7 +996,12 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     await releaseCoordination(project, id);
     // abandon the worktree (see Build cancel) so nothing stale is left behind
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
-    await patchFrontmatter(project.path, id, { worktree: '', base_branch: '' });
+    // roll the burned attempt back (like the quota park): a cancel is an
+    // abort, not a failed try — it must not count toward attempts_exhausted
+    await patchFrontmatter(project.path, id, {
+      worktree: '', base_branch: '',
+      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: card?.data?.verification?.last_verdict || '' },
+    });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
       return sendState(project, id, 'idle');
@@ -819,7 +1024,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
   const verdict = result.envelope?.structured_output;
   if (!result.envelope || result.envelope.is_error || !verdict || !verdict.verdict) {
-    const failure = classifyFailure(result);
+    const failure = classifyFailure(result, worktreeAbs);
     if (failure.kind === 'quota') {
       // park back in Queue; resume re-enters the build→verify chain (the
       // existing worktree is reused). Attempt rolled back so none is burned.
@@ -830,8 +1035,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · malformed verdict, re-running once`);
       return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, true, priorFindings);
     }
-    await recordRun(project, id, 'Verify', attempt, result, 'failed: bad_verdict');
-    return toNeedsHuman(project, id, 'Verify', 'bad_verdict', result.stderr);
+    // a genuinely malformed verdict is bad_verdict; a spawn-level failure
+    // (e.g. worktree_failed on a deleted cwd) keeps its own kind
+    const reason = failure.kind === 'agent' ? 'bad_verdict' : failure.kind;
+    await recordRun(project, id, 'Verify', attempt, result, `failed: ${reason}`);
+    return toNeedsHuman(project, id, 'Verify', reason, result.stderr);
   }
 
   const unmet = (verdict.criteria || []).filter((c) => !c.met).map((c) => c.criterion);
@@ -842,6 +1050,13 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   });
 
   if (verdict.verdict === 'pass') {
+    // last between-spawns window: a cancel flagged post-verify/pre-merge aborts
+    // the merge too — the card reverts instead of landing Done under a cancel
+    const pc2 = pendingCancelled(project, id);
+    if (pc2) {
+      return revertPendingCancel(project, id, pc2,
+        { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: card?.data?.verification?.last_verdict });
+    }
     // §3.4: board tampering guard, then merge
     if (await branchTouchesBoard(project.path, branch)) {
       return toNeedsHuman(project, id, 'Verify', 'board_tampering', 'task branch modifies .todomd/');
@@ -855,7 +1070,14 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     // base-branch guard: only merge onto the branch this run forked from. The
     // user may have switched branches mid-run — merging now would silently land
     // the work on the wrong branch. Route to Needs Human and KEEP the worktree.
+    // 'unknown' (stamped when the fork happened on a detached HEAD) always
+    // escalates; a MISSING base_branch is a pre-hardening card → legacy skip.
     const forkedFrom = card.data.base_branch;
+    if (forkedFrom === 'unknown') {
+      return toNeedsHuman(project, id, 'Verify', 'base_branch_unknown',
+        'this run forked from a detached HEAD, so the merge target is unknown. ' +
+        'Check out the intended branch, then drag the card back to Planned to retry.');
+    }
     const head = await currentBranch(project.path);
     if (forkedFrom && head !== forkedFrom) {
       return toNeedsHuman(project, id, 'Verify', 'base_branch_moved',
@@ -864,6 +1086,13 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     }
     const merged = await withRepoLock(project.path, () => mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`));
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
+    // A merge that "succeeds" without the branch landing (git reports "Already
+    // up to date" while the branch is NOT an ancestor — e.g. a messed-up
+    // merge-base) must never mark the card Done: nothing actually merged.
+    if (!(await git(project.path, ['merge-base', '--is-ancestor', branch, 'HEAD'])).ok) {
+      return toNeedsHuman(project, id, 'Verify', 'merge_noop',
+        'merge reported success but the task branch is not an ancestor of HEAD — nothing merged. Work is preserved on the branch.');
+    }
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
     await patchFrontmatter(project.path, id, { worktree: '', base_branch: '' });
     await releaseCoordination(project, id);
@@ -910,7 +1139,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 const triaging = new Set(); // synchronous claim — closes the check-then-spawn gap
 
 export async function maybeTriage(project, id) {
-  const config = loadConfig(project.path);
+  const config = await execConfig(project.path);
   const t = config.triage || {};
   if (t.enabled === false) return;
   if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
@@ -944,9 +1173,12 @@ async function runTriage(project, id, config, t, vendor) {
   }
 
   // triage auto-fires on cards that may arrive from outside the UI (git pull,
-  // email). It runs in the main checkout, so confine its writes to the board:
-  // a poisoned card can't make it edit source via prompt injection.
-  //  - claude: allowedTools paren-scoping restricts Edit to the cards dir.
+  // email). It runs in the main checkout, so confine its writes to the board
+  // AND its reads to the repo: a poisoned card can't make it edit source via
+  // prompt injection, or exfiltrate ~/.ssh / ~/.aws / a repo .env into a card
+  // that then gets auto-committed.
+  //  - claude: allowedTools paren-scoping restricts Read to the repo and Edit
+  //    to the cards dir.
   //  - codex: its CLI has no allowedTools scoping (the runner never passes the
   //    list) — its confinement is `--sandbox workspace-write`, which keys the
   //    writable workspace on the cwd (reads stay repo-wide). So run codex
@@ -960,7 +1192,7 @@ async function runTriage(project, id, config, t, vendor) {
     prompt: codexTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
     model: t.model,
     maxTurns: t.max_turns || 15,
-    allowedTools: ['Read', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'], // claude-only; codex ignores this
+    allowedTools: ['Read(./**)', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'], // claude-only; codex ignores this
     logFile: runLogFile(project, id, 'Triage'),
   });
 
@@ -992,6 +1224,15 @@ export function triageSweep(project) {
   try {
     const board = loadBoard(project.path);
     for (const card of board.cards) {
+      // an unparseable card can't be read or triaged — surface it once per file
+      // (setBanner dedupes on the key) instead of burning a triage run every
+      // sweep. `unparseable` is the board-payload flag; the title shape covers
+      // a board.js that predates it.
+      if (card.unparseable || String(card.title || '').startsWith('(unparseable)')) {
+        setBanner(`unparseable:${project.name}:${card.file}`, 'error',
+          `${project.name}: ${card.file} could not be parsed — fix or remove the card file`);
+        continue;
+      }
       if (card.status === 'Review' && card.id && !card.triaged && !card.skill) {
         maybeTriage(project, card.id).catch(() => {});
       }
@@ -1043,9 +1284,31 @@ export async function reconcileOnBoot() {
       const board = loadBoard(project.path);
       for (const card of board.cards) {
         if (IN_FLIGHT.has(card.status) && !children.has(runKey(project.name, card.id))) {
-          await toNeedsHuman(project, card.id, card.status, 'orphaned_run', 'server restarted during a run');
-          // a fresh retry must not build on the abandoned worktree's rejected commits
-          await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, card.id), `${branchPrefix}${card.id}`));
+          // an orphaned Build|Verify card may hold real work on its branch —
+          // never delete unmerged work. If the branch already landed (crash
+          // between merge and the Done move), the work is safe: the card goes
+          // straight to Done and the leftovers are cleaned up.
+          const branch = `${branchPrefix}${card.id}`;
+          const wtAbs = path.join(project.path, wtDir, card.id);
+          const buildish = card.status === 'Build' || card.status === 'Verify';
+          const landed = buildish &&
+            (await git(project.path, ['merge-base', '--is-ancestor', branch, 'HEAD'])).ok;
+          if (landed) {
+            await withRepoLock(project.path, () => removeWorktree(project.path, wtAbs, branch));
+            await patchFrontmatter(project.path, card.id, { worktree: '', base_branch: '' });
+            await releaseCoordination(project, card.id);
+            await orchMove(project, card.id, 'Done', 'orphaned run; work already merged');
+          } else {
+            await toNeedsHuman(project, card.id, card.status, 'orphaned_run',
+              buildish
+                ? 'server restarted during a run — unmerged work is PRESERVED in the worktree/branch'
+                : 'server restarted during a run');
+            // a Plan-stage orphan has no work to preserve; a fresh retry must
+            // not build on the abandoned worktree's rejected commits
+            if (!buildish) {
+              await withRepoLock(project.path, () => removeWorktree(project.path, wtAbs, branch));
+            }
+          }
         }
         // interrupted triage, OR a triage that failed on a TRANSIENT problem
         // (claude not on PATH, a usage limit, an auth blip) — clear the stamp so
@@ -1123,7 +1386,10 @@ export function getRunStates(projectName) {
 }
 
 export function hasLiveRun(projectName, id) {
-  return children.has(runKey(projectName, id));
+  const key = runKey(projectName, id);
+  // children covers spawned runs; pending covers a claimed chain between
+  // spawns (shift→spawn, build→verify, verify→merge) — both mean "hands off"
+  return children.has(key) || pending.has(key);
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -1137,6 +1403,7 @@ export function hasLiveBuildingChild(project, epicId) {
 export function projectHasLiveRun(projectName) {
   const prefix = `${projectName}:`;
   for (const key of children.keys()) if (key.startsWith(prefix)) return true;
+  for (const key of pending.keys()) if (key.startsWith(prefix)) return true;
   return false;
 }
 
@@ -1147,6 +1414,7 @@ export function forgetProject(projectName) {
   quotaPaused.delete(projectName);
   const prefix = `${projectName}:`;
   for (const k of retryFindings.keys()) if (k.startsWith(prefix)) retryFindings.delete(k);
+  for (const k of pending.keys()) if (k.startsWith(prefix)) pending.delete(k);
 }
 
 export function usage(projectName) {

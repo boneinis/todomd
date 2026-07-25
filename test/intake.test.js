@@ -166,3 +166,8 @@ test('saveBoardIntake / publicIntake: round-trip, blank password keeps the saved
   saveBoardIntake('repo-a', { host: '', user: '' });
   assert.equal(publicIntake('repo-a').configured, false);
 });
+
+test('emailToCardFields replaces subject control chars with spaces', () => {
+  const f = emailToCardFields({ subject: 'login\x07 broke\x1fhere', text: 'x' });
+  assert.equal(f.title, 'login broke here');
+});

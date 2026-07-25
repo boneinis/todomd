@@ -11,15 +11,40 @@
 //   FAKE_MAXTURNS=1         — emit an error_max_turns envelope
 //   FAKE_HANG=1|<stage>     — hang a stage until SIGTERM (1 = build; once per
 //                             FAKE_HANG_MARKER so a re-driven run proceeds)
+//   FAKE_HANG_ON=N + FAKE_HANG_COUNTER=<path> — hang only the Nth matching
+//                             stage run (counted via the counter file), e.g. a
+//                             retry build; takes precedence over the marker
 //   FAKE_IGNORE_TERM=1      — while hanging, ignore SIGTERM (forces a SIGKILL)
+//   FAKE_RM_WORKTREE=1      — build deletes its own worktree cwd before
+//                             exiting, so the NEXT stage's spawn hits ENOENT
+//                             on the cwd (not on the binary)
 //   FAKE_SWITCH_REPO/FAKE_SWITCH_BRANCH — on verify, checkout -b this branch in
 //                             the given repo (simulates the user switching
 //                             branches mid-run before the merge)
+//   FAKE_ARGV_LOG=<path>   — append each invocation's full argv (JSON lines),
+//                             so a test can assert what the runner passed
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const argv = process.argv.slice(2);
+if (process.env.FAKE_ARGV_LOG) {
+  fs.appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(argv) + '\n');
+}
+// record the permission bits of the --settings file (the runner deletes it as
+// soon as the run ends, so only the child can see them)
+if (process.env.FAKE_STAT_SETTINGS) {
+  const i = argv.indexOf('--settings');
+  let mode = 'none';
+  try { if (i >= 0) mode = (fs.statSync(argv[i + 1]).mode & 0o777).toString(8); } catch { mode = 'unreadable'; }
+  fs.writeFileSync(process.env.FAKE_STAT_SETTINGS, mode);
+}
+// copy out the --settings CONTENT (the Stop hook command the run was armed
+// with) — same reason: the runner deletes the file when the run ends
+if (process.env.FAKE_DUMP_SETTINGS) {
+  const i = argv.indexOf('--settings');
+  try { fs.writeFileSync(process.env.FAKE_DUMP_SETTINGS, i >= 0 ? fs.readFileSync(argv[i + 1], 'utf8') : '(no --settings)'); } catch {}
+}
 const prompt = argv.find((a) => !a.startsWith('-') && a !== '-p') || '';
 const has = (f) => argv.includes(f);
 const cwd = process.cwd();
@@ -64,18 +89,28 @@ if (process.env.FAKE_MODE === 'parsing') {
   process.exit(0);
 }
 
-const stage = prompt.includes('plan') ? 'plan'
+const stage = has('--resume') ? 'build' // only retry builds resume a session
+  : prompt.includes('plan') ? 'plan'
   : prompt.includes('build') ? 'build'
   : prompt.includes('verify') ? 'verify' : 'other';
 
 // ── hang a stage until SIGTERM, so a test can cancel/timeout a LIVE run ──
 // FAKE_HANG=1 hangs the build (legacy); FAKE_HANG=<stage> hangs that stage.
 // With FAKE_HANG_MARKER set it hangs only ONCE (the marker records the first
-// hang), so a re-driven run proceeds normally. The hang is terminal: the stage
+// hang), so a re-driven run proceeds normally. With FAKE_HANG_ON=N it hangs
+// only the Nth matching run (counted via FAKE_HANG_COUNTER) — e.g. hang the
+// RETRY build while the first build proceeds. The hang is terminal: the stage
 // dispatch below is an else-chain so a hanging run never falls through and
 // completes on its own.
 const hangStage = process.env.FAKE_HANG === '1' ? 'build' : process.env.FAKE_HANG;
-if (hangStage && stage === hangStage &&
+let hangNow = hangStage && stage === hangStage;
+if (hangNow && process.env.FAKE_HANG_ON) {
+  const cf = process.env.FAKE_HANG_COUNTER;
+  const n = (cf && fs.existsSync(cf) ? Number(fs.readFileSync(cf, 'utf8')) || 0 : 0) + 1;
+  if (cf) fs.writeFileSync(cf, String(n));
+  hangNow = n === Number(process.env.FAKE_HANG_ON);
+}
+if (hangNow &&
     !(process.env.FAKE_HANG_MARKER && fs.existsSync(process.env.FAKE_HANG_MARKER))) {
   if (process.env.FAKE_HANG_MARKER) fs.writeFileSync(process.env.FAKE_HANG_MARKER, '1');
   if (process.env.FAKE_IGNORE_TERM) process.on('SIGTERM', () => {}); // stubborn child — only SIGKILL stops it
@@ -112,6 +147,9 @@ if (hangStage && stage === hangStage &&
     execFileSync('git', ['add', '-A'], { cwd });
     execFileSync('git', ['commit', '-qm', `${taskId}: add prod`], { cwd });
   }
+  // delete the worktree from under the run: the NEXT stage (verify) then fails
+  // to spawn with ENOENT on its cwd — distinct from a missing CLI binary
+  if (process.env.FAKE_RM_WORKTREE) fs.rmSync(cwd, { recursive: true, force: true });
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
   process.exit(0);
 } else if (stage === 'verify') {

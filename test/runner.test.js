@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runStage } from '../src/runner.js';
+import { tmp } from './helpers.js';
+import { runStage, stopHookSettings } from '../src/runner.js';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-agent.js');
 
@@ -31,6 +33,37 @@ test('spawn error (missing binary) reports spawnError, not a crash', async () =>
   delete process.env.TODOMD_CLAUDE_BIN;
   assert.equal(r.envelope, null);
   assert.ok(r.spawnError);
+});
+
+// the jsonl tee is telemetry: an unwritable path (full disk, read-only mount,
+// a stray FILE where the runs dir should be) must not take the server down —
+// without an 'error' listener a stream error is an uncaught exception
+test('an unwritable jsonl log path does not kill the run (or the process)', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  const blocker = path.join(tmp('logdir'), 'not-a-dir');
+  fs.writeFileSync(blocker, 'i am a file');
+  const { done } = runStage({
+    cwd: process.cwd(), prompt: 'anything', logFile: path.join(blocker, 'run.jsonl'),
+  });
+  const { envelope, exitCode } = await done;
+  delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN;
+  assert.equal(exitCode, 0);
+  assert.equal(envelope?.subtype, 'success', 'the run completes; only the transcript is lost');
+});
+
+test('the Stop-hook settings file is written 0600 (it carries a shell command)', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX permission bits');
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  const modeFile = path.join(tmp('settings'), 'mode');
+  process.env.FAKE_STAT_SETTINGS = modeFile;
+  const { done } = runStage({
+    cwd: process.cwd(), prompt: 'anything', settings: stopHookSettings('npm test'),
+  });
+  await done;
+  delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_STAT_SETTINGS;
+  assert.equal(fs.readFileSync(modeFile, 'utf8'), '600', 'world-readable /tmp must not expose the hook command');
 });
 
 test('buffered mode (--json-schema) returns structured_output', async () => {

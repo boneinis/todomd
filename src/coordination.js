@@ -1,4 +1,5 @@
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 import { git, commitPaths } from './git.js';
 import { withRepoLock } from './board.js';
@@ -109,15 +110,22 @@ async function pushActive(repoPath) {
   await git(repoPath, ['push', '--quiet', 'origin', `HEAD:${branch}`]); // best effort
 }
 
+// Crash-safe manifest write, same tmp+rename pattern board.js uses for cards:
+// a crash mid-write leaves a .tmp behind instead of a truncated ACTIVE.md.
+function writeFileAtomic(file, content) {
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, content);
+  fs.renameSync(tmp, file);
+}
+
 // Atomically (under the repo lock) re-read the local manifest, apply `mutate`,
 // write, and commit — so concurrent claims/releases and board commits can't race
 // the file or the git index. Returns whether a commit was made (for push).
 async function commitManifest(repoPath, mutate, message) {
-  const fs = await import('node:fs');
   return withRepoLock(repoPath, async () => {
     const current = await readLocal(repoPath);
     const next = mutate(current);
-    fs.writeFileSync(path.join(repoPath, ACTIVE_REL), renderActive(next));
+    writeFileAtomic(path.join(repoPath, ACTIVE_REL), renderActive(next));
     return commitPaths(repoPath, [ACTIVE_REL], message);
   });
 }

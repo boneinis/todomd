@@ -31,13 +31,17 @@ export async function currentBranch(repoPath) {
   return res.ok && res.stdout && res.stdout !== 'HEAD' ? res.stdout : null;
 }
 
-// The repo's base branch: origin/HEAD ("origin/main" → "main") when the repo
-// has an origin remote, else the branch checked out right now (a local-only
-// repo merges back into whatever the worktree forked from).
+// The repo's base branch: the branch checked out right now. Worktrees fork
+// from HEAD, so HEAD-at-fork is the truth about where a task branch must merge
+// back — preferring origin/HEAD false-fires on repos where the user works on a
+// non-default branch. origin/HEAD is only the fallback for a detached HEAD
+// (e.g. a CI checkout); null when neither resolves (detached, no origin).
 export async function baseBranch(repoPath) {
+  const cur = await currentBranch(repoPath);
+  if (cur) return cur;
   const res = await git(repoPath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   if (res.ok && res.stdout) return res.stdout.replace(/^origin\//, '');
-  return currentBranch(repoPath);
+  return null;
 }
 
 export async function addWorktree(repoPath, worktreePath, branch) {

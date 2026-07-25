@@ -88,6 +88,7 @@ async function loadBoard() {
     return;
   }
   boardData = await api(`board?project=${encodeURIComponent(currentProject)}${showArchived ? '&archived=1' : ''}`);
+  (boardData.cards || []).forEach(normalizeCardLists);
   runStates = boardData.runStates || {};
   renderBanners(boardData.banners || []);
   const usage = boardData.usage || {};
@@ -191,8 +192,8 @@ function renderBoard() {
     const cards = boardData.cards.filter(
       (c) => c.status === col &&
         (showArchived ? c.archived : true) && // archived view shows only archived cards
-        (!mine || (c.assignee || '').toLowerCase() === mine) &&
-        (!filter || `${c.id} ${c.title} ${(c.labels || []).join(' ')} ${c.assignee || ''}`.toLowerCase().includes(filter))
+        (!mine || String(c.assignee || '').toLowerCase() === mine) &&
+        (!filter || `${c.id} ${c.title} ${asList(c.labels).join(' ')} ${String(c.assignee || '')}`.toLowerCase().includes(filter))
     );
     const colEl = document.createElement('section');
     colEl.className = 'column';
@@ -217,6 +218,21 @@ function renderBoard() {
   }
 }
 
+// hand-edited cards can make labels a YAML mapping or a bare string — coerce
+// to a list of strings so no card shape can throw and abort the whole render
+const asList = (x) => (Array.isArray(x) ? x : x ? [x] : []).map(String);
+// The board is markdown files people edit by hand, and chunk cards are written
+// by an agent — so EVERY list field can arrive as a scalar, a mapping, or
+// missing. Normalize once, where card data enters, rather than at each use
+// site: coercing per-site is how a scalar `dependencies:` reached
+// `.some(...)` inside the board render and blanked the entire board.
+const LIST_FIELDS = ['labels', 'dependencies', 'children'];
+function normalizeCardLists(card) {
+  const target = card?.data || card; // /api/board cards are flat; /api/cards/:id nests under .data
+  if (!target) return card;
+  for (const f of LIST_FIELDS) if (f in target) target[f] = asList(target[f]);
+  return card;
+}
 // label pills: a stable hue per label text (chip-c0..chip-c5 in the stylesheet)
 function labelHue(s) {
   let h = 0;
@@ -244,15 +260,18 @@ function renderCard(card, color, i) {
   // label pills — a needs-human flag replaces them with a warning pill
   const chips = el.querySelector('.card-chips');
   if (card.needs_human_reason) {
-    chips.innerHTML = `<span class="chip chip-warn">⚠ ${esc(card.needs_human_reason)}</span>`;
+    chips.innerHTML = `<span class="chip chip-warn">⚠ ${esc(String(card.needs_human_reason))}</span>`;
   } else {
     const pills = [];
-    if (card.type) pills.push(`<span class="chip chip-type">${esc(card.type)}</span>`);
-    for (const l of card.labels || []) pills.push(`<span class="chip chip-c${labelHue(l)}">${esc(l)}</span>`);
+    if (card.type) pills.push(`<span class="chip chip-type">${esc(String(card.type))}</span>`);
+    for (const l of asList(card.labels)) pills.push(`<span class="chip chip-c${labelHue(l)}">${esc(l)}</span>`);
     chips.innerHTML = pills.join('');
   }
   const av = el.querySelector('.card-assignee');
-  if (card.assignee) { av.textContent = initials(card.assignee); av.title = `@${card.assignee}`; }
+  if (card.assignee) {
+    const who = String(card.assignee);
+    av.textContent = initials(who); av.title = `@${who}`;
+  }
   const crit = el.querySelector('.card-criteria');
   if (card.criteria) {
     crit.textContent = `☑ ${card.criteria.done}/${card.criteria.total}`;
@@ -265,7 +284,9 @@ function renderCard(card, color, i) {
     const done = kids.filter((c) => c.status === 'Done').length;
     rel.textContent = `⊞ epic ${done}/${kids.length}`;
   } else if (card.parent) {
-    const blocked = (card.dependencies || []).some((d) => boardData.cards.find((c) => c.id === d)?.status !== 'Done');
+    // asList, not `|| []`: a scalar `dependencies:` throws here, and this runs
+    // inside the board render — one hand-edited card would blank the WHOLE board
+    const blocked = asList(card.dependencies).some((d) => boardData.cards.find((c) => c.id === d)?.status !== 'Done');
     rel.textContent = blocked ? '⊞ chunk 🔒' : '⊞ chunk';
     if (blocked) rel.classList.add('blocked');
   }
@@ -336,25 +357,31 @@ async function openDrawer(id) {
   $('#drawer-run').hidden = true;
   $('#drawer-cancel').hidden = !runStates[id];
   backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
-  const card = await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`);
+  const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
   $('#drawer-id').textContent = card.data.id;
   $('#drawer-title').textContent = card.data.title;
   $('#drawer-meta').innerHTML = [
     ['status', card.data.status], ['type', card.data.type], ['priority', card.data.priority],
     ['agent', card.data.agent], ['source', card.data.source],
-    ['labels', (card.data.labels || []).join(', ') || null],
+    // asList, not `|| []`: a hand-edited/agent-written card can make labels a
+    // bare string or a mapping, and .join on that throws — which aborts
+    // openDrawer entirely, leaving the card silently un-openable (no drawer, so
+    // no way to read it, answer its question, or delete it)
+    ['labels', asList(card.data.labels).join(', ') || null],
   ].filter(([, v]) => v).map(([k, v]) => `<span class="meta-chip">${esc(k)} <b>${esc(String(v))}</b></span>`).join('');
   // relationship section: epic → children, chunk → parent + deps
   const relEl = $('#drawer-rel');
   if (card.data.epic) {
-    const children = card.data.children || [];
+    // same coercion as labels: a scalar `children:` survives the .length check
+    // and then throws on .map, taking the whole drawer with it
+    const children = asList(card.data.children);
     const chipsHtml = children.length
       ? children.map((cid) => relChip(cid, cid)).join('')
       : '<span class="rel-empty">no chunks</span>';
     relEl.innerHTML = `<span class="rel-label">chunks</span>${chipsHtml}`;
     relEl.hidden = false;
   } else if (card.data.parent) {
-    const deps = card.data.dependencies || [];
+    const deps = asList(card.data.dependencies);
     const depsHtml = deps.length
       ? `<span class="rel-label">depends on</span>${deps.map(depChip).join('')}`
       : '';

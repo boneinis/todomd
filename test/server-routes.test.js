@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +7,12 @@ import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, 
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
 import * as pipeline from '../src/pipeline.js';
+
+// The epic-delete test drives a build that hangs until it's signalled. A live
+// agent child is a ref'd handle — one left behind (cancel path missed, an early
+// assertion failure) keeps this process alive forever, stalling the suite with
+// no failing test to point at. Sweep at the end.
+after(async () => { try { await pipeline.killAllChildren({ graceMs: 1000 }); } catch { /* best effort */ } });
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -343,4 +349,57 @@ test('API DELETE epic with a building child returns 400', async () => {
     srv.close();
     clearFakeAgent();
   }
+});
+
+test('API runlog + models require full access: an authed viewer gets 403, never 401', async () => {
+  isolateHome();
+  const { base, srv, q } = await boot();
+  const viewer = deviceToken('token-viewer');
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    let r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: h, body: '{"title":"runlog gate"}' });
+    const { id } = await r.json();
+    // The raw run stream can carry command output — viewer denied, full 200.
+    // It must be 403: the UI turns ANY 401 into "session expired — restart
+    // todomd", so a 401 here nags every viewer on the default QR link each
+    // time they open a card drawer. 401 is reserved for a bad/absent token.
+    r = await fetch(`${base}/api/cards/${id}/runlog${q}`, { headers: { 'x-todomd-token': viewer } });
+    assert.equal(r.status, 403, 'authenticated-but-not-permitted is 403, not 401');
+    r = await fetch(`${base}/api/cards/${id}/runlog${q}`, { headers: { 'x-todomd-token': srv.token } });
+    assert.equal(r.status, 200);
+    // /api/models spawns blocking CLI probes — viewers can't reach it
+    r = await fetch(`${base}/api/models${q}&agent=claude`, { headers: { 'x-todomd-token': viewer } });
+    assert.equal(r.status, 403);
+    // a genuinely bad token still gets 401 (that IS the session-expired signal)
+    r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': 'deadbeef'.repeat(4) } });
+    assert.equal(r.status, 401);
+  } finally { srv.close(); }
+});
+
+test('API attachment uploads are capped: the 5th concurrent upload gets a 429', async () => {
+  isolateHome();
+  const { base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, origin: base, 'x-filename': 'f.txt' };
+  try {
+    let r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: '{"title":"cap me"}' });
+    const { id } = await r.json();
+    // 4 uploads whose bodies stay open until released → all upload slots held
+    const controllers = [];
+    const pending = [];
+    for (let i = 0; i < 4; i++) {
+      const body = new ReadableStream({
+        start(c) { c.enqueue(new TextEncoder().encode('x')); controllers.push(c); },
+      });
+      pending.push(fetch(`${base}/api/cards/${id}/attach${q}`, { method: 'POST', headers: h, body, duplex: 'half' }));
+    }
+    await new Promise((res) => setTimeout(res, 500)); // let the four register in-flight
+    const fifth = await fetch(`${base}/api/cards/${id}/attach${q}`, { method: 'POST', headers: h, body: 'x' });
+    assert.equal(fifth.status, 429);
+    assert.match((await fifth.json()).error, /too many concurrent uploads/);
+    // release the four; slots free up and a fresh upload is accepted again
+    for (const c of controllers) c.close();
+    await Promise.all(pending);
+    r = await fetch(`${base}/api/cards/${id}/attach${q}`, { method: 'POST', headers: h, body: 'after' });
+    assert.equal(r.status, 200);
+  } finally { srv.close(); }
 });

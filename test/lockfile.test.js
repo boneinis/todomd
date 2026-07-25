@@ -107,3 +107,32 @@ test('owner format matches the dispatch shell protocol: "<epoch-seconds> <who> <
   assert.equal(nonce, a.nonce, 'third field is the acquisition nonce');
   releaseFileLock(a.dir, a.nonce);
 });
+
+test('an EMPTY owner file (partial write → NaN ts) with a stale dir mtime is stolen', async () => {
+  const repo = repoWithTodomd();
+  const lock = path.join(repo, '.todomd', '.lock');
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, 'owner'), ''); // crashed mid owner-write
+  const old = new Date(Date.now() - 400_000); // > 300s STALE_SEC
+  fs.utimesSync(lock, old, old);
+  // the NaN timestamp must fall back to the dir mtime, like a missing owner —
+  // not sit unstealable forever
+  const a = await acquireFileLock(repo);
+  const owner = fs.readFileSync(path.join(lock, 'owner'), 'utf8');
+  assert.ok(owner.trim().length > 0, 'fresh owner written after the steal');
+  releaseFileLock(a.dir, a.nonce);
+});
+
+test('an empty owner file with a FRESH dir mtime is not stolen (holder mid-write)', async () => {
+  const repo = repoWithTodomd();
+  const lock = path.join(repo, '.todomd', '.lock');
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, 'owner'), ''); // mtime is now — could be mid-creation
+  let got = false;
+  const waiter = acquireFileLock(repo).then((r) => { got = true; return r; });
+  await sleep(300); // a few poll cycles
+  assert.equal(got, false, 'fresh partial owner still reads as mid-creation');
+  releaseFileLock(lock, null); // simulate the holder finishing/cleaning up
+  const a = await waiter;
+  releaseFileLock(a.dir, a.nonce);
+});

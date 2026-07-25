@@ -115,6 +115,7 @@ test('unparseable card is surfaced, not fatal', () => {
   fs.writeFileSync(file, `---\ntitle: "unterminated\nstatus: Review\n---\nbody\n`);
   const { cards } = loadBoard(repo);
   assert.match(cards[0].title, /unparseable/);
+  assert.equal(cards[0].unparseable, true, 'flagged so the pipeline can skip it');
   // readCard on the SAME malformed string AFTER loadBoard already parsed it must
   // still surface a parseError — gray-matter caches an empty result even after
   // the first parse threw, which would otherwise make readCard silently return
@@ -533,4 +534,104 @@ test('upgrade-commands sequence: no custom region on brand-new install → no em
 
   // The upgrade condition is false — no writeCommandCustom call
   assert.ok(!(existing.hasRegion || existing.custom), 'should skip re-injection for new installs');
+});
+
+test('createCard sanitizes frontmatter scalars: newliney type/labels cannot inject keys', async () => {
+  const repo = makeRepo();
+  const r = await createCard(repo, {
+    title: 'scalar injection',
+    type: 'feature\nstatus: Done',
+    priority: 'high\nassignee: mallory',
+    labels: ['ui\nstatus: Done', 'ok-label'],
+    source: 'email\narchived: true',
+  });
+  assert.equal(r.ok, true);
+  const card = readCard(repo, r.id);
+  assert.ok(!card.parseError, 'frontmatter still parses');
+  assert.equal(card.data.status, 'Review', 'no status injection through type/labels');
+  assert.notEqual(card.data.assignee, 'mallory', 'no assignee injection through priority');
+  assert.ok(!card.data.archived, 'no archived injection through source');
+  assert.ok(!/[\r\n]/.test(card.data.type), 'type is a single-line scalar');
+  assert.deepEqual(card.data.labels, ['ui status Done', 'ok-label']);
+});
+
+// Blocking key injection isn't enough: a scalar that merely fails to PARSE
+// writes a card nothing can read, so the run is wasted anyway. Chunk cards take
+// their title/type from the Plan agent's yaml, so these shapes are reachable.
+test('createCard: scalars that would break the YAML parse are neutralized, not just key injection', async () => {
+  const repo = makeRepo();
+  for (const [label, fields] of [
+    ['leading dash in title', { title: '- write the parser' }],
+    ['leading dash in type', { title: 'dash type', type: '- feature' }],
+    ['control chars in title', { title: 'bell\x07 and nul\x00 here' }],
+    ['anchor in type', { title: 'anchor type', type: '*ref' }],
+    ['doc marker in title', { title: '--- not a new document' }],
+  ]) {
+    const r = await createCard(repo, fields);
+    assert.equal(r.ok, true, `${label}: created`);
+    const card = readCard(repo, r.id);
+    assert.ok(!card.parseError, `${label}: card must still parse`);
+    assert.equal(card.data.status, 'Review', `${label}: no status injection`);
+    assert.ok(card.data.title && !/^[-?]/.test(String(card.data.title)), `${label}: title is a clean scalar`);
+    // and the board can actually load it — not surfaced as "(unparseable)"
+    const onBoard = loadBoard(repo).cards.find((c) => c.id === r.id);
+    assert.ok(onBoard && !onBoard.unparseable, `${label}: loads as a real card`);
+  }
+});
+
+// Every reader does `(card.dependencies || []).filter(...)`. A scalar there
+// throws and takes down whatever is iterating — advanceEpicChildren strands the
+// epic, and the board payload blanked the whole UI (one bad card, no board).
+test('loadBoard coerces scalar list fields so no reader can throw on them', () => {
+  const repo = makeRepo();
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0001-scalars.md'),
+    '---\nid: task-0001\ntitle: hand-edited scalars\nstatus: Review\n' +
+    'labels: ui\ndependencies: task-0002\nchildren: task-0003\n---\n\n## Description\n\nx\n');
+  const card = loadBoard(repo).cards.find((c) => c.id === 'task-0001');
+  assert.deepEqual(card.labels, ['ui']);
+  assert.deepEqual(card.dependencies, ['task-0002']);
+  assert.deepEqual(card.children, ['task-0003']);
+  // the shapes every reader actually calls
+  assert.doesNotThrow(() => card.dependencies.filter(Boolean));
+  assert.doesNotThrow(() => card.labels.join(' '));
+  assert.doesNotThrow(() => card.children.map(String));
+  // a mapping degrades to a string rather than throwing
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0004-mapping.md'),
+    '---\nid: task-0004\ntitle: mapping labels\nstatus: Review\nlabels: {a: 1}\n---\n\n## Description\n\nx\n');
+  const mapped = loadBoard(repo).cards.find((c) => c.id === 'task-0004');
+  assert.ok(Array.isArray(mapped.labels) && mapped.labels.length === 1, 'mapping becomes a one-item list');
+  // absent stays absent (the field is only added when present)
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0005-none.md'),
+    '---\nid: task-0005\ntitle: no lists\nstatus: Review\n---\n\n## Description\n\nx\n');
+  const bare = loadBoard(repo).cards.find((c) => c.id === 'task-0005');
+  assert.equal(bare.labels, undefined);
+});
+
+test('createCard tolerates scalar labels/criteria/dependencies from an agent chunk block', async () => {
+  const repo = makeRepo();
+  // the Plan agent's `## Chunks` yaml can carry any of these as a bare scalar;
+  // .map on that used to throw straight out of the Plan stage
+  const r = await createCard(repo, {
+    title: 'scalar chunk fields',
+    labels: 'ui',
+    criteria: 'it works',
+    dependencies: 'task-0009',
+    parent: 'task-0008',
+  });
+  assert.equal(r.ok, true);
+  const card = readCard(repo, r.id);
+  assert.ok(!card.parseError);
+  assert.deepEqual(card.data.labels, ['ui']);
+  assert.deepEqual(card.data.dependencies, ['task-0009']);
+  assert.match(card.body, /- \[ \] it works/, 'the scalar criterion still becomes a checkbox');
+});
+
+test('loadConfig re-adds pipeline-required columns a config edit dropped', () => {
+  const repo = makeRepo();
+  fs.writeFileSync(path.join(repo, '.todomd/config.yml'), 'columns: [Review, Plan, Planned, Build]\n');
+  const cfg = loadConfig(repo);
+  for (const col of ['Queue', 'Build', 'Verify', 'Needs Human', 'Done']) {
+    assert.ok(cfg.columns.includes(col), `${col} unioned back in`);
+  }
+  assert.deepEqual(cfg.columns.slice(0, 4), ['Review', 'Plan', 'Planned', 'Build'], 'user order preserved');
 });

@@ -102,6 +102,19 @@ if (cmd === 'stop') {
     // the pid file is "<pid> <port>" (older versions wrote just the pid)
     const pid = Number(fs.readFileSync(PID_FILE, 'utf8').trim().split(/\s+/)[0]);
     process.kill(pid, 0); // throws if the pid is dead → don't signal a recycled pid
+    // same `ps` check the serve guard uses: a live pid that ISN'T a todomd
+    // server means the pid file is stale and the pid was recycled — signalling
+    // it would kill an unrelated process. The pid is already known-live, so a
+    // `ps` that isn't there at all (Windows) means "can't tell" — fall back to
+    // the old behavior and signal it, rather than refusing to stop the server.
+    let cmdline = null;
+    try {
+      cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { /* no ps on this platform — skip the check */ }
+    if (cmdline !== null && !cmdline.includes('todomd')) {
+      console.error(`pid ${pid} is not a todomd server — stale pid file? remove ~/.todomd/server.pid`);
+      process.exit(1);
+    }
     process.kill(pid);
     fs.rmSync(PID_FILE, { force: true });
     console.log(`stopped todomd (pid ${pid})`);

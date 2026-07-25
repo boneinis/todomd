@@ -52,7 +52,10 @@ stages:
     command: todomd-plan
     model: sonnet
     max_turns: 20
-    allowed_tools: [Read, Glob, Grep, Edit]
+    # Edit is scoped to the cards dir: the plan agent runs in the main checkout
+    # with --permission-mode acceptEdits, so an email-injected card must not be
+    # able to rewrite config.yml (verify_command runs as a shell hook next build)
+    allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
   Build:
     command: todomd-build
     model: sonnet
@@ -63,8 +66,9 @@ stages:
       - Grep
       - Edit
       - Write
+      # no Bash(node:*) / broad Bash here: node -e ... auto-approves and
+      # writes anywhere as you, defeating every other guard
       - "Bash(npm test:*)"
-      - "Bash(node:*)"
       - "Bash(git add:*)"
       - "Bash(git commit:*)"
       - "Bash(git status:*)"
@@ -212,7 +216,7 @@ Another dispatcher (or the server's launcher) may run on this repo at the same t
 
 - **LOCK** — run this and wait for it to return before any git commit that writes under \`.todomd/\` (and before *selecting* the build card in step 2):
   \`\`\`
-  until mkdir .todomd/.lock 2>/dev/null; do o=$(cut -d' ' -f1 .todomd/.lock/owner 2>/dev/null); if [ -n "$o" ] && [ $(( $(date +%s) - o )) -gt 300 ]; then d=.todomd/.lock.dead.$$.$(date +%s); mv .todomd/.lock "$d" 2>/dev/null && rm -rf "$d"; else sleep 1; fi; done; printf '%s %s %s\\n' "$(date +%s)" "$(whoami)@$(hostname -s)" "$$-$(date +%s)" > .todomd/.lock/owner
+  until mkdir .todomd/.lock 2>/dev/null; do o=$(cut -d' ' -f1 .todomd/.lock/owner 2>/dev/null); if [ -z "$o" ]; then o=$(stat -c %Y .todomd/.lock 2>/dev/null || stat -f %m .todomd/.lock 2>/dev/null); fi; if [ -n "$o" ] && [ $(( $(date +%s) - o )) -gt 300 ]; then d=.todomd/.lock.dead.$$.$(date +%s); mv .todomd/.lock "$d" 2>/dev/null && rm -rf "$d"; else sleep 1; fi; done; printf '%s %s %s\\n' "$(date +%s)" "$(whoami)@$(hostname -s)" "$$-$(date +%s)" > .todomd/.lock/owner
   \`\`\`
 - **UNLOCK** — run immediately after that commit: \`rm -rf .todomd/.lock\`
 
@@ -322,7 +326,7 @@ export function initProject(repoPath, { nodeBin, todomdBin } = {}) {
   }
   const gi = path.join(repoPath, '.gitignore');
   let cur = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
-  for (const line of ['.todomd/worktrees/', '.todomd/runs/', '.todomd/.lock/']) {
+  for (const line of ['.todomd/worktrees/', '.todomd/runs/', '.todomd/.lock/', '.todomd/.lock.dead.*']) {
     if (!cur.includes(line)) {
       cur += (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n';
       created.push(`.gitignore (+${line})`);
