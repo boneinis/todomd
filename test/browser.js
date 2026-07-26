@@ -79,12 +79,20 @@ export async function openPage() {
   const bin = findChrome();
   if (!bin) return null;
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'todomd-chrome-'));
+  // Chrome refuses to start as root without --no-sandbox, which is the normal
+  // case inside a container (act, or any Docker-based runner). Without this the
+  // stage doesn't skip — findChrome() succeeds, the launch dies, and the whole
+  // file fails in before(). GitHub-hosted runners are non-root, so this is a
+  // no-op there; dropping the sandbox is acceptable for a throwaway profile
+  // loading only our own localhost page.
+  const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const child = spawn(bin, [
     '--headless=new',
     '--remote-debugging-port=0',        // 0 = OS picks; parsed off stderr below
     `--user-data-dir=${userDataDir}`,
     '--no-first-run', '--no-default-browser-check', '--disable-extensions',
     '--disable-gpu', '--disable-dev-shm-usage',  // the latter matters in containers
+    ...(asRoot ? ['--no-sandbox'] : []),
     'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
