@@ -102,4 +102,12 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 
 ## Development
 
-`npm test` runs the suite (Node's built-in runner, no deps): unit tests for the board/frontmatter, git, registry, intake, and run-output parsing layers, plus an integration test that drives a card through the real state machine (happy path, verification-retry loop, attempt-cap escalation, transition-table guards, quota park/resume) using a deterministic fake agent — no LLM or network. Tests isolate to a temp `TODOMD_HOME` and temp git repos; they never touch your real boards.
+`npm test` runs the suite (Node's built-in runner, no deps): unit tests for the board/frontmatter, git, registry, intake, and run-output parsing layers, plus an integration test that drives a card through the real state machine (happy path, verification-retry loop, attempt-cap escalation, transition-table guards, quota park/resume) using a deterministic fake agent — no LLM or network. Tests isolate to a temp `TODOMD_HOME` and temp git repos; they never touch your real boards. `test/ui/` adds a headless-Chrome smoke test of the board render (driven over the DevTools protocol with the `ws` dep — no Playwright); it skips itself where no Chrome is installed.
+
+**Local CI.** `npm run ci` is the gate: the suite, the browser smoke test, `npm audit`, and a **pack → install → init → serve → stop** stage that packs the tarball, installs it into a throwaway project and exercises the running server. That last stage is the only thing that sees the *installed* artifact — unit tests import from `src/`, so they can't catch a path missing from `files`, a missing runtime dep, or a broken bin.
+
+`npm install` points git at `.githooks/`, so **pre-push** runs `npm run ci -- --quick` (everything but the browser stage, ~60s idle). Bypass once with `git push --no-verify`; opt out entirely with `git config --unset core.hooksPath`.
+
+Timing note: the suite spawns git and agent CLIs, so it stretches with machine load (measured ~20x median at load 120 on 10 cores). `until()` in `test/helpers.js` scales its deadlines by `loadavg/cores` so a busy machine doesn't produce phantom failures; pin it with `TODOMD_TEST_TIMEOUT_SCALE` if you'd rather it were fixed.
+
+What local CI can't do: tell you the code works anywhere but your machine. The `ps` probe in `todomd stop` was macOS-only and would pass here forever. For that you want the same commands on a clean Linux runner — the stages above are a single `npm run ci` line in any CI service.

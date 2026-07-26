@@ -1,0 +1,8 @@
+#!/bin/sh
+# Local CI gate. Quick mode: full test suite + the pack/install smoke test,
+# skipping the browser stage (headless Chrome is ~15 processes and this runs
+# while you wait on a push). Run the full gate any time with `npm run ci`.
+#
+# Bypass once:  git push --no-verify
+# Disable:      git config --unset core.hooksPath
+exec npm run ci -- --quick

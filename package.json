@@ -17,7 +17,10 @@
     "start": "node bin/todomd.js",
     "test": "node --test test/*.test.js && node --test test/ui/*.test.js",
     "test:unit": "node --test test/*.test.js",
-    "test:ui": "node --test test/ui/*.test.js"
+    "test:ui": "node --test test/ui/*.test.js",
+    "ci": "node scripts/ci.mjs",
+    "ci:quick": "node scripts/ci.mjs --quick",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "engines": {
     "node": ">=20"
