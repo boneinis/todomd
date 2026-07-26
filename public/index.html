@@ -163,11 +163,13 @@
       </label>
       <span id="stage-routing-note" class="qr-note"></span>
     </div>
-    <p class="qr-note">The <b>core protocol</b> is locked (read-only) — changing it could break the pipeline. Add your project conventions in the <b>editable</b> box; the agent reads them as extra instructions. Saved &amp; committed to the repo.</p>
+    <p class="qr-note">The <b>core protocol</b> is locked (read-only) — changing it could break the pipeline. Add your conventions below; the agent reads both boxes as extra instructions. <b>Shared</b> is committed to the repo and travels with it — treat it as public. <b>Local only</b> is written to <code>.todomd/local/</code>, which is gitignored and never leaves this machine — put client names, internal URLs and other private context there.</p>
     <label class="prompt-lbl">core protocol — read-only</label>
     <pre id="prompt-locked" class="prompt-locked"></pre>
-    <label class="prompt-lbl">your custom instructions — editable</label>
-    <textarea id="prompt-custom" class="prompt-text" spellcheck="false" placeholder="e.g. follow our commit conventions · always add a unit test · the API base is https://…"></textarea>
+    <label class="prompt-lbl">shared instructions — committed, travels with the repo</label>
+    <textarea id="prompt-custom" class="prompt-text" spellcheck="false" placeholder="e.g. follow our commit conventions · always add a unit test"></textarea>
+    <label class="prompt-lbl">local only — stays on this machine, never committed</label>
+    <textarea id="prompt-local" class="prompt-text" spellcheck="false" placeholder="private context: client names, internal URLs, staging hosts, anything you don't want pushed"></textarea>
     <div class="modal-actions">
       <button type="button" id="prompts-close" class="drawer-close">close</button>
       <button type="button" id="prompt-save" class="modal-submit">save</button>

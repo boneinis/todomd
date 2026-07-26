@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
@@ -349,6 +350,44 @@ test('API DELETE epic with a building child returns 400', async () => {
     srv.close();
     clearFakeAgent();
   }
+});
+
+test('API prompt editor: shared half is committed, local half never is', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const viewer = deviceToken('token-viewer');
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  const head = () => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  try {
+    const before = head();
+    // one save carries both halves
+    let r = await fetch(`${base}/api/commands/todomd-build${q}`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ custom: 'shared: always run lint', local: 'private: staging host is internal-only' }),
+    });
+    assert.equal(r.status, 200);
+
+    // both come back for the editor
+    r = await fetch(`${base}/api/commands/todomd-build${q}`, { headers: { 'x-todomd-token': srv.token } });
+    const parts = await r.json();
+    assert.match(parts.custom, /always run lint/);
+    assert.match(parts.local, /staging host is internal-only/);
+
+    // the shared half landed in the committed file; the local half did NOT
+    const committed = fs.readFileSync(path.join(repo, '.claude/commands/todomd-build.md'), 'utf8');
+    assert.match(committed, /always run lint/);
+    assert.doesNotMatch(committed, /staging host/, 'private text must never enter a committed file');
+    assert.notEqual(head(), before, 'the shared edit was committed');
+    assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }).includes('.todomd/local'), false,
+      'the local file is gitignored, so git never sees it');
+
+    // a viewer can neither read nor write the prompt (local text is private)
+    assert.equal((await fetch(`${base}/api/commands/todomd-build${q}`, { headers: { 'x-todomd-token': viewer } })).status, 403);
+    assert.equal((await fetch(`${base}/api/commands/todomd-build${q}`, {
+      method: 'POST', headers: { 'x-todomd-token': viewer, 'content-type': 'application/json', origin: base },
+      body: JSON.stringify({ local: 'sneak' }),
+    })).status, 403);
+  } finally { srv.close(); }
 });
 
 test('API runlog + models require full access: an authed viewer gets 403, never 401', async () => {

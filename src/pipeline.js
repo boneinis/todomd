@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
-import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived } from './board.js';
+import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
@@ -180,12 +180,28 @@ async function execConfig(repoPath) {
 
 // claude invokes the repo's command file as a slash command; codex doesn't
 // read .claude/commands, so the command body is inlined with the id filled in.
-function stagePrompt(project, vendor, stage, id) {
-  if (vendor !== 'codex') return `/${stage.command} ${id}`;
-  const file = path.join(project.path, '.claude', 'commands', `${stage.command}.md`);
+function commandBody(project, command, id) {
+  const file = path.join(project.path, '.claude', 'commands', `${command}.md`);
   const raw = fs.readFileSync(file, 'utf8');
-  const body = raw.replace(/^---[\s\S]*?---\s*/, '');
-  return body.replaceAll('$ARGUMENTS', id);
+  return raw.replace(/^---[\s\S]*?---\s*/, '').replaceAll('$ARGUMENTS', id);
+}
+
+function stagePrompt(project, vendor, stage, id) {
+  // .todomd/local/<command>.md is the private half of a prompt: gitignored, so
+  // it can hold what the committed file must not (client names, internal URLs).
+  const local = readLocalPrompt(project.path, stage.command);
+  if (!local) {
+    // unchanged path: claude resolves the slash command itself, codex can't
+    return vendor === 'codex' ? commandBody(project, stage.command, id) : `/${stage.command} ${id}`;
+  }
+  // With a local layer we inline the body for BOTH vendors rather than appending
+  // after `/command id` — text trailing a slash command is the CLI's to
+  // interpret, and a silently-dropped addendum is worse than none. Inlining is
+  // exactly what codex has always received, so the content is identical either
+  // way; only the delivery changes.
+  return `${commandBody(project, stage.command, id)}\n\n` +
+    `## Project conventions (local, not committed)\n\n` +
+    `Treat the following as additional instructions for this repo:\n\n${local}\n`;
 }
 
 // Per-card skill override: a card with `skill:` frontmatter dragged into a

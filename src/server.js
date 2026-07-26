@@ -9,7 +9,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, setArchived, deleteCard, listSkills, readRunLog, setStageRouting } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
 import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
@@ -282,15 +282,24 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
       if (req.method === 'GET') {
         const parts = readCommandParts(project.path, cmdMatch[1]);
-        return parts === null ? json(res, 400, { error: 'bad command name' }) : json(res, 200, parts);
+        if (parts === null) return json(res, 400, { error: 'bad command name' });
+        // `local` is the gitignored layer — returned alongside so the editor can
+        // show both, and so it's obvious which half leaves this machine
+        return json(res, 200, { ...parts, local: readLocalPrompt(project.path, cmdMatch[1]) || '' });
       }
       if (req.method === 'POST') {
-        // only the editable region is writable — the locked core is preserved
+        // Two independent halves: `custom` is the committed shared region (the
+        // locked core is preserved), `local` is written to .todomd/local/ and
+        // never committed. A request may carry either or both.
         const body = await readBody(req);
         if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
-        let custom;
-        try { ({ custom } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-        const result = await writeCommandCustom(project.path, cmdMatch[1], custom);
+        let custom, local;
+        try { ({ custom, local } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        let result = { ok: true };
+        if (local !== undefined) result = await writeLocalPrompt(project.path, cmdMatch[1], local);
+        if (result.ok && custom !== undefined) {
+          result = { ...(await writeCommandCustom(project.path, cmdMatch[1], custom)), ...(local !== undefined ? { local: true } : {}) };
+        }
         return json(res, result.ok ? 200 : 400, result);
       }
     }

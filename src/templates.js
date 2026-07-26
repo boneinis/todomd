@@ -326,7 +326,9 @@ export function initProject(repoPath, { nodeBin, todomdBin } = {}) {
   }
   const gi = path.join(repoPath, '.gitignore');
   let cur = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
-  for (const line of ['.todomd/worktrees/', '.todomd/runs/', '.todomd/.lock/', '.todomd/.lock.dead.*']) {
+  // .todomd/local/ holds the private half of each column prompt — the committed
+  // .claude/commands/*.md travel with the repo, this never does
+  for (const line of ['.todomd/worktrees/', '.todomd/runs/', '.todomd/.lock/', '.todomd/.lock.dead.*', '.todomd/local/']) {
     if (!cur.includes(line)) {
       cur += (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n';
       created.push(`.gitignore (+${line})`);

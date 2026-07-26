@@ -49,6 +49,15 @@ that runs without a human in the loop is confined:
   read-only/scoped `git` rules remain. Treat any broad Bash rule
   (`Bash(node:*)`, `Bash(*)`, `Bash(curl:*)`, …) as weakening the whole
   pipeline's guard set.
+- **Column prompts are committed — the local layer is not.** The
+  `.claude/commands/todomd-*.md` files travel with the repo by design, and the
+  **⚙** editor's *shared instructions* box writes into them, so anything typed
+  there is committed and pushed. Private context (client names, internal URLs,
+  staging hosts) belongs in the *local only* box, which writes
+  `.todomd/local/<command>.md` — gitignored (`init` adds the entry, and saving
+  re-adds it if missing), never committed, and appended to the stage prompt at
+  spawn time. If you push your board to a public remote, assume every word in
+  the shared box is public.
 - **The Stop-hook settings file is `0600`.** The `verify_command` is handed to
   the agent CLI as a temp settings file in `/tmp` (world-readable on a shared
   machine) and deleted when the run ends — it's written owner-only so no other

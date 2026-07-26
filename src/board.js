@@ -582,6 +582,58 @@ export function writeCommandCustom(repoPath, name, custom) {
   return writeCommandFile(repoPath, name, next);
 }
 
+/* ── local (never-committed) prompt layer ── */
+
+// The shared custom region above lives INSIDE .claude/commands/<name>.md, which
+// is committed on purpose so prompts travel with the repo. That makes it the
+// wrong home for anything private: client names, internal URLs, staging
+// credentials-adjacent context. This layer is the private half — same idea,
+// but under .todomd/local/, which is gitignored and never committed.
+// Appended to the stage prompt at spawn time (see pipeline.stagePrompt).
+export const LOCAL_PROMPT_DIR = path.join('.todomd', 'local');
+const LOCAL_IGNORE_LINE = '.todomd/local/';
+
+function localPromptPath(repoPath, name) {
+  if (!/^[\w-]+$/.test(name)) return null;   // same containment as the command dir
+  return path.join(repoPath, LOCAL_PROMPT_DIR, `${name}.md`);
+}
+
+export function readLocalPrompt(repoPath, name) {
+  const file = localPromptPath(repoPath, name);
+  if (!file) return null;
+  try { return fs.readFileSync(file, 'utf8').trim(); }
+  catch { return ''; } // absent → no local layer
+}
+
+// Belt and braces: make sure .gitignore covers this dir BEFORE writing into it.
+// `todomd init` adds the line, but a board created by an older version wouldn't
+// have it — and the whole point of this file is that it never gets committed.
+function ensureLocalIgnored(repoPath) {
+  const gi = path.join(repoPath, '.gitignore');
+  let cur = '';
+  try { cur = fs.readFileSync(gi, 'utf8'); } catch { /* no .gitignore yet */ }
+  if (cur.split(/\r?\n/).some((l) => l.trim() === LOCAL_IGNORE_LINE)) return false;
+  writeFileAtomic(gi, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + LOCAL_IGNORE_LINE + '\n');
+  return true;
+}
+
+// Never commits: no commitPaths call here, unlike writeCommandFile.
+export function writeLocalPrompt(repoPath, name, text) {
+  const file = localPromptPath(repoPath, name);
+  if (!file) return Promise.resolve({ ok: false, error: 'invalid command name' });
+  return withRepoLock(repoPath, async () => {
+    const ignoreAdded = ensureLocalIgnored(repoPath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const body = String(text ?? '').trim();
+    if (!body) {
+      try { fs.rmSync(file); } catch { /* already gone */ }
+      return { ok: true, cleared: true, ignoreAdded };
+    }
+    writeFileAtomic(file, `${body}\n`);
+    return { ok: true, ignoreAdded };
+  });
+}
+
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
 const MAX_ATTACHMENT = 25 * 1024 * 1024; // 25 MB
 

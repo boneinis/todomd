@@ -655,6 +655,55 @@ test('an executable key MISSING from the committed config is not taken from the 
   clearFakeAgent();
 });
 
+// The committed prompt is public (it travels with the repo); .todomd/local/ is
+// the private half. It only earns its keep if it actually reaches the agent —
+// so assert on the prompt the runner passed, not just on the file.
+test('a local prompt layer reaches the agent, appended to the committed prompt', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('argv'), 'argv.jsonl');
+  useFakeAgent({ argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const { writeLocalPrompt } = await import('../src/board.js');
+  await writeLocalPrompt(repo, 'todomd-plan', 'SENTINEL_LOCAL_CONTEXT: the staging host is internal-only.');
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  await pipeline.humanMove(p, 'task-0001', 'Plan');
+  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+
+  const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+  const prompt = calls.flat().find((a) => typeof a === 'string' && a.includes('SENTINEL_LOCAL_CONTEXT'));
+  assert.ok(prompt, 'the local layer was passed to the agent');
+  // and it rides ON TOP of the committed prompt rather than replacing it —
+  // compare against the real file so this holds whatever the template says
+  const committed = fs.readFileSync(path.join(repo, '.claude/commands/todomd-plan.md'), 'utf8')
+    .replace(/^---[\s\S]*?---\s*/, '').replaceAll('$ARGUMENTS', 'task-0001').trim();
+  assert.ok(prompt.startsWith(committed), 'the committed prompt body leads, the local layer follows');
+  assert.ok(prompt.indexOf('SENTINEL_LOCAL_CONTEXT') > committed.length, 'local text comes after the core');
+  assert.ok(!calls.flat().some((a) => a === '/todomd-plan task-0001'),
+    'with a local layer the body is inlined, so nothing can silently drop the addendum');
+  clearFakeAgent();
+});
+
+test('no local layer leaves the claude slash-command path exactly as it was', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('argv2'), 'argv.jsonl');
+  useFakeAgent({ argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  await pipeline.humanMove(p, 'task-0001', 'Plan');
+  await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+
+  const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(calls.flat().includes('/todomd-plan task-0001'),
+    'unchanged behavior when the feature is unused');
+  clearFakeAgent();
+});
+
 test('cancel during Verify re-enqueues the build — the card resumes to Done on its own', async () => {
   isolateHome();
   const marker = path.join(tmp('verifyhang'), 'started');

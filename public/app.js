@@ -776,6 +776,7 @@ async function loadPromptCommand(command) {
   const out = await api(`commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`);
   $('#prompt-locked').textContent = out.locked || '';
   $('#prompt-custom').value = out.custom || '';
+  $('#prompt-local').value = out.local || ''; // .todomd/local/<cmd>.md — gitignored
   const item = promptCommands.find((c) => c.command === command);
   $('#prompt-meta').textContent = item ? `${item.command}.md${item.exists ? '' : ' · (new)'}` : `${command}.md`;
   await updateRoutingRow(item);
@@ -829,7 +830,11 @@ $('#prompt-save').addEventListener('click', async () => {
   const command = $('#prompt-select').value;
   try {
     const res = await fetch(`/api/commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`, {
-      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ custom: $('#prompt-custom').value }),
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      // both halves in one save: `custom` is committed with the prompt file,
+      // `local` lands in the gitignored .todomd/local/ and never leaves the box
+      body: JSON.stringify({ custom: $('#prompt-custom').value, local: $('#prompt-local').value }),
     });
     const out = await res.json();
     toast(res.ok ? `saved ${command}` : (out.error || 'save failed'));

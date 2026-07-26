@@ -650,6 +650,36 @@ test('createCard tolerates scalar labels/criteria/dependencies from an agent chu
   assert.match(card.body, /- \[ \] it works/, 'the scalar criterion still becomes a checkbox');
 });
 
+// The shared custom region lives inside the COMMITTED prompt file, so it is the
+// wrong home for private context. The local layer is the private half: written
+// under .todomd/local/, gitignored, never committed.
+test('local prompts are written outside git: gitignored, never committed, cleanly cleared', async () => {
+  const repo = makeRepo();
+  const before = git(repo, ['rev-parse', 'HEAD']);
+  const { writeLocalPrompt, readLocalPrompt } = await import('../src/board.js');
+
+  const r = await writeLocalPrompt(repo, 'todomd-build', '  Use the staging DB. Never touch vendor/*.  ');
+  assert.equal(r.ok, true);
+  assert.equal(readLocalPrompt(repo, 'todomd-build'), 'Use the staging DB. Never touch vendor/*.');
+
+  // it exists on disk, but git cannot see it and nothing was committed
+  assert.ok(fs.existsSync(path.join(repo, '.todomd/local/todomd-build.md')));
+  assert.equal(git(repo, ['status', '--porcelain', '--ignored=no', '.todomd/local']), '',
+    'the local dir is invisible to git status');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), before, 'writing a local prompt makes no commit');
+  assert.match(fs.readFileSync(path.join(repo, '.gitignore'), 'utf8'), /^\.todomd\/local\/$/m,
+    'the ignore entry is ensured at write time, not just at init');
+
+  // an empty save removes the file rather than leaving a stray empty one
+  await writeLocalPrompt(repo, 'todomd-build', '   ');
+  assert.equal(fs.existsSync(path.join(repo, '.todomd/local/todomd-build.md')), false);
+  assert.equal(readLocalPrompt(repo, 'todomd-build'), '');
+
+  // name containment, same rule as the commands dir
+  assert.equal((await writeLocalPrompt(repo, '../escape', 'x')).ok, false);
+  assert.equal(readLocalPrompt(repo, '../escape'), null);
+});
+
 test('loadConfig re-adds pipeline-required columns a config edit dropped', () => {
   const repo = makeRepo();
   fs.writeFileSync(path.join(repo, '.todomd/config.yml'), 'columns: [Review, Plan, Planned, Build]\n');
