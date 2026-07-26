@@ -106,7 +106,15 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 
 **Local CI.** `npm run ci` is the gate: the suite, the browser smoke test, `npm audit`, and a **pack → install → init → serve → stop** stage that packs the tarball, installs it into a throwaway project and exercises the running server. That last stage is the only thing that sees the *installed* artifact — unit tests import from `src/`, so they can't catch a path missing from `files`, a missing runtime dep, or a broken bin.
 
-`npm install` points git at `.githooks/`, so **pre-push** runs `npm run ci -- --quick` (everything but the browser stage, ~60s idle). Bypass once with `git push --no-verify`; opt out entirely with `git config --unset core.hooksPath`.
+To gate your own pushes, opt in once per clone:
+
+```bash
+git config core.hooksPath .githooks   # pre-push runs `npm run ci -- --quick`
+```
+
+That runs everything but the browser stage (~60s idle). Bypass once with `git push --no-verify`; opt out with `git config --unset core.hooksPath`.
+
+> Deliberately **not** wired to a `prepare` script. npm leaves a git install symlinked to its staging clone when the package has one — `npm i -g github:boneinis/todomd` produced a dangling `todomd` bin — so the convenience would have broken the documented install for everyone.
 
 Timing note: the suite spawns git and agent CLIs, so it stretches with machine load (measured ~20x median at load 120 on 10 cores). `until()` in `test/helpers.js` scales its deadlines by `loadavg/cores` so a busy machine doesn't produce phantom failures; pin it with `TODOMD_TEST_TIMEOUT_SCALE` if you'd rather it were fixed.
 
