@@ -23,12 +23,25 @@ Every transition is a path-scoped git commit — board history is `git log`. Run
 
 > **Vendor support is uneven.** `claude` is the primary, fully-featured path (the Stop-hook build quality-gate is claude-only). `codex` works, but its build stage has no Stop-hook gate — the independent **Verify** stage is the only gate, and its reported cost shows as $0. Other vendors (Copilot, Antigravity) aren't implemented yet. Set a card's vendor with `agent:` frontmatter or the column's `stages:` config.
 
+## Install
+
+Not on npm — install straight from this repo:
+
+```bash
+npm i -g github:boneinis/todomd     # puts `todomd` on your PATH
+```
+
+Or run it without installing: `npx github:boneinis/todomd init`. Either way you
+get whatever is on `main` at install time (there's no published version to pin
+to yet) — re-run the install to update, and `todomd upgrade-commands` refreshes
+an existing board's pipeline prompts.
+
 ## Use
 
 ```bash
 cd your-repo        # must be a git repo
-npx todomd init    # writes .todomd/ + the agent pipeline commands
-npx todomd         # localhost server + browser board (per-run token)
+todomd init         # writes .todomd/ + the agent pipeline commands
+todomd              # localhost server + browser board (per-run token)
 ```
 
 On first open the board shows a **Getting Started** guide (the flow, the two human gates, and how to add work) — reopen it anytime by clicking the **todomd** wordmark, or hit the **?** on any column header for what that column does.
