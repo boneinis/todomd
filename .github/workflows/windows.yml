@@ -1,0 +1,30 @@
+name: windows (exploratory)
+
+# Manual only, and deliberately so. todomd has never supported Windows beyond
+# the .bat launcher, and the suite HANGS there: `npm ci` succeeds, then
+# `npm run test:unit` never returns (25+ min observed while linux finished in
+# 40s). Running that on every push bought nothing — it hung identically each
+# time, cost 15 minutes of runner time, and its timeout cancellation dragged
+# the whole CI run's conclusion to "cancelled" even though linux was green.
+#
+# Run it from the Actions tab when someone actually works on Windows support.
+# Expect a timeout until the hang is diagnosed; the value is the log, not a
+# green tick.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    name: windows · node 22 (exploratory)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # unit + integration only: the pack stage shells through a POSIX-ish path
+      # and the browser stage's Chrome lookup has no Windows branch yet.
+      - run: npm run test:unit
