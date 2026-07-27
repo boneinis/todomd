@@ -46,7 +46,9 @@ todomd              # localhost server + browser board (per-run token)
 
 On first open the board shows a **Getting Started** guide (the flow, the two human gates, and how to add work) — reopen it anytime by clicking the **todomd** wordmark, or hit the **?** on any column header for what that column does.
 
-**Desktop launcher (optional):** `todomd install-launcher` puts a double-clickable, **icon'd** launcher on your Desktop (a `.app` on macOS, a `.desktop` entry on Linux, a `.bat` on Windows). It starts the server in the background if it isn't already running and opens the board — no terminal needed. `todomd stop` stops a background server.
+**Desktop launcher (optional):** `todomd install-launcher` puts a double-clickable, **icon'd** launcher on your Desktop (a `.app` on macOS, a `.desktop` entry on Linux). It starts the server in the background if it isn't already running and opens the board — no terminal needed. `todomd stop` stops a background server.
+
+> **macOS and Linux only.** Windows isn't supported: npm installs agent CLIs as `.cmd` shims, and Node refuses to spawn those without `shell: true` ([CVE-2024-27980](https://nodejs.org/en/blog/vulnerability/april-2024-security-releases)), so the pipeline can't start `claude` or `codex` there at all. A `.bat` launcher is still written for completeness, and the board itself will serve — but no stage will run. CI keeps a manual `windows (exploratory)` workflow for whoever picks this up; expect a wall of `until()` timeouts until the spawn path is fixed.
 
 - **+ card** in the UI (or any editor — cards are just files; agents and humans coexist via the file watcher).
 - **Attach files** to a card (＋ file in the drawer, or drag-drop): images render inline, docs become links. Stored in `.todomd/attachments/<id>/` and committed — so a screenshot or spec travels with the card, and plan/build agents can **read** it (e.g. attach a bug screenshot and the agent sees it).
