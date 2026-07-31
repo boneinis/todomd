@@ -12,9 +12,11 @@ assignee:
 agent: claude
 model: claude-sonnet-5
 effort: low
-session_id:
+session_id: 7c477ffc-a281-47ce-8c52-3b53c2c7bc68
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
+triaged: 2026-07-31
+cost_usd: 0.1823
 ---
 
 ## Description
@@ -34,3 +36,11 @@ Enable separate To-do MD computers to share assignment updates through the track
 ## Implementation Plan
 
 ## Run Log
+- 2026-07-31 21:53Z · Triage · 4 turns · $0.182 · ok
+
+## Triage
+
+- **Decision:** Split into smaller cards.
+- **Rationale:** This bundles several distinct concerns — a git-backed board-state branch/publish mechanism, a manual Sync-now action, automatic refresh/polling triggers, conflict handling for active worktrees, and a CI-exclusion guarantee for board-only commits. Each has its own design and failure modes and is independently testable.
+- **Risks or questions:** Conflict-resolution strategy (what "defer sync" looks like) and the branch/commit scheme for board metadata are non-trivial design choices that should be settled before implementation; CI exclusion mechanism needs to match the existing workflow triggers in `.github/workflows/ci.yml`.
+- **Next step:** Split into cards for (1) board-state git branch publish/fetch mechanism with CI exclusion, (2) Sync-now UI action, (3) auto-refresh/polling triggers with conflict-safe merge behavior.
