@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 95e7434e-7e65-4cc5-bbe3-93186372af59
+session_id: 2e2a037a-022c-423b-97f4-4959e7ea6c47
 worktree: todomd/task-0024
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 12.2276
-needs_human_reason:
+needs_human_reason: bad_verdict
 ---
 
 ## Description
@@ -90,3 +90,5 @@ mail keeps its attachments only in the mailbox.
 - 2026-07-31 22:35Z · Verify attempt 1 · ? turns · $0.000 · failed: cli_missing
 - 2026-07-31 22:39Z · Verify attempt 1 · malformed verdict, re-running once
 - 2026-07-31 22:39Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
+- 2026-07-31 22:47Z · Verify attempt 1 · malformed verdict, re-running once
+- 2026-07-31 22:47Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
