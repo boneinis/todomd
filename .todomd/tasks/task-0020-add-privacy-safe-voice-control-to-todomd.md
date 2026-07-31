@@ -3,7 +3,7 @@ id: task-0020
 title: Add privacy-safe voice control to TODOMD
 status: Review
 type: module
-priority: high
+priority: critical
 labels: [voice, accessibility, realtime]
 dependencies: []
 created_date: 2026-07-31
