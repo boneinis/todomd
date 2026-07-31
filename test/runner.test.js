@@ -112,6 +112,23 @@ test('Codex Verify retains executable, cwd, exit, stderr, and structured output'
   assert.ok(events.some((e) => e.type === 'runner-diagnostic' && e.structuredOutput?.verdict === 'pass'));
 });
 
+test('Codex resume omits the unsupported sandbox flag', async () => {
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  const dir = tmp('codex-resume');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_CODEX_ARGV_LOG = argvLog;
+  const { done } = runStage({
+    vendor: 'codex', cwd: dir, prompt: 'repair the findings', resume: 'saved-session',
+  });
+  await done;
+  delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
+
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.deepEqual(argv.slice(0, 3), ['exec', 'resume', 'saved-session']);
+  assert.equal(argv.includes('--sandbox'), false);
+  assert.ok(argv.includes('--json'));
+});
+
 test('Codex Verify preserves a raw final message and unsuccessful exit diagnostic', async () => {
   process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
   process.env.FAKE_CODEX_LAST_MESSAGE = 'transport returned no verdict';

@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 
 const args = process.argv.slice(2);
+if (process.env.FAKE_CODEX_ARGV_LOG) fs.writeFileSync(process.env.FAKE_CODEX_ARGV_LOG, JSON.stringify(args));
 const outputIndex = args.indexOf('--output-last-message');
 const outputFile = outputIndex >= 0 ? args[outputIndex + 1] : '';
 const schemaIndex = args.indexOf('--output-schema');

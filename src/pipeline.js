@@ -658,6 +658,14 @@ async function preservedWorktree(project, card) {
   return { config, worktreeAbs, branch: card.data.worktree };
 }
 
+function canRetryVerification(card) {
+  const reason = card?.data?.needs_human_reason;
+  return ['bad_verdict', 'hook_cancelled'].includes(reason)
+    // A real fail followed by an infrastructure error in the repair Build can
+    // be fixed manually in the preserved worktree, then re-verified in place.
+    || (reason === 'error' && card?.data?.verification?.last_verdict === 'fail');
+}
+
 export async function recoveryActions(project, id) {
   const card = readCard(project.path, id);
   if (!card || card.data.status !== 'Needs Human' || hasLiveRun(project.name, id)) {
@@ -671,7 +679,7 @@ export async function recoveryActions(project, id) {
   return {
     resume_build: !!kept && orphanedBuild,
     restart_build: !kept && orphanedBuild,
-    retry_verification: !!kept && ['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason),
+    retry_verification: !!kept && canRetryVerification(card),
   };
 }
 
@@ -752,7 +760,7 @@ export async function retryVerification(project, id) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
   if (card.data.status !== 'Needs Human') return { ok: false, error: 'card is not waiting for verification retry' };
-  if (!['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason)) {
+  if (!canRetryVerification(card)) {
     return { ok: false, error: 'only an unavailable verification verdict can be retried directly' };
   }
   const kept = await preservedWorktree(project, card);

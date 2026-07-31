@@ -165,7 +165,12 @@ function runCodex({
   // codex exec is non-interactive by design — no approval flag exists (v0.139)
   const args = ['exec'];
   if (resume) args.push('resume', resume);
-  args.push('--json', '--sandbox', 'workspace-write', '--skip-git-repo-check');
+  args.push('--json');
+  // `codex exec resume` inherits the original session sandbox and does not
+  // accept --sandbox itself. Supplying it makes every verifier-repair resume
+  // exit at argument parsing before the agent can act.
+  if (!resume) args.push('--sandbox', 'workspace-write');
+  args.push('--skip-git-repo-check');
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('-m', model);
   if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);
   let schemaFile, outFile;

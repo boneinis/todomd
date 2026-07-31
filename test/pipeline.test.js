@@ -1153,6 +1153,17 @@ test('Codex Verify infrastructure failures retain diagnostics and Retry Verifica
     assert.doesNotMatch(card.raw, /failed: bad_verdict/, 'infrastructure was not labeled as a code failure');
     assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true);
 
+    await patchFrontmatter(repo, 'task-0001', {
+      needs_human_reason: 'error',
+      verification: { attempts: 1, max_attempts: 3, last_verdict: 'fail' },
+    });
+    assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true,
+      'a manually repaired worktree remains directly verifiable after repair infrastructure failed');
+    await patchFrontmatter(repo, 'task-0001', {
+      needs_human_reason: 'bad_verdict',
+      verification: { attempts: 1, max_attempts: 3, last_verdict: '' },
+    });
+
     const runDir = path.join(repo, '.todomd/runs/task-0001');
     const verifyLogs = fs.readdirSync(runDir).filter((f) => f.startsWith('verify-1') && f.endsWith('.jsonl'));
     assert.equal(verifyLogs.length, 2, 'the automatic rerun retained both raw attempts');
