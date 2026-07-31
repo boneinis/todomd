@@ -168,6 +168,58 @@ export function emailToCardFields(parsed) {
   };
 }
 
+// One parsed message → board state, screening included. Exported (and free of
+// any IMAP object) so the whole decision path is testable without a mail
+// server: pollSource only adds fetch/\Seen/dedup bookkeeping around it.
+//
+// Returns { verdict, created, handled, id?, reason }. `handled` means the
+// message reached a terminal decision, so the caller can stop reconsidering it.
+export async function intakeMessage(project, parsed, { label = 'intake', assignee = null, maxAttachments = 5 } = {}) {
+  const screened = screenEmail(parsed);
+  const record = {
+    timestamp: new Date().toISOString(),
+    source: label,
+    from: parsed?.from?.text || '',
+    subject: parsed?.subject || '',
+    messageId: parsed?.messageId || '',
+    verdict: screened.verdict,
+    reason: screened.reason,
+    card: '',
+  };
+
+  // Screened-out mail never reaches the board, so the audit line is its ONLY
+  // trace — write it before returning (the caller marks \Seen after we do),
+  // otherwise a misclassified message is unrecoverable.
+  if (screened.verdict === 'spam') {
+    await appendIntakeAudit(project.path, record);
+    return { verdict: 'spam', created: false, handled: true, reason: screened.reason };
+  }
+
+  const fields = emailToCardFields(parsed);
+  if (screened.verdict === 'unclear') {
+    // held for a human, not dropped: an ambiguous message still becomes a card,
+    // just not one an agent picks up. Nothing else is needed to keep triage off
+    // it — both maybeTriage and triageSweep already gate on status === 'Review'.
+    // Deliberately NOT pre-setting `triaged`: dragging the card to Review is how
+    // a human says "this is real", and that move clears needs_human_reason and
+    // hands the card to auto-triage exactly like any other new card would be.
+    fields.status = 'Needs Human';
+    fields.needs_human_reason = screened.reason;
+  }
+
+  const card = await createCard(project.path, { ...fields, assignee });
+  if (!card.ok) return { verdict: screened.verdict, created: false, handled: false, error: card.error };
+
+  for (const att of (parsed?.attachments || []).slice(0, maxAttachments)) {
+    if (att?.content && att?.filename) {
+      try { await attachCard(project.path, card.id, att.filename, att.content); } catch {}
+    }
+  }
+  record.card = card.id;
+  await appendIntakeAudit(project.path, record);
+  return { verdict: screened.verdict, created: true, handled: true, id: card.id, reason: screened.reason };
+}
+
 let onCard = () => {};   // set by start(): (project, id) => void  (e.g. trigger triage)
 let log = () => {};
 
@@ -217,43 +269,20 @@ async function pollSource(source, getProject) {
             ? `project "${targetName}" not registered`
             : `no route matched (to: ${recipientAddresses(parsed).join(', ') || 'none'})`}`);
         } else {
-          const screened = screenEmail(parsed);
-          const auditRecord = {
-            timestamp: new Date().toISOString(),
-            source: label,
-            from: parsed.from?.text || '',
-            subject: parsed.subject || '',
-            messageId: mid || '',
-            verdict: screened.verdict,
-            reason: screened.reason,
-          };
-          if (screened.verdict === 'spam') {
-            // audit BEFORE \Seen so a misclassified message is still recoverable
-            await appendIntakeAudit(project.path, auditRecord);
-            log(`intake: "${label}" screened a message as spam for ${project.name}: ${screened.reason}`);
-          } else {
-            const assignee = assigneeOf ? assigneeOf(parsed) : null; // auto-assign incoming work
-            const fields = emailToCardFields(parsed);
-            if (screened.verdict === 'unclear') {
-              fields.status = 'Needs Human';
-              fields.needs_human_reason = screened.reason;
-              fields.triaged = 'held (email screen)'; // keeps maybeTriage's status==='Review' guard off this card
-            }
-            const card = await createCard(project.path, { ...fields, assignee });
-            if (card.ok) {
-              created++;
-              if (mid) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
-              for (const att of (parsed.attachments || []).slice(0, conf.maxAttachments ?? 5)) {
-                if (att?.content && att?.filename) {
-                  try { await attachCard(project.path, card.id, att.filename, att.content); } catch {}
-                }
-              }
-              if (screened.verdict === 'unclear') {
-                await appendIntakeAudit(project.path, auditRecord); // audit BEFORE \Seen, same as spam
-              } else {
-                onCard(project, card.id);
-              }
-              log(`intake: "${label}" → ${project.name}: ${card.id}${screened.verdict === 'unclear' ? ' (needs human — email screen)' : ''}`);
+          const assignee = assigneeOf ? assigneeOf(parsed) : null; // auto-assign incoming work
+          const outcome = await intakeMessage(project, parsed, { label, assignee, maxAttachments: conf.maxAttachments ?? 5 });
+          // screened-out mail is "handled" too — without this, a markSeen:false
+          // mailbox would re-screen and re-audit the same spam on every tick
+          if (mid && outcome.handled) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
+          if (outcome.verdict === 'spam') {
+            log(`intake: "${label}" screened out a message for ${project.name} — ${outcome.reason}`);
+          } else if (outcome.created) {
+            created++;
+            if (outcome.verdict === 'unclear') {
+              log(`intake: "${label}" → ${project.name}: ${outcome.id} (Needs Human — ${outcome.reason})`);
+            } else {
+              onCard(project, outcome.id); // only real work is auto-triaged
+              log(`intake: "${label}" → ${project.name}: ${outcome.id}`);
             }
           }
         }

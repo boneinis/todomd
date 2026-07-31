@@ -71,9 +71,11 @@ export function screenEmail(parsed) {
   const precedence = headerText(headers, 'precedence').toLowerCase();
   if (/\b(bulk|list|junk)\b/.test(precedence)) spamStrong.push('precedence-bulk');
 
-  const autoSubmitted = headerText(headers, 'auto-submitted').toLowerCase();
-  // 'auto-replied' is an out-of-office style reply — surfaced below as unclear,
-  // not folded into the bulk-mail signal here.
+  // RFC 3834 allows parameters after the keyword ("auto-replied; owner=x"), so
+  // compare only the leading token — an exact match on the whole header value
+  // would read `auto-replied; owner=…` as bulk and silently drop an
+  // out-of-office that belongs in the unclear bucket below.
+  const autoSubmitted = headerText(headers, 'auto-submitted').toLowerCase().split(';')[0].trim();
   if (autoSubmitted && autoSubmitted !== 'no' && autoSubmitted !== 'auto-replied') {
     spamStrong.push('auto-submitted-bulk');
   }
@@ -113,8 +115,12 @@ const AUDIT_FILE = path.join('.todomd', 'intake-audit.jsonl');
 const AUDIT_IGNORE_LINE = '.todomd/intake-audit.jsonl';
 const AUDIT_MAX_LINES = 500; // an operational log, not board history — cap so it can't grow unbounded
 
-// One JSON line per screened message: timestamp, source label, from, subject,
-// messageId, verdict, reason. Trims to the last AUDIT_MAX_LINES on every write.
+// One JSON line per screened message — timestamp, source label, from, subject,
+// messageId, verdict, reason, and the card id when one was created. Every
+// verdict is logged, not just the screened-out ones: a `spam` line is the only
+// record that a message ever arrived, and the `work`/`unclear` lines are what
+// make the file a complete "which email became which card" trace.
+// Trims to the last AUDIT_MAX_LINES on every write.
 export function appendIntakeAudit(repoPath, record) {
   return withRepoLock(repoPath, async () => {
     ensureGitignored(repoPath, AUDIT_IGNORE_LINE);

@@ -92,7 +92,37 @@ Best when you set up **one dedicated inbox** and forward each project's address 
 - `default` (optional) is the board for mail that matches no route; without it, unrouted mail is logged (with the addresses it was sent to, so you can add a route) and skipped. Point `default` at a catch-all board and re-file from its Review column when something needs another project.
 - One connection, one folder, any number of projects — no per-project filters needed. `todomd intake-test main` reports the folder, unseen count, and route count.
 
-> **Security note:** email is untrusted input. Card titles are sanitized and bodies are escaped on render, so a crafted email can't corrupt a card or inject script. It *can* contain prompt-injection aimed at the triage agent — which runs read-only-ish (Edit scoped to `.todomd/tasks/`), but treat auto-triaged email cards with the same skepticism as any inbound request.
+### Screening: what actually becomes a card
+
+Point an address at a board and it will eventually receive things that are not work — newsletters, receipts, out-of-office replies, bounces. Every message is screened *before* a card exists, using deterministic header/body heuristics (no LLM call, no network) that sort it into one of three outcomes:
+
+| Verdict | What happens | Why |
+| --- | --- | --- |
+| **work** | card in **Review**, auto-triage runs as usual | nothing suspicious matched |
+| **unclear** | card in **Needs Human** with the reason on it, auto-triage skipped | ambiguous — a human decides, nothing is lost |
+| **spam** | no card; one line in the audit log | bulk/automated mail with no work in it |
+
+The signals are split into **strong** and **weak** so a single ambiguous match can never silently drop real work:
+
+- **Strong** (any one is enough to screen out): a `List-Unsubscribe` header, `Precedence: bulk/list/junk`, an `Auto-Submitted` value other than `no`/`auto-replied`, or a bulk-mail-service header (`List-Id`, Mailgun/SendGrid/SES/Mailchimp/Klaviyo and friends).
+- **Weak** (two or more to screen out; **one on its own only holds the message**): a `no-reply@` sender, an unsubscribe/view-in-browser footer, an HTML-only body.
+- **Held as unclear**: an empty or very short body, a missing subject, an out-of-office/auto-reply, a bounce or `mailer-daemon` notice — plus any lone weak signal.
+
+So a genuine bug report relayed from `no-reply@` alerts is *held*, not dropped; it takes a second independent signal before todomd will refuse to make a card. Held cards keep the full subject and body. Dragging one to **Review** is how you say "this is real": that clears the held reason and hands the card to auto-triage exactly like any other new card. (**Needs Human → Plan** works too, if you already know what you want built.)
+
+**The audit log.** Every decision — including `work` — appends one JSON line to `.todomd/intake-audit.jsonl`:
+
+```json
+{"timestamp":"2026-07-31T18:04:11.902Z","source":"main","from":"Shop <no-reply@shop.example.com>",
+ "subject":"Summer sale","messageId":"<abc@shop.example.com>","verdict":"spam",
+ "reason":"Looks like marketing/automated mail (has a List-Unsubscribe header)","card":""}
+```
+
+- It is written **before** the message is marked `\Seen`, so a misclassified email is always recoverable: the `messageId` finds the original still sitting in the mailbox.
+- `card` carries the id when one was created, which makes the file a complete "which email became which card" trace.
+- It is an operational log, not board history: `todomd init` gitignores it (and so does the first write on a board that predates this), and it self-trims to the newest 500 lines.
+
+> **Security note:** email is untrusted input. Card titles are sanitized and bodies are escaped on render, so a crafted email can't corrupt a card or inject script. It *can* contain prompt-injection aimed at the triage agent — which runs read-only-ish (Edit scoped to `.todomd/tasks/`), but treat auto-triaged email cards with the same skepticism as any inbound request. Screening is a relevance filter, not a security boundary: it decides whether a message is worth a card, and a message that passes it is exactly as untrusted as one that skipped it.
 
 ---
 

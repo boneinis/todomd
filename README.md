@@ -55,7 +55,7 @@ On first open the board shows a **Getting Started** guide (the flow, the two hum
 - One server, many repos: add/remove projects from the **⊕** button next to the project switcher (paste a repo's path — it's scaffolded and registered), or from the CLI with `todomd init` inside the repo.
 - Per-column **model/skill routing** in `.todomd/config.yml` (`stages:` block): which command each column invokes, on which model, with which tools. Per-card overrides via `agent:` / `model:` frontmatter.
 - Safety: localhost-only + token; humans can't drop cards into orchestrator-only columns; agents can't touch the board from worktrees (tampering guard); failing tests block agent completion (generated Stop hook); attempt cap then **Needs Human** with a recorded reason; reconcile-on-boot catches orphaned runs.
-- Email → board: built-in **IMAP polling** (`~/.todomd/intake.json` + `todomd intake-test`) turns inbox mail into Review cards with attachments; or a zero-infra cloud-routine recipe. See `docs/email-intake.md`.
+- Email → board: built-in **IMAP polling** (`~/.todomd/intake.json` + `todomd intake-test`) turns inbox mail into Review cards with attachments; or a zero-infra cloud-routine recipe. Inbound mail is **screened** first — newsletters/bounces never make a card, ambiguous mail is held in **Needs Human** rather than dropped, and every decision is logged to `.todomd/intake-audit.jsonl`. See `docs/email-intake.md`.
 
 ## Task file
 
