@@ -4,6 +4,7 @@ import os from 'node:os';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { createCard, attachCard } from './board.js';
+import { screenEmail, appendIntakeAudit } from './screen.js';
 
 // Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json.
 // Formats (boards keyed by project name; inboxes keyed by inbox name + routes):
@@ -216,18 +217,44 @@ async function pollSource(source, getProject) {
             ? `project "${targetName}" not registered`
             : `no route matched (to: ${recipientAddresses(parsed).join(', ') || 'none'})`}`);
         } else {
-          const assignee = assigneeOf ? assigneeOf(parsed) : null; // auto-assign incoming work
-          const card = await createCard(project.path, { ...emailToCardFields(parsed), assignee });
-          if (card.ok) {
-            created++;
-            if (mid) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
-            for (const att of (parsed.attachments || []).slice(0, conf.maxAttachments ?? 5)) {
-              if (att?.content && att?.filename) {
-                try { await attachCard(project.path, card.id, att.filename, att.content); } catch {}
-              }
+          const screened = screenEmail(parsed);
+          const auditRecord = {
+            timestamp: new Date().toISOString(),
+            source: label,
+            from: parsed.from?.text || '',
+            subject: parsed.subject || '',
+            messageId: mid || '',
+            verdict: screened.verdict,
+            reason: screened.reason,
+          };
+          if (screened.verdict === 'spam') {
+            // audit BEFORE \Seen so a misclassified message is still recoverable
+            await appendIntakeAudit(project.path, auditRecord);
+            log(`intake: "${label}" screened a message as spam for ${project.name}: ${screened.reason}`);
+          } else {
+            const assignee = assigneeOf ? assigneeOf(parsed) : null; // auto-assign incoming work
+            const fields = emailToCardFields(parsed);
+            if (screened.verdict === 'unclear') {
+              fields.status = 'Needs Human';
+              fields.needs_human_reason = screened.reason;
+              fields.triaged = 'held (email screen)'; // keeps maybeTriage's status==='Review' guard off this card
             }
-            onCard(project, card.id);
-            log(`intake: "${label}" → ${project.name}: ${card.id}`);
+            const card = await createCard(project.path, { ...fields, assignee });
+            if (card.ok) {
+              created++;
+              if (mid) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
+              for (const att of (parsed.attachments || []).slice(0, conf.maxAttachments ?? 5)) {
+                if (att?.content && att?.filename) {
+                  try { await attachCard(project.path, card.id, att.filename, att.content); } catch {}
+                }
+              }
+              if (screened.verdict === 'unclear') {
+                await appendIntakeAudit(project.path, auditRecord); // audit BEFORE \Seen, same as spam
+              } else {
+                onCard(project, card.id);
+              }
+              log(`intake: "${label}" → ${project.name}: ${card.id}${screened.verdict === 'unclear' ? ' (needs human — email screen)' : ''}`);
+            }
           }
         }
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
