@@ -17,7 +17,7 @@ worktree: todomd/task-0024
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 12.2276
-needs_human_reason: cli_missing
+needs_human_reason: hook_cancelled
 ---
 
 ## Description
