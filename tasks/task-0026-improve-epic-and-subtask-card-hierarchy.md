@@ -1,7 +1,7 @@
 ---
 id: task-0026
 title: Improve epic and subtask card hierarchy
-status: Planned
+status: Queue
 type: improvement
 priority: high
 labels: [board-ui, epics, subtasks]
@@ -29,9 +29,9 @@ Redesign TODOMD’s epic and subtask presentation. A parent epic and its generat
 - [ ] An epic card shows child count and progress and can expand or collapse its planned and queued subtasks.
 - [ ] A subtask row shows title, status, dependency state, and opens that child card.
 - [ ] A child becomes a normal full card when it is in an active execution column.
-- [ ] The parent drawer has a Subtasks view instead of rendering raw Chunks YAML in the main details flow.
+- [ ] The centered card-details modal has a Subtasks view instead of rendering raw Chunks YAML in the main details flow.
 - [ ] Raw planner output remains available in a collapsed Planner record for auditability.
-- [ ] The Actions rail remains separate and sticky while details scroll independently.
+- [ ] Card details open in a centered, accessible modal that preserves board context behind it and supports closing with Escape.
 - [ ] Focused unit and browser tests cover hierarchy, dependency state, drawer switching, and responsive layout.
 
 ## Implementation Plan
