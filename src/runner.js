@@ -41,6 +41,7 @@ function runClaude({
   cwd,
   prompt,
   model,
+  effort,
   maxTurns,
   allowedTools = [],
   permissionMode = 'acceptEdits',
@@ -61,6 +62,7 @@ function runClaude({
   if (allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
   if (maxTurns) args.push('--max-turns', String(maxTurns));
   if (model) args.push('--model', model);
+  if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('--effort', effort);
 
   let settingsFile;
   if (settings) {
@@ -151,6 +153,7 @@ function runCodex({
   cwd,
   prompt,
   model,
+  effort,
   jsonSchema,
   resume,
   logFile,
@@ -163,6 +166,7 @@ function runCodex({
   if (resume) args.push('resume', resume);
   args.push('--json', '--sandbox', 'workspace-write', '--skip-git-repo-check');
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('-m', model);
+  if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);
   let schemaFile, outFile;
   if (jsonSchema) {
     schemaFile = tmp('schema.json');

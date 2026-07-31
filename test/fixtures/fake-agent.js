@@ -9,6 +9,7 @@
 //   FAKE_BUILD=good|bad|noop — whether build writes passing/failing/no code
 //   FAKE_FAIL=1              — exit non-zero (agent error)
 //   FAKE_MAXTURNS=1         — emit an error_max_turns envelope
+//   FAKE_MAXTURNS_ONCE_MARKER=<path> — emit it once, then complete normally
 //   FAKE_HANG=1|<stage>     — hang a stage until SIGTERM (1 = build; once per
 //                             FAKE_HANG_MARKER so a re-driven run proceeds)
 //   FAKE_HANG_ON=N + FAKE_HANG_COUNTER=<path> — hang only the Nth matching
@@ -75,6 +76,11 @@ if (process.env.FAKE_QUOTA_MARKER && prompt.includes('build') && !fs.existsSync(
 
 // ── forced-failure modes ──
 if (process.env.FAKE_FAIL === '1') { process.stderr.write('forced failure\n'); process.exit(1); }
+if (process.env.FAKE_MAXTURNS_ONCE_MARKER && !fs.existsSync(process.env.FAKE_MAXTURNS_ONCE_MARKER)) {
+  fs.writeFileSync(process.env.FAKE_MAXTURNS_ONCE_MARKER, '1');
+  emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope({ subtype: 'error_max_turns', is_error: true })]);
+  process.exit(0);
+}
 if (process.env.FAKE_MAXTURNS === '1') {
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope({ subtype: 'error_max_turns', is_error: true })]);
   process.exit(0);

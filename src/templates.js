@@ -23,6 +23,14 @@ branch_prefix: todomd/
 # model); else these. default_model is the fallback where a stage sets no model.
 default_agent: claude
 # default_model: sonnet
+# default_effort: high
+
+# Build agents run autonomously inside their approved task worktree. A provider
+# turn cap is treated as a checkpoint: productive work resumes automatically;
+# repeated no-progress slices pause for a human instead of looping forever.
+build_continuation:
+  enabled: true
+  max_no_progress_slices: 2
 
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
 # in-flight work (which card/files each worker is building), so several people
@@ -40,7 +48,8 @@ coordination:
 triage:
   enabled: true
   model: sonnet
-  max_turns: 15
+  effort: low
+  max_turns: 8
 
 # Each pipeline stage maps a column to the command it invokes, the model it
 # runs on, and its tool allowlist. A stage may also pin its own agent
@@ -51,6 +60,7 @@ stages:
   Plan:
     command: todomd-plan
     model: sonnet
+    effort: high
     max_turns: 20
     # Edit is scoped to the cards dir: the plan agent runs in the main checkout
     # with --permission-mode acceptEdits, so an email-injected card must not be
@@ -59,6 +69,8 @@ stages:
   Build:
     command: todomd-build
     model: sonnet
+    effort: high
+    # workflow: ultra_code  # Sonnet at xhigh plus required self-review before Verify
     max_turns: 40
     allowed_tools:
       - Read
@@ -76,20 +88,30 @@ stages:
   Verify:
     command: todomd-verify
     model: haiku
+    effort: high
     max_turns: 15
     allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)"]
+
+# Optional repeated-failure escalation. After the chosen number of failed
+# independent Verify rounds, Fable diagnoses; Opus repairs; Verify stays the
+# final independent gate.
+# escalation:
+#   enabled: true
+#   after_failed_reviews: 2
+#   diagnosis: { agent: claude, model: claude-fable-5, effort: xhigh }
+#   repair: { agent: claude, model: claude-opus-5, effort: xhigh }
 `;
 
 export const CMD_PLAN = `---
-description: Produce an implementation plan for a todomd task card
+description: Produce a focused implementation plan for a todomd task card
 ---
 
 You are the todomd PLAN agent. The task id is: $ARGUMENTS
 
 1. Locate the task file \`.todomd/tasks/<task-id>-*.md\` and read it: Description and Acceptance Criteria define the goal.
-2. **If the card has a \`## Triage\` section, start from it** — an agent already produced Insight, a Proposed plan of action, and Flags. Build on that: verify its findings against the code rather than re-deriving from scratch, follow its proposed steps where they hold up (correct them where they don't), and resolve every Flag — surface any human-decision flags in your Risks.
-3. Explore the codebase (read-only) to confirm/extend the above and understand exactly what must change to satisfy every acceptance criterion.
-4. **Decide whether to split into sequential chunks.** If the work naturally breaks into **2 or more independent steps that each build and verify on their own** — typically because it spans separable files or layers (e.g. a DB migration, then the API wiring, then the UI + tests) — produce a chunk breakdown (step 5). If it's a single cohesive change, write one plan (step 6). When unsure, prefer a single plan; don't over-split.
+2. **If the card has a \`## Triage\` section, start from its Decision and Next step.** Do not re-do triage. A Technical spike or Needs human decision must be surfaced as a risk rather than researched indefinitely.
+3. Write a short working plan immediately after reading the card. Then use only targeted, read-only inspection to validate or correct it: inspect the named files, or use at most six focused Glob/Grep/Read calls to find directly related code. Do not use Bash, repo-wide inventories, or broad architecture mapping.
+4. **Decide whether to split into sequential chunks.** If the work naturally breaks into **2 or more independent steps that each build and verify on their own** — typically because it spans separable files or layers (e.g. a DB migration, then the API wiring, then the UI + tests) — produce a chunk breakdown (step 5). If it is a broad architectural change, split it immediately rather than continuing discovery. If it's a single cohesive change, write one plan (step 6).
 5. **To split** — edit the task file (the only file you may modify), filling a \`## Chunks\` section (add it just before \`## Run Log\` if absent) and leaving \`## Implementation Plan\` empty. The section must contain exactly ONE fenced \`\`\`yaml block holding an ordered list; each item has:
    - \`title:\` a short imperative title for the chunk
    - \`plan:\` a block scalar (\`|\`) with that chunk's own numbered, concrete implementation steps (files to change, what to add where, tests to write)
@@ -103,7 +125,7 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
    Leave \`## Chunks\` empty or absent.
 7. Do NOT modify the YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
 
-Finish with a one-line summary (say whether you split into N chunks or wrote a single plan).
+Finish with a one-line summary (say whether you split into N chunks or wrote a single plan). Produce the card edit before spending the rest of the turn budget on investigation.
 `;
 
 export const CMD_BUILD = `---
@@ -115,10 +137,11 @@ You are the todomd BUILD agent. The task id is: $ARGUMENTS
 You are running inside a dedicated git worktree branch for this task. Rules:
 
 1. Read the task file \`.todomd/tasks/<task-id>-*.md\` for the Description, Acceptance Criteria, and Implementation Plan. Follow the plan.
-2. **Never modify anything under \`.todomd/\`** — this worktree's copy of the board is read-only context; the board is owned elsewhere.
-3. Implement the plan: edit/create source and test files so that every acceptance criterion is met.
-4. Run the project's verify command and iterate until it passes.
-5. Commit your changes on the current branch. Stage only the specific source/test files you modified (\`git add <file1> <file2> ...\`). **Never use \`git add -A\` or \`git add .\`**, and **never add or commit anything under \`.todomd/\`**. Follow the repository's commit conventions — if commitlint/husky enforce Conventional Commits, use an appropriate type (\`feat:\`/\`fix:\`/\`test:\`…); include the task id in the message. Do not push, do not switch branches, do not merge.
+2. Before investigating or editing, inspect \`git status\` and \`git diff\`. Treat existing task-branch changes as work to validate and finish, not work to redo.
+3. **Never modify anything under \`.todomd/\`** — this worktree's copy of the board is read-only context; the board is owned elsewhere.
+4. Implement the plan: edit/create source and test files so that every acceptance criterion is met.
+5. Run the project's verify command and iterate until it passes.
+6. Commit your changes on the current branch. Stage only the specific source/test files you modified (\`git add <file1> <file2> ...\`). **Never use \`git add -A\` or \`git add .\`**, and **never add or commit anything under \`.todomd/\`**. Follow the repository's commit conventions — if commitlint/husky enforce Conventional Commits, use an appropriate type (\`feat:\`/\`fix:\`/\`test:\`…); include the task id in the message. Do not push, do not switch branches, do not merge.
 
 Finish with a one-line summary of what you changed.
 `;
@@ -184,22 +207,22 @@ Those two drags — **Review→Plan** and **Planned→Queue** — are the only s
 `;
 
 export const CMD_TRIAGE = `---
-description: Triage an incoming todomd card — codebase insight + proposed plan of action
+description: Quickly route an incoming todomd card to the right next step
 ---
 
 You are the todomd TRIAGE agent. A new card just arrived for human review. The task id is: $ARGUMENTS
 
 1. Read the card \`.todomd/tasks/<task-id>-*.md\` (Description, Acceptance Criteria, source).
-2. Investigate the codebase enough to give the human real insight: which files/modules are involved, how the relevant code works today, likely root cause (for fixes), risks and unknowns.
-3. Edit the card file — **the only file you may modify** — adding a \`## Triage\` section (replace it if present) containing exactly:
-   - **Insight:** 2-4 sentences on what the request actually touches and anything surprising you found.
-   - **Proposed plan of action:** 3-6 numbered, concrete steps (advisory — the formal plan is written later in the Plan stage).
-   - **Estimate:** S / M / L with a clause of rationale.
-   - **Flags:** anything the human must decide or verify first (missing info, external dependencies, manual steps), or "none".
-4. If the Description is too vague to investigate, say so in **Flags** with the specific questions to answer.
+2. Make one routing decision: **Actionable**, **Technical spike needed**, **Split into smaller cards**, or **Needs human decision**.
+3. Do not perform architecture planning or broad repository exploration. You may inspect at most three directly relevant files only when the card already names them or a single targeted search identifies them. Do not use Bash.
+4. Edit the card file — **the only file you may modify** — adding a \`## Triage\` section (replace it if present) containing exactly:
+   - **Decision:** one of the four decisions above.
+   - **Rationale:** 1-2 short sentences.
+   - **Risks or questions:** concise, or "none".
+   - **Next step:** Plan, create a technical spike, split, or ask the human.
 5. Never modify the YAML frontmatter, any other section, or any other file. Do not implement anything.
 
-Finish with a one-line summary.
+Finish with a one-line routing summary. Complete the decision before additional investigation.
 `;
 
 const CMD_DISPATCH_TMPL = `---

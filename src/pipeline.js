@@ -33,7 +33,16 @@ const VERDICT_SCHEMA = {
   },
 };
 
-const IN_FLIGHT = new Set(['Plan', 'Build', 'Verify']);
+const ESCALATION_SCHEMA = {
+  type: 'object',
+  required: ['diagnosis', 'repair_strategy'],
+  properties: {
+    diagnosis: { type: 'string' },
+    repair_strategy: { type: 'string' },
+  },
+};
+
+const IN_FLIGHT = new Set(['Plan', 'Build', 'Verify', 'Escalate']);
 // statuses where a coordination claim is legitimately held (assigned-and-parked, or building)
 const BUILD_FLOW = new Set(['Queue', 'Build', 'Verify']);
 const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human']);
@@ -129,9 +138,62 @@ function stageConfig(config, stageName, card) {
   return {
     command: stage.command || `todomd-${stageName.toLowerCase()}`,
     model: card?.data?.model || stage.model || config.default_model,
-    maxTurns: stage.max_turns || 30,
+    effort: card?.data?.effort || stage.effort || config.default_effort,
+    workflow: card?.data?.workflow || stage.workflow || '',
+    // Zero deliberately means "let the provider choose its per-session cap".
+    // Build continuations below still turn a provider cap into a checkpoint.
+    maxTurns: stage.max_turns ?? 30,
     allowedTools: stage.allowed_tools || [],
   };
+}
+
+// A provider's max-turn result is a checkpoint, not automatically a human
+// blocker. Build continues in the same worktree/session while it is changing
+// the candidate. A run that repeatedly makes no git-visible progress is the
+// useful signal that a human or the escalation path is needed.
+function buildContinuationConfig(config) {
+  const c = config.build_continuation || {};
+  const n = Number(c.max_no_progress_slices);
+  return {
+    enabled: c.enabled !== false,
+    maxNoProgressSlices: Number.isInteger(n) && n > 0 ? n : 2,
+  };
+}
+
+async function progressSnapshot(worktreeAbs) {
+  const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
+  const changed = await git(worktreeAbs, ['status', '--porcelain']);
+  return {
+    head: head.ok ? head.stdout : '',
+    changed: changed.ok ? changed.stdout : '',
+  };
+}
+
+function hasProgress(before, after) {
+  return before.head !== after.head || before.changed !== after.changed;
+}
+
+function escalationConfig(config) {
+  const e = config.escalation || {};
+  if (e.enabled !== true) return null;
+  const after = Number(e.after_failed_reviews);
+  return {
+    afterFailedReviews: Number.isInteger(after) && after > 0 ? after : 2,
+    diagnosis: {
+      agent: e.diagnosis?.agent === 'codex' ? 'codex' : 'claude',
+      model: e.diagnosis?.model || 'claude-fable-5',
+      effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.diagnosis?.effort) ? e.diagnosis.effort : 'xhigh',
+    },
+    repair: {
+      agent: e.repair?.agent === 'codex' ? 'codex' : 'claude',
+      model: e.repair?.model || 'claude-opus-5',
+      effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.repair?.effort) ? e.repair.effort : 'xhigh',
+    },
+  };
+}
+
+function ultraCodeInstructions() {
+  return '\n\nUltra Code workflow: before reporting ready, inspect the surrounding implementation, complete every acceptance criterion, run the relevant tests, review your own diff for regressions, and commit the finished repair. The Stop hook remains mandatory.';
 }
 
 // Config for EXECUTION (stage tools/models, the verify_command Stop hook) is
@@ -149,7 +211,7 @@ function stageConfig(config, stageName, card) {
 // ALONE — including when it omits them, in which case the caller's own default
 // applies and NOT the working-tree value. Add any new key here that can execute
 // something or loosen a guard.
-const EXEC_KEYS = ['verify_command', 'stages', 'default_agent', 'worktree_link'];
+const EXEC_KEYS = ['verify_command', 'stages', 'default_agent', 'worktree_link', 'escalation', 'build_continuation'];
 
 async function execConfig(repoPath) {
   const workingTree = loadConfig(repoPath);
@@ -628,6 +690,7 @@ async function runTriggerStage(project, id, stageName) {
     cwd: project.path,
     prompt,
     model: stage.model,
+    effort: stage.effort,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
     logFile: runLogFile(project, id, stageName),
@@ -901,11 +964,15 @@ async function buildChain(project, id, retry = null) {
   }
 
   const stage = stageConfig(config, 'Build', card);
-  const vendor = cardVendor(config, card, 'Build');
+  // An escalation repair intentionally starts a fresh Opus session. It must
+  // not inherit the earlier Sonnet conversation or the Ultra Code preset.
+  const repair = retry?.escalation?.repair;
+  const vendor = repair?.agent || cardVendor(config, card, 'Build');
   const buildOpts = {
     vendor,
     cwd: worktreeAbs,
-    model: stage.model,
+    model: repair?.model || stage.model,
+    effort: repair?.effort || stage.effort,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
     logFile: runLogFile(project, id, 'Build', attempt),
@@ -913,11 +980,12 @@ async function buildChain(project, id, retry = null) {
   // Stop-hook quality gate is claude-only; for other vendors the independent
   // Verify stage is the gate.
   if (vendor === 'claude') buildOpts.settings = stopHookSettings(config.verify_command || 'npm test');
-  if (retry?.sessionId) {
+  if (retry?.sessionId && !repair) {
     buildOpts.resume = retry.sessionId;
     buildOpts.prompt = `The independent verifier failed your work (attempt ${attempt - 1}):\n\n${retry.findings}\n\nFix every finding, re-run the verify command until it passes, and commit on this branch.`;
   } else {
     buildOpts.prompt = stagePrompt(project, vendor, stage, id);
+    if (stage.workflow === 'ultra_code' && !repair) buildOpts.prompt += ultraCodeInstructions();
     if (retry?.findings) {
       buildOpts.prompt += `\n\nPrevious verifier findings to address:\n${retry.findings}`;
     }
@@ -931,7 +999,41 @@ async function buildChain(project, id, retry = null) {
       { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: ver.last_verdict });
   }
 
-  const { result, run } = await spawnTracked(project, id, 'Build', fromStatus, attempt, buildOpts);
+  const continuation = buildContinuationConfig(config);
+  let noProgressSlices = 0;
+  let slice = 1;
+  let before = await progressSnapshot(worktreeAbs);
+  let { result, run } = await spawnTracked(project, id, 'Build', fromStatus, attempt, buildOpts);
+
+  // Claude may impose its own default cap even when the board leaves
+  // max_turns unset. Resume a productive session rather than converting that
+  // normal checkpoint into Needs Human. This is intentionally a Build-only
+  // policy: Plan and Verify should remain short, bounded reviews.
+  while (!run?.cancelled && !run?.timedOut &&
+         continuation.enabled && classifyFailure(result, worktreeAbs).detail === 'max turns reached') {
+    const after = await progressSnapshot(worktreeAbs);
+    const progressed = hasProgress(before, after);
+    await recordRun(project, id, 'Build', attempt, result,
+      progressed ? `checkpoint ${slice}: progress detected; continuing` : `checkpoint ${slice}: no git-visible progress`);
+    noProgressSlices = progressed ? 0 : noProgressSlices + 1;
+    if (noProgressSlices >= continuation.maxNoProgressSlices) {
+      return toNeedsHuman(project, id, 'Build', 'stalled_build',
+        `No git-visible progress across ${noProgressSlices} consecutive build checkpoints`);
+    }
+
+    slice++;
+    before = after;
+    const sessionId = result.sessionId;
+    const continuationOpts = {
+      ...buildOpts,
+      resume: sessionId || undefined,
+      logFile: runLogFile(project, id, 'Build', `${attempt}-continue-${slice}`),
+      prompt: sessionId
+        ? `Continue the approved task ${id} from the current worktree state. Do not re-plan. Finish the remaining acceptance criteria, run the verify command, and commit the completed work.`
+        : `${buildOpts.prompt}\n\nContinue from the current worktree state. Do not re-plan; finish the remaining acceptance criteria, run the verify command, and commit the completed work.`,
+    };
+    ({ result, run } = await spawnTracked(project, id, 'Build', 'Build', attempt, continuationOpts));
+  }
 
   if (run?.cancelled) {
     await recordRun(project, id, 'Build', attempt, result, 'cancelled');
@@ -975,12 +1077,40 @@ async function buildChain(project, id, retry = null) {
     return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? failure.detail : failure.kind, result.stderr);
   }
 
-  await recordRun(project, id, 'Build', attempt, result, 'ok');
+  await recordRun(project, id, 'Build', attempt, result, repair ? 'ok (escalation repair)' : 'ok');
   const buildSession = result.sessionId;
   await orchMove(project, id, 'Verify', `attempt ${attempt}`);
   // thread the findings that drove this attempt so a verify-quota resume can
   // rebuild with them (the build code is in the worktree; this keeps context)
   return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);
+}
+
+async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation) {
+  const prompt = `You are TODOMD's escalation diagnostician. Task ${id} has failed two independent verification rounds. Do not edit code. Read the task, the current worktree, and the prior findings below. Return a concise root-cause diagnosis and a concrete repair strategy for the next build agent.\n\nPrior verification findings:\n${findings}`;
+  const { result, run } = await spawnTracked(project, id, 'Escalate', 'Verify', attempt, {
+    vendor: escalation.diagnosis.agent,
+    cwd: worktreeAbs,
+    prompt,
+    model: escalation.diagnosis.model,
+    effort: escalation.diagnosis.effort,
+    jsonSchema: ESCALATION_SCHEMA,
+    logFile: runLogFile(project, id, 'Escalate', attempt),
+  });
+  if (run?.cancelled) {
+    await recordRun(project, id, 'Escalate', attempt, result, 'cancelled');
+    return { ok: false, reason: 'cancelled', detail: 'escalation diagnosis cancelled' };
+  }
+  if (run?.timedOut) {
+    await recordRun(project, id, 'Escalate', attempt, result, 'run timeout');
+    return { ok: false, reason: 'run_timeout', detail: `Escalation diagnosis exceeded the ${run.timeoutMin}m stage timeout` };
+  }
+  const diagnosis = result.envelope?.structured_output;
+  if (!result.envelope || result.envelope.is_error || !diagnosis?.diagnosis || !diagnosis?.repair_strategy) {
+    await recordRun(project, id, 'Escalate', attempt, result, 'failed diagnosis');
+    return { ok: false, reason: 'escalation_failed', detail: result.stderr || 'Fable did not return a usable repair strategy' };
+  }
+  await recordRun(project, id, 'Escalate', attempt, result, 'diagnosis complete');
+  return { ok: true, findings: `${findings}\n\nFable diagnosis:\n${diagnosis.diagnosis}\n\nRequired repair strategy:\n${diagnosis.repair_strategy}` };
 }
 
 async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
@@ -1002,6 +1132,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     cwd: worktreeAbs,
     prompt: stagePrompt(project, vendor, stage, id),
     model: stage.model,
+    effort: stage.effort,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
     jsonSchema: VERDICT_SCHEMA,
@@ -1142,7 +1273,14 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   }
 
   // fail → retry loop or escalation
-  const findings = `${verdict.findings}\n${unmet.map((c) => `- unmet: ${c}`).join('\n')}`;
+  const findings = `${verdict.findings}\n${unmet.map((c) => `- unmet: ${c}`).join('\n')}`.trim();
+  const escalation = escalationConfig(config);
+  if (escalation && attempt === escalation.afterFailedReviews && attempt < maxAttempts) {
+    await appendRunLog(project.path, id, `  - escalating after ${attempt} failed reviews: Fable diagnosis → Opus repair → final Codex gate`);
+    const diagnosis = await diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation);
+    if (!diagnosis.ok) return toNeedsHuman(project, id, 'Escalate', diagnosis.reason, diagnosis.detail);
+    return buildChain(project, id, { findings: diagnosis.findings, escalation });
+  }
   if (attempt >= maxAttempts) {
     return toNeedsHuman(project, id, 'Verify', 'attempts_exhausted', findings);
   }
@@ -1178,6 +1316,8 @@ export async function maybeTriage(project, id) {
 }
 
 async function runTriage(project, id, config, t, vendor) {
+  const card = readCard(project.path, id);
+  if (!card) return;
   // stamp so a restart-time sweep treats an interrupted triage as retryable
   await patchFrontmatter(project.path, id, { triaged: 'running' });
 
@@ -1206,7 +1346,8 @@ async function runTriage(project, id, config, t, vendor) {
     vendor,
     cwd: codexTriage ? path.join(project.path, '.todomd', 'tasks') : project.path,
     prompt: codexTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
-    model: t.model,
+    model: card.data.model || t.model || config.default_model,
+    effort: card.data.effort || t.effort || config.default_effort,
     maxTurns: t.max_turns || 15,
     allowedTools: ['Read(./**)', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'], // claude-only; codex ignores this
     logFile: runLogFile(project, id, 'Triage'),

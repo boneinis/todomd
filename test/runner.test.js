@@ -35,6 +35,18 @@ test('spawn error (missing binary) reports spawnError, not a crash', async () =>
   assert.ok(r.spawnError);
 });
 
+test('passes configured effort to the Claude CLI', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  const log = path.join(tmp('effort'), 'argv.jsonl');
+  process.env.FAKE_ARGV_LOG = log;
+  const { done } = runStage({ cwd: process.cwd(), prompt: 'anything', effort: 'xhigh' });
+  await done;
+  delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_ARGV_LOG;
+  const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+  assert.deepEqual(argv.slice(argv.indexOf('--effort'), argv.indexOf('--effort') + 2), ['--effort', 'xhigh']);
+});
+
 // the jsonl tee is telemetry: an unwritable path (full disk, read-only mount,
 // a stray FILE where the runs dir should be) must not take the server down —
 // without an 'error' listener a stream error is an uncaught exception

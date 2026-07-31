@@ -406,6 +406,8 @@ async function openDrawer(id) {
   $('#route-agent').value = card.data.agent || 'claude';
   setModelOptions($('#route-agent').value); // suggestions match the card's vendor
   $('#route-model').value = card.data.model || '';
+  $('#route-effort').value = card.data.effort || '';
+  $('#route-workflow').value = card.data.workflow || '';
   $('#route-skill').value = card.data.skill || '';
   $('#route-assignee').value = card.data.assignee || '';
   const cols = boardData?.config?.columns || [];
@@ -521,6 +523,8 @@ $('#route-save').addEventListener('click', async () => {
       body: JSON.stringify({
         agent: $('#route-agent').value,
         model: $('#route-model').value.trim(),
+        effort: $('#route-effort').value,
+        workflow: $('#route-workflow').value,
         skill: $('#route-skill').value.trim(),
         assignee: $('#route-assignee').value.trim(),
       }),
@@ -754,13 +758,15 @@ $('#theme-btn').addEventListener('click', () => {
 
 /* ── column settings: locked-core/editable prompt + per-column agent/model ── */
 let promptCommands = [];
-let promptDefaults = { agent: 'claude', model: '' };
+let promptDefaults = { agent: 'claude', model: '', effort: '' };
 let routingColumn = null;
 // the column's effective agent/model = its own override, else the board default
 function renderRoutingNote(item) {
   const agent = item.agent || `${promptDefaults.agent} (board)`;
   const model = item.model || (promptDefaults.model ? `${promptDefaults.model} (board)` : 'CLI default');
-  $('#stage-routing-note').textContent = `runs as ${agent} · ${model} — a card can still override per-card`;
+  const effort = item.effort || (promptDefaults.effort ? `${promptDefaults.effort} (board)` : 'CLI default');
+  const workflow = item.workflow === 'ultra_code' ? ' · Ultra Code workflow' : '';
+  $('#stage-routing-note').textContent = `runs as ${agent} · ${model} · ${effort} effort${workflow} — a card can still override per-card`;
 }
 async function updateRoutingRow(item) {
   const row = $('#prompt-routing');
@@ -768,6 +774,9 @@ async function updateRoutingRow(item) {
   routingColumn = item.column;
   $('#stage-agent').value = item.agent || '';
   $('#stage-model').value = item.model || '';
+  $('#stage-effort').value = item.effort || '';
+  $('#stage-workflow').value = item.workflow || '';
+  $('#stage-workflow-row').hidden = item.column !== 'Build';
   row.hidden = false;
   await setModelOptions(item.agent || promptDefaults.agent); // suggestions match the effective vendor
   renderRoutingNote(item);
@@ -785,9 +794,9 @@ async function loadPromptCommand(command) {
 async function openPromptEditor(command) {
   if (!currentProject) return;
   try {
-    const { commands, defaultAgent, defaultModel } = await api(`commands?project=${encodeURIComponent(currentProject)}`);
+    const { commands, defaultAgent, defaultModel, defaultEffort } = await api(`commands?project=${encodeURIComponent(currentProject)}`);
     promptCommands = commands;
-    promptDefaults = { agent: defaultAgent || 'claude', model: defaultModel || '' };
+    promptDefaults = { agent: defaultAgent || 'claude', model: defaultModel || '', effort: defaultEffort || '' };
     $('#prompt-select').innerHTML = commands.map((c) => `<option value="${esc(c.command)}">${esc(c.column)} — ${esc(c.command)}</option>`).join('');
     const target = (command && commands.some((c) => c.command === command)) ? command : commands[0]?.command;
     if (target) { $('#prompt-select').value = target; await loadPromptCommand(target); }
@@ -822,6 +831,20 @@ $('#stage-model').addEventListener('change', async (e) => {
   if (await saveRouting({ model: e.target.value }) && item) {
     item.model = e.target.value.replace(/[^\w.-]/g, '');
     renderRoutingNote(item); toast(`${col} model saved`);
+  }
+});
+$('#stage-effort').addEventListener('change', async (e) => {
+  const col = routingColumn, item = promptCommands.find((c) => c.column === col);
+  if (await saveRouting({ effort: e.target.value }) && item) {
+    item.effort = e.target.value;
+    renderRoutingNote(item); toast(`${col} effort saved`);
+  }
+});
+$('#stage-workflow').addEventListener('change', async (e) => {
+  const col = routingColumn, item = promptCommands.find((c) => c.column === col);
+  if (await saveRouting({ workflow: e.target.value }) && item) {
+    item.workflow = e.target.value;
+    renderRoutingNote(item); toast(`${col} workflow saved`);
   }
 });
 $('#prompts-close').addEventListener('click', () => { $('#prompts-backdrop').hidden = true; });
@@ -997,6 +1020,8 @@ $('#card-form').addEventListener('submit', async (e) => {
     priority: f.get('priority'),
     agent: f.get('agent'),
     model: (f.get('model') || '').trim() || undefined,
+    effort: f.get('effort') || undefined,
+    workflow: f.get('workflow') || undefined,
     skill: (f.get('skill') || '').trim() || undefined,
     assignee: (f.get('assignee') || '').trim() || undefined,
     labels: String(f.get('labels') || '').split(',').map((s) => s.trim()).filter(Boolean),

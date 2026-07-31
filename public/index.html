@@ -79,6 +79,8 @@
         <select id="route-agent" class="rail-input"><option>claude</option><option>codex</option></select>
       </label>
       <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
+      <label class="rail-field">effort <select id="route-effort" class="rail-input"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+      <label class="rail-field">build workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
       <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
       <label class="rail-field">assignee <input id="route-assignee" class="rail-input" placeholder="developer" autocomplete="off" /></label>
       <button id="route-save" class="rail-btn rail-primary">save</button>
@@ -131,6 +133,8 @@
         </select>
       </label>
       <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
+      <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+      <label>build workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
       <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
     </div>
     <label>description <textarea name="description" rows="3"></textarea></label>
@@ -160,6 +164,12 @@
       </label>
       <label>model
         <input id="stage-model" list="model-options" placeholder="board default" autocomplete="off" />
+      </label>
+      <label>effort
+        <select id="stage-effort"><option value="">board default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
+      </label>
+      <label id="stage-workflow-row">build workflow
+        <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option></select>
       </label>
       <span id="stage-routing-note" class="qr-note"></span>
     </div>

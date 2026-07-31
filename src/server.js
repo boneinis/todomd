@@ -270,12 +270,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
       // stage columns carry per-column agent/model routing (the "column" tier);
       // triage/dispatch don't, so they're flagged stage:false to hide selectors
       for (const [col, s] of Object.entries(cfg.stages || {})) {
-        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', agent: s.agent || '', stage: true });
+        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', effort: s.effort || '', workflow: s.workflow || '', agent: s.agent || '', stage: true });
       }
       if (cfg.triage) list.push({ column: 'Triage (auto)', command: cfg.triage.command || 'todomd-triage', model: cfg.triage.model || '', stage: false });
       list.push({ column: 'Dispatch (budget mode)', command: 'todomd-dispatch', model: '', stage: false });
       for (const it of list) it.exists = fs.existsSync(path.join(project.path, '.claude', 'commands', `${it.command}.md`));
-      return json(res, 200, { commands: list, defaultAgent: cfg.default_agent || 'claude', defaultModel: cfg.default_model || '' });
+      return json(res, 200, { commands: list, defaultAgent: cfg.default_agent || 'claude', defaultModel: cfg.default_model || '', defaultEffort: cfg.default_effort || '' });
     }
     const cmdMatch = url.pathname.match(/^\/api\/commands\/([\w-]+)$/);
     if (cmdMatch) {
@@ -320,6 +320,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
         updates.agent = fields.agent || '';
       }
       if ('model' in fields) updates.model = String(fields.model || '');
+      if ('effort' in fields) updates.effort = String(fields.effort || '');
+      if ('workflow' in fields) {
+        if (col !== 'Build') return json(res, 400, { error: 'workflow presets are available only for Build' });
+        updates.workflow = String(fields.workflow || '');
+      }
       const result = await setStageRouting(project.path, col, updates);
       return json(res, result.ok ? 200 : 400, result);
     }
@@ -476,6 +481,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
         updates.agent = fields.agent;
       }
       if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
+      if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
+      if ('workflow' in fields) updates.workflow = fields.workflow === 'ultra_code' ? 'ultra_code' : '';
       if ('skill' in fields) updates.skill = String(fields.skill || '').replace(/[^\w:-]/g, '');
       if ('assignee' in fields) updates.assignee = String(fields.assignee || '').replace(/[^\w.@ -]/g, '').trim();
       if (!Object.keys(updates).length) return json(res, 400, { error: 'nothing to set' });

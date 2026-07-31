@@ -44,6 +44,42 @@ test('happy path: Review → Plan → Planned → Queue → Build → Verify →
   clearFakeAgent();
 });
 
+test('a productive Build turn-limit checkpoint resumes automatically and reaches Done', async () => {
+  isolateHome();
+  const marker = path.join(tmp('checkpoint'), 'first-slice');
+  useFakeAgent({ verdict: 'pass', build: 'good', maxturns_once_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-continue', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-continue', 'Queue');
+  await until(() => status(repo, 'task-continue') === 'Done', { timeout: BUDGET.chain });
+
+  const card = readCard(repo, 'task-continue');
+  assert.ok(fs.existsSync(marker), 'the first slice reached its provider turn limit');
+  assert.match(card.body, /checkpoint 1: no git-visible progress/, 'the checkpoint was recorded');
+  assert.equal(card.data.needs_human_reason || '', '', 'a productive continuation does not need a human');
+  clearFakeAgent();
+});
+
+test('repeated no-progress Build checkpoints pause safely for a human', async () => {
+  isolateHome();
+  useFakeAgent({ maxturns: 1 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-stalled', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-stalled', 'Queue');
+  await until(() => status(repo, 'task-stalled') === 'Needs Human', { timeout: BUDGET.stage });
+
+  const card = readCard(repo, 'task-stalled');
+  assert.equal(card.data.needs_human_reason, 'stalled_build');
+  assert.match(card.body, /checkpoint 2: no git-visible progress/);
+  clearFakeAgent();
+});
+
 test('stage routing precedence: a column agent gates the queue; a card agent overrides it', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });

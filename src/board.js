@@ -45,7 +45,7 @@ export function loadConfig(repoPath) {
   }
 }
 
-// Per-column agent/model override — the "column" tier of card → column → board.
+// Per-column agent/model/effort/workflow override — the "column" tier of card → column → board.
 // A comment-preserving, block-format line patch of .todomd/config.yml's
 // `stages.<col>` map: sets the agent/model line, or removes it when the value is
 // empty (so the column falls back to the board default). js-yaml.dump would
@@ -59,10 +59,12 @@ export function setStageRouting(repoPath, col, updates) {
     const eol = raw.includes('\r\n') ? '\r\n' : '\n';
     const lines = raw.split(/\r?\n/);
 
-    // sanitize: agent is an enum-ish slug, model is [\w.-]; '' clears the override
+    // sanitize: agent is an enum-ish slug, model is [\w.-], effort/workflow are enums; '' clears the override
     const clean = {};
     if ('agent' in updates) clean.agent = String(updates.agent || '').replace(/[^\w-]/g, '');
     if ('model' in updates) clean.model = String(updates.model || '').replace(/[^\w.-]/g, '');
+    if ('effort' in updates) clean.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(updates.effort || '')) ? String(updates.effort) : '';
+    if ('workflow' in updates) clean.workflow = String(updates.workflow || '') === 'ultra_code' ? 'ultra_code' : '';
     if (!Object.keys(clean).length) return { ok: true, unchanged: true };
 
     const commit = () => commitPaths(repoPath, [path.join('.todomd', 'config.yml')],
@@ -495,7 +497,7 @@ dependencies: [${deps.join(', ')}]${parent ? `\nparent: ${parent}` : ''}
 created_date: ${new Date().toISOString().slice(0, 10)}
 source: ${fmScalar(fields.source, 'ui')}
 assignee: ${fields.assignee ? String(fields.assignee).replace(/[^\w.@ -]/g, '').trim() : ''}
-agent: ${fields.agent === 'codex' ? 'codex' : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
+agent: ${fields.agent === 'codex' ? 'codex' : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? `\neffort: ${fields.effort}` : ''}${fields.workflow === 'ultra_code' ? '\nworkflow: ultra_code' : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
