@@ -218,9 +218,15 @@ function runCodex({
     child.on('close', (code) => {
       if (lineBuf.trim()) handleLine(lineBuf); // flush trailing newline-less event
       let structured;
+      let lastMessage = '';
       if (outFile) {
-        try { structured = JSON.parse(fs.readFileSync(outFile, 'utf8')); } catch {}
+        try {
+          lastMessage = fs.readFileSync(outFile, 'utf8');
+          structured = JSON.parse(lastMessage);
+        } catch {}
       }
+      if (stderr.trim()) log?.write(JSON.stringify({ type: 'runner-stderr', text: stderr.slice(0, 4000) }) + '\n');
+      if (lastMessage.trim() && !structured) log?.write(JSON.stringify({ type: 'runner-last-message', text: lastMessage.slice(0, 4000) }) + '\n');
       cleanup();
       const ok = code === 0 && !failed;
       resolve({
