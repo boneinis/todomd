@@ -59,6 +59,7 @@ const active = new Map();            // project name → running build/verify ch
 const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
 const retryFindings = new Map();      // runKey → verifier findings to carry into a resumed build
+const recoveryBuilds = new Map();     // runKey → guarded orphaned-Build continuation state
 
 // On a usage limit the card is parked back in Queue with its attempt rolled
 // back; resume (or boot) re-enqueues it through the normal queue, so accounting
@@ -307,6 +308,33 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr }, cwd) {
   return { kind: 'agent', detail: envelope?.subtype || `exit ${exitCode}` };
 }
 
+function diagnosticSnippet(value, max = 220) {
+  if (value === undefined || value === null || value === '') return '';
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return String(text).replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+// Card history gets a concise, explicitly infrastructural explanation. The
+// complete bounded fields remain in runner-diagnostic inside the private jsonl.
+function codexVerifierDiagnostic(result) {
+  const d = result?.diagnostic || {};
+  const executable = d.executable || 'codex';
+  const cwd = d.cwd || '(unknown working directory)';
+  const exit = d.spawnError
+    ? `could not start (${d.spawnError})`
+    : d.signal
+      ? `ended by ${d.signal}${d.exitCode == null ? '' : `, exit ${d.exitCode}`}`
+      : `exited ${d.exitCode ?? result?.exitCode ?? 'unknown'}`;
+  const stderr = diagnosticSnippet(d.stderr || result?.stderr);
+  const output = d.structuredOutput !== undefined && d.structuredOutput !== null
+    ? `structured output: ${diagnosticSnippet(d.structuredOutput)}`
+    : d.finalMessage
+      ? `final message: ${diagnosticSnippet(d.finalMessage)}`
+      : 'no final message or structured output';
+  return `Codex verification infrastructure: ${executable} in ${cwd} ${exit}; ` +
+    `${stderr ? `stderr: ${stderr}; ` : 'stderr: (empty); '}${output}; no valid verdict`;
+}
+
 async function recordRun(project, id, stage, attempt, result, note) {
   const cost = result?.envelope?.total_cost_usd || 0;
   const turns = result?.envelope?.num_turns ?? '?';
@@ -325,7 +353,10 @@ async function recordRun(project, id, stage, attempt, result, note) {
 async function toNeedsHuman(project, id, from, reason, detail = '') {
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
-  await patchFrontmatter(project.path, id, { needs_human_reason: reason });
+  await patchFrontmatter(project.path, id, {
+    needs_human_reason: reason,
+    recovery_stage: reason === 'orphaned_run' ? from : '',
+  });
   if (detail) await appendRunLog(project.path, id, `  - ${reason}: ${detail.slice(0, 400)}`);
   await orchMove(project, id, 'Needs Human', reason);
   sendState(project, id, 'idle');
@@ -344,6 +375,7 @@ export async function releaseCardResources(project, id) {
   const qi = q ? q.indexOf(id) : -1;
   if (qi >= 0) q.splice(qi, 1);
   retryFindings.delete(runKey(project.name, id));
+  recoveryBuilds.delete(runKey(project.name, id));
   await releaseCoordination(project, id);
   const card = readCard(project.path, id);
   if (card?.data?.worktree) {
@@ -400,7 +432,12 @@ export async function answerCard(project, id, answer) {
 }
 
 function runLogFile(project, id, stage, attempt) {
-  return path.join(project.path, '.todomd', 'runs', id, `${stage.toLowerCase()}-${attempt || Date.now()}.jsonl`);
+  const dir = path.join(project.path, '.todomd', 'runs', id);
+  const stem = `${stage.toLowerCase()}-${attempt || Date.now()}`;
+  const first = path.join(dir, `${stem}.jsonl`);
+  // Direct Verify retries and the one-time malformed-verdict rerun reuse the
+  // same attempt number. Never truncate the earlier attempt's raw diagnostic.
+  return fs.existsSync(first) ? path.join(dir, `${stem}-${Date.now()}.jsonl`) : first;
 }
 
 function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
@@ -409,18 +446,34 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     // never overwrite a live run's tracking entry — that would orphan it
     return Promise.resolve({ result: { envelope: null, exitCode: -1, stderr: 'already running' }, run: null });
   }
+  let run;
+  let observedSession = null;
+  const saveSession = (sessionId) => {
+    if (!sessionId || sessionId === observedSession) return;
+    observedSession = sessionId;
+    if (run) {
+      run.sessionId = sessionId;
+      persistRuns();
+    }
+    // A Build process can be killed by a service restart before recordRun sees
+    // its final envelope. Save its provider session as soon as init arrives so
+    // Resume Build can continue that exact run in the preserved worktree.
+    if (stage === 'Build') patchFrontmatter(project.path, id, { session_id: sessionId }).catch(() => {});
+  };
   const { child, done } = runStage({
     ...opts,
     onEvent: (event) => {
+      saveSession(event.session_id || event.thread_id || event?.thread?.id);
       if (event.type === 'assistant' || event.type === 'rate_limit_event' ||
           (event.type === 'system' && event.subtype === 'init')) {
         broadcast({ type: 'run-event', project: project.name, card: id, event });
       }
     },
   });
-  const run = {
+  run = {
     project: project.name, card: id, stage, pid: child.pid,
     startedAt: new Date().toISOString(), prevStatus, attempt,
+    ...(observedSession ? { sessionId: observedSession } : {}),
   };
   runs.set(key, run);
   children.set(key, child);
@@ -488,6 +541,7 @@ export async function humanMove(project, id, to) {
       return { ok: true, cancelled: true };
     }
     retryFindings.delete(key);
+    recoveryBuilds.delete(key);
     await releaseCoordination(project, id); // a card pulled back out of the build flow drops its claim
     // discard any stale worktree (like the Planned retry path) so a re-driven
     // card starts fresh instead of building on abandoned commits
@@ -495,7 +549,7 @@ export async function humanMove(project, id, to) {
       const wtDir = config.worktree_dir || '.todomd/worktrees';
       await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
     }
-    await patchFrontmatter(project.path, id, { needs_human_reason: '', worktree: '', base_branch: '' });
+    await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '', worktree: '', base_branch: '' });
     const result = await moveCard(project.path, id, 'Review', { reason: 'retriage' });
     if (card.data.epic) await cascadeEpicCleanup(project, id);
     return result;
@@ -549,6 +603,7 @@ export async function humanMove(project, id, to) {
   if (to === 'Planned') {
     if (from !== 'Needs Human') return { ok: false, error: 'Planned is set by the orchestrator' };
     retryFindings.delete(key);
+    recoveryBuilds.delete(key);
     const ver = card.data.verification || {};
     // discard the rejected worktree so the fresh attempt doesn't build on top of it
     if (card.data.worktree) {
@@ -559,6 +614,7 @@ export async function humanMove(project, id, to) {
     }
     await patchFrontmatter(project.path, id, {
       needs_human_reason: '',
+      recovery_stage: '',
       worktree: '',
       base_branch: '',
       verification: { attempts: 0, max_attempts: ver.max_attempts || config.max_attempts || 3, last_verdict: '' },
@@ -590,6 +646,61 @@ export async function humanMove(project, id, to) {
 // A verifier that could not return a verdict may be retried without throwing
 // away a completed build. This is deliberately narrower than Needs Human →
 // Planned: that route starts a fresh worktree and build attempt.
+async function preservedWorktree(project, card) {
+  if (!card?.data?.worktree) return null;
+  const config = await execConfig(project.path);
+  const worktreeAbs = path.join(project.path, config.worktree_dir || '.todomd/worktrees', card.data.id);
+  if (!fs.existsSync(worktreeAbs)) return null;
+  if (!(await worktreeValid(worktreeAbs, card.data.worktree))) return null;
+  return { config, worktreeAbs, branch: card.data.worktree };
+}
+
+export async function recoveryActions(project, id) {
+  const card = readCard(project.path, id);
+  if (!card || card.data.status !== 'Needs Human' || hasLiveRun(project.name, id)) {
+    return { resume_build: false, retry_verification: false };
+  }
+  const kept = await preservedWorktree(project, card);
+  return {
+    resume_build: !!kept && card.data.needs_human_reason === 'orphaned_run' && card.data.recovery_stage === 'Build',
+    retry_verification: !!kept && ['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason),
+  };
+}
+
+// Resume only a Build that reconcileOnBoot positively identified as orphaned.
+// The preserved git worktree and its checked-out branch are validated twice
+// (here and when the queued continuation starts); neither path can recreate it.
+export async function resumeBuild(project, id) {
+  const card = readCard(project.path, id);
+  if (!card) return { ok: false, error: 'card not found' };
+  if (card.data.status !== 'Needs Human' || card.data.needs_human_reason !== 'orphaned_run' || card.data.recovery_stage !== 'Build') {
+    return { ok: false, error: 'card is not an eligible orphaned Build run' };
+  }
+  const key = runKey(project.name, id);
+  if (hasLiveRun(project.name, id) || (queues.get(project.name) || []).includes(id)) {
+    return { ok: false, error: 'run already in progress' };
+  }
+  const kept = await preservedWorktree(project, card);
+  if (!kept) return { ok: false, error: 'the preserved Build worktree is unavailable or no longer valid' };
+  const verification = card.data.verification || {};
+  const attempt = Math.max(1, Number(verification.attempts) || 1);
+  const maxAttempts = Number(verification.max_attempts) || kept.config.max_attempts || 3;
+  await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
+  await appendRunLog(project.path, id,
+    `- ${now()} · Resume Build · continuing attempt ${attempt} in preserved worktree ${kept.branch}`);
+  const moved = await orchMove(project, id, 'Build', 'resuming orphaned run in preserved worktree');
+  if (!moved.ok) return moved;
+  recoveryBuilds.set(key, {
+    attempt,
+    maxAttempts,
+    branch: kept.branch,
+    worktreeAbs: kept.worktreeAbs,
+    sessionId: card.data.session_id || '',
+  });
+  enqueueBuild(project, id);
+  return { ok: true, worktree: kept.branch, attempt };
+}
+
 export async function retryVerification(project, id) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
@@ -597,15 +708,14 @@ export async function retryVerification(project, id) {
   if (!['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason)) {
     return { ok: false, error: 'only an unavailable verification verdict can be retried directly' };
   }
-  if (!card.data.worktree) return { ok: false, error: 'the preserved worktree is unavailable' };
-  const config = await execConfig(project.path);
-  const worktreeAbs = path.join(project.path, config.worktree_dir || '.todomd/worktrees', id);
-  if (!fs.existsSync(worktreeAbs)) return { ok: false, error: 'the preserved worktree no longer exists' };
-  if (children.has(runKey(project.name, id))) return { ok: false, error: 'run already in progress' };
+  const kept = await preservedWorktree(project, card);
+  if (!kept) return { ok: false, error: 'the preserved worktree is unavailable or no longer valid' };
+  const { config, worktreeAbs } = kept;
+  if (hasLiveRun(project.name, id)) return { ok: false, error: 'run already in progress' };
   const verification = card.data.verification || {};
   const attempt = Math.max(1, Number(verification.attempts) || 1);
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
-  await patchFrontmatter(project.path, id, { needs_human_reason: '' });
+  await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
   await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
   verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '')
     .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)));
@@ -644,7 +754,13 @@ export function cancel(project, id) {
     const qi = q.indexOf(id);
     if (qi >= 0) {
       q.splice(qi, 1);
+      const recovery = recoveryBuilds.get(key);
+      recoveryBuilds.delete(key);
       sendState(project, id, 'idle');
+      if (recovery) {
+        return toNeedsHuman(project, id, 'Build', 'orphaned_run',
+          'Resume Build was cancelled before it started; the worktree remains preserved').then(() => ({ ok: true }));
+      }
       return moveCard(project.path, id, 'Planned', { reason: 'dequeued' }).then(() => ({ ok: true }));
     }
     return { ok: false, error: 'no live run' };
@@ -848,9 +964,11 @@ function processQueue(project) {
     // failure: after toNeedsHuman/revert completes)
     const key = runKey(project.name, id);
     const entry = { cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false };
+    const recovery = recoveryBuilds.get(key) || null;
+    recoveryBuilds.delete(key);
     pending.set(key, entry);
     active.set(project.name, (active.get(project.name) || 0) + 1);
-    buildChain(project, id)
+    buildChain(project, id, null, recovery)
       .catch((err) => pipelineError(project, id, err))
       .finally(() => {
         // a re-enqueue (e.g. a verify-cancel at concurrency>1) may already have
@@ -911,7 +1029,7 @@ async function worktreeValid(worktreeAbs, branch) {
   return head.ok && head.stdout === branch;
 }
 
-async function buildChain(project, id, retry = null) {
+async function buildChain(project, id, retry = null, recovery = null) {
   const config = await execConfig(project.path);
   const card = readCard(project.path, id);
   if (!card) return;
@@ -928,18 +1046,22 @@ async function buildChain(project, id, retry = null) {
   // carry findings from a verify-fail build that was then quota-parked
   if (!retry && retryFindings.has(key)) { retry = { findings: retryFindings.get(key) }; retryFindings.delete(key); }
   const ver = card.data.verification || {};
-  const attempt = (Number(ver.attempts) || 0) + 1;
-  const maxAttempts = Number(ver.max_attempts) || config.max_attempts || 3;
-  const branch = `${config.branch_prefix || 'todomd/'}${id}`;
+  const attempt = recovery?.attempt || (Number(ver.attempts) || 0) + 1;
+  const maxAttempts = recovery?.maxAttempts || Number(ver.max_attempts) || config.max_attempts || 3;
+  const branch = recovery?.branch || `${config.branch_prefix || 'todomd/'}${id}`;
   const worktreeRel = path.join(config.worktree_dir || '.todomd/worktrees', id);
-  const worktreeAbs = path.join(project.path, worktreeRel);
-  const fromStatus = retry ? 'Verify' : 'Queue';
+  const worktreeAbs = recovery?.worktreeAbs || path.join(project.path, worktreeRel);
+  const fromStatus = recovery ? 'Build' : retry ? 'Verify' : 'Queue';
 
   // worktree exists across retries; create on first attempt. A leftover dir is
   // only reusable if it's a real git worktree checked out on THIS task's branch
   // — a user-switched or half-removed one must be recreated, not built upon.
   let forkedFrom = null;
-  if (fs.existsSync(worktreeAbs) && !(await worktreeValid(worktreeAbs, branch))) {
+  if (recovery && (!fs.existsSync(worktreeAbs) || !(await worktreeValid(worktreeAbs, branch)))) {
+    return toNeedsHuman(project, id, fromStatus, 'worktree_failed',
+      'the preserved orphaned-Build worktree is no longer available or is checked out on a different branch; nothing was recreated');
+  }
+  if (!recovery && fs.existsSync(worktreeAbs) && !(await worktreeValid(worktreeAbs, branch))) {
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
     if (fs.existsSync(worktreeAbs)) {
       // a dir at the worktree path that isn't a registered worktree can't be
@@ -949,7 +1071,7 @@ async function buildChain(project, id, retry = null) {
         'a stale directory at the worktree path is not a git worktree and could not be removed — remove it manually, then drag the card back to Queue');
     }
   }
-  if (!fs.existsSync(worktreeAbs)) {
+  if (!recovery && !fs.existsSync(worktreeAbs)) {
     // capture the base branch BEFORE forking: the merge at the end must land on
     // this same branch — if the user switches branches mid-run, merging would
     // silently drop verified work on the wrong branch. A detached HEAD resolves
@@ -973,7 +1095,7 @@ async function buildChain(project, id, retry = null) {
   // multi-developer coordination: claim the files this card touches, surface
   // (or block on) overlap with another worker's active work
   const coord = config.coordination || {};
-  if (coord.enabled && attempt === 1) {
+  if (coord.enabled && (attempt === 1 || recovery)) {
     try {
       const files = coordPlanFiles(card.body);
       const conflicts = await coordClaim(project.path,
@@ -1008,7 +1130,12 @@ async function buildChain(project, id, retry = null) {
   // Stop-hook quality gate is claude-only; for other vendors the independent
   // Verify stage is the gate.
   if (vendor === 'claude') buildOpts.settings = stopHookSettings(config.verify_command || 'npm test');
-  if (retry?.sessionId && !repair) {
+  if (recovery && !repair) {
+    buildOpts.resume = recovery.sessionId || undefined;
+    buildOpts.prompt = recovery.sessionId
+      ? `Continue the approved task ${id} from its preserved Build session and current worktree state. Do not re-plan or restart. Finish the remaining acceptance criteria, run the verify command, and commit the completed work.`
+      : `${stagePrompt(project, vendor, stage, id)}\n\nThis is a recovery of an interrupted Build. Continue from the existing worktree changes; do not discard them, recreate the worktree, re-plan, or restart the task from scratch.`;
+  } else if (retry?.sessionId && !repair) {
     buildOpts.resume = retry.sessionId;
     buildOpts.prompt = `The independent verifier failed your work (attempt ${attempt - 1}):\n\n${retry.findings}\n\nFix every finding, re-run the verify command until it passes, and commit on this branch.`;
   } else {
@@ -1201,21 +1328,26 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const verdict = result.envelope?.structured_output;
   if (!result.envelope || result.envelope.is_error || !verdict || !verdict.verdict) {
     const failure = classifyFailure(result, worktreeAbs);
+    const infrastructure = vendor === 'codex' ? codexVerifierDiagnostic(result) : '';
     if (failure.kind === 'quota') {
       // park back in Queue; resume re-enters the build→verify chain (the
       // existing worktree is reused). Attempt rolled back so none is burned.
-      await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
+      if (infrastructure) await recordRun(project, id, 'Verify', attempt, result, `infrastructure: ${infrastructure}`);
+      else await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
       return parkForQuota(project, id, attempt, maxAttempts, priorFindings);
     }
     if (!isRerun && failure.kind === 'agent') {
+      if (infrastructure) await recordRun(project, id, 'Verify', attempt, result, `infrastructure: ${infrastructure}`);
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · malformed verdict, re-running once`);
       return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, true, priorFindings);
     }
     // a genuinely malformed verdict is bad_verdict; a spawn-level failure
     // (e.g. worktree_failed on a deleted cwd) keeps its own kind
-    const reason = failure.kind === 'agent' ? 'bad_verdict' : failure.kind;
-    await recordRun(project, id, 'Verify', attempt, result, `failed: ${reason}`);
-    return toNeedsHuman(project, id, 'Verify', reason, result.stderr);
+    const codexUnavailable = vendor === 'codex' && failure.kind !== 'worktree_failed' && failure.kind !== 'hook_cancelled';
+    const reason = codexUnavailable || failure.kind === 'agent' ? 'bad_verdict' : failure.kind;
+    await recordRun(project, id, 'Verify', attempt, result,
+      infrastructure ? `infrastructure: ${infrastructure}` : `failed: ${reason}`);
+    return toNeedsHuman(project, id, 'Verify', reason, infrastructure || result.stderr);
   }
 
   const unmet = (verdict.criteria || []).filter((c) => !c.met).map((c) => c.criterion);
@@ -1474,10 +1606,19 @@ export async function reconcileOnBoot() {
           // never delete unmerged work. If the branch already landed (crash
           // between merge and the Done move), the work is safe: the card goes
           // straight to Done and the leftovers are cleaned up.
-          const branch = `${branchPrefix}${card.id}`;
+          const branch = card.worktree || `${branchPrefix}${card.id}`;
           const wtAbs = path.join(project.path, wtDir, card.id);
           const buildish = card.status === 'Build' || card.status === 'Verify';
+          // The branch tip being on HEAD is not enough: an interrupted agent
+          // may have valuable uncommitted or untracked work in its worktree.
+          // Any dirty (or unreadable) preserved worktree makes this unlanded.
+          let worktreeHasChanges = false;
+          if (buildish && fs.existsSync(wtAbs)) {
+            const status = await git(wtAbs, ['status', '--porcelain']);
+            worktreeHasChanges = !status.ok || !!status.stdout;
+          }
           const landed = buildish &&
+            !worktreeHasChanges &&
             (await git(project.path, ['merge-base', '--is-ancestor', branch, 'HEAD'])).ok;
           if (landed) {
             await withRepoLock(project.path, () => removeWorktree(project.path, wtAbs, branch));
@@ -1600,6 +1741,7 @@ export function forgetProject(projectName) {
   quotaPaused.delete(projectName);
   const prefix = `${projectName}:`;
   for (const k of retryFindings.keys()) if (k.startsWith(prefix)) retryFindings.delete(k);
+  for (const k of recoveryBuilds.keys()) if (k.startsWith(prefix)) recoveryBuilds.delete(k);
   for (const k of pending.keys()) if (k.startsWith(prefix)) pending.delete(k);
 }
 

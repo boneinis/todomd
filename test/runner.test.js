@@ -7,6 +7,7 @@ import { tmp } from './helpers.js';
 import { runStage, stopHookSettings } from '../src/runner.js';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-agent.js');
+const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
 
 test('stream-json: captures session id, final envelope, and flushes a trailing newline-less event', async () => {
   process.env.TODOMD_CLAUDE_BIN = FAKE;
@@ -88,4 +89,65 @@ test('buffered mode (--json-schema) returns structured_output', async () => {
   const { envelope } = await done;
   delete process.env.FAKE_VERDICT; delete process.env.TODOMD_CLAUDE_BIN;
   assert.equal(envelope.structured_output.verdict, 'pass');
+});
+
+test('Codex Verify retains executable, cwd, exit, stderr, and structured output', async () => {
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  process.env.FAKE_CODEX_STDERR = 'non-fatal warning\n';
+  const dir = tmp('codex-ok');
+  const logFile = path.join(dir, 'verify.jsonl');
+  const { done } = runStage({
+    vendor: 'codex', cwd: dir, prompt: 'verify', jsonSchema: { type: 'object' }, logFile,
+  });
+  const result = await done;
+  delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_STDERR;
+
+  assert.equal(result.envelope.structured_output.verdict, 'pass');
+  assert.equal(result.diagnostic.executable, FAKE_CODEX);
+  assert.equal(result.diagnostic.cwd, dir);
+  assert.equal(result.diagnostic.exitCode, 0);
+  assert.equal(result.diagnostic.stderr, 'non-fatal warning\n');
+  assert.equal(result.diagnostic.structuredOutput.verdict, 'pass');
+  const events = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(events.some((e) => e.type === 'runner-diagnostic' && e.structuredOutput?.verdict === 'pass'));
+});
+
+test('Codex Verify preserves a raw final message and unsuccessful exit diagnostic', async () => {
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  process.env.FAKE_CODEX_LAST_MESSAGE = 'transport returned no verdict';
+  process.env.FAKE_CODEX_STDERR = 'connection reset by peer\n';
+  process.env.FAKE_CODEX_EXIT = '7';
+  const dir = tmp('codex-fail');
+  const logFile = path.join(dir, 'verify.jsonl');
+  const { done } = runStage({
+    vendor: 'codex', cwd: dir, prompt: 'verify', jsonSchema: { type: 'object' }, logFile,
+  });
+  const result = await done;
+  delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_LAST_MESSAGE;
+  delete process.env.FAKE_CODEX_STDERR; delete process.env.FAKE_CODEX_EXIT;
+
+  assert.equal(result.envelope.is_error, true);
+  assert.equal(result.diagnostic.exitCode, 7);
+  assert.equal(result.diagnostic.finalMessage, 'transport returned no verdict');
+  assert.equal(result.diagnostic.structuredOutput, null);
+  const raw = fs.readFileSync(logFile, 'utf8');
+  assert.match(raw, /connection reset by peer/);
+  assert.match(raw, /transport returned no verdict/);
+});
+
+test('Codex Verify writes a cannot-start diagnostic to the raw run log', async () => {
+  process.env.TODOMD_CODEX_BIN = '/nonexistent/todomd-no-such-codex';
+  const dir = tmp('codex-spawn');
+  const logFile = path.join(dir, 'verify.jsonl');
+  const { done } = runStage({
+    vendor: 'codex', cwd: dir, prompt: 'verify', jsonSchema: { type: 'object' }, logFile,
+  });
+  const result = await done;
+  delete process.env.TODOMD_CODEX_BIN;
+
+  assert.equal(result.envelope, null);
+  assert.equal(result.diagnostic.exitCode, -1);
+  assert.ok(result.diagnostic.spawnError);
+  const events = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(events.some((e) => e.type === 'runner-diagnostic' && e.spawnError));
 });

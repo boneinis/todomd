@@ -24,6 +24,8 @@
 //                             branches mid-run before the merge)
 //   FAKE_ARGV_LOG=<path>   — append each invocation's full argv (JSON lines),
 //                             so a test can assert what the runner passed
+//   FAKE_REQUIRE_FILE=<relpath> — a build fails unless this existing worktree
+//                             file survived (used by orphan recovery tests)
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -142,6 +144,10 @@ if (hangNow &&
   process.exit(0);
 } else if (stage === 'build') {
   // cwd is the worktree; write code + test, commit on the branch
+  if (process.env.FAKE_REQUIRE_FILE && !fs.existsSync(path.join(cwd, process.env.FAKE_REQUIRE_FILE))) {
+    process.stderr.write(`preserved file missing: ${process.env.FAKE_REQUIRE_FILE}\n`);
+    process.exit(1);
+  }
   const mode = process.env.FAKE_BUILD || 'good';
   if (mode !== 'noop') {
     const fn = mode === 'bad' ? 'export function prod(a, b) { return a + b; }\n'  // wrong: returns sum

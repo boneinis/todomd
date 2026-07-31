@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
 import { readCard, setStageRouting, patchFrontmatter } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
 
 const noop = () => {};
+const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
 // unique project name per repo — the pipeline module keys queue/run state by name
 function project(repo) { return { name: path.basename(repo), path: repo }; }
 const status = (repo, id) => readCard(repo, id).data.status;
@@ -1025,6 +1027,127 @@ test('orphan sweep: merged branch finishes as Done; unmerged work is preserved a
   assert.equal(cardB.data.needs_human_reason, 'orphaned_run');
   assert.match(git(repo, ['branch', '--list', 'todomd/task-0002']), /todomd\/task-0002/, 'unmerged branch is KEPT');
   clearFakeAgent();
+});
+
+test('Resume Build reuses an orphaned Build worktree, saved attempt, and partial changes', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good', require_file: 'resume-sentinel.txt' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  addProject(repo);
+  const base = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branch = 'todomd/task-0001';
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+
+  writeCard(repo, 'task-0001', { status: 'Build' });
+  await patchFrontmatter(repo, 'task-0001', {
+    worktree: branch,
+    base_branch: base,
+    session_id: 'fake-session-0001',
+    verification: { attempts: 1, max_attempts: 3, last_verdict: '' },
+  });
+  git(repo, ['add', '.todomd/tasks']); git(repo, ['commit', '-qm', 'interrupted build card']);
+  git(repo, ['worktree', 'add', '-q', '-b', branch, wt]);
+  fs.writeFileSync(path.join(wt, 'resume-sentinel.txt'), 'uncommitted work survives\n');
+  fs.appendFileSync(path.join(wt, 'src/calc.js'), 'export const interruptedPartial = true;\n');
+
+  try {
+    await pipeline.reconcileOnBoot();
+    let card = readCard(repo, 'task-0001');
+    assert.equal(card.data.status, 'Needs Human');
+    assert.equal(card.data.needs_human_reason, 'orphaned_run');
+    assert.equal(card.data.recovery_stage, 'Build');
+    assert.equal((await pipeline.recoveryActions(p, 'task-0001')).resume_build, true);
+    assert.ok(fs.existsSync(path.join(wt, 'resume-sentinel.txt')), 'orphan sweep kept uncommitted work');
+
+    const resumed = await pipeline.resumeBuild(p, 'task-0001');
+    assert.equal(resumed.ok, true);
+    assert.equal(resumed.attempt, 1, 'resume does not burn a new attempt');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+
+    card = readCard(repo, 'task-0001');
+    assert.equal(card.data.verification.attempts, 1);
+    assert.match(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /interruptedPartial/,
+      'the partial work present before restart was merged');
+    assert.equal(fs.readFileSync(path.join(repo, 'resume-sentinel.txt'), 'utf8'), 'uncommitted work survives\n',
+      'an uncommitted worktree file survived and was completed by the resumed run');
+    assert.ok(!fs.existsSync(wt), 'normal successful cleanup still removes the worktree');
+  } finally {
+    clearFakeAgent();
+  }
+});
+
+test('Resume Build eligibility requires the marked Build origin and a live preserved worktree', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', {
+    status: 'Needs Human',
+    extra: 'needs_human_reason: orphaned_run\nrecovery_stage: Build\nworktree: todomd/task-0001\n',
+  });
+
+  assert.equal((await pipeline.recoveryActions(p, 'task-0001')).resume_build, false);
+  const result = await pipeline.resumeBuild(p, 'task-0001');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /preserved Build worktree/);
+  assert.equal(status(repo, 'task-0001'), 'Needs Human');
+});
+
+test('Codex Verify infrastructure failures retain diagnostics and Retry Verification runs Verify only', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  process.env.FAKE_CODEX_LAST_MESSAGE = 'verification transport returned no verdict';
+  process.env.FAKE_CODEX_STDERR = 'codex transport disconnected\n';
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  await setStageRouting(repo, 'Verify', { agent: 'codex' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  await patchFrontmatter(repo, 'task-0001', { agent: '' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.chain });
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+
+    let card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'bad_verdict');
+    assert.match(card.raw, /Codex verification infrastructure:/);
+    assert.match(card.raw, /codex transport disconnected/);
+    assert.match(card.raw, /verification transport returned no verdict/);
+    assert.doesNotMatch(card.raw, /failed: bad_verdict/, 'infrastructure was not labeled as a code failure');
+    assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true);
+
+    const runDir = path.join(repo, '.todomd/runs/task-0001');
+    const verifyLogs = fs.readdirSync(runDir).filter((f) => f.startsWith('verify-1') && f.endsWith('.jsonl'));
+    assert.equal(verifyLogs.length, 2, 'the automatic rerun retained both raw attempts');
+    for (const file of verifyLogs) {
+      const raw = fs.readFileSync(path.join(runDir, file), 'utf8');
+      assert.match(raw, /"type":"runner-diagnostic"/);
+      assert.match(raw, /"executable":/);
+      assert.match(raw, /"cwd":/);
+      assert.match(raw, /"exitCode":0/);
+      assert.match(raw, /codex transport disconnected/);
+      assert.match(raw, /verification transport returned no verdict/);
+    }
+
+    const buildLogsBefore = fs.readdirSync(runDir).filter((f) => f.startsWith('build-')).length;
+    process.env.FAKE_CODEX_LAST_MESSAGE = JSON.stringify({
+      verdict: 'pass', criteria: [{ criterion: 'works', met: true }], findings: 'all good',
+    });
+    const retried = await pipeline.retryVerification(p, 'task-0001');
+    assert.equal(retried.ok, true);
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+    const buildLogsAfter = fs.readdirSync(runDir).filter((f) => f.startsWith('build-')).length;
+    assert.equal(buildLogsAfter, buildLogsBefore, 'Retry Verification did not run Build again');
+    card = readCard(repo, 'task-0001');
+    assert.equal(card.data.verification.attempts, 1);
+  } finally {
+    delete process.env.TODOMD_CODEX_BIN;
+    clearFakeAgent();
+  }
 });
 
 test('triageSweep skips unparseable cards and banners once per file', async () => {

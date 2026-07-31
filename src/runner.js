@@ -161,6 +161,7 @@ function runCodex({
 }) {
   const tmp = (name) =>
     path.join(os.tmpdir(), `todomd-codex-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const executable = process.env.TODOMD_CODEX_BIN || 'codex';
   // codex exec is non-interactive by design — no approval flag exists (v0.139)
   const args = ['exec'];
   if (resume) args.push('resume', resume);
@@ -176,9 +177,13 @@ function runCodex({
   }
   args.push(prompt);
 
-  const child = spawn(process.env.TODOMD_CODEX_BIN || 'codex', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-
   const log = logFile ? openLog(logFile) : null;
+  // Keep the invocation even when spawn itself fails. This deliberately omits
+  // argv/prompt (which can contain card text or secrets) while retaining the
+  // two facts needed to diagnose PATH and worktree problems.
+  log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
+
+  const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const done = new Promise((resolve) => {
     let sessionId = null;
@@ -186,6 +191,50 @@ function runCodex({
     let turns = 0;
     let lineBuf = '';
     let stderr = '';
+    let settled = false;
+
+    const finish = ({ exitCode, signal = null, spawnError = null, lastMessage = '', structuredOutput }) => {
+      if (settled) return;
+      settled = true;
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode,
+        signal,
+        spawnError,
+        stderr,
+        finalMessage: lastMessage,
+        structuredOutput: structuredOutput ?? null,
+      };
+      const ok = exitCode === 0 && !signal && !spawnError && !failed;
+      const result = {
+        envelope: spawnError ? null : {
+          subtype: ok ? 'success' : 'error',
+          is_error: !ok,
+          total_cost_usd: 0,
+          num_turns: turns,
+          result: failed ? JSON.stringify(failed).slice(0, 500) : '',
+          structured_output: structuredOutput,
+        },
+        sessionId,
+        exitCode,
+        ...(spawnError ? { spawnError } : {}),
+        stderr: stderr.slice(0, 2000),
+        diagnostic,
+      };
+      const complete = () => {
+        for (const f of [schemaFile, outFile]) if (f) fs.rm(f, { force: true }, () => {});
+        resolve(result);
+      };
+      if (log) {
+        // The full bounded stderr/final message lives in the private raw run log;
+        // the card history receives only a concise infrastructure summary.
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+        log.end(complete);
+      } else {
+        complete();
+      }
+    };
 
     const handleLine = (line) => {
       if (!line.trim()) return;
@@ -212,10 +261,9 @@ function runCodex({
     child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
 
     child.on('error', (err) => {
-      cleanup();
-      resolve({ envelope: null, sessionId, exitCode: -1, spawnError: err.code || String(err), stderr });
+      finish({ exitCode: -1, spawnError: err.code || String(err) });
     });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       if (lineBuf.trim()) handleLine(lineBuf); // flush trailing newline-less event
       let structured;
       let lastMessage = '';
@@ -225,29 +273,8 @@ function runCodex({
           structured = JSON.parse(lastMessage);
         } catch {}
       }
-      if (stderr.trim()) log?.write(JSON.stringify({ type: 'runner-stderr', text: stderr.slice(0, 4000) }) + '\n');
-      if (lastMessage.trim() && !structured) log?.write(JSON.stringify({ type: 'runner-last-message', text: lastMessage.slice(0, 4000) }) + '\n');
-      cleanup();
-      const ok = code === 0 && !failed;
-      resolve({
-        envelope: {
-          subtype: ok ? 'success' : 'error',
-          is_error: !ok,
-          total_cost_usd: 0,
-          num_turns: turns,
-          result: failed ? JSON.stringify(failed).slice(0, 500) : '',
-          structured_output: structured,
-        },
-        sessionId,
-        exitCode: code,
-        stderr: stderr.slice(0, 2000),
-      });
+      finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
     });
-
-    function cleanup() {
-      log?.end();
-      for (const f of [schemaFile, outFile]) if (f) fs.rm(f, { force: true }, () => {});
-    }
   });
 
   return { child, done };

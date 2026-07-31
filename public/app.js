@@ -417,7 +417,10 @@ async function openDrawer(id) {
   // archive / delete controls
   drawerArchived = !!card.data.archived;
   $('#drawer-archive').textContent = drawerArchived ? 'restore' : 'archive';
-  $('#drawer-retry-verify').hidden = !(card.data.status === 'Needs Human' && card.data.worktree && ['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason));
+  // Eligibility is computed server-side from the actual registered worktree,
+  // not just a possibly stale `worktree:` frontmatter value.
+  $('#drawer-resume-build').hidden = !card.recovery?.resume_build;
+  $('#drawer-retry-verify').hidden = !card.recovery?.retry_verification;
   resetDeleteBtn();
   // pending agent question
   const q = card.data.question;
@@ -603,6 +606,19 @@ $('#drawer-retry-verify').addEventListener('click', async () => {
   } catch { toast('server unreachable'); }
 });
 
+$('#drawer-resume-build').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/resume-build?project=${encodeURIComponent(currentProject)}`, { method: 'POST', headers });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'could not resume build');
+    toast('build resumed in the preserved worktree');
+    $('#drawer').hidden = true;
+    drawerCard = null;
+    loadBoard();
+  } catch { toast('server unreachable'); }
+});
+
 // fetch the most recent run's events so the drawer shows the whole run, not just
 // what streams in after you open it (works for a finished run too)
 async function backfillRunLog(id) {
@@ -631,6 +647,17 @@ function logLine(cls, text) {
 
 function appendRunEvent(event) {
   if (event.vendor === 'codex') {
+    if (event.type === 'runner-diagnostic') {
+      const exit = event.spawnError ? `start error ${event.spawnError}`
+        : event.signal ? `signal ${event.signal}` : `exit ${event.exitCode}`;
+      const output = event.structuredOutput != null
+        ? JSON.stringify(event.structuredOutput)
+        : event.finalMessage || '(none)';
+      logLine('log-sys',
+        `Codex executable: ${event.executable}\nworking directory: ${event.cwd}\nresult: ${exit}` +
+        `\nstandard error: ${event.stderr || '(empty)'}\nfinal result: ${output}`);
+      return;
+    }
     const text = event.item?.text || event.item?.command || event.message || '';
     logLine('log-tool', `▸ ${event.type}${text ? `: ${String(text).slice(0, 200)}` : ''}`);
     return;

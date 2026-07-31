@@ -406,7 +406,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
     if (cardMatch && req.method === 'GET') {
       const card = readCard(project.path, cardMatch[1]);
-      return card ? json(res, 200, card) : json(res, 404, { error: 'card not found' });
+      if (!card) return json(res, 404, { error: 'card not found' });
+      return json(res, 200, { ...card, recovery: await pipeline.recoveryActions(project, cardMatch[1]) });
     }
     // the streamed events of the card's most recent run, to back-fill the drawer
     const runlogMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/runlog$/);
@@ -498,6 +499,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const retryVerifyMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/retry-verify$/);
     if (retryVerifyMatch && req.method === 'POST') {
       const result = await pipeline.retryVerification(project, retryVerifyMatch[1]);
+      return json(res, result.ok ? 202 : 400, result);
+    }
+    const resumeBuildMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/resume-build$/);
+    if (resumeBuildMatch && req.method === 'POST') {
+      const result = await pipeline.resumeBuild(project, resumeBuildMatch[1]);
       return json(res, result.ok ? 202 : 400, result);
     }
     // answer an agent's pending question → threads the answer into the next build
