@@ -1,0 +1,111 @@
+columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]
+# mode: launcher — the todomd server spawns headless agent runs (instant,
+#   bills the included headless credit pool).
+# mode: budget — the server only manages the board; you run a dispatcher
+#   inside an interactive session (`/loop 2m /todomd-dispatch`), so work
+#   bills the interactive subscription pool instead.
+mode: launcher
+verify_command: npm test
+max_attempts: 3
+concurrency: 1
+merge: merge            # merge | pr (pr lands in a later phase)
+worktree_dir: .todomd/worktrees
+# gitignored runtime deps symlinked into each build worktree so the verify
+# command can run (add .env, .env.local, etc. if your tests need them)
+worktree_link: [node_modules]
+branch_prefix: todomd/
+# Board-wide defaults — the bottom of the card → column → board override chain.
+# A card's own agent/model wins; else the stage column's (stages.<col>.agent|
+# model); else these. default_model is the fallback where a stage sets no model.
+default_agent: claude
+# default_model: sonnet
+default_effort: high
+
+# Publish shared board Markdown to a dedicated GitHub branch. This never
+# pushes main; GitHub Actions also ignores board-only main updates.
+github_sync:
+  enabled: true
+  remote: origin
+  branch: todomd-state
+  done_delay_seconds: 10
+  debounce_seconds: 30
+  max_delay_seconds: 120
+
+# A Build turn cap is a checkpoint, not a human blocker. Productive agents
+# resume in the same worktree; only repeated no-progress slices pause.
+build_continuation:
+  enabled: true
+  max_no_progress_slices: 2
+
+# Pin the board's model picker to the models available to this team. This
+# supplements CLI discovery, which only exposes generic aliases for some models.
+models:
+  claude: [fable, claude-fable-5, opus, claude-opus-5, sonnet, haiku]
+  codex: [gpt-5.6-sol, gpt-5-codex, gpt-5, o3]
+
+# Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
+# in-flight work (which card/files each worker is building), so several people
+# on this repo don't overlap. Off by default.
+coordination:
+  enabled: false
+  block: false      # true = refuse a card whose files overlap another worker's active work
+  sync: false       # true = git fetch others' claims + git push your own (needs a remote)
+  worker: ""        # optional name; defaults to <user>@<host>
+
+# Auto-triage: when a card arrives in Review (UI, API, or email push), an
+# agent annotates it with codebase insight + a proposed plan of action.
+# The card stays in Review — the human still decides. Set enabled: false
+# to turn off, or model: haiku to cut the per-card cost ~5x.
+triage:
+  enabled: true
+  model: sonnet
+  effort: low
+  max_turns: 8
+
+# Each pipeline stage maps a column to the command it invokes, the model it
+# runs on, and its tool allowlist. A stage may also pin its own agent
+# (claude | codex) — the per-column tier of the override chain. A card's own
+# agent/model still wins; an unset agent/model falls back to the board default.
+# Edit these per-column from the board (the gear on each stage column).
+stages:
+  Plan:
+    command: todomd-plan
+    model: claude-opus-5
+    effort: xhigh
+    max_turns: 20
+    allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
+  Build:
+    command: todomd-build
+    agent: claude
+    model: claude-sonnet-5
+    effort: xhigh
+    workflow: ultra_code
+    max_turns: 100
+    allowed_tools:
+      - Read
+      - Glob
+      - Grep
+      - Edit
+      - Write
+      - "Bash(npm test:*)"
+      - "Bash(npm run test:*)"
+      - "Bash(node --test:*)"
+      - "Bash(git add:*)"
+      - "Bash(git commit:*)"
+      - "Bash(git status:*)"
+      - "Bash(git diff:*)"
+  Verify:
+    command: todomd-verify
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
+    max_turns: 40
+    allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(node --test:*)", "Bash(git diff:*)", "Bash(git log:*)"]
+
+# Repeated-failure escalation: after the second failed independent review,
+# Fable diagnoses, Opus repairs, then Codex performs the final merge gate.
+escalation:
+  enabled: true
+  after_failed_reviews: 2
+  diagnosis: { agent: claude, model: claude-fable-5, effort: xhigh }
+  repair: { agent: claude, model: claude-opus-5, effort: xhigh }
