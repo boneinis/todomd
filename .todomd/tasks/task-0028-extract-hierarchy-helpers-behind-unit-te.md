@@ -1,7 +1,7 @@
 ---
 id: task-0028
 title: Extract hierarchy helpers behind unit tests
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
