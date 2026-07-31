@@ -1130,6 +1130,7 @@ test('Codex Verify infrastructure failures retain diagnostics and Retry Verifica
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });
   process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  process.env.FAKE_CODEX_REQUIRE_STRICT_SCHEMA = '1';
   process.env.FAKE_CODEX_LAST_MESSAGE = 'verification transport returned no verdict';
   process.env.FAKE_CODEX_STDERR = 'codex transport disconnected\n';
   pipeline.init({ broadcast: noop });
@@ -1178,6 +1179,7 @@ test('Codex Verify infrastructure failures retain diagnostics and Retry Verifica
     assert.equal(card.data.verification.attempts, 1);
   } finally {
     delete process.env.TODOMD_CODEX_BIN;
+    delete process.env.FAKE_CODEX_REQUIRE_STRICT_SCHEMA;
     clearFakeAgent();
   }
 });

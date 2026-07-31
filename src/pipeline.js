@@ -12,13 +12,15 @@ import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './
 const VERDICT_SCHEMA = {
   // todomd.verdict/1
   type: 'object',
-  required: ['verdict', 'criteria', 'findings'],
+  additionalProperties: false,
+  required: ['verdict', 'criteria', 'findings', 'setup_error', 'question'],
   properties: {
     verdict: { type: 'string', enum: ['pass', 'fail'] },
     criteria: {
       type: 'array',
       items: {
         type: 'object',
+        additionalProperties: false,
         required: ['criterion', 'met'],
         properties: { criterion: { type: 'string' }, met: { type: 'boolean' } },
       },
@@ -26,15 +28,16 @@ const VERDICT_SCHEMA = {
     findings: { type: 'string' },
     // set ONLY when the verify command couldn't run at all (missing dep/file/env
     // var/service) — a worktree-environment problem, not a test-assertion failure
-    setup_error: { type: 'string' },
+    setup_error: { type: ['string', 'null'] },
     // set ONLY when a genuine human decision is required to proceed (ambiguous
     // spec, a product choice) — not a code defect you can describe as a finding
-    question: { type: 'string' },
+    question: { type: ['string', 'null'] },
   },
 };
 
 const ESCALATION_SCHEMA = {
   type: 'object',
+  additionalProperties: false,
   required: ['diagnosis', 'repair_strategy'],
   properties: {
     diagnosis: { type: 'string' },
