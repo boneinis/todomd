@@ -8,7 +8,7 @@ labels: [board-ui, archive, workflow]
 dependencies: []
 created_date: 2026-07-31
 source: ui
-assignee: 
+assignee:
 agent: claude
 triaged: manual bypass
 session_id: 405bbef0-2994-4d47-9aac-83f5588a11f0

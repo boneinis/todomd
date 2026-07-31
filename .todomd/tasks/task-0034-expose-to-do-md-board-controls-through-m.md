@@ -8,7 +8,7 @@ labels: [mcp, agents, integration]
 dependencies: []
 created_date: 2026-07-31
 source: ui
-assignee: 
+assignee:
 agent: claude
 model: claude-sonnet-5
 effort: low
