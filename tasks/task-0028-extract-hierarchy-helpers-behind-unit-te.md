@@ -1,7 +1,7 @@
 ---
 id: task-0028
 title: Extract hierarchy helpers behind unit tests
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 1/3 of task-0026)
-session_id: 89525e2a-20a5-430b-8eda-96f70ae83155
+session_id: f4671637-43cf-422c-8c89-39ea98e0ca73
 worktree: todomd/task-0028
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 3.903
-needs_human_reason:
+needs_human_reason: bad_verdict
 recovery_stage:
 ---
 
@@ -75,3 +75,5 @@ Extract hierarchy helpers behind unit tests
   - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
 - 2026-07-31 23:40Z · Restart Build · preserved worktree unavailable; starting a fresh build
 - 2026-07-31 23:48Z · Build attempt 1 · 55 turns · $2.580 · ok
+- 2026-07-31 23:48Z · Verify attempt 1 · malformed verdict, re-running once
+- 2026-07-31 23:48Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
