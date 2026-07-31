@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 88f9194b-05be-43e3-8941-3f3fa09e50a2
+session_id: 5f1132be-8854-4944-a9ee-e8bc7492bedb
 worktree: todomd/task-0024
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
-cost_usd: 9.8508
-needs_human_reason:
+cost_usd: 12.2276
+needs_human_reason: bad_verdict
 ---
 
 ## Description
@@ -82,3 +82,7 @@ mail keeps its attachments only in the mailbox.
 - 2026-07-31 21:33Z · Build attempt 1 · 31 turns · $2.599 · checkpoint 1: progress detected; continuing
 - 2026-07-31 21:38Z · Build attempt 1 · 31 turns · $3.624 · checkpoint 2: progress detected; continuing
 - 2026-07-31 21:42Z · Build attempt 1 · 5 turns · $1.700 · ok
+- 2026-07-31 21:48Z · Verify attempt 1 · malformed verdict, re-running once
+- 2026-07-31 21:56Z · Verify attempt 1 · 31 turns · $2.377 · failed: bad_verdict
+  - bad_verdict: SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+
