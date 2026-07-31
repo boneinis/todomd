@@ -417,6 +417,7 @@ async function openDrawer(id) {
   // archive / delete controls
   drawerArchived = !!card.data.archived;
   $('#drawer-archive').textContent = drawerArchived ? 'restore' : 'archive';
+  $('#drawer-retry-verify').hidden = !(card.data.status === 'Needs Human' && card.data.worktree && ['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason));
   resetDeleteBtn();
   // pending agent question
   const q = card.data.question;
@@ -587,6 +588,19 @@ $('#drawer-cancel').addEventListener('click', async () => {
     { method: 'POST', headers });
   const out = await res.json();
   toast(res.ok ? 'run cancelled' : out.error || 'cancel failed');
+});
+
+$('#drawer-retry-verify').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/retry-verify?project=${encodeURIComponent(currentProject)}`, { method: 'POST', headers });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'could not retry verification');
+    toast('verification retry started');
+    $('#drawer').hidden = true;
+    drawerCard = null;
+    loadBoard();
+  } catch { toast('server unreachable'); }
 });
 
 // fetch the most recent run's events so the drawer shows the whole run, not just

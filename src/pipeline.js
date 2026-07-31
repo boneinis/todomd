@@ -294,6 +294,9 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr }, cwd) {
     return { kind: 'cli_missing', detail: 'claude CLI not found on PATH' };
   }
   const text = `${envelope?.result || ''} ${envelope?.subtype || ''} ${stderr || ''}`;
+  if (/hook.*cancelled|cancelled.*hook/i.test(text)) {
+    return { kind: 'hook_cancelled', detail: 'the provider cancelled a lifecycle hook before it returned a verdict' };
+  }
   if (/rate.?limit|quota|credit|usage limit|exhausted|exceeded/i.test(text)) {
     return { kind: 'quota', detail: 'usage limit reached' };
   }
@@ -582,6 +585,31 @@ export async function humanMove(project, id, to) {
 
   // free human move between non-pipeline columns
   return moveCard(project.path, id, to);
+}
+
+// A verifier that could not return a verdict may be retried without throwing
+// away a completed build. This is deliberately narrower than Needs Human →
+// Planned: that route starts a fresh worktree and build attempt.
+export async function retryVerification(project, id) {
+  const card = readCard(project.path, id);
+  if (!card) return { ok: false, error: 'card not found' };
+  if (card.data.status !== 'Needs Human') return { ok: false, error: 'card is not waiting for verification retry' };
+  if (!['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason)) {
+    return { ok: false, error: 'only an unavailable verification verdict can be retried directly' };
+  }
+  if (!card.data.worktree) return { ok: false, error: 'the preserved worktree is unavailable' };
+  const config = await execConfig(project.path);
+  const worktreeAbs = path.join(project.path, config.worktree_dir || '.todomd/worktrees', id);
+  if (!fs.existsSync(worktreeAbs)) return { ok: false, error: 'the preserved worktree no longer exists' };
+  if (children.has(runKey(project.name, id))) return { ok: false, error: 'run already in progress' };
+  const verification = card.data.verification || {};
+  const attempt = Math.max(1, Number(verification.attempts) || 1);
+  const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
+  await patchFrontmatter(project.path, id, { needs_human_reason: '' });
+  await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
+  verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '')
+    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)));
+  return { ok: true };
 }
 
 // SIGTERM a child with a SIGKILL backstop: a child that ignores TERM would

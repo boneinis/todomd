@@ -7,7 +7,11 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.todomd/**'
   pull_request:
+    paths-ignore:
+      - '.todomd/**'
   workflow_dispatch:
 
 jobs:

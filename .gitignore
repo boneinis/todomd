@@ -4,6 +4,11 @@ spike/demo-repo/
 .todomd/worktrees/
 .todomd/runs/
 .todomd/.lock/
-.todomd/
+# The shared configuration and task Markdown are board history and may sync to
+# GitHub. Everything operational, private, or machine-specific stays ignored.
+.todomd/*
+!.todomd/config.yml
+!.todomd/tasks/
+!.todomd/tasks/*.md
 spike/
 RECOMMENDATIONS.md

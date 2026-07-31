@@ -13,6 +13,7 @@ import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readComm
 import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
+import { createMetadataScheduler } from './github-sync.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -494,6 +495,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const result = await pipeline.cancel(project, cancelMatch[1]);
       return json(res, result.ok ? 200 : 400, result);
     }
+    const retryVerifyMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/retry-verify$/);
+    if (retryVerifyMatch && req.method === 'POST') {
+      const result = await pipeline.retryVerification(project, retryVerifyMatch[1]);
+      return json(res, result.ok ? 202 : 400, result);
+    }
     // answer an agent's pending question → threads the answer into the next build
     const answerMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/answer$/);
     if (answerMatch && req.method === 'POST') {
@@ -606,6 +612,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
   // watch every registered project's tasks dir; reconcile with the registry
   // so removed projects release their watchers (chokidar v4: plain paths only)
   const watchers = new Map();
+  const metadataSync = createMetadataScheduler({
+    onResult: (project, result) => console.log(`metadata sync ${project.name}: ${result.ok ? (result.skipped || 'pushed') : result.error}`),
+  });
   let closed = false;
   const watchProjects = () => {
     if (closed) return; // a rescan after close() would re-open watchers we just released
@@ -619,13 +628,18 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (watchers.has(dir) || !fs.existsSync(dir)) continue;
       let timer;
       const project = listProjects().find((p) => p.name === name);
-      const w = chokidar.watch(dir, { ignoreInitial: true });
+      const w = chokidar.watch([dir, path.join(project.path, '.todomd', 'config.yml')], { ignoreInitial: true });
       w.on('error', () => {});
-      w.on('all', () => {
+      w.on('all', (_event, changedPath) => {
         clearTimeout(timer);
         timer = setTimeout(() => {
           broadcast({ type: 'board-changed', project: name });
           if (project) pipeline.triageSweep(project); // annotate externally-arrived cards
+          if (project) {
+            const match = path.basename(changedPath || '').match(/^(task-\d+)/);
+            const card = match ? readCard(project.path, match[1]) : null;
+            metadataSync.schedule(project, { done: card?.data?.status === 'Done' });
+          }
         }, 1500);
       });
       watchers.set(dir, w);
@@ -660,6 +674,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
     try { wss.close(); } catch {}
     for (const w of watchers.values()) { try { w.close(); } catch {} }
     watchers.clear();
+    metadataSync.close();
     try { stopIntake(); } catch {}
   };
 

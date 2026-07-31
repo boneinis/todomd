@@ -25,6 +25,16 @@ default_agent: claude
 # default_model: sonnet
 # default_effort: high
 
+# Optional GitHub board-history sync. It publishes only the shared .todomd
+# tree to a dedicated branch, never pushes main or runs normal code CI.
+github_sync:
+  enabled: false
+  remote: origin
+  branch: todomd-state
+  done_delay_seconds: 10
+  debounce_seconds: 30
+  max_delay_seconds: 120
+
 # Build agents run autonomously inside their approved task worktree. A provider
 # turn cap is treated as a checkpoint: productive work resumes automatically;
 # repeated no-progress slices pause for a human instead of looping forever.
@@ -78,9 +88,11 @@ stages:
       - Grep
       - Edit
       - Write
-      # no Bash(node:*) / broad Bash here: node -e ... auto-approves and
-      # writes anywhere as you, defeating every other guard
+      # Keep Node scoped to its test subcommand: broad Bash(node:*) would allow
+      # node -e ... to write anywhere as the user.
       - "Bash(npm test:*)"
+      - "Bash(npm run test:*)"
+      - "Bash(node --test:*)"
       - "Bash(git add:*)"
       - "Bash(git commit:*)"
       - "Bash(git status:*)"
@@ -90,7 +102,7 @@ stages:
     model: haiku
     effort: high
     max_turns: 15
-    allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)"]
+    allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(node --test:*)", "Bash(git diff:*)", "Bash(git log:*)"]
 
 # Optional repeated-failure escalation. After the chosen number of failed
 # independent Verify rounds, Fable diagnoses; Opus repairs; Verify stays the
