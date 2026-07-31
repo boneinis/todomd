@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0024
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 12.2276
-needs_human_reason:
+needs_human_reason: error
 recovery_stage:
 model:
 effort:
@@ -105,3 +105,12 @@ mail keeps its attachments only in the mailbox.
   - bad_verdict: Codex verification infrastructure: codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: Reading additional input from stdin... 2026-07-31T23:40:34.349310Z WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/ 2026-07-31T23:40:34.349329Z WARN cod; no final message or structured output; no valid verdic
 - 2026-07-31 23:53Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - retrying with findings (attempt 2/3)
+- 2026-07-31 23:53Z · Build attempt 2 · 0 turns · $0.000 · failed: agent
+  - error: error: unexpected argument '--sandbox' found
+
+  tip: to pass '--sandbox' as a value, use '-- --sandbox'
+
+Usage: codex exec resume --json <SESSION_ID> [PROMPT]
+
+For more information, try '--help'.
+
