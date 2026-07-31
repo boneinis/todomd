@@ -8,7 +8,7 @@ labels: [triage, email, reliability]
 dependencies: []
 created_date: 2026-07-31
 source: ui
-assignee: 
+assignee:
 agent: claude
 triaged: manual bypass
 session_id: 0f699ca4-a225-486a-9a35-8928d1628d82

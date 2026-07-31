@@ -9,7 +9,7 @@ dependencies: [task-0023]
 parent: task-0022
 created_date: 2026-07-31
 source: chunk
-assignee: 
+assignee:
 agent: claude
 triaged: n/a (chunk 2/3 of task-0022)
 session_id: 5f1132be-8854-4944-a9ee-e8bc7492bedb

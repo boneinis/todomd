@@ -8,7 +8,7 @@ labels: [board-ui, epics, subtasks]
 dependencies: []
 created_date: 2026-07-31
 source: ui
-assignee: 
+assignee:
 agent: claude
 triaged: manual bypass
 session_id: 6755176b-1ab0-47d7-b7d7-4058e1efc4cb

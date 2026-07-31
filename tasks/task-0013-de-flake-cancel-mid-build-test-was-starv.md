@@ -8,7 +8,7 @@ labels: []
 dependencies: []
 created_date: 2026-06-12
 source: ui
-assignee: 
+assignee:
 agent: claude
 session_id:
 worktree:

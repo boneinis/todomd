@@ -8,7 +8,7 @@ labels: [ci, scheduler, reliability]
 dependencies: []
 created_date: 2026-07-31
 source: ui
-assignee: 
+assignee:
 agent: claude
 session_id:
 worktree:
