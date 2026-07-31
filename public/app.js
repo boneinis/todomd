@@ -420,6 +420,7 @@ async function openDrawer(id) {
   // Eligibility is computed server-side from the actual registered worktree,
   // not just a possibly stale `worktree:` frontmatter value.
   $('#drawer-resume-build').hidden = !card.recovery?.resume_build;
+  $('#drawer-restart-build').hidden = !card.recovery?.restart_build;
   $('#drawer-retry-verify').hidden = !card.recovery?.retry_verification;
   resetDeleteBtn();
   // pending agent question
@@ -613,6 +614,19 @@ $('#drawer-resume-build').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not resume build');
     toast('build resumed in the preserved worktree');
+    $('#drawer').hidden = true;
+    drawerCard = null;
+    loadBoard();
+  } catch { toast('server unreachable'); }
+});
+
+$('#drawer-restart-build').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/restart-build?project=${encodeURIComponent(currentProject)}`, { method: 'POST', headers });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'could not restart build');
+    toast('fresh build started');
     $('#drawer').hidden = true;
     drawerCard = null;
     loadBoard();

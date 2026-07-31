@@ -56,6 +56,9 @@ function hostileBoard() {
   card('task-0006-resumable.md',
     '---\nid: task-0006\ntitle: resumable orphaned build\nstatus: Needs Human\ntype: bug\n' +
     'labels: []\nneeds_human_reason: orphaned_run\nrecovery_stage: Build\nworktree: todomd/task-0006\n---\n\n## Description\n\npreserved\n');
+  card('task-0007-restartable.md',
+    '---\nid: task-0007\ntitle: restartable orphaned build\nstatus: Needs Human\ntype: bug\n' +
+    'labels: []\nneeds_human_reason: orphaned_run\nworktree: todomd/task-0007\n---\n\n## Description\n\nmissing worktree\n');
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', 'hostile UI fixtures']);
   git(repo, ['worktree', 'add', '-q', '-b', 'todomd/task-0006', path.join(repo, '.todomd/worktrees/task-0006')]);
@@ -89,11 +92,11 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
   {
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
 
-    // all six cards render — a throw anywhere in the render path drops the
+    // all seven cards render — a throw anywhere in the render path drops the
     // whole board, so the COUNT is the assertion that catches it
     const count = await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null,
       { timeout: BUDGET.stage });
-    assert.equal(count, 6, 'every card rendered (a render throw would blank the board)');
+    assert.equal(count, 7, 'every card rendered (a render throw would blank the board)');
     assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0005-broken"]')`), true,
       'the unparseable card is surfaced rather than swallowed');
 
@@ -116,7 +119,7 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       renderBoard();
       return document.querySelectorAll('.card').length;
     })()`);
-    assert.equal(survived, 6, 'the client survives a raw scalar on its own, independent of the server');
+    assert.equal(survived, 7, 'the client survives a raw scalar on its own, independent of the server');
 
     // the drawer is the other place a bad shape aborted mid-render — and this
     // one is NOT masked by the server: /api/cards/:id returns raw frontmatter
@@ -131,6 +134,12 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       await page.eval(`document.getElementById('drawer-title').textContent`)) || null, { timeout: BUDGET.quick });
     assert.equal(await page.eval(`document.getElementById('drawer-resume-build').hidden`), false,
       'an eligible card with a registered preserved worktree shows Resume Build');
+
+    await page.eval(`document.querySelector('[data-id="task-0007"]').click()`);
+    await until(async () => /restartable orphaned build/.test(
+      await page.eval(`document.getElementById('drawer-title').textContent`)) || null, { timeout: BUDGET.quick });
+    assert.equal(await page.eval(`document.getElementById('drawer-restart-build').hidden`), false,
+      'an orphan whose preserved assets are gone shows Restart Build');
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
   }

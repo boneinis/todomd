@@ -506,6 +506,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const result = await pipeline.resumeBuild(project, resumeBuildMatch[1]);
       return json(res, result.ok ? 202 : 400, result);
     }
+    const restartBuildMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/restart-build$/);
+    if (restartBuildMatch && req.method === 'POST') {
+      const result = await pipeline.restartBuild(project, restartBuildMatch[1]);
+      return json(res, result.ok ? 202 : 400, result);
+    }
     // answer an agent's pending question → threads the answer into the next build
     const answerMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/answer$/);
     if (answerMatch && req.method === 'POST') {

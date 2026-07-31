@@ -658,11 +658,16 @@ async function preservedWorktree(project, card) {
 export async function recoveryActions(project, id) {
   const card = readCard(project.path, id);
   if (!card || card.data.status !== 'Needs Human' || hasLiveRun(project.name, id)) {
-    return { resume_build: false, retry_verification: false };
+    return { resume_build: false, restart_build: false, retry_verification: false };
   }
   const kept = await preservedWorktree(project, card);
+  // Older orphan records predate recovery_stage. orphaned_run was only emitted
+  // for Build at that point, so keep those cards recoverable too.
+  const orphanedBuild = card.data.needs_human_reason === 'orphaned_run'
+    && (!card.data.recovery_stage || card.data.recovery_stage === 'Build');
   return {
-    resume_build: !!kept && card.data.needs_human_reason === 'orphaned_run' && card.data.recovery_stage === 'Build',
+    resume_build: !!kept && orphanedBuild,
+    restart_build: !kept && orphanedBuild,
     retry_verification: !!kept && ['bad_verdict', 'hook_cancelled'].includes(card.data.needs_human_reason),
   };
 }
@@ -673,7 +678,8 @@ export async function recoveryActions(project, id) {
 export async function resumeBuild(project, id) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
-  if (card.data.status !== 'Needs Human' || card.data.needs_human_reason !== 'orphaned_run' || card.data.recovery_stage !== 'Build') {
+  if (card.data.status !== 'Needs Human' || card.data.needs_human_reason !== 'orphaned_run'
+      || (card.data.recovery_stage && card.data.recovery_stage !== 'Build')) {
     return { ok: false, error: 'card is not an eligible orphaned Build run' };
   }
   const key = runKey(project.name, id);
@@ -699,6 +705,44 @@ export async function resumeBuild(project, id) {
   });
   enqueueBuild(project, id);
   return { ok: true, worktree: kept.branch, attempt };
+}
+
+// A legacy orphan may already have lost its worktree/branch. There is nothing
+// left to resume, but the prior human approval still stands: clear only the
+// stale recovery metadata and enqueue a fresh Build. If preservation is still
+// available, refuse this path so the Resume Build action cannot be bypassed.
+export async function restartBuild(project, id) {
+  const card = readCard(project.path, id);
+  if (!card) return { ok: false, error: 'card not found' };
+  if (card.data.status !== 'Needs Human' || card.data.needs_human_reason !== 'orphaned_run'
+      || (card.data.recovery_stage && card.data.recovery_stage !== 'Build')) {
+    return { ok: false, error: 'card is not an eligible orphaned Build run' };
+  }
+  const key = runKey(project.name, id);
+  if (hasLiveRun(project.name, id) || (queues.get(project.name) || []).includes(id)) {
+    return { ok: false, error: 'run already in progress' };
+  }
+  if (await preservedWorktree(project, card)) {
+    return { ok: false, error: 'preserved work is available — use Resume Build instead' };
+  }
+  const config = await execConfig(project.path);
+  const verification = card.data.verification || {};
+  retryFindings.delete(key);
+  recoveryBuilds.delete(key);
+  await patchFrontmatter(project.path, id, {
+    needs_human_reason: '',
+    recovery_stage: '',
+    session_id: '',
+    worktree: '',
+    base_branch: '',
+    verification: { attempts: 0, max_attempts: verification.max_attempts || config.max_attempts || 3, last_verdict: '' },
+  });
+  await appendRunLog(project.path, id,
+    `- ${now()} · Restart Build · preserved worktree unavailable; starting a fresh build`);
+  const moved = await orchMove(project, id, 'Queue', 'retrying orphaned build from scratch');
+  if (!moved.ok) return moved;
+  enqueueBuild(project, id);
+  return { ok: true };
 }
 
 export async function retryVerification(project, id) {

@@ -92,7 +92,7 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
     const card = await r.json();
     assert.equal(card.data.assignee, 'alice');
     assert.equal(card.data.agent, 'codex');
-    assert.deepEqual(card.recovery, { resume_build: false, retry_verification: false });
+    assert.deepEqual(card.recovery, { resume_build: false, restart_build: false, retry_verification: false });
 
     // invalid agent → 400
     r = await fetch(`${base}/api/cards/${id}/set${q}`, { method: 'POST', headers: h, body: '{"agent":"bogus"}' });
@@ -114,6 +114,8 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
 
     // recovery endpoints exist but reject ineligible cards without moving them
     r = await fetch(`${base}/api/cards/${id}/resume-build${q}`, { method: 'POST', headers: h });
+    assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/cards/${id}/restart-build${q}`, { method: 'POST', headers: h });
     assert.equal(r.status, 400);
 
     // GET a missing card → 404

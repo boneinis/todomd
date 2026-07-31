@@ -1087,11 +1087,43 @@ test('Resume Build eligibility requires the marked Build origin and a live prese
     extra: 'needs_human_reason: orphaned_run\nrecovery_stage: Build\nworktree: todomd/task-0001\n',
   });
 
-  assert.equal((await pipeline.recoveryActions(p, 'task-0001')).resume_build, false);
+  const actions = await pipeline.recoveryActions(p, 'task-0001');
+  assert.equal(actions.resume_build, false);
+  assert.equal(actions.restart_build, true);
   const result = await pipeline.resumeBuild(p, 'task-0001');
   assert.equal(result.ok, false);
   assert.match(result.error, /preserved Build worktree/);
   assert.equal(status(repo, 'task-0001'), 'Needs Human');
+});
+
+test('Restart Build re-drives a legacy orphan only when its preserved assets are gone', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', {
+    status: 'Needs Human',
+    extra: 'needs_human_reason: orphaned_run\nsession_id: stale-session\nworktree: todomd/task-0001\nbase_branch: main\n',
+  });
+
+  try {
+    const actions = await pipeline.recoveryActions(p, 'task-0001');
+    assert.equal(actions.resume_build, false);
+    assert.equal(actions.restart_build, true, 'legacy orphan with no worktree offers a fresh retry');
+
+    const restarted = await pipeline.restartBuild(p, 'task-0001');
+    assert.equal(restarted.ok, true);
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.verification.attempts, 1, 'fresh retry starts at attempt one');
+    assert.match(card.raw, /Restart Build · preserved worktree unavailable; starting a fresh build/);
+    assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')),
+      'successful Build → Verify → Done cleanup is unchanged');
+  } finally {
+    clearFakeAgent();
+  }
 });
 
 test('Codex Verify infrastructure failures retain diagnostics and Retry Verification runs Verify only', async () => {

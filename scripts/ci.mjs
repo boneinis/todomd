@@ -120,7 +120,8 @@ async function packSmoke() {
     // that a unit test on src/ would not notice in the INSTALLED artifact
     const cfg = fs.readFileSync(path.join(repo, '.todomd/config.yml'), 'utf8');
     if (!cfg.includes('Edit(.todomd/tasks/**)')) throw new Error("shipped config lost Plan's scoped Edit");
-    if (/^\s+- "Bash\(node/m.test(cfg)) throw new Error('shipped config re-introduced a broad Bash(node:*) rule');
+    const activeCfg = cfg.split('\n').filter((line) => !line.trimStart().startsWith('#')).join('\n');
+    if (/Bash\(node:\*\)/.test(activeCfg)) throw new Error('shipped config re-introduced a broad Bash(node:*) rule');
     if (!fs.readFileSync(path.join(repo, '.gitignore'), 'utf8').split('\n').some((l) => l.trim() === '.todomd/local/'))
       throw new Error('init did not gitignore .todomd/local/ (local prompts would be committable)');
 
