@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,9 +12,9 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fba8d-0e91-7dc0-8f8c-571c0fa7af27
+session_id: 019fba94-f789-7692-9b02-fa9b54cc69df
 worktree: todomd/task-0024
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 12.2276
 needs_human_reason:
@@ -103,3 +103,5 @@ mail keeps its attachments only in the mailbox.
 - 2026-07-31 23:40Z · Verify attempt 1 · malformed verdict, re-running once
 - 2026-07-31 23:40Z · Verify attempt 1 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: Reading additional input from stdin... 2026-07-31T23:40:34.349310Z WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/ 2026-07-31T23:40:34.349329Z WARN cod; no final message or structured output; no valid verdict
   - bad_verdict: Codex verification infrastructure: codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: Reading additional input from stdin... 2026-07-31T23:40:34.349310Z WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/ 2026-07-31T23:40:34.349329Z WARN cod; no final message or structured output; no valid verdic
+- 2026-07-31 23:53Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - retrying with findings (attempt 2/3)
