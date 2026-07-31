@@ -1164,6 +1164,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
     jsonSchema: VERDICT_SCHEMA,
+    logFile: runLogFile(project, id, 'Verify', attempt),
   });
 
   if (run?.cancelled) {
