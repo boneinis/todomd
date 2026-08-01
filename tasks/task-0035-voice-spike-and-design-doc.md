@@ -1,7 +1,7 @@
 ---
 id: task-0035
 title: Voice spike and design doc
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0020)
-session_id: cee544e2-f58e-4ff9-8d24-976a97faf1dd
+session_id: 8b22a194-cfe7-47ec-9b10-ceee5d8bd08b
 worktree: todomd/task-0035
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 1.1054
+needs_human_reason: bad_verdict
+recovery_stage:
 ---
 
 ## Description
@@ -41,3 +43,5 @@ Voice spike and design doc
 
 ## Run Log
 - 2026-08-01 11:07Z · Build attempt 1 · 31 turns · $1.105 · ok
+- 2026-08-01 11:07Z · Verify attempt 1 · malformed verdict, re-running once
+- 2026-08-01 11:07Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
