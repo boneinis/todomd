@@ -27,6 +27,13 @@ import { screenEmail, appendIntakeAudit } from './screen.js';
 //          default: "triage" } } }   // default optional: unmatched → this board
 const configFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake.json');
 
+// Keep the MIME-body distinction intact for screening. Mailparser otherwise
+// synthesizes `text` from HTML, making a message with no text/plain part look
+// like ordinary text mail before screenEmail can classify it.
+export function parseInboundMessage(source) {
+  return simpleParser(source, { skipHtmlToText: true });
+}
+
 function loadRaw() {
   try {
     const raw = JSON.parse(fs.readFileSync(configFile(), 'utf8'));
@@ -256,7 +263,7 @@ async function pollSource(source, getProject) {
       if (processed >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
       processed++;
       try {
-        const parsed = await simpleParser(msg.source);
+        const parsed = await parseInboundMessage(msg.source);
         const mid = parsed.messageId;
         if (mid && handled.has(mid)) {            // already made a card for this message this run
           if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });

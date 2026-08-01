@@ -5,7 +5,7 @@ import path from 'node:path';
 import { simpleParser } from 'mailparser';
 import { makeRepo, isolateHome, git } from './helpers.js';
 import { screenEmail, appendIntakeAudit } from '../src/screen.js';
-import { intakeMessage } from '../src/intake.js';
+import { intakeMessage, parseInboundMessage } from '../src/intake.js';
 import { readCard } from '../src/board.js';
 
 // A hand-built headers Map, for unit cases that only care about one signal.
@@ -247,6 +247,34 @@ const RAW_BUG_REPORT = rawEmail([
   'Repro: open /reports, filter by month, click Export. Server returns a 500.',
   '',
 ]);
+
+const RAW_HTML_ONLY = rawEmail([
+  'From: Web Form <forms@example.com>',
+  'To: intake@example.com',
+  'Subject: New website update',
+  'Message-ID: <html-only-1@example.com>',
+  'Content-Type: text/html; charset=utf-8',
+  '',
+  '<p>This message has enough visible content to look actionable after HTML-to-text conversion.</p>',
+  '',
+]);
+
+test('production parsing preserves an HTML-only body so screening can hold it', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const parsed = await parseInboundMessage(RAW_HTML_ONLY);
+
+  assert.equal(parsed.text, '', 'production intake must not synthesize a text/plain part');
+  assert.ok(parsed.html);
+  assert.ok(screenEmail(parsed).signals.includes('html-only'));
+
+  const out = await intakeMessage({ path: repo, name: 'repo' }, parsed, { label: 'main' });
+  assert.equal(out.verdict, 'unclear');
+  assert.equal(out.created, true);
+  const card = readCard(repo, out.id);
+  assert.equal(card.data.status, 'Needs Human');
+  assert.match(card.data.needs_human_reason, /HTML-only/i);
+});
 
 test('mailparser folds List-* headers out of the headers Map — screening must still see them', async () => {
   const parsed = await simpleParser(RAW_NEWSLETTER);
