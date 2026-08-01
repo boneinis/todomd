@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0029
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 6.2014
-needs_human_reason:
+needs_human_reason: retry_failed
 recovery_stage:
 model:
 effort:
@@ -85,3 +85,7 @@ Nest planned and queued subtasks under an expandable epic card
 - 2026-08-01 00:33Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 00:36Z · Escalate attempt 2 · 16 turns · $1.263 · diagnosis complete
+  - retry_failed: The argument 'args[1]' must be a string without null bytes. Received '/todomd-build task-0029\n' +
+  '\n' +
+  'Previous verifier findings to address:\n' +
+  'Adversarial review found a reachable mu...
