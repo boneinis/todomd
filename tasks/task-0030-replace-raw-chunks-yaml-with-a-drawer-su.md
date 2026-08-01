@@ -1,7 +1,7 @@
 ---
 id: task-0030
 title: Replace raw Chunks YAML with a modal Subtasks view
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 3/3 of task-0026)
-session_id: 37bc3e1e-d496-4d42-ae64-db0deaf7b801
+session_id: 019fbaef-b71a-7903-a594-c85b943f2e92
 worktree: todomd/task-0030
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 8.1727
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -83,3 +83,5 @@ Replace raw Chunks YAML with a drawer Subtasks view
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 01:22Z · Escalate attempt 2 · 21 turns · $2.263 · diagnosis complete
 - 2026-08-01 01:28Z · Build attempt 3 · 32 turns · $1.880 · ok (escalation repair)
+- 2026-08-01 01:33Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Reachable viewer-mode accessibility defect in public/app.js:458-460. `drawerFocusable()` excludes only disabled, negative-tabindex, and `[hidden]` elements, but viewer mode hides `.drawer-rail` through CSS. Those invisible controls remain in the focus-trap list. In real Chrome, Shift+Tab from the initially focused close button selected hidden `#route-save`; focus remained stuck on the close button
