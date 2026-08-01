@@ -2,12 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { simpleParser } from 'mailparser';
 import { makeRepo, isolateHome, git } from './helpers.js';
 import { screenEmail, appendIntakeAudit } from '../src/screen.js';
 import { intakeMessage } from '../src/intake.js';
 import { readCard } from '../src/board.js';
 
-// mailparser hands back a Map of lowercased header names — the same shape.
+// A hand-built headers Map, for unit cases that only care about one signal.
+// NOT a faithful stand-in for mailparser: it normalizes some headers away from
+// the Map (every List-* header becomes one `list` entry), which is exactly the
+// bug the simpleParser end-to-end tests at the bottom of this file exist to
+// catch. Use those whenever the header shape itself is what's under test.
 const headers = (obj) => new Map(Object.entries(obj));
 
 // A message with nothing to hold against it: human sender, real subject, a body
@@ -208,4 +213,104 @@ test('appendIntakeAudit: trims to the newest 500 lines so it cannot grow unbound
   assert.equal(lines.length, 500);
   assert.equal(lines[0].n, 2, 'the oldest lines are the ones dropped');
   assert.equal(lines.at(-1).n, 501);
+});
+
+/* ── end-to-end through the real parser ──
+ * Everything above screens hand-built fixtures. These go through the parser
+ * pollSource actually uses, because mailparser reshapes headers on the way in
+ * and a fixture written to match our own assumptions cannot catch that. */
+
+const rawEmail = (lines) => lines.join('\r\n');
+
+// A newsletter whose ONLY strong signal is List-Unsubscribe: a human-looking
+// sender, a real subject, a body long enough to act on and with no unsubscribe
+// footer in it. If screening reads this header, one signal decides the message.
+const RAW_NEWSLETTER = rawEmail([
+  'From: Shop News <news@shop.example.com>',
+  'To: intake@example.com',
+  'Subject: Summer sale is on',
+  'Message-ID: <newsletter-1@shop.example.com>',
+  'List-Unsubscribe: <mailto:leave@shop.example.com>',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  'Big savings this week on everything in the store. Come take a look.',
+  '',
+]);
+
+const RAW_BUG_REPORT = rawEmail([
+  'From: Jane Doe <jane@example.com>',
+  'To: intake@example.com',
+  'Subject: Export button 500s on filtered reports',
+  'Message-ID: <real-1@example.com>',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  'Repro: open /reports, filter by month, click Export. Server returns a 500.',
+  '',
+]);
+
+test('mailparser folds List-* headers out of the headers Map — screening must still see them', async () => {
+  const parsed = await simpleParser(RAW_NEWSLETTER);
+
+  // This is the shape that broke the classifier: there is NO 'list-unsubscribe'
+  // key on the Map. Pinned here so a parser upgrade that changes it is loud.
+  assert.equal(parsed.headers.has('list-unsubscribe'), false,
+    'mailparser normalizes List-* away from the Map — a Map-only check is not enough');
+  assert.ok(parsed.headers.get('list')?.unsubscribe, 'it lands on the structured `list` entry instead');
+  assert.ok(parsed.headerLines.some((h) => h.key === 'list-unsubscribe'),
+    'headerLines keeps the raw header, which is what makes the presence check reliable');
+
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'spam');
+  assert.deepEqual(r.signals, ['list-unsubscribe'], 'that one header is the whole case against it');
+  assert.match(r.reason, /List-Unsubscribe/);
+});
+
+test('screenEmail: a List-Id newsletter parsed for real still reads as a bulk-mail header', async () => {
+  const parsed = await simpleParser(rawEmail([
+    'From: Weekly Digest <digest@lists.example.com>',
+    'To: intake@example.com',
+    'Subject: Your weekly digest',
+    'List-Id: Weekly Digest <digest.lists.example.com>',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Here are the five most-read posts from the community this week.',
+    '',
+  ]));
+  assert.equal(parsed.headers.has('list-id'), false); // same normalization
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'spam');
+  assert.ok(r.signals.includes('esp-header'));
+});
+
+test('intakeMessage: a real newsletter, parsed by mailparser, never reaches the board', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const before = cardFiles(repo).length;
+
+  const out = await intakeMessage({ path: repo, name: 'repo' }, await simpleParser(RAW_NEWSLETTER), { label: 'main' });
+
+  assert.equal(out.verdict, 'spam');
+  assert.equal(out.created, false);
+  assert.equal(cardFiles(repo).length, before, 'no card file was written');
+
+  const line = auditLines(repo).at(-1);
+  assert.equal(line.verdict, 'spam');
+  assert.equal(line.card, '');
+  assert.equal(line.messageId, '<newsletter-1@shop.example.com>');
+  assert.match(line.reason, /List-Unsubscribe/, 'the audit line names the signal that decided it');
+});
+
+test('intakeMessage: a real bug report, parsed by mailparser, becomes a Review card', async () => {
+  isolateHome();
+  const repo = makeRepo();
+
+  const out = await intakeMessage({ path: repo, name: 'repo' }, await simpleParser(RAW_BUG_REPORT), { label: 'main' });
+
+  assert.equal(out.verdict, 'work');
+  assert.equal(out.created, true);
+  const card = readCard(repo, out.id);
+  assert.equal(card.data.status, 'Review');
+  assert.match(card.data.title, /Export button 500s/);
+  assert.equal(card.data.needs_human_reason || '', '');
+  assert.equal(auditLines(repo).at(-1).card, out.id);
 });

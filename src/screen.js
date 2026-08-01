@@ -51,8 +51,27 @@ function headerText(headers, name) {
   return String(v);
 }
 
-function hasHeader(headers, name) {
-  return !!(headers && typeof headers.has === 'function' && headers.has(name));
+// Is `name` present on the message? The headers Map alone is NOT enough:
+// mailparser folds every List-* header into one structured entry
+// (headers.get('list') = { unsubscribe, id, … }) and leaves no
+// `list-unsubscribe` / `list-id` key behind — so a Map-only check silently
+// misses the two strongest newsletter signals we have. headerLines is the raw
+// [{ key, line }] array mailparser always preserves, with lowercased keys, so
+// consulting it makes presence work uniformly for every header. The normalized
+// `list` object is read too, for callers that hand us headers without lines.
+function hasHeader(parsed, name) {
+  const headers = parsed?.headers;
+  if (headers && typeof headers.has === 'function' && headers.has(name)) return true;
+
+  const lines = parsed?.headerLines;
+  if (Array.isArray(lines) && lines.some((h) => String(h?.key || '').toLowerCase() === name)) return true;
+
+  const list = headers && typeof headers.get === 'function' ? headers.get('list') : null;
+  if (list && typeof list === 'object') {
+    if (name === 'list-unsubscribe') return !!list.unsubscribe;
+    if (name === 'list-id') return !!list.id;
+  }
+  return false;
 }
 
 // Pure: a parsed email → { verdict: 'work' | 'spam' | 'unclear', reason, signals }.
@@ -66,7 +85,7 @@ export function screenEmail(parsed) {
   const spamStrong = [];
   const spamWeak = [];
 
-  if (hasHeader(headers, 'list-unsubscribe')) spamStrong.push('list-unsubscribe');
+  if (hasHeader(parsed, 'list-unsubscribe')) spamStrong.push('list-unsubscribe');
 
   const precedence = headerText(headers, 'precedence').toLowerCase();
   if (/\b(bulk|list|junk)\b/.test(precedence)) spamStrong.push('precedence-bulk');
@@ -80,7 +99,7 @@ export function screenEmail(parsed) {
     spamStrong.push('auto-submitted-bulk');
   }
 
-  if (ESP_HEADERS.some((h) => hasHeader(headers, h))) spamStrong.push('esp-header');
+  if (ESP_HEADERS.some((h) => hasHeader(parsed, h))) spamStrong.push('esp-header');
 
   if (/no-?reply@/i.test(fromAddr)) spamWeak.push('noreply-sender');
 
