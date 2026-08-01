@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbdcb-292f-7a82-9562-7b16902da675
+session_id: 5d864422-3a92-466e-b7c1-7ea64a2fc58d
 worktree: todomd/task-0036
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 5.9645
+cost_usd: 14.8956
 ---
 
 ## Description
@@ -53,3 +53,4 @@ an action but cannot execute or confirm it.
 - 2026-08-01 14:47Z · Build attempt 1 · 73 turns · $5.964 · ok
 - 2026-08-01 14:53Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
+- 2026-08-01 15:07Z · Build attempt 2 · 69 turns · $8.931 · ok
