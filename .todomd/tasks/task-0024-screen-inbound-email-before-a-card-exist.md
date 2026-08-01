@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: bad_verdict
 recovery_stage:
 model:
 effort:
@@ -206,3 +206,7 @@ Reachable classifier defects remain:
   - attempts_exhausted: `npm test` passed all 236 core tests and 2 UI tests with normal process visibility; `git diff --check main...HEAD` also passed. However, src/screen.js:16-17 misses common out-of-office forms. A parsed email with subject `Out of Office AutoReply: Export failure` and body `Thank you for your message. I will return on August 12 and reply then.` was classified as `work` with no signals. End-to-end, po
 - 2026-08-01 03:34Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: `npm test` passed all 236 core tests and 2 UI tests with normal runtime permissions; `git diff --check main...HEAD` also passed. However, the classifier misses common out-of-office messages that the task explicitly requires to be `unclear`. Parser-level probes with subject `Re: Export failure` and bodies such as `I am on maternity leave until August 12...`, `Currently out of the office until Augus
+- 2026-08-01 03:36Z · Verify attempt 3 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
+- 2026-08-01 03:36Z · Verify attempt 3 · malformed verdict, re-running once
+- 2026-08-01 03:36Z · Verify attempt 3 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
+  - bad_verdict: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or
