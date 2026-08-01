@@ -16,7 +16,7 @@ const ESP_HEADERS = [
 const OOO_RE = /\b(out[- ]of[- ](?:the[- ])?office|automatic reply|auto[- ]?reply|away from (my |the )?(office|email|desk))\b/i;
 const BOUNCE_ADDR_RE = /\b(mailer-daemon|postmaster)\b/i;
 const BOUNCE_SUBJECT_RE = /\b(undeliverable|delivery status notification|returned to sender|delivery (?:has )?failed|delivery failure|mail delivery failed)\b/i;
-const FOOTER_RE = /unsubscribe|view(?: (?:this|it)(?: email| message)?)? in (?:your )?browser|manage your (email )?preferences/i;
+const FOOTER_RE = /unsubscribe|view(?: (?:this|the|your|an?|it))?(?: (?:email|message))? in (?:an? |your )?browser|manage your (email )?preferences/i;
 const MIN_BODY_LEN = 20; // shorter than this and there's rarely enough to act on
 
 const SIGNAL_LABELS = {
@@ -112,7 +112,9 @@ export function screenEmail(parsed) {
   if (!text) unclear.push('empty-body');
   else if (text.length < MIN_BODY_LEN) unclear.push('short-body');
 
-  if (!subject || !/[a-z0-9]/i.test(subject)) unclear.push('no-subject');
+  const subjectCore = subject.replace(/^(?:(?:re|fw|fwd)\s*:\s*)+/i, '').trim();
+  const noSubjectPlaceholder = /^[[(<]?\s*no\s+subject\s*[\])>]?$/i.test(subjectCore);
+  if (!subjectCore || noSubjectPlaceholder || !/[a-z0-9]/i.test(subjectCore)) unclear.push('no-subject');
 
   if (autoSubmitted === 'auto-replied' || OOO_RE.test(subject) || OOO_RE.test(bodyText)) unclear.push('auto-reply');
 

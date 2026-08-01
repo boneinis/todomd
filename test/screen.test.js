@@ -440,6 +440,45 @@ test('screenEmail: parsed bare X-Campaign and plus-tagged no-reply variants are 
   assert.ok(screenEmail(tagged).signals.includes('noreply-sender'));
 });
 
+test('screenEmail: parsed view-in-browser footer variants combine with a no-reply sender', async () => {
+  for (const [i, footer] of [
+    'View email in browser',
+    'View message in browser',
+    'View this email in a browser',
+  ].entries()) {
+    const parsed = await parseInboundMessage(rawEmail([
+      'From: Shop <no-reply@shop.example.com>',
+      'To: intake@example.com',
+      'Subject: Your weekly store update',
+      `Message-ID: <footer-${i}@shop.example.com>`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      `Here are this week's featured products and announcements. ${footer}`,
+      '',
+    ]));
+    const r = screenEmail(parsed);
+    assert.equal(r.verdict, 'spam', footer);
+    assert.deepEqual(r.signals, ['noreply-sender', 'unsubscribe-footer']);
+  }
+});
+
+test('screenEmail: parsed reply/forward-only and placeholder subjects are not meaningful', async () => {
+  for (const subject of ['Re:', 'Fwd:', '(no subject)', '[no subject]', 'Re: (no subject)']) {
+    const parsed = await parseInboundMessage(rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      `Subject: ${subject}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'This body is long enough to avoid the short-body signal entirely.',
+      '',
+    ]));
+    const r = screenEmail(parsed);
+    assert.equal(r.verdict, 'unclear', subject);
+    assert.ok(r.signals.includes('no-subject'), subject);
+  }
+});
+
 test('screenEmail: a parsed multipart message checks the HTML footer as well as plain text', async () => {
   const parsed = await parseInboundMessage(rawEmail([
     'From: Shop <no-reply@shop.example.com>',
