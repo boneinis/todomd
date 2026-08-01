@@ -1046,6 +1046,16 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       'From: Jane Doe <jane@example.com>',
       'To: intake@example.com',
       'Subject: Re: Export failure',
+      'Message-ID: <on-leave-until@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'I am on leave until August 5 and will respond when I return.',
+      '',
+    ]),
+    rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re: Export failure',
       'Message-ID: <future-out-of-office@example.com>',
       'Content-Type: text/plain; charset=utf-8',
       '',
@@ -1079,7 +1089,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
   ];
   const expected = [
     'unclear', 'spam', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear',
-    'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'spam', 'spam',
+    'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'spam', 'spam',
   ];
   for (const [i, verdict] of expected.entries()) {
     assert.equal(screenEmail(await simpleParser(messages[i])).verdict, verdict);
@@ -1105,7 +1115,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
     onCardCallback: (_project, id) => triaged.push(id),
   });
 
-  assert.equal(cardFiles(repo).length, 12, 'only the held auto-responses create cards');
+  assert.equal(cardFiles(repo).length, 13, 'only the held auto-responses create cards');
   for (const file of cardFiles(repo)) {
     assert.equal(readCard(repo, file.match(/task-\d+/)[0]).data.status, 'Needs Human');
   }
