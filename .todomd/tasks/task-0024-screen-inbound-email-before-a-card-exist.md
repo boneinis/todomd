@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbae3-b967-7aa3-b7c8-cd548b2d9751
+session_id: 019fbae9-b2a9-7fc2-bbdb-4fa38a2ebe7e
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -144,3 +144,7 @@ Reachable classification bug: `src/screen.js:97-123` misclassifies a realistic b
   - attempts_exhausted: `npm test` passed outside the restricted sandbox: 220 core tests and 2 UI tests. However, adversarial parser-level review found reachable classification defects:
 
 1. `src/screen.js:106` uses `text || stripHtml(html)`, so it never examines HTML when a multipart message also has a text part. A reproduced multipart marketing email from `no-reply@shop.example.com`, with ordinary plain text and an HTML
+- 2026-08-01 01:27Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: The official `npm test` passed (222 core tests plus UI tests), and the worktree remained clean. However, parser-level adversarial testing found classification defects in `src/screen.js`:
+
+1. A common Outlook bounce with subject `Delivery has failed to these recipients or groups:` and `Auto-Submitted: auto-generated` is classified as spam because `BOUNCE_SUBJECT_RE` does not recognize that wording.
