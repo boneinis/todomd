@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb5f-4e28-7fa0-b681-9767a658ecd9
+session_id: 019fbb67-05fe-7f42-92ae-6b8de8ee074c
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -210,3 +210,5 @@ Reachable classifier defects remain:
 - 2026-08-01 03:36Z · Verify attempt 3 · malformed verdict, re-running once
 - 2026-08-01 03:36Z · Verify attempt 3 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
   - bad_verdict: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0024 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or
+- 2026-08-01 03:41Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: The configured `npm test` passed all 236 core tests and 2 UI tests, and `git diff --check main...HEAD` passed. However, a reachable classifier defect remains at `src/screen.js:17`: common explicit leave replies are missed when `leave` ends the sentence or is followed by punctuation. A parser-level message with body “Thank you for your message. I am currently on annual leave.” and an ordinary reply
