@@ -826,6 +826,7 @@ test('pollSource: human bug reports about automated-mail features stay work and 
     ['View-in-browser link is broken', 'The view this email in browser link returns a 404 for customer receipts.'],
     ['Out-of-office settings fail to save', 'The out-of-office settings form loses the selected return date after saving.'],
     ['Leave settings fail to save', 'I am on leave settings page and the return date form returns a 500.'],
+    ['Annual leave screen cannot save changes', 'I am on the annual leave screen and the Save button is disabled.'],
     ['OOO notification bug', 'OOO notifications are not delivered when the schedule begins.'],
     ['Vacation response strips Unicode', 'The vacation response editor removes accented characters from the saved template.'],
     ['Delivery failed alert has wrong link', 'The delivery failed alert links to the wrong message in the activity view.'],
