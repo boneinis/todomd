@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
-import { readCard, setStageRouting, patchFrontmatter, withRepoLock } from '../src/board.js';
+import { readCard, loadBoard, setStageRouting, patchFrontmatter, withRepoLock } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
 import * as voice from '../src/voice.js';
@@ -567,6 +567,40 @@ test('a Plan run remains live through finalization and cancellation wins the fin
     assert.equal(status(repo, 'task-0001'), 'Review', 'the stage finalizer cannot overwrite the cancellation');
   } finally {
     if (release) await release();
+    clearFakeAgent();
+  }
+});
+
+test('cancelling Plan during chunk fan-out archives every generated non-Done child', async () => {
+  isolateHome();
+  useFakeAgent({ chunks: 12 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { title: 'large split' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => pipeline.hasLiveRun(p.name, 'task-0001') &&
+      readCard(repo, 'task-0001')?.data?.status === 'Plan', { timeout: BUDGET.stage });
+    await until(() => {
+      const board = loadBoard(repo, { includeArchived: true });
+      return board.cards.some((card) => card.parent === 'task-0001');
+    }, { timeout: BUDGET.stage, step: 2 });
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'), { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+
+    const children = loadBoard(repo, { includeArchived: true }).cards
+      .filter((card) => card.parent === 'task-0001');
+    assert.equal(children.length, 12, 'fan-out completed before cancellation cleanup');
+    assert.ok(children.every((card) => card.status === 'Done' || card.archived),
+      'every non-Done child created by the cancelled Plan is archived');
+    assert.equal(loadBoard(repo).cards.some((card) => card.parent === 'task-0001'), false,
+      'cancelled Plan children are no longer active on the board');
+  } finally {
+    await pipeline.killAllChildren({ graceMs: 1000 });
     clearFakeAgent();
   }
 });

@@ -1078,8 +1078,16 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   const finishCancellation = async () => {
     if (!run?.cancelled || cancellationHandled) return false;
     cancellationHandled = true;
+    const revertTo = run.revertTo || 'Review';
     await recordRun(project, id, stageName, 0, result, 'cancelled');
-    await orchMove(project, id, run.revertTo || 'Review', 'cancelled');
+    await orchMove(project, id, revertTo, 'cancelled');
+    // A Plan can be cancelled while fanOutChunks is between child commits.
+    // Re-read after finalization settles and restore the same invariant as a
+    // normal epic retriage: no non-Done child from the cancelled plan remains
+    // active on the board.
+    if (revertTo === 'Review' && readCard(project.path, id)?.data?.epic) {
+      await cascadeEpicCleanup(project, id);
+    }
     sendState(project, id, 'idle');
     return true;
   };
