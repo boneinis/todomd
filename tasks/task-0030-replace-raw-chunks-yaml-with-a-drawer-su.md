@@ -1,7 +1,7 @@
 ---
 id: task-0030
 title: Replace raw Chunks YAML with a modal Subtasks view
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 3/3 of task-0026)
-session_id: 019fbadd-0276-7ac0-860a-dd911a937c02
+session_id: de6478f2-6860-484f-924a-077778fe7034
 worktree: todomd/task-0030
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 4.0298
+cost_usd: 6.2925
 needs_human_reason:
 recovery_stage:
 model:
@@ -79,4 +79,6 @@ Replace raw Chunks YAML with a drawer Subtasks view
   - retrying with findings (attempt 2/3)
 - 2026-08-01 01:11Z · Build attempt 2 · 0 turns · $0.000 · failed: agent
   - error: Error: thread/resume: thread/resume failed: no rollout found for thread id fa47ecab-401e-4b14-a488-109a1e8370de (code -32600)
-
+- 2026-08-01 01:19Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
+- 2026-08-01 01:22Z · Escalate attempt 2 · 21 turns · $2.263 · diagnosis complete
