@@ -1,7 +1,7 @@
 ---
 id: task-0030
-title: Replace raw Chunks YAML with a drawer Subtasks view
-status: Planned
+title: Replace raw Chunks YAML with a modal Subtasks view
+status: Queue
 type: improvement
 priority: medium
 labels: []
@@ -23,10 +23,10 @@ Replace raw Chunks YAML with a drawer Subtasks view
 
 ## Acceptance Criteria
 
-- [ ] The parent drawer shows a Subtasks view with per-child status, dependency state, and assignee, and no raw Chunks YAML in the main details flow.
+- [ ] The centered card-details modal shows a Subtasks view with per-child status, dependency state, and assignee, and no raw Chunks YAML in the main details flow.
 - [ ] Raw planner output is still reachable in a collapsed Planner record that is closed by default.
 - [ ] Clicking a subtask row in the drawer opens that child card, and a non-epic card shows neither the Subtasks tab nor the planner record.
-- [ ] The Actions rail is sticky and separate while the details column scrolls independently, and it stacks below the details at narrow widths.
+- [ ] The card detail surface is a centered, accessible modal over the board; it keeps board context visible, closes with Escape, and adapts for narrow screens.
 - [ ] Browser tests cover drawer switching, the planner record, and the responsive rail layout, and `npm test` is green.
 
 ## Implementation Plan
