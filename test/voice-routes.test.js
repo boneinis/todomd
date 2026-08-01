@@ -146,6 +146,35 @@ test('voice action routes reject null and prototype-property actions without HTT
   } finally { srv.close(); }
 });
 
+test('archived cards must be restored before operational voice actions', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Planned', extra: 'archived: true\n' });
+
+    let r = await fetch(`${base}/api/voice/actions${q}`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ cardId: 'task-0001', action: 'approve' }),
+    });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /archived.*restore/);
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Planned');
+
+    r = await fetch(`${base}/api/voice/actions${q}`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ cardId: 'task-0001', action: 'unarchive' }),
+    });
+    assert.equal(r.status, 200);
+    const prep = await r.json();
+    r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, {
+      method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'Yes To-do' }),
+    });
+    assert.equal(r.status, 200);
+    assert.equal(readCard(repo, 'task-0001').data.archived, undefined);
+  } finally { srv.close(); }
+});
+
 test('reject endpoint over HTTP: consumes the proposal, never executes it', async () => {
   isolateHome();
   const { repo, base, srv, q } = await boot();

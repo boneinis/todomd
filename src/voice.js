@@ -134,6 +134,16 @@ function notWhileLive(card, fx) {
     : { ok: false, error: `${card.data.id} has a live run — cancel it in the app first` };
 }
 
+// Archived cards are hidden from the operational board. Letting any normal
+// action run against one can queue or mutate invisible work, so restoration is
+// the sole voice operation available until the card is visible again.
+function archivedEligibility(card, action) {
+  if (!card.data.archived || action === 'unarchive') return { ok: true };
+  return action === 'archive'
+    ? { ok: false, error: `${card.data.id} is already archived` }
+    : { ok: false, error: `${card.data.id} is archived — restore it before using voice actions` };
+}
+
 // Voice is strictly single-card. Moving/archiving an epic can cascade cleanup,
 // while approving one releases its ready children; either affects multiple
 // cards, and bulk actions are unavailable by voice at any tier.
@@ -396,6 +406,8 @@ export async function prepareVoiceAction(project, fields = {}) {
   // two aliases can reserve and execute against the same card concurrently.
   const cardId = String(card.data.id || '');
   if (!CARD_ID.test(cardId)) return { status: 400, ok: false, error: 'card has an invalid canonical id' };
+  const archived = archivedEligibility(card, action);
+  if (!archived.ok) return { status: 400, ok: false, error: archived.error };
   if (pendingFor(project.path, cardId)) {
     return { status: 409, ok: false, error: 'ambiguous: a pending proposal already exists for this card — confirm or reject it first' };
   }
@@ -485,6 +497,11 @@ export async function confirmVoiceAction(project, proposalId, body = {}) {
     }
 
     const def = ALLOWED_ACTIONS[p.action];
+    const archived = archivedEligibility(card, p.action);
+    if (!archived.ok) {
+      proposals.delete(proposalId);
+      return { status: 409, ok: false, error: `stale: ${archived.error}` };
+    }
     const eligible = await def.eligible(card, project, effects);
     if (!eligible.ok) {
       proposals.delete(proposalId);

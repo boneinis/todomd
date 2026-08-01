@@ -372,6 +372,12 @@ test('unarchive is a harmless reversible move (Yes To-do), and archive/unarchive
   // cannot re-archive an already-archived card
   r = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'archive' });
   assert.equal(r.status, 400);
+  assert.match(r.error, /already archived/);
+  for (const action of ['approve', 'retriage', 'retry_planned', 'cancel']) {
+    r = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action });
+    assert.equal(r.status, 400, action);
+    assert.match(r.error, /archived.*restore/, action);
+  }
 
   const unarchive = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'unarchive' });
   assert.equal(unarchive.confirmation.tier, 'reversible');
@@ -818,6 +824,17 @@ test('stale detection covers every input the policy was derived from, not just t
   assert.match(r.error, /stale/);
   assert.equal(status(repo, 'task-0006'), 'Build');
   assert.equal(readCard(repo, 'task-0006').data.worktree, 'todomd/replacement-branch');
+
+  // (5) an archive racing confirmation cannot turn a visible-board action into
+  // an invisible mutation.
+  writeCard(repo, 'task-0007', { status: 'Build' });
+  prep = await voice.prepareVoiceAction(p, { cardId: 'task-0007', action: 'retriage' });
+  await patchFrontmatter(repo, 'task-0007', { archived: true });
+  r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
+  assert.equal(r.status, 409);
+  assert.match(r.error, /stale/);
+  assert.equal(status(repo, 'task-0007'), 'Build');
+  assert.equal(readCard(repo, 'task-0007').data.archived, true);
 });
 
 test('confirm revalidation and mutation are atomic with concurrent board writes', async () => {
