@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb4b-d8de-7160-ad2e-da4c7969bcda
+session_id: 019fbb50-40f6-7792-b6d9-1765711ddf10
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -198,3 +198,5 @@ Reachable classifier defects remain:
 1. `src/screen.js:16` misses the common subject `Automatic response: Ticket received` (it recognizes “automatic reply” and “automated response,” but not “automatic response”). A production-parser probe returned `work` wit
 - 2026-08-01 03:12Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Official verification passed: 236 core tests and 2 UI tests. Adversarial testing found a reachable classifier bug: src/screen.js:16-17 recognizes “automated response” but omits the equally common “automated reply.” A parsed message with subject “Automated reply: Ticket received” and body “This is an automated reply…” returns work with no signals. pollSource therefore creates a Review card and invo
+- 2026-08-01 03:17Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Official `npm test` passed all 236 core tests and 2 UI tests with normal process visibility; `git diff --check main...HEAD` also passed. However, `src/screen.js:16` only accepts a colon or end-of-subject after an auto-reply phrase. Production-parser probes of common subjects `Auto Reply - Ticket received` and `[Auto-Reply] Ticket received` returned `work` with no signals. An end-to-end `pollSource
