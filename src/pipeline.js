@@ -52,6 +52,7 @@ const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human'])
 
 let broadcast = () => {};
 const children = new Map();          // runKey → ChildProcess
+const finalizationWaiters = new WeakMap(); // retained trigger run → completion signal for direct human moves
 // runKey → { cancelled, revertTo, cascadeArchive, noRequeue } — a build chain
 // claimed by processQueue but not yet fully settled. Covers the windows where
 // `children` has no entry (queue shift → spawn, build done → verify spawn,
@@ -61,8 +62,14 @@ const queues = new Map();            // project name → [cardId]
 const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
-const retryFindings = new Map();      // runKey → verifier findings to carry into a resumed build
-const recoveryBuilds = new Map();     // runKey → guarded orphaned-Build continuation state
+const retryFindings = new Map();      // runKey → { project, card, findings }
+const recoveryBuilds = new Map();     // runKey → guarded continuation state with exact project/card ownership
+
+function saveRetryFindings(project, id, findings) {
+  const key = runKey(project.name, id);
+  if (findings) retryFindings.set(key, { project: project.name, card: id, findings });
+  else retryFindings.delete(key);
+}
 
 // On a usage limit the card is parked back in Queue with its attempt rolled
 // back; resume (or boot) re-enqueues it through the normal queue, so accounting
@@ -78,8 +85,7 @@ async function parkForQuota(project, id, attempt, maxAttempts, findings) {
   await patchFrontmatter(project.path, id, {
     verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict },
   });
-  if (findings) retryFindings.set(runKey(project.name, id), findings);
-  else retryFindings.delete(runKey(project.name, id));
+  saveRetryFindings(project, id, findings);
   await orchMove(project, id, 'Queue', 'usage limit; will resume');
   pauseForQuota(project);
   sendState(project, id, 'idle');
@@ -462,7 +468,7 @@ export async function answerCard(project, id, answer) {
   const text = String(answer || '').trim();
   if (!text) return { ok: false, error: 'answer is required' };
   const question = card.data.question || '';
-  retryFindings.set(runKey(project.name, id),
+  saveRetryFindings(project, id,
     `A human answered your earlier question — use this decision to proceed.\nQuestion: ${question}\nAnswer: ${text}`);
   await patchFrontmatter(project.path, id, { question: '', needs_human_reason: '' });
   await appendRunLog(project.path, id, `- ${now()} · human answered: ${text.slice(0, 200)}`);
@@ -484,7 +490,11 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   const key = runKey(project.name, id);
   if (children.has(key)) {
     // never overwrite a live run's tracking entry — that would orphan it
-    return Promise.resolve({ result: { envelope: null, exitCode: -1, stderr: 'already running' }, run: null });
+    return Promise.resolve({
+      result: { envelope: null, exitCode: -1, stderr: 'already running' },
+      run: null,
+      finishTracking: () => {},
+    });
   }
   let run;
   let observedSession = null;
@@ -500,8 +510,9 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     // Resume Build can continue that exact run in the preserved worktree.
     if (stage === 'Build') patchFrontmatter(project.path, id, { session_id: sessionId }).catch(() => {});
   };
+  const { retainUntilFinalized = false, ...stageOpts } = opts;
   const { child, done } = runStage({
-    ...opts,
+    ...stageOpts,
     onEvent: (event) => {
       saveSession(event.session_id || event.thread_id || event?.thread?.id);
       if (event.type === 'assistant' || event.type === 'rate_limit_event' ||
@@ -515,6 +526,9 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     startedAt: new Date().toISOString(), prevStatus, attempt,
     ...(observedSession ? { sessionId: observedSession } : {}),
   };
+  let resolveFinalized;
+  const finalized = new Promise((resolve) => { resolveFinalized = resolve; });
+  finalizationWaiters.set(run, { finalized, resolve: resolveFinalized });
   runs.set(key, run);
   children.set(key, child);
   persistRuns();
@@ -541,10 +555,17 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   return done.then((result) => {
     clearTimeout(stageTimer);
     const run = runs.get(key);
-    runs.delete(key);
     children.delete(key);
-    persistRuns();
-    return { result, run };
+    const finishTracking = () => {
+      // Do not delete a newer run if a late finalizer somehow overlaps it.
+      if (runs.get(key) === run) runs.delete(key);
+      finalizationWaiters.get(run)?.resolve();
+      finalizationWaiters.delete(run);
+      persistRuns();
+    };
+    if (!retainUntilFinalized) finishTracking();
+    else persistRuns();
+    return { result, run, finishTracking };
   });
 }
 
@@ -558,18 +579,29 @@ export async function humanMove(project, id, to) {
   const key = runKey(project.name, id);
   const live = children.get(key);
   const pend = pending.get(key);
+  const tracked = runs.get(key);
 
-  if ((live || pend) && to !== 'Review') {
+  // Preserve the long-standing "approve as soon as Planned appears" behavior:
+  // a direct human move waits for the last trigger-stage commit to settle, then
+  // revalidates from the new state. Voice preparation remains non-blocking and
+  // sees hasLiveRun=true throughout this window, so it cannot race finalization.
+  if (tracked && !live && to !== 'Review') {
+    const waiter = finalizationWaiters.get(tracked);
+    if (waiter) {
+      await waiter.finalized;
+      return humanMove(project, id, to);
+    }
+  }
+  if ((tracked || pend) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
   // always allowed: retriage to Review (cancels a live run)
   if (to === 'Review') {
-    if (live) {
-      const run = runs.get(key);
-      run.cancelled = true;
-      run.revertTo = 'Review';
-      killWithEscalation(live);
+    if (tracked) {
+      tracked.cancelled = true;
+      tracked.revertTo = 'Review';
+      if (live) killWithEscalation(live);
       return { ok: true, cancelled: true };
     }
     if (pend) {
@@ -728,6 +760,8 @@ export async function resumeBuild(project, id) {
   const moved = await orchMove(project, id, 'Build', 'resuming orphaned run in preserved worktree');
   if (!moved.ok) return moved;
   recoveryBuilds.set(key, {
+    project: project.name,
+    card: id,
     attempt,
     maxAttempts,
     branch: kept.branch,
@@ -814,6 +848,15 @@ export function cancel(project, id) {
   const key = runKey(project.name, id);
   const live = children.get(key);
   if (!live) {
+    // The agent child has exited but a Plan/custom-stage finalizer can still be
+    // committing its result. Keep cancellation meaningful in that window; the
+    // finalizer checks this flag before it drops tracking.
+    const run = runs.get(key);
+    if (run) {
+      run.cancelled = true;
+      run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
+      return { ok: true };
+    }
     // chain claimed but between spawns (pre-spawn, or post-verify/pre-merge) —
     // nothing to SIGTERM. Flag it so the chain reverts at its next checkpoint
     // instead of proceeding, and drop any queued re-entry so the abort sticks.
@@ -884,6 +927,15 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
     }
     try { child.kill('SIGTERM'); } catch { /* already gone */ }
   }
+  // A trigger-stage child may already be gone while its final card/Git writes
+  // remain tracked. Cancel that finalizer too, and wait for it below, so a board
+  // shutdown cannot interrupt the very window voice now protects.
+  for (const [key, run] of runs) {
+    if (children.has(key)) continue;
+    run.cancelled = true;
+    run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
+    run.noRequeue = true;
+  }
   // chains claimed but between spawns have no child to kill — flag them so they
   // park in Queue at their next checkpoint instead of spawning into a dying
   // process
@@ -894,7 +946,7 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
-    while (children.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    while ((children.size || runs.size) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
   };
   await waitForExit(graceMs);
   for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
@@ -919,7 +971,8 @@ async function runTriggerStage(project, id, stageName) {
     return toNeedsHuman(project, id, stageName, 'skill_not_found', String(e.message || e));
   }
 
-  const { result, run } = await spawnTracked(project, id, stageName, 'Review', 0, {
+  const { result, run, finishTracking } = await spawnTracked(project, id, stageName, 'Review', 0, {
+    retainUntilFinalized: true,
     vendor,
     cwd: project.path,
     prompt,
@@ -930,58 +983,82 @@ async function runTriggerStage(project, id, stageName) {
     logFile: runLogFile(project, id, stageName),
   });
 
-  if (run?.cancelled) {
+  let cancellationHandled = false;
+  let trackingFinished = false;
+  const releaseTracking = () => {
+    if (trackingFinished) return;
+    trackingFinished = true;
+    finishTracking();
+  };
+  const finishCancellation = async () => {
+    if (!run?.cancelled || cancellationHandled) return false;
+    cancellationHandled = true;
     await recordRun(project, id, stageName, 0, result, 'cancelled');
-    await orchMove(project, id, run.revertTo, 'cancelled');
+    await orchMove(project, id, run.revertTo || 'Review', 'cancelled');
     sendState(project, id, 'idle');
-    return;
-  }
-  if (run?.timedOut) {
-    await recordRun(project, id, stageName, 0, result, 'run timeout');
-    return toNeedsHuman(project, id, stageName, 'run_timeout',
-      `${stageName} exceeded the ${run.timeoutMin}m stage timeout`);
-  }
-  const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
-  if (ok) {
-    await recordRun(project, id, stageName, 0, result, skill ? `ok (/${skill})` : 'ok');
-    if (stageName === 'Plan') {
-      // skill cards return to Review (human reads the findings and decides);
-      // staying in Plan would read as an orphaned run after a restart
-      if (skill) {
-        await orchMove(project, id, 'Review', `findings ready (/${skill})`);
-      } else {
-        // the plan agent may have split the work into a `## Chunks` breakdown —
-        // fan it out into sequential child cards; otherwise it's a normal plan
-        const chunks = parseChunks(readCard(project.path, id)?.body || '');
-        if (chunks.length >= 2) {
-          await fanOutChunks(project, id, chunks);
+    return true;
+  };
+
+  try {
+    if (await finishCancellation()) return;
+    if (run?.timedOut) {
+      await recordRun(project, id, stageName, 0, result, 'run timeout');
+      await toNeedsHuman(project, id, stageName, 'run_timeout',
+        `${stageName} exceeded the ${run.timeoutMin}m stage timeout`);
+      return;
+    }
+    const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
+    if (ok) {
+      await recordRun(project, id, stageName, 0, result, skill ? `ok (/${skill})` : 'ok');
+      if (await finishCancellation()) return;
+      if (stageName === 'Plan') {
+        // skill cards return to Review (human reads the findings and decides);
+        // staying in Plan would read as an orphaned run after a restart
+        if (skill) {
+          await orchMove(project, id, 'Review', `findings ready (/${skill})`);
         } else {
-          if (chunks.length === 1) {
-            await withRepoLock(project.path, async () => {
-              const card = readCard(project.path, id);
-              if (card) {
-                const plan = (chunks[0].plan || '').trimEnd();
-                const header = '## Implementation Plan\n';
-                const idx = card.raw.indexOf(header);
-                if (idx !== -1) {
-                  const afterHeader = idx + header.length;
-                  const nextSection = card.raw.indexOf('\n## ', afterHeader);
-                  const end = nextSection >= 0 ? nextSection + 1 : card.raw.length;
-                  const updated = card.raw.slice(0, afterHeader) + `\n${plan}\n\n` + card.raw.slice(end);
-                  fs.writeFileSync(path.join(project.path, '.todomd', 'tasks', card.file), updated);
+          // the plan agent may have split the work into a `## Chunks` breakdown —
+          // fan it out into sequential child cards; otherwise it's a normal plan
+          const chunks = parseChunks(readCard(project.path, id)?.body || '');
+          if (chunks.length >= 2) {
+            await fanOutChunks(project, id, chunks);
+          } else {
+            if (chunks.length === 1) {
+              await withRepoLock(project.path, async () => {
+                const card = readCard(project.path, id);
+                if (card) {
+                  const plan = (chunks[0].plan || '').trimEnd();
+                  const header = '## Implementation Plan\n';
+                  const idx = card.raw.indexOf(header);
+                  if (idx !== -1) {
+                    const afterHeader = idx + header.length;
+                    const nextSection = card.raw.indexOf('\n## ', afterHeader);
+                    const end = nextSection >= 0 ? nextSection + 1 : card.raw.length;
+                    const updated = card.raw.slice(0, afterHeader) + `\n${plan}\n\n` + card.raw.slice(end);
+                    fs.writeFileSync(path.join(project.path, '.todomd', 'tasks', card.file), updated);
+                  }
                 }
-              }
-            });
-            await appendRunLog(project.path, id, '  - note: single-chunk plan folded into Implementation Plan');
+              });
+              await appendRunLog(project.path, id, '  - note: single-chunk plan folded into Implementation Plan');
+            }
+            await orchMove(project, id, 'Planned', 'plan complete');
           }
-          await orchMove(project, id, 'Planned', 'plan complete');
         }
       }
+      // A cancel can arrive while the result or final card move is committing.
+      // Re-check after those awaits so the explicit cancellation wins.
+      if (await finishCancellation()) return;
+      releaseTracking();
+      sendState(project, id, 'idle');
+      return;
     }
-    sendState(project, id, 'idle');
-    return;
+    await handleRunFailure(project, id, stageName, result, run?.prevStatus || 'Review');
+    if (await finishCancellation()) return;
+    releaseTracking();
+  } finally {
+    await finishCancellation();
+    releaseTracking();
   }
-  await handleRunFailure(project, id, stageName, result, run?.prevStatus || 'Review');
 }
 
 async function handleRunFailure(project, id, stageName, result, revertTo) {
@@ -1138,12 +1215,15 @@ async function buildChain(project, id, retry = null, recovery = null) {
   // quota — defer it to resume. processQueue already gates first builds, so
   // this only fires on the direct verify→retry path.
   if (quotaPaused.has(project.name)) {
-    if (retry?.findings) retryFindings.set(key, retry.findings);
+    if (retry?.findings) saveRetryFindings(project, id, retry.findings);
     await orchMove(project, id, 'Queue', 'paused; will resume');
     return sendState(project, id, 'idle');
   }
   // carry findings from a verify-fail build that was then quota-parked
-  if (!retry && retryFindings.has(key)) { retry = { findings: retryFindings.get(key) }; retryFindings.delete(key); }
+  if (!retry && retryFindings.has(key)) {
+    retry = { findings: retryFindings.get(key).findings };
+    retryFindings.delete(key);
+  }
   const ver = card.data.verification || {};
   const attempt = recovery?.attempt || (Number(ver.attempts) || 0) + 1;
   const maxAttempts = recovery?.maxAttempts || Number(ver.max_attempts) || config.max_attempts || 3;
@@ -1822,9 +1902,9 @@ export function getRunStates(projectName) {
 
 export function hasLiveRun(projectName, id) {
   const key = runKey(projectName, id);
-  // children covers spawned runs; pending covers a claimed chain between
-  // spawns (shift→spawn, build→verify, verify→merge) — both mean "hands off"
-  return children.has(key) || pending.has(key);
+  // runs also covers a trigger-stage child that exited while its final Git/card
+  // writes are still settling. That window remains hands-off until finalization.
+  return runs.has(key) || pending.has(key);
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -1849,9 +1929,8 @@ export function forgetProject(projectName) {
   queues.delete(projectName);
   active.delete(projectName);
   quotaPaused.delete(projectName);
-  const prefix = `${projectName}:`;
-  for (const k of retryFindings.keys()) if (k.startsWith(prefix)) retryFindings.delete(k);
-  for (const k of recoveryBuilds.keys()) if (k.startsWith(prefix)) recoveryBuilds.delete(k);
+  for (const [k, entry] of retryFindings) if (entry.project === projectName) retryFindings.delete(k);
+  for (const [k, entry] of recoveryBuilds) if (entry.project === projectName) recoveryBuilds.delete(k);
   for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
 }
 

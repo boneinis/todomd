@@ -140,6 +140,11 @@ if (hangNow &&
       fs.writeFileSync(file, raw.replace('## Implementation Plan\n', '## Implementation Plan\n\n1. Do the thing.\n'));
     }
   }
+  // Let tests park the orchestrator precisely after the agent has finished its
+  // work but before the child exits and the stage finalizer starts.
+  if (process.env.FAKE_BEFORE_EXIT_MARKER) fs.writeFileSync(process.env.FAKE_BEFORE_EXIT_MARKER, 'ready');
+  const exitDelay = Number(process.env.FAKE_EXIT_DELAY_MS) || 0;
+  if (exitDelay > 0) await new Promise((resolve) => setTimeout(resolve, exitDelay));
   emitStream([{ type: 'system', subtype: 'init' }, { type: 'assistant', message: { content: [{ type: 'text', text: 'planned' }] } }, resultEnvelope()]);
   process.exit(0);
 } else if (stage === 'build') {

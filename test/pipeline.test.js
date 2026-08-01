@@ -5,9 +5,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
-import { readCard, setStageRouting, patchFrontmatter } from '../src/board.js';
+import { readCard, setStageRouting, patchFrontmatter, withRepoLock } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
+import * as voice from '../src/voice.js';
 
 const noop = () => {};
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
@@ -36,7 +37,7 @@ test('happy path: Review → Plan → Planned → Queue → Build → Verify →
 
   // approve → the full automatic chain
   r = await pipeline.humanMove(p, 'task-0001', 'Queue');
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, true, r.error);
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
 
   // the build's code was merged to main, the worktree was pruned
@@ -449,6 +450,84 @@ test('projectHasLiveRun includes a live Plan child outside the pending Build cha
   } finally {
     await pipeline.humanMove(p, 'task-0001', 'Review');
     await until(() => status(repo, 'task-0001') === 'Review', { timeout: BUDGET.stage });
+    clearFakeAgent();
+  }
+});
+
+test('a Plan run remains live through finalization and cancellation wins the final move', async () => {
+  isolateHome();
+  const marker = path.join(tmp('plan-finalizing'), 'agent-done');
+  useFakeAgent({ before_exit_marker: marker, exit_delay_ms: 500 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  let release;
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+
+    // Hold the first finalizer write. The child exits during this hold, leaving
+    // exactly the post-child/pre-final-move window that used to look idle.
+    let unlock;
+    const held = new Promise((resolve) => { unlock = resolve; });
+    const lockDone = withRepoLock(repo, () => held);
+    release = async () => { unlock(); await lockDone; };
+    await sleep(700);
+
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.equal(pipeline.getRunStates(p.name)['task-0001'].stage, 'Plan');
+    assert.deepEqual(voice.buildVoiceSummary(p).activeRuns,
+      [{ card: 'task-0001', state: 'running', stage: 'Plan', external: false }]);
+    const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(retriage.status, 400);
+    assert.match(retriage.error, /live run/);
+    const cancelled = await pipeline.humanMove(p, 'task-0001', 'Review');
+    assert.deepEqual(cancelled, { ok: true, cancelled: true });
+
+    await release();
+    release = null;
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+    await sleep(150);
+    assert.equal(status(repo, 'task-0001'), 'Review', 'the stage finalizer cannot overwrite the cancellation');
+  } finally {
+    if (release) await release();
+    clearFakeAgent();
+  }
+});
+
+test('forgetProject uses exact ownership and preserves a nested project\'s queued findings', async () => {
+  isolateHome();
+  const hangMarker = path.join(tmp('nested-project'), 'first-build');
+  const argvLog = path.join(tmp('nested-project-argv'), 'argv.jsonl');
+  useFakeAgent({ verdict: 'pass', build: 'good', hang: 'build', hang_marker: hangMarker, argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = { name: 'alpha:beta', path: repo };
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', {
+    status: 'Needs Human',
+    extra: 'needs_human_reason: needs_answer\nquestion: Which option?\n',
+  });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(hangMarker), { timeout: BUDGET.stage });
+    await pipeline.answerCard(p, 'task-0002', 'Keep the blue option');
+    assert.equal(status(repo, 'task-0002'), 'Queue', 'the second build is parked behind the live first build');
+
+    pipeline.forgetProject('alpha');
+    await pipeline.humanMove(p, 'task-0001', 'Review');
+    await until(() => status(repo, 'task-0002') === 'Done', { timeout: BUDGET.chain });
+
+    const invocations = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+    const resumedPrompt = invocations.map((args) => args.join(' '))
+      .find((line) => line.includes('task-0002') && line.includes('Keep the blue option'));
+    assert.ok(resumedPrompt, 'removing alpha must not delete alpha:beta retry findings');
+  } finally {
+    if (pipeline.hasLiveRun(p.name, 'task-0001')) pipeline.cancel(p, 'task-0001');
     clearFakeAgent();
   }
 });
