@@ -1,7 +1,7 @@
 ---
 id: task-0028
 title: Extract hierarchy helpers behind unit tests
-status: Verify
+status: Done
 type: improvement
 priority: medium
 labels: []
@@ -12,10 +12,10 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 1/3 of task-0026)
-session_id: f4671637-43cf-422c-8c89-39ea98e0ca73
-worktree: todomd/task-0028
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
-base_branch: main
+session_id: 019fbaa3-0722-7f53-935a-f6e64389dbcb
+worktree:
+verification: { attempts: 1, max_attempts: 3, last_verdict: pass }
+base_branch:
 cost_usd: 3.903
 needs_human_reason:
 recovery_stage:
@@ -81,3 +81,4 @@ Extract hierarchy helpers behind unit tests
 - 2026-07-31 23:48Z · Build attempt 1 · 55 turns · $2.580 · ok
 - 2026-07-31 23:48Z · Verify attempt 1 · malformed verdict, re-running once
 - 2026-07-31 23:48Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
+- 2026-08-01 00:08Z · Verify attempt 1 · 1 turns · $0.000 · verdict: pass
