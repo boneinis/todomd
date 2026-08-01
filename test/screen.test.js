@@ -963,6 +963,16 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       '',
     ]),
     rawEmail([
+      'From: Support <support@example.com>',
+      'To: intake@example.com',
+      'Subject: Automated reply: Ticket received',
+      'Message-ID: <automated-reply@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'This is an automated reply. We have received your request and a support agent will respond soon.',
+      '',
+    ]),
+    rawEmail([
       'From: Jane Doe <jane@example.com>',
       'To: intake@example.com',
       'Subject: Re: Export failure',
@@ -1027,16 +1037,10 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       '',
     ]),
   ];
-  assert.equal(screenEmail(await simpleParser(messages[0])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[1])).verdict, 'spam');
-  assert.equal(screenEmail(await simpleParser(messages[2])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[3])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[4])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[5])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[6])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[7])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[8])).verdict, 'spam');
-  assert.equal(screenEmail(await simpleParser(messages[9])).verdict, 'spam');
+  const expected = ['unclear', 'spam', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'spam', 'spam'];
+  for (const [i, verdict] of expected.entries()) {
+    assert.equal(screenEmail(await simpleParser(messages[i])).verdict, verdict);
+  }
 
   const fakeClient = {
     mailbox: { uidValidity: '1', uidNext: messages.length + 1 },
@@ -1058,7 +1062,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
     onCardCallback: (_project, id) => triaged.push(id),
   });
 
-  assert.equal(cardFiles(repo).length, 7, 'only the held auto-responses create cards');
+  assert.equal(cardFiles(repo).length, 8, 'only the held auto-responses create cards');
   for (const file of cardFiles(repo)) {
     assert.equal(readCard(repo, file.match(/task-\d+/)[0]).data.status, 'Needs Human');
   }
