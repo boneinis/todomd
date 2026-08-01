@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbef4-d7f9-7820-9d4a-885da7963777
+session_id: 019fbeff-dcbc-7f61-918c-c94e6bee2290
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -104,3 +104,5 @@ Actionable defect: stale-state binding does not include the preserved worktree�
   - attempts_exhausted: 1. `spawnTracked` removes Plan/custom-stage entries from `runs` and `children` at src/pipeline.js:541 before `runTriggerStage` finishes recording results and moving the card at src/pipeline.js:933-984. While an awaited Git commit is finishing, voice reports no active run and permits reversible retriage. A queued confirmation can move the card to Review, after which the stage finalizer moves it bac
 - 2026-08-01 20:18Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - attempts_exhausted: Reachable launcher auto-triage race: `runTriage()` calls `spawnTracked()` without `retainUntilFinalized`. When the agent child exits, `spawnTracked()` removes run tracking before `recordRun`, frontmatter updates, and `commitCardChanges` finish. Reproduction while blocking those finalizer writes showed `hasLiveRun=false`, no `summary.activeRuns`, “Nothing building right now,” and successful prepara
+- 2026-08-01 20:29Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Adversarial testing found an ABA stale-proposal bug. I prepared a visible `cancel` proposal for task-0002 while it was queued, canceled that queue entry through the normal guarded operation, re-approved the card to create a new queue entry, then confirmed the old proposal. Confirmation returned 200 and canceled the replacement queue entry. The fingerprint only records card content and the coarse `
