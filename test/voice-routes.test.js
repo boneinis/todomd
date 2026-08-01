@@ -98,7 +98,7 @@ test('full prepare → confirm round trip over HTTP moves the card exactly once'
   const tok = srv.token;
   const h = { 'x-todomd-token': tok, 'content-type': 'application/json', origin: base };
   try {
-    writeCard(repo, 'task-0001', { status: 'Build' });
+    writeCard(repo, 'task-0001', { status: 'Planned' });
 
     let r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001', action: 'retriage' }) });
     assert.equal(r.status, 200);
@@ -114,7 +114,7 @@ test('full prepare → confirm round trip over HTTP moves the card exactly once'
     // wrong phrase → 400, board untouched
     r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'nah' }) });
     assert.equal(r.status, 400);
-    assert.equal(readCard(repo, 'task-0001').data.status, 'Build');
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Planned');
 
     r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'Yes To-do' }) });
     assert.equal(r.status, 200);
@@ -256,7 +256,7 @@ test('removing a project invalidates its pending voice proposals, even if the fr
   const { repo, name, base, srv, q } = await boot();
   const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
   try {
-    writeCard(repo, 'task-0001', { status: 'Build' });
+    writeCard(repo, 'task-0001', { status: 'Planned' });
     let r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001', action: 'retriage' }) });
     assert.equal(r.status, 200);
     const prep = await r.json();
@@ -271,6 +271,6 @@ test('removing a project invalidates its pending voice proposals, even if the fr
 
     r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'Yes To-do' }) });
     assert.equal(r.status, 404, 'the proposal from before removal must not survive re-registration');
-    assert.equal(readCard(repo, 'task-0001').data.status, 'Build');
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Planned');
   } finally { srv.close(); }
 });

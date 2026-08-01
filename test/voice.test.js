@@ -104,6 +104,42 @@ test('summary excludes process-global banners and carries no wall-clock timestam
   }
 });
 
+test('budget-mode Build and Verify cards are externally active and cannot be moved by voice', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = budgetProject(repo);
+  writeCard(repo, 'task-0001', { status: 'Build' });
+  writeCard(repo, 'task-0002', { status: 'Verify' });
+  writeCard(repo, 'task-0003', { status: 'Planned' });
+
+  const summary = voice.buildVoiceSummary(p);
+  assert.deepEqual(summary.activeRuns, [
+    { card: 'task-0001', state: 'running', stage: 'Build', external: true },
+    { card: 'task-0002', state: 'running', stage: 'Verify', external: true },
+  ]);
+  assert.match(summary.text, /task-0001 running Build through the dispatcher/);
+  assert.match((await voice.buildCardStatus(p, 'task-0002')).text, /running Verify through the dispatcher/);
+
+  for (const action of ['retriage', 'retry_planned', 'archive']) {
+    const prepared = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action });
+    assert.equal(prepared.status, 400, action);
+    assert.match(prepared.error, /external Build run.*dispatcher/, action);
+  }
+  const cancel = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'cancel' });
+  assert.equal(cancel.status, 400);
+  assert.match(cancel.error, /external dispatcher run/);
+  assert.equal(status(repo, 'task-0001'), 'Build');
+
+  // Confirmation re-derives external ownership rather than trusting the state
+  // captured while the card was still idle.
+  const idle = await voice.prepareVoiceAction(p, { cardId: 'task-0003', action: 'retriage' });
+  await patchFrontmatter(repo, 'task-0003', { status: 'Build' });
+  const stale = await voice.confirmVoiceAction(p, idle.proposalId, { confirmation: 'Yes To-do' });
+  assert.equal(stale.status, 409);
+  assert.equal(status(repo, 'task-0003'), 'Build');
+});
+
 test('summary text stays concise on a busy board: it names a handful, then a count', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });

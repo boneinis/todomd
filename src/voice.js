@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { loadBoard, loadConfig, readCard, withRepoLock } from './board.js';
 import {
   humanMove, cancel, resumeBuild, restartBuild, retryVerification, archiveCard,
-  recoveryActions, getRunStates, hasLiveRun, approvalEligibility,
+  recoveryActions, getRunStates, approvalEligibility,
 } from './pipeline.js';
 
 // Spoken summaries stay short even on a busy board — list at most this many
@@ -46,6 +46,20 @@ function requestObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Launcher runs live in pipeline.js's process maps. Budget-mode Build/Verify
+// runs belong to the external dispatcher, so they have no local child entry;
+// their execution column is the conservative ownership signal voice must use.
+function effectiveRunStates(project, board) {
+  const states = { ...getRunStates(project.name) };
+  if ((board.config.mode || 'launcher') !== 'budget') return states;
+  for (const card of board.cards) {
+    if (!card.archived && !states[card.id] && ['Build', 'Verify'].includes(card.status)) {
+      states[card.id] = { state: 'running', stage: card.status, external: true };
+    }
+  }
+  return states;
+}
+
 // What an action would ACTUALLY do to this card, right now.
 //
 // The guarded operations behind the allowlist are state-polymorphic: the single
@@ -57,11 +71,10 @@ function requestObject(value) {
 // whichever variant the board happens to be in.
 function computeEffects(project, card) {
   const id = card.data.id;
-  // the same predicate humanMove/archiveCard/cancel branch on: it covers a
-  // spawned child AND a chain claimed between spawns
-  const live = hasLiveRun(project.name, id);
   // mirrors cascadeEpicCleanup's own filter (active, non-Done, non-epic children)
   const board = loadBoard(project.path, { includeArchived: true });
+  const localRunState = getRunStates(project.name)[id] || null;
+  const runState = effectiveRunStates(project, board)[id] || null;
   const cascadeChildren = card.data.epic
     ? board.cards.filter((c) => c.parent === id && c.status !== 'Done' && !c.epic && !c.archived).length
     : 0;
@@ -75,9 +88,10 @@ function computeEffects(project, card) {
   let mode = 'launcher';
   try { mode = loadConfig(project.path).mode || 'launcher'; } catch { /* unreadable config reads as the default */ }
   return {
-    live,
-    // runs ∪ pending ∪ queues — exactly the three cases pipeline.cancel acts on
-    runState: getRunStates(project.name)[id] || null,
+    // runState adds dispatcher-owned budget work for safety/reporting. Only the
+    // local state is cancellable through pipeline.cancel.
+    runState,
+    cancellableRunState: localRunState,
     epic: !!card.data.epic,
     cascadeChildren,
     blockedDependencies,
@@ -104,7 +118,8 @@ function fingerprint(card, fx) {
     `card:${cardDigest}`,
     card.data.status || '(none)',
     card.data.archived ? 'archived' : 'active',
-    fx.runState ? `run:${fx.runState.state}:${fx.runState.stage}` : 'no-run',
+    fx.runState ? `run:${fx.runState.state}:${fx.runState.stage}:${fx.runState.external ? 'external' : 'local'}` : 'no-run',
+    fx.cancellableRunState ? 'cancellable' : 'not-cancellable',
     `worktree:${String(card.data.worktree || '')}`,
     `children:${fx.cascadeChildren}`,
     `blocked:${fx.blockedDependencies.join(',')}`,
@@ -129,6 +144,9 @@ function buildChallenge(action, cardId, proposalId) {
 // Cancelling stays reachable only through the explicit `cancel` action.
 function notWhileLive(card, fx) {
   if (!fx.runState) return null;
+  if (fx.runState.external) {
+    return { ok: false, error: `${card.data.id} has an external ${fx.runState.stage} run — stop it in the dispatcher first` };
+  }
   return fx.runState.state === 'queued'
     ? { ok: false, error: `${card.data.id} has a queued ${fx.runState.stage} run — cancel it in the app first` }
     : { ok: false, error: `${card.data.id} has a live run — cancel it in the app first` };
@@ -229,17 +247,19 @@ const ALLOWED_ACTIONS = {
   cancel: {
     tier: () => 'visible',
     label: (card, fx) => {
-      const run = fx.runState;
+      const run = fx.cancellableRunState;
       if (run?.state === 'queued') return `take ${card.data.id} out of the ${run.stage.toLowerCase()} queue`;
       if (run?.stage === 'Build') return `cancel the running build for ${card.data.id}`;
       if (run?.stage === 'in progress') return `cancel the active run for ${card.data.id}`;
       return `cancel the running ${run?.stage || 'agent'} run for ${card.data.id}`;
     },
-    // runState is runs ∪ pending ∪ queues — the exact three cases pipeline.cancel
-    // can act on, so eligibility and execution agree, including in the
-    // between-spawns windows where only `pending` holds the claim.
-    eligible: (card, project, fx) => (fx.runState
-      ? { ok: true } : { ok: false, error: 'no live run to cancel' }),
+    // Only cancellableRunState (local runs ∪ pending ∪ queues) is actionable by
+    // pipeline.cancel. Dispatcher-owned budget work is reported but refused.
+    eligible: (card, project, fx) => (fx.cancellableRunState
+      ? { ok: true }
+      : fx.runState?.external
+        ? { ok: false, error: 'external dispatcher run — cancel it in the dispatcher first' }
+        : { ok: false, error: 'no live run to cancel' }),
     execute: (project, id) => cancel(project, id),
   },
   archive: {
@@ -331,18 +351,18 @@ function describeList(list, render) {
 
 // A deterministic, sanitized status summary for the "Report To-do" phrase and
 // the Realtime read_board_report() tool. Pure function of THIS project's live
-// board and in-memory run state — no process-global data (banners span every
+// board and effective run state — no process-global data (banners span every
 // open project, not just this one) and no wall-clock timestamp, so the same
 // board state always produces byte-identical output.
 export function buildVoiceSummary(project) {
   const board = loadBoard(project.path);
-  const runStates = getRunStates(project.name);
+  const runStates = effectiveRunStates(project, board);
   const counts = {};
   for (const col of board.config.columns) counts[col] = 0;
   for (const c of board.cards) counts[c.status] = (counts[c.status] || 0) + 1;
 
   const activeRuns = Object.entries(runStates)
-    .map(([card, s]) => ({ card, state: s.state, stage: boundedText(s.stage) }))
+    .map(([card, s]) => ({ card, state: s.state, stage: boundedText(s.stage), external: !!s.external }))
     .sort((a, b) => a.card.localeCompare(b.card));
   const needsHuman = board.cards
     .filter((c) => c.status === 'Needs Human')
@@ -355,7 +375,7 @@ export function buildVoiceSummary(project) {
 
   const parts = [`${board.cards.length} card${board.cards.length === 1 ? '' : 's'} on the board.`];
   parts.push(activeRuns.length
-    ? `${activeRuns.length} active: ${describeList(activeRuns, (r) => `${r.card} ${r.state === 'queued' ? 'queued for' : 'running'} ${r.stage}`)}.`
+    ? `${activeRuns.length} active: ${describeList(activeRuns, (r) => `${r.card} ${r.state === 'queued' ? 'queued for' : 'running'} ${r.stage}${r.external ? ' through the dispatcher' : ''}`)}.`
     : 'Nothing building right now.');
   parts.push(needsHuman.length
     ? `${needsHuman.length} need${needsHuman.length === 1 ? 's' : ''} you: ${describeList(needsHuman, (n) => `${n.id}${n.reason ? ` (${n.reason})` : ''}`)}.`
@@ -369,12 +389,14 @@ export async function buildCardStatus(project, cardId) {
   const board = loadBoard(project.path, { includeArchived: true });
   const card = board.cards.find((c) => c.id === cardId);
   if (!card) return null;
-  const run = getRunStates(project.name)[cardId];
+  const run = effectiveRunStates(project, board)[cardId];
   const recovery = await recoveryActions(project, cardId);
 
   const bits = [`${cardId}: ${card.title || '(untitled)'} — ${card.status}`];
   if (card.archived) bits.push('archived');
-  if (run) bits.push(run.state === 'queued' ? `queued for ${run.stage}` : `running ${run.stage}`);
+  if (run) bits.push(run.state === 'queued'
+    ? `queued for ${run.stage}`
+    : `running ${run.stage}${run.external ? ' through the dispatcher' : ''}`);
   if (card.status === 'Needs Human' && card.needs_human_reason) bits.push(`reason: ${card.needs_human_reason}`);
   if (card.criteria) bits.push(`${card.criteria.done} of ${card.criteria.total} acceptance criteria met`);
   const available = ['resume_build', 'restart_build', 'retry_verification']
