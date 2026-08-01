@@ -1,7 +1,7 @@
 ---
 id: task-0025
 title: Apply the screen to the push API and surface screened mail
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,9 +12,9 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 3/3 of task-0022)
-session_id: a7253b8f-99e1-4761-a537-f4a8e163e97f
+session_id: 019fbb8b-812f-7f72-af4c-c8c2fdb716ea
 worktree: todomd/task-0025
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 9.4887
 needs_human_reason:
@@ -63,3 +63,5 @@ real assertion.
 - 2026-08-01 04:16Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
 - 2026-08-01 04:17Z · Verify attempt 1 · malformed verdict, re-running once
 - 2026-08-01 04:17Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
+- 2026-08-01 04:23Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 3)
+  - retrying with findings (attempt 2/3)
