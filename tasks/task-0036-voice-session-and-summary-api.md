@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbe70-1463-7662-bfdd-5224cba47c64
+session_id: 019fbe77-e2ea-7f22-afc3-2a23013eb251
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -85,3 +85,5 @@ an action but cannot execute or confirm it.
   - attempts_exhausted: Configured `npm test` passed with normal listener/process permissions: 319 core/API tests and 5 UI tests. `git diff --check main...HEAD` also passed, and the worktree remained clean.
 
 Actionable defect: stale-state binding does not include the preserved worktree’s identity. `fingerprint()` in src/voice.js records only `worktree` versus `no-worktree`. I prepared a visible retriage while `worktree: 
+- 2026-08-01 18:03Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: Archived cards remain eligible for operational voice actions. An adversarial probe archived a Planned card, prepared `approve` successfully (HTTP 200), then confirmed its challenge successfully; the card moved to Queue while retaining its archived flag and, in launcher mode, the hidden card is enqueued for a build. The read-back does not disclose that the card remains archived, and confirmation tr
