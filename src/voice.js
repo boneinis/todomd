@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { loadBoard, loadConfig, readCard, withRepoLock } from './board.js';
 import {
   humanMove, cancel, resumeBuild, restartBuild, retryVerification, archiveCard,
@@ -62,6 +63,22 @@ function hasFreshBudgetLease(card, nowSec) {
   return Number.isSafeInteger(timestamp) && age >= 0 && age <= BUDGET_LEASE_TTL_SEC;
 }
 
+// The card body alone cannot distinguish an ABA transition such as
+// Queue -> Planned -> Queue: the final bytes can be identical even though the
+// proposal's original queue claim was replaced. Bind to the latest commit that
+// touched this exact card. Unrelated board commits do not invalidate it, and an
+// empty revision is still useful for a just-created/untracked test fixture —
+// the first committed transition changes it from empty to a real object id.
+function cardRevision(project, card) {
+  try {
+    return execFileSync('git', [
+      'log', '-1', '--format=%H', '--', `.todomd/tasks/${card.file}`,
+    ], { cwd: project.path, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+}
+
 // Launcher runs live in pipeline.js's process maps. Budget-mode Build/Verify
 // runs belong to the external dispatcher, so their execution column is the
 // conservative ownership signal. Plan/Triage run before their column changes,
@@ -120,6 +137,7 @@ function computeEffects(project, card) {
     epic: !!card.data.epic,
     cascadeChildren,
     blockedDependencies,
+    cardRevision: cardRevision(project, card),
     worktree: !!card.data.worktree,
     budget: mode === 'budget',
   };
@@ -141,6 +159,7 @@ function fingerprint(card, fx) {
     .digest('hex');
   return [
     `card:${cardDigest}`,
+    `revision:${fx.cardRevision || '(uncommitted)'}`,
     card.data.status || '(none)',
     card.data.archived ? 'archived' : 'active',
     fx.runState ? `run:${fx.runState.state}:${fx.runState.stage}:${fx.runState.external ? 'external' : 'local'}` : 'no-run',

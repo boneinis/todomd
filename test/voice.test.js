@@ -735,6 +735,43 @@ test('a queued Build cannot be retriaged under reversible voice confirmation', a
   }
 });
 
+test('a cancel proposal becomes stale when its queued run is canceled and replaced', async () => {
+  isolateHome();
+  const marker = path.join(tmp('voice-queue-aba'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
+
+    const prepared = await voice.prepareVoiceAction(p, { cardId: 'task-0002', action: 'cancel' });
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.confirmation.tier, 'visible');
+
+    assert.equal((await pipeline.cancel(p, 'task-0002')).ok, true);
+    assert.equal(status(repo, 'task-0002'), 'Planned');
+    assert.equal((await pipeline.humanMove(p, 'task-0002', 'Queue')).ok, true);
+    assert.equal(status(repo, 'task-0002'), 'Queue');
+
+    const confirmed = await voice.confirmVoiceAction(p, prepared.proposalId, { visibleApproval: true });
+    assert.equal(confirmed.status, 409);
+    assert.match(confirmed.error, /stale/);
+    assert.equal(status(repo, 'task-0002'), 'Queue');
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0002'], { state: 'queued', stage: 'Build' });
+  } finally {
+    await pipeline.cancel(p, 'task-0002');
+    pipeline.cancel(p, 'task-0001');
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+    clearFakeAgent();
+  }
+});
+
 test('pending run ownership uses exact project identity when names contain colons', async () => {
   isolateHome();
   const marker = path.join(tmp('voice-colon-project'), 'started');
