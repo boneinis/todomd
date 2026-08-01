@@ -825,6 +825,7 @@ test('pollSource: human bug reports about automated-mail features stay work and 
     ['Manage preferences page returns 500', 'When I click manage your email preferences, the server returns a 500.'],
     ['View-in-browser link is broken', 'The view this email in browser link returns a 404 for customer receipts.'],
     ['Out-of-office settings fail to save', 'The out-of-office settings form loses the selected return date after saving.'],
+    ['OOO notification bug', 'OOO notifications are not delivered when the schedule begins.'],
     ['Vacation response strips Unicode', 'The vacation response editor removes accented characters from the saved template.'],
     ['Delivery failed alert has wrong link', 'The delivery failed alert links to the wrong message in the activity view.'],
     ['Ошибка экспорта', 'Кнопка экспорта возвращает ошибку при сохранении отчёта.'],
@@ -982,6 +983,16 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       '',
     ]),
     rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re: Export failure',
+      'Message-ID: <future-out-of-office@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Thank you for your email. I will be out of the office until August 12 and will respond when I return.',
+      '',
+    ]),
+    rawEmail([
       'From: Shop <no-reply@shop.example.com>',
       'To: intake@example.com',
       'Subject: Monthly shop news',
@@ -1012,8 +1023,9 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
   assert.equal(screenEmail(await simpleParser(messages[3])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[4])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[5])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[6])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[6])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[7])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[8])).verdict, 'spam');
 
   const fakeClient = {
     mailbox: { uidValidity: '1', uidNext: messages.length + 1 },
@@ -1035,7 +1047,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
     onCardCallback: (_project, id) => triaged.push(id),
   });
 
-  assert.equal(cardFiles(repo).length, 5, 'only the held auto-responses create cards');
+  assert.equal(cardFiles(repo).length, 6, 'only the held auto-responses create cards');
   for (const file of cardFiles(repo)) {
     assert.equal(readCard(repo, file.match(/task-\d+/)[0]).data.status, 'Needs Human');
   }
