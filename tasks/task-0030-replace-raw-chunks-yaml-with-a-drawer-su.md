@@ -1,7 +1,7 @@
 ---
 id: task-0030
 title: Replace raw Chunks YAML with a modal Subtasks view
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 3/3 of task-0026)
-session_id: 3b803089-7e1d-4125-871e-475acd47a17c
+session_id: 186bc7f7-07df-4b7c-8082-8ae1bbe14d6b
 worktree: todomd/task-0030
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 4.0298
+needs_human_reason: bad_verdict
+recovery_stage:
 ---
 
 ## Description
@@ -65,3 +67,5 @@ Replace raw Chunks YAML with a drawer Subtasks view
 
 ## Run Log
 - 2026-08-01 01:04Z · Build attempt 1 · 65 turns · $4.030 · ok
+- 2026-08-01 01:04Z · Verify attempt 1 · malformed verdict, re-running once
+- 2026-08-01 01:04Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
