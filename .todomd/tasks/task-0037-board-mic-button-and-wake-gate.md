@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
-session_id: 65cd2019-02f3-4926-8574-606dcad7c071
+session_id: 019fbfb7-3bf5-7d10-bfba-e8e3bbbadcec
 worktree: todomd/task-0037
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 28.5062
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -70,3 +70,7 @@ local speech or provider configuration is unavailable.
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 23:32Z · Escalate attempt 2 · 24 turns · $2.887 · diagnosis complete
 - 2026-08-01 23:44Z · Build attempt 3 · 72 turns · $5.437 · ok (escalation repair)
+- 2026-08-01 23:48Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: `npm test` passed: 413 unit/API tests and 12 browser tests. However, adversarial review found three reachable bugs:
+
+1. Fresh supported Chrome profiles cannot install a downloadable language pack. The `install:false` probe reports `supported:false` for `downloadable`, and [main.js](/Users/irvinbowman/web%20dev/TODOMD/.todomd/worktrees/task-0037/public/voice/main.js:110) hides the Arm button. That 
