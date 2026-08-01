@@ -10,6 +10,10 @@ import {
 const MAX_SUMMARY_ITEMS = 5;
 const MAX_SUMMARY_FIELD_CHARS = 160;
 const MAX_SUMMARY_TEXT_CHARS = 1200;
+// Must match the budget dispatcher's documented lease freshness window in
+// templates.js. A fresh lease is the ownership signal while Plan/Triage runs
+// outside this server and the card has not changed columns yet.
+const BUDGET_LEASE_TTL_SEC = 900;
 
 // Same shape createCard uses: task-0001, zero-padded, growing past 4 digits.
 // Voice card ids arrive in a JSON body rather than a URL path, so this route
@@ -46,15 +50,31 @@ function requestObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasFreshBudgetLease(card, nowSec) {
+  const [claimedAt = ''] = String(card.lease ?? '').trim().split(/\s+/);
+  if (!/^\d+$/.test(claimedAt)) return false;
+  const timestamp = Number(claimedAt);
+  return Number.isSafeInteger(timestamp) && nowSec - timestamp <= BUDGET_LEASE_TTL_SEC;
+}
+
 // Launcher runs live in pipeline.js's process maps. Budget-mode Build/Verify
-// runs belong to the external dispatcher, so they have no local child entry;
-// their execution column is the conservative ownership signal voice must use.
+// runs belong to the external dispatcher, so their execution column is the
+// conservative ownership signal. Plan/Triage run before their column changes,
+// so the dispatcher's fresh card lease is their ownership signal instead.
 function effectiveRunStates(project, board) {
   const states = { ...getRunStates(project.name) };
   if ((board.config.mode || 'launcher') !== 'budget') return states;
+  const nowSec = Math.floor(Date.now() / 1000);
   for (const card of board.cards) {
-    if (!card.archived && !states[card.id] && ['Build', 'Verify'].includes(card.status)) {
+    if (card.archived || states[card.id]) continue;
+    if (['Build', 'Verify'].includes(card.status)) {
       states[card.id] = { state: 'running', stage: card.status, external: true };
+    } else if (['Plan', 'Review'].includes(card.status) && hasFreshBudgetLease(card, nowSec)) {
+      states[card.id] = {
+        state: 'running',
+        stage: card.status === 'Review' ? 'Triage' : 'Plan',
+        external: true,
+      };
     }
   }
   return states;

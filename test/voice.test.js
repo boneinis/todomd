@@ -104,22 +104,29 @@ test('summary excludes process-global banners and carries no wall-clock timestam
   }
 });
 
-test('budget-mode Build and Verify cards are externally active and cannot be moved by voice', async () => {
+test('budget-mode columns and fresh leases are externally active and cannot be moved by voice', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = budgetProject(repo);
+  const now = Math.floor(Date.now() / 1000);
   writeCard(repo, 'task-0001', { status: 'Build' });
   writeCard(repo, 'task-0002', { status: 'Verify' });
   writeCard(repo, 'task-0003', { status: 'Planned' });
+  writeCard(repo, 'task-0004', { status: 'Plan', extra: `lease: "${now} worker@host"\n` });
+  writeCard(repo, 'task-0005', { status: 'Review', extra: `lease: "${now} worker@host"\n` });
+  writeCard(repo, 'task-0006', { status: 'Plan', extra: `lease: "${now - 901} old@host"\n` });
 
   const summary = voice.buildVoiceSummary(p);
   assert.deepEqual(summary.activeRuns, [
     { card: 'task-0001', state: 'running', stage: 'Build', external: true },
     { card: 'task-0002', state: 'running', stage: 'Verify', external: true },
+    { card: 'task-0004', state: 'running', stage: 'Plan', external: true },
+    { card: 'task-0005', state: 'running', stage: 'Triage', external: true },
   ]);
   assert.match(summary.text, /task-0001 running Build through the dispatcher/);
   assert.match((await voice.buildCardStatus(p, 'task-0002')).text, /running Verify through the dispatcher/);
+  assert.match((await voice.buildCardStatus(p, 'task-0004')).text, /running Plan through the dispatcher/);
 
   for (const action of ['retriage', 'retry_planned', 'archive']) {
     const prepared = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action });
@@ -130,6 +137,12 @@ test('budget-mode Build and Verify cards are externally active and cannot be mov
   assert.equal(cancel.status, 400);
   assert.match(cancel.error, /external dispatcher run/);
   assert.equal(status(repo, 'task-0001'), 'Build');
+
+  const leased = await voice.prepareVoiceAction(p, { cardId: 'task-0004', action: 'retriage' });
+  assert.equal(leased.status, 400);
+  assert.match(leased.error, /external Plan run.*dispatcher/);
+  const staleLease = await voice.prepareVoiceAction(p, { cardId: 'task-0006', action: 'retriage' });
+  assert.equal(staleLease.status, 200, 'an expired dispatcher lease does not freeze voice actions');
 
   // Confirmation re-derives external ownership rather than trusting the state
   // captured while the card was still idle.
