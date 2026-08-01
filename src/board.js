@@ -331,17 +331,32 @@ export function withRepoLock(repoPath, fn) {
   // operation. Board helpers called by that operation acquire the same lock;
   // treat those nested calls as part of the existing transaction instead of
   // queueing behind ourselves forever.
-  if (held?.has(key)) return Promise.resolve().then(fn);
+  const inherited = held?.get(key);
+  if (inherited?.active) return Promise.resolve().then(fn);
 
   const guarded = () => withFileLock(key, () => {
-    const nextHeld = new Set(held || []);
-    nextHeld.add(key);
-    return heldRepoLocks.run(nextHeld, fn);
+    const nextHeld = new Map(held || []);
+    const token = { active: true };
+    nextHeld.set(key, token);
+    return heldRepoLocks.run(nextHeld, async () => {
+      try { return await fn(); }
+      // AsyncLocalStorage is inherited by detached promises. Revoke this token
+      // before releasing the real lock so a late continuation cannot mistake
+      // its stale context for lock ownership and bypass a future holder.
+      finally { token.active = false; }
+    });
   });
   const prev = repoLocks.get(key) || Promise.resolve();
   const next = prev.then(guarded, guarded);
   repoLocks.set(key, next.then(() => {}, () => {}));
   return next;
+}
+
+// A pipeline operation may intentionally launch work that outlives its caller.
+// Start that detached chain with no inherited ownership: every later board/git
+// write must acquire the real repository lock in its own right.
+export function withoutRepoLockContext(fn) {
+  return heldRepoLocks.run(new Map(), fn);
 }
 
 export function moveCard(repoPath, id, newStatus, { reason } = {}) {

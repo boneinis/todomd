@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
-import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived, readLocalPrompt } from './board.js';
+import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
@@ -638,7 +638,7 @@ export async function humanMove(project, id, to) {
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
     const moved = await moveCard(project.path, id, to, { reason: 'queued by human' });
     if (moved.ok && (config.mode || 'launcher') !== 'budget') {
-      runTriggerStage(project, id, to).catch(() => {});
+      withoutRepoLockContext(() => runTriggerStage(project, id, to).catch(() => {}));
     }
     return moved;
   }
@@ -775,8 +775,10 @@ export async function retryVerification(project, id) {
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
   await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
   await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
-  verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '')
-    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)));
+  withoutRepoLockContext(() => {
+    verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '')
+      .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)));
+  });
   return { ok: true };
 }
 
@@ -1019,7 +1021,10 @@ function enqueueBuild(project, id) {
   if (q.includes(id) || children.has(runKey(project.name, id))) return;
   q.push(id);
   sendState(project, id, 'queued', 'Build');
-  processQueue(project);
+  // Voice confirmation can enqueue while holding the repository transaction.
+  // The build chain outlives that call, so it must not inherit reentrant lock
+  // ownership from the confirmer.
+  withoutRepoLockContext(() => processQueue(project));
 }
 
 function processQueue(project) {

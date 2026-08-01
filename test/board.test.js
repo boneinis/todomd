@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks, withRepoLock } from '../src/board.js';
+import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks, withRepoLock, withoutRepoLockContext } from '../src/board.js';
 
 test('withRepoLock is reentrant for a guarded operation that uses board helpers', async () => {
   const repo = makeRepo();
@@ -16,6 +16,72 @@ test('withRepoLock is reentrant for a guarded operation that uses board helpers'
   assert.equal(result.ok, true);
   assert.equal(readCard(repo, 'task-0001').data.priority, 'high');
   assert.equal(readCard(repo, 'task-0001').data.status, 'Plan');
+});
+
+test('detached lock contexts are revoked and wait behind a later holder', async () => {
+  const repo = makeRepo();
+  const events = [];
+  let releaseDetached;
+  const detachedGate = new Promise((resolve) => { releaseDetached = resolve; });
+  let detached;
+
+  await withRepoLock(repo, async () => {
+    // This deliberately inherits the current context, modeling an accidentally
+    // detached continuation. The ownership token must be dead after return.
+    detached = (async () => {
+      await detachedGate;
+      return withRepoLock(repo, () => { events.push('detached-entered'); });
+    })();
+  });
+
+  let releaseHolder;
+  let holderEntered;
+  const entered = new Promise((resolve) => { holderEntered = resolve; });
+  const holder = withRepoLock(repo, async () => {
+    events.push('holder-entered');
+    holderEntered();
+    await new Promise((resolve) => { releaseHolder = resolve; });
+    events.push('holder-released');
+  });
+  await entered;
+  releaseDetached();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(events, ['holder-entered']);
+  releaseHolder();
+  await Promise.all([holder, detached]);
+  assert.deepEqual(events, ['holder-entered', 'holder-released', 'detached-entered']);
+});
+
+test('withoutRepoLockContext gives a detached chain independent lock ownership', async () => {
+  const repo = makeRepo();
+  const events = [];
+  let releaseDetached;
+  const detachedGate = new Promise((resolve) => { releaseDetached = resolve; });
+  let detached;
+
+  await withRepoLock(repo, async () => {
+    detached = withoutRepoLockContext(async () => {
+      await detachedGate;
+      return withRepoLock(repo, () => { events.push('detached-entered'); });
+    });
+  });
+
+  let releaseHolder;
+  let holderEntered;
+  const entered = new Promise((resolve) => { holderEntered = resolve; });
+  const holder = withRepoLock(repo, async () => {
+    events.push('holder-entered');
+    holderEntered();
+    await new Promise((resolve) => { releaseHolder = resolve; });
+    events.push('holder-released');
+  });
+  await entered;
+  releaseDetached();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(events, ['holder-entered']);
+  releaseHolder();
+  await Promise.all([holder, detached]);
+  assert.deepEqual(events, ['holder-entered', 'holder-released', 'detached-entered']);
 });
 
 test('loadBoard parses cards and criteria progress', () => {
