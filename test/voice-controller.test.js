@@ -49,7 +49,10 @@ function fakeRealtimeFactory({ manual = false } = {}) {
         session.onClose = handlers.onClose;
         await openPromise;
       },
-      async close() { session.closeCalls += 1; session.closed = true; },
+      // Idempotent, matching realtime.js's real close() — a superseded
+      // in-flight open can legitimately be closed both by the canceller
+      // (immediately) and by openActiveSession's own post-await cleanup.
+      async close() { if (session.closed) return; session.closeCalls += 1; session.closed = true; },
       resolveOpen: (v) => resolveOpen(v),
       rejectOpen: (e) => rejectOpen(e),
     };
@@ -165,6 +168,41 @@ test('arm() can retry from error and succeeds once capability is available', asy
   assert.equal(controller.state, 'armed');
 });
 
+test('goOffline during arm() cancels a still-initializing capability check', async () => {
+  let resolveInit;
+  const wakeEngine = fakeWakeEngine();
+  wakeEngine.init = () => { wakeEngine.calls.init += 1; return new Promise((resolve) => { resolveInit = () => resolve({ supported: true, status: 'available' }); }); };
+  const { controller } = build({ wakeEngine });
+
+  const armPromise = controller.arm();
+  await flush();
+  assert.equal(controller.state, 'arming');
+  assert.equal(await controller.goOffline(), true, 'offline is reachable while arming, not just once armed');
+  assert.equal(controller.state, 'inactive');
+
+  resolveInit(); // the delayed capability check now resolves
+  assert.equal(await armPromise, false, 'a superseded arm attempt reports failure');
+  assert.equal(controller.state, 'inactive', 'the delayed init must not silently re-arm the board after offline');
+  assert.equal(wakeEngine.calls.start, 0, 'start() is never reached for a superseded arm attempt');
+});
+
+test('goOffline during arm() cancels a still-starting wake engine', async () => {
+  let resolveStart;
+  const wakeEngine = fakeWakeEngine();
+  wakeEngine.start = () => { wakeEngine.calls.start += 1; return new Promise((resolve) => { resolveStart = () => resolve(true); }); };
+  const { controller } = build({ wakeEngine });
+
+  const armPromise = controller.arm();
+  await flush(); // let the (fast, default) capability check resolve, so arm() is now awaiting start()
+  assert.equal(controller.state, 'arming');
+  assert.equal(await controller.goOffline(), true);
+  assert.equal(controller.state, 'inactive');
+
+  resolveStart(); // the delayed start() now resolves true
+  assert.equal(await armPromise, false);
+  assert.equal(controller.state, 'inactive', 'a late-resolving start() must not flip the board back to armed');
+});
+
 test('microphone denial after wake returns to armed with a diagnostic and the error earcon, not enter twice', async () => {
   const { controller, earcons, diagnostics, wakeEngine } = build({ realtime: fakeFailingRealtimeFactory('microphone permission denied') });
   await controller.arm();
@@ -174,6 +212,28 @@ test('microphone denial after wake returns to armed with a diagnostic and the er
   assert.deepEqual(earcons.calls, ['enter', 'error']);
   assert.match(diagnostics.at(-1).message, /microphone permission denied/);
   assert.equal(wakeEngine.calls.resume, 1);
+});
+
+test('notifyWakeEngineError: a terminal recognizer failure while armed falls to error with a diagnostic', async () => {
+  const { controller, earcons, diagnostics } = build();
+  await controller.arm();
+  assert.equal(controller.notifyWakeEngineError({ error: { code: 'not-allowed', message: 'microphone denied' } }), true);
+  assert.equal(controller.state, 'error');
+  assert.deepEqual(earcons.calls, ['error']);
+  assert.match(diagnostics.at(-1).message, /microphone denied/);
+});
+
+test('notifyWakeEngineError is a no-op outside armed', async () => {
+  const { controller: fromInactive } = build();
+  assert.equal(fromInactive.notifyWakeEngineError({}), false, 'no-op from inactive');
+
+  const { controller, wakeEngine } = build();
+  await controller.arm();
+  wakeEngine.triggerWake();
+  await flush();
+  assert.equal(controller.state, 'active');
+  assert.equal(controller.notifyWakeEngineError({}), false, 'an active session is not interrupted by it');
+  assert.equal(controller.state, 'active');
 });
 
 test('missing provider configuration after wake behaves the same as any other session-open failure', async () => {
@@ -357,14 +417,67 @@ test('push-to-talk opens a session without arming local wake, and release return
   assert.equal(realtime.sessions[0].closeCalls, 1);
 });
 
-test('push-to-talk while already armed still returns to armed afterward', async () => {
+test('push-to-talk while already armed pauses local listening, and release resumes it', async () => {
   const { controller, wakeEngine } = build();
   await controller.arm();
   assert.equal(await controller.pushToTalkStart(), true);
   assert.equal(controller.state, 'active');
+  assert.equal(wakeEngine.calls.pause, 1, 'local recognition is paused so it can never run concurrently with the opening session');
   await controller.pushToTalkEnd();
   assert.equal(controller.state, 'armed');
   assert.equal(wakeEngine.calls.resume, 1);
+});
+
+test('releasing push-to-talk before open() resolves lands on inactive, not active, and closes the still-opening session', async () => {
+  const realtime = fakeRealtimeFactory({ manual: true });
+  const { controller, earcons } = build({ realtime });
+
+  const startPromise = controller.pushToTalkStart();
+  await flush();
+  assert.equal(controller.state, 'inactive', 'state has not caught up yet — open() is still pending');
+  assert.equal(await controller.pushToTalkEnd(), true,
+    'signOff must act on the still-opening session even though `state` has not reached active yet');
+  assert.equal(controller.state, 'inactive');
+  assert.equal(realtime.sessions[0].closeCalls, 1, 'the still-opening session was closed immediately on release');
+  assert.deepEqual(earcons.calls, ['enter', 'exit']);
+
+  realtime.sessions[0].resolveOpen(); // the cancelled open() eventually settles anyway
+  await flush();
+  assert.equal(controller.state, 'inactive', 'a session that finishes opening after release must never resurrect active');
+  assert.equal(await startPromise, true);
+});
+
+test('goOffline mid-open also cancels a still-opening push-to-talk session, stopping every acquired track', async () => {
+  const realtime = fakeRealtimeFactory({ manual: true });
+  const { controller, wakeEngine } = build({ realtime });
+
+  const startPromise = controller.pushToTalkStart();
+  await flush();
+  assert.equal(controller.state, 'inactive');
+  assert.equal(await controller.goOffline(), true, 'offline must act on a pending session even though state already reads inactive');
+  assert.equal(realtime.sessions[0].closeCalls, 1);
+  assert.equal(wakeEngine.calls.stop, 1);
+
+  realtime.sessions[0].resolveOpen(); // let the superseded open() settle so nothing is left dangling
+  await startPromise;
+  assert.equal(controller.state, 'inactive', 'a superseded open() must never move the board out of inactive');
+});
+
+test('a real wake firing while a push-to-talk session is already opening does not stack a second session', async () => {
+  const realtime = fakeRealtimeFactory({ manual: true });
+  const { controller, wakeEngine } = build({ realtime });
+  await controller.arm();
+
+  const startPromise = controller.pushToTalkStart(); // holds the button while armed
+  await flush();
+  assert.equal(realtime.sessions.length, 1);
+  wakeEngine.triggerWake(); // a real "Hey To-do" arrives mid-open
+  await flush();
+  assert.equal(realtime.sessions.length, 1, 'no second concurrent session was opened');
+
+  realtime.sessions[0].resolveOpen();
+  await startPromise;
+  assert.equal(controller.state, 'active');
 });
 
 test('a session that finishes opening after offline/sign-off already fired is closed and never resurrects state', async () => {

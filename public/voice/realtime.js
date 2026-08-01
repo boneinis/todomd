@@ -27,12 +27,17 @@ export function createRealtimeSession({
   fetchFn = scope.fetch?.bind(scope),
   RTCPeerConnectionClass = scope.RTCPeerConnection,
   getUserMediaFn = (constraints) => scope.navigator?.mediaDevices?.getUserMedia?.(constraints),
+  // Where the assistant's remote audio is rendered. Defaults to a real
+  // <audio> element so production code needs no wiring; tests inject a fake
+  // to assert playback without a real DOM/audio device.
+  createAudioSink = () => scope.document?.createElement?.('audio') ?? null,
   token = '',
   project = '',
 } = {}) {
   let pc = null;
   let dataChannel = null;
   let stream = null;
+  let audioEl = null;
   let closed = false;
   let opened = false;
 
@@ -41,6 +46,31 @@ export function createRealtimeSession({
       try { track.stop(); } catch { /* already stopped */ }
     }
     stream = null;
+  }
+
+  // The model's speech arrives as a remote track on the same peer connection
+  // — without rendering it, the "conversation" is one-way and unusable.
+  function attachRemoteAudio(event) {
+    if (closed) return;
+    const remoteStream = event?.streams?.[0];
+    if (!remoteStream) return;
+    if (!audioEl) {
+      audioEl = createAudioSink();
+      if (!audioEl) return; // no document/Audio support in this environment — degrade silently, never throw
+      audioEl.autoplay = true;
+    }
+    audioEl.srcObject = remoteStream;
+    // Autoplay can reject before the arming click's user-activation window is
+    // considered current by the browser; that's non-fatal, not a session error.
+    try { audioEl.play?.()?.catch?.(() => {}); } catch { /* best effort */ }
+  }
+
+  function stopAudioSink() {
+    if (!audioEl) return;
+    try { audioEl.pause?.(); } catch { /* already stopped */ }
+    try { audioEl.srcObject = null; } catch { /* best effort */ }
+    try { audioEl.remove?.(); } catch { /* best effort, or never attached */ }
+    audioEl = null;
   }
 
   function handleServerEvent(raw, onTranscript) {
@@ -86,6 +116,7 @@ export function createRealtimeSession({
       }
       dataChannel = pc.createDataChannel('oai-events');
       dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, onTranscript));
+      pc.addEventListener?.('track', attachRemoteAudio);
       pc.addEventListener?.('connectionstatechange', () => {
         if (closed) return;
         if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) onClose(pc.connectionState);
@@ -98,6 +129,7 @@ export function createRealtimeSession({
       const answerSdp = await postOffer(offer.sdp);
       if (closed) throw new Error('session closed before it opened');
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+      if (closed) throw new Error('session closed before it opened');
     } catch (error) {
       await close();
       throw error;
@@ -110,6 +142,7 @@ export function createRealtimeSession({
     try { dataChannel?.close?.(); } catch { /* already closed */ }
     try { pc?.close?.(); } catch { /* already closed */ }
     stopStream();
+    stopAudioSink();
     pc = null;
     dataChannel = null;
   }

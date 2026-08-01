@@ -36,10 +36,24 @@ function fakeRtcClass({ connectionState = 'connected' } = {}) {
     }
     addEventListener(type, fn) { this.listeners[type] = fn; }
     fireConnectionStateChange(state) { this.connectionState = state; this.listeners.connectionstatechange?.(); }
+    fireTrack(streams) { this.listeners.track?.({ streams }); }
     async createOffer() { return { type: 'offer', sdp: 'v=0\r\no=fake offer\r\n' }; }
     async setLocalDescription() {}
     async setRemoteDescription(desc) { this.remoteDescription = desc; }
     close() { this.closed = true; }
+  };
+}
+
+function fakeAudioElement() {
+  return {
+    autoplay: false,
+    srcObject: null,
+    playCalls: 0,
+    paused: false,
+    removed: false,
+    play() { this.playCalls += 1; return Promise.resolve(); },
+    pause() { this.paused = true; },
+    remove() { this.removed = true; },
   };
 }
 
@@ -92,6 +106,64 @@ test('a finalized input-transcription event surfaces through onTranscript; other
   channel.emit('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'That is all, To-do' }) });
   channel.emit('message', { data: 'not json' }); // must not throw
   assert.deepEqual(transcripts, [{ text: 'That is all, To-do', final: true }]);
+});
+
+test('a remote track is rendered to an audio sink and played; close() tears it down', async () => {
+  const RTC = fakeRtcClass();
+  const audioEl = fakeAudioElement();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    createAudioSink: () => audioEl,
+    token: 't', project: 'p',
+  });
+  await session.open({});
+  const pc = RTC.instances.at(-1);
+  const remoteStream = { fake: 'remote-stream' };
+  pc.fireTrack([remoteStream]);
+  assert.equal(audioEl.srcObject, remoteStream, 'the assistant\'s remote audio is otherwise never heard');
+  assert.equal(audioEl.autoplay, true);
+  assert.equal(audioEl.playCalls, 1);
+
+  await session.close();
+  assert.equal(audioEl.paused, true);
+  assert.equal(audioEl.srcObject, null);
+  assert.equal(audioEl.removed, true);
+});
+
+test('a track event with no stream, or arriving after close, is ignored without throwing', async () => {
+  const RTC = fakeRtcClass();
+  const audioEl = fakeAudioElement();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    createAudioSink: () => audioEl,
+    token: 't', project: 'p',
+  });
+  await session.open({});
+  const pc = RTC.instances.at(-1);
+  pc.fireTrack([]); // no stream on the event
+  assert.equal(audioEl.srcObject, null);
+
+  await session.close();
+  pc.fireTrack([{ fake: 'late-stream' }]); // arrives after close
+  assert.equal(audioEl.srcObject, null, 'a track event after close must not resurrect the sink');
+});
+
+test('missing document/audio support in this environment degrades silently instead of throwing', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    createAudioSink: () => null,
+    token: 't', project: 'p',
+  });
+  await session.open({});
+  const pc = RTC.instances.at(-1);
+  assert.doesNotThrow(() => pc.fireTrack([{ fake: 'stream' }]));
 });
 
 test('an unexpected connection failure calls onClose, but a deliberate close() does not', async () => {

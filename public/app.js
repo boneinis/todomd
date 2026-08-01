@@ -91,6 +91,10 @@ async function loadBoard() {
       <p><button id="empty-guide" class="modal-submit">open the Getting Started guide</button></p>
     </div>`;
     $('#empty-guide')?.addEventListener('click', openGuide);
+    // no board to point voice at (e.g. the last project was just removed) —
+    // tell voice/main.js so an armed/active session doesn't keep running
+    // against a project that no longer has a board behind it
+    document.dispatchEvent(new CustomEvent('todomd:context', { detail: { project: '', access: 'none' } }));
     return;
   }
   boardData = await api(`board?project=${encodeURIComponent(currentProject)}${showArchived ? '&archived=1' : ''}`);

@@ -119,6 +119,29 @@ test('engine ignores interim and unrelated results, then pauses on a finalized e
   assert.equal(engine.diagnostics().state, 'paused');
 });
 
+test('the wake gate matches only the recognizer\'s top-ranked alternative, never a lower-ranked one', async () => {
+  const Recognition = fakeRecognitionClass();
+  const wakes = [];
+  const engine = createWakeWordEngine({ scope: { SpeechRecognition: Recognition } });
+  await engine.start((wake) => wakes.push(wake));
+  const active = Recognition.instances.at(-1);
+  assert.equal(active.maxAlternatives, 1, 'the engine requests only the top alternative — there is nothing else to match');
+
+  // The recognizer's own best guess is ordinary conversation; a much less
+  // likely second alternative happens to be the wake phrase. Only index 0
+  // may ever open the gate.
+  const result = Object.assign(
+    [
+      { transcript: 'anyway I think we should', confidence: 0.9 },
+      { transcript: 'Hey To-do', confidence: 0.2 },
+    ],
+    { isFinal: true },
+  );
+  active.onresult({ resultIndex: 0, results: [result] });
+  assert.deepEqual(wakes, [], 'a lower-ranked alternative must never open the gate');
+  assert.equal(engine.diagnostics().state, 'armed', 'the engine keeps listening normally');
+});
+
 test('engine never arms without processLocally support', async () => {
   const NoLocal = fakeRecognitionClass({ local: false });
   const engine = createWakeWordEngine({ scope: { SpeechRecognition: NoLocal } });

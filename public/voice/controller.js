@@ -47,8 +47,10 @@ export function createVoiceController({
 } = {}) {
   let state = 'inactive';
   let realtime = null;
+  let pendingSession = null; // the session object while open() is still in flight — not yet committed to `realtime`
   let armedByWake = false; // false for a push-to-talk-only session: there is no local armed loop to return to
   let sessionEpoch = 0;    // bumped on every teardown so a stale in-flight open() can be discarded
+  let armGeneration = 0;   // bumped on every teardown so a stale in-flight arm() can be discarded
   let armedLifetimeTimer = null;
   let idleTimer = null;
   let confirmTimer = null;
@@ -111,6 +113,7 @@ export function createVoiceController({
 
   async function arm() {
     if (state !== 'inactive' && state !== 'error') return false;
+    const myGeneration = ++armGeneration;
     setState('arming');
     let capability;
     try {
@@ -118,6 +121,10 @@ export function createVoiceController({
     } catch (error) {
       capability = { supported: false, status: 'init-failed', error: boundedMessage(error) };
     }
+    // goOffline() may have run while init() was in flight (it bumps
+    // armGeneration) — an arm attempt that lost the race must never touch the
+    // wake engine or the state the offline call already settled on.
+    if (myGeneration !== armGeneration) { try { wakeEngine.stop(); } catch { /* already stopped */ } return false; }
     if (!capability?.supported) {
       earcons?.error?.();
       setState('error');
@@ -127,6 +134,7 @@ export function createVoiceController({
       return false;
     }
     const started = await wakeEngine.start(() => handleWake());
+    if (myGeneration !== armGeneration) { try { wakeEngine.stop(); } catch { /* already stopped */ } return false; }
     if (!started) {
       earcons?.error?.();
       setState('error');
@@ -139,6 +147,19 @@ export function createVoiceController({
     return true;
   }
 
+  // A terminal wake-engine failure (permission revoked, audio-capture error,
+  // repeated restart exhaustion) fires asynchronously through the engine's
+  // own onStatus callback, well after start() already resolved `armed`.
+  // Without this, the controller stays falsely `armed` with a dead recognizer
+  // and no diagnostic or push-to-talk fallback.
+  function notifyWakeEngineError(detail = {}) {
+    if (state !== 'armed') return false;
+    earcons?.error?.();
+    setState('error');
+    diag(`local wake stopped: ${boundedMessage(detail?.error || detail)} — use push-to-talk instead`, { detail });
+    return true;
+  }
+
   function handleWake() {
     // The wake engine already gates this to a finalized exact match and
     // pauses itself before calling back; the state check here is defense in
@@ -148,29 +169,48 @@ export function createVoiceController({
   }
 
   async function openActiveSession() {
+    if (pendingSession) return; // already opening one (e.g. a real wake during a held push-to-talk press)
     const myEpoch = ++sessionEpoch;
     stopArmedLifetime();
     earcons?.enter?.();
-    let session;
+    const session = createRealtime();
+    // Visible to signOff()/goOffline() the instant it exists — before this,
+    // release/offline mid-open had nothing to close and no state to act on
+    // (the state machine was still `armed`/`inactive` until open() settled),
+    // so a press-and-quick-release left a live microphone/provider request
+    // running to completion with no way to cancel it.
+    pendingSession = session;
     try {
-      session = createRealtime();
       await session.open({
         onTranscript: (t) => { if (realtime === session) handleTranscript(t); },
         onClose: (reason) => { if (realtime === session) handleRealtimeClosed(reason); },
       });
     } catch (error) {
-      if (myEpoch !== sessionEpoch) return; // superseded by offline/sign-off while opening
+      pendingSession = null;
+      if (myEpoch !== sessionEpoch) return; // superseded — the canceller already closed this session
       await settleSession({ earcon: 'error' });
       diag(`voice session unavailable: ${boundedMessage(error)}`);
       return;
     }
     if (myEpoch !== sessionEpoch) { // offline/sign-off landed while the open() above was in flight
-      try { await session.close(); } catch { /* best effort */ }
+      pendingSession = null;
+      try { await session.close(); } catch { /* best effort, possibly already closed by the canceller */ }
       return;
     }
+    pendingSession = null;
     realtime = session;
     setState('active');
     startIdle();
+  }
+
+  // Closes an in-flight open() immediately instead of waiting for it to
+  // settle. Idempotent with openActiveSession()'s own post-await cleanup —
+  // realtime.js's close() is safe to call twice.
+  async function closePendingSession() {
+    const p = pendingSession;
+    pendingSession = null;
+    if (!p) return;
+    try { await p.close(); } catch { /* best effort */ }
   }
 
   function handleTranscript({ text, final } = {}) {
@@ -197,19 +237,27 @@ export function createVoiceController({
   }
 
   async function signOff(reason = 'manual') {
-    if (!['active', 'confirming'].includes(state)) return false;
+    // A push-to-talk press that hasn't finished opening yet leaves `state`
+    // unchanged (still `inactive`/`armed`) until open() settles, so the
+    // active/confirming check alone would silently ignore a release that
+    // lands during that window — pendingSession is the tell that there is
+    // still something to cancel even though `state` hasn't caught up.
+    if (!['active', 'confirming'].includes(state) && !pendingSession) return false;
     sessionEpoch += 1;
+    await closePendingSession();
     await settleSession({ earcon: 'exit' });
     return true;
   }
 
   async function goOffline(reason = 'manual') {
-    if (state === 'inactive') return false;
+    if (state === 'inactive' && !pendingSession) return false;
     sessionEpoch += 1;
+    armGeneration += 1; // also fences a still-initializing arm() (see arm()'s post-init/post-start checks)
     stopArmedLifetime();
     stopIdle();
     stopConfirmTimer();
     rejectPendingConfirmation('offline');
+    await closePendingSession();
     await closeRealtime();
     try { wakeEngine.stop(); } catch { /* already stopped, or never armed */ }
     armedByWake = false;
@@ -223,7 +271,10 @@ export function createVoiceController({
   // `inactive`, not a synthetic `armed` state the board can't actually reach.
   async function pushToTalkStart() {
     if (!['inactive', 'error', 'armed'].includes(state)) return false;
-    if (state !== 'armed') armedByWake = false;
+    // Mirrors what a real wake already does to itself: pause local listening
+    // before opening remote transport, so a held press-while-armed can never
+    // run a second concurrent recognizer alongside the opening session.
+    if (state === 'armed') wakeEngine.pause(); else armedByWake = false;
     await openActiveSession();
     return true;
   }
@@ -272,6 +323,7 @@ export function createVoiceController({
     pushToTalkEnd,
     enterConfirming,
     resolveConfirmation,
+    notifyWakeEngineError,
     diagnostics,
     get state() { return state; },
   };

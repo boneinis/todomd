@@ -167,7 +167,11 @@ export function createWakeWordEngine({
       recognition.lang = lang;
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.maxAlternatives = 3;
+      // The wake gate matches only the recognizer's own top-ranked guess (see
+      // onresult below); requesting more than one alternative would let a
+      // lower-confidence guess of "hey to-do" wake the board even while the
+      // recognizer's actual best guess was ordinary conversation.
+      recognition.maxAlternatives = 1;
       recognition.processLocally = true;
     } catch (error) {
       recognition = null;
@@ -185,17 +189,19 @@ export function createWakeWordEngine({
     recognition.onresult = (event) => {
       for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
         const result = event.results[index];
-        for (let alternative = 0; alternative < result.length; alternative += 1) {
-          const transcript = String(result[alternative]?.transcript || '');
-          onResult({ transcript, final: Boolean(result.isFinal) });
-          if (!result.isFinal || !isWakePhrase(transcript) || state !== 'armed') continue;
-          wakeCount += 1;
-          state = 'paused';
-          emitStatus('wake', { wakeCount });
-          try { recognition.abort(); } catch { /* already stopped */ }
-          wakeHandler({ phrase: 'hey to-do', wakeCount });
-          return;
-        }
+        // Only the recognizer's own top-ranked (index 0) transcript may open
+        // the gate. A lower-ranked alternative is the recognizer itself
+        // saying that guess was less likely than what it actually heard, so
+        // it must never be treated as an exact finalized "Hey To-do".
+        const transcript = String(result[0]?.transcript || '');
+        onResult({ transcript, final: Boolean(result.isFinal) });
+        if (!result.isFinal || !isWakePhrase(transcript) || state !== 'armed') continue;
+        wakeCount += 1;
+        state = 'paused';
+        emitStatus('wake', { wakeCount });
+        try { recognition.abort(); } catch { /* already stopped */ }
+        wakeHandler({ phrase: 'hey to-do', wakeCount });
+        return;
       }
     };
     recognition.onerror = (event) => {

@@ -226,6 +226,56 @@ test('UI voice: missing provider configuration after wake returns to armed with 
   }
 });
 
+test('UI voice: switching to a different project disarms voice; reloading the SAME project does not', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const repo2 = makeRepo();
+  addProject(repo2);
+  const name2 = path.basename(repo2);
+
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await until(async () => (await page.eval(`!document.getElementById('voice-btn').hidden`)) || null, { timeout: BUDGET.stage });
+
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
+
+  // an ordinary re-load of the SAME project (e.g. a periodic poll) must not disarm
+  await page.eval(`loadBoard()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.eval(`document.getElementById('voice-btn').dataset.voiceState`), 'armed',
+    'reloading the same project/access context must not disarm an already-armed control');
+
+  // switching to a DIFFERENT project must disarm — a live session or armed
+  // recognizer must never outlive the board it was opened against
+  await page.eval(`(() => {
+    const sel = document.getElementById('project');
+    sel.value = ${JSON.stringify(name2)};
+    sel.dispatchEvent(new Event('change'));
+  })()`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'inactive' || null, { timeout: BUDGET.quick });
+
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: the board losing its current project also disarms voice', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await until(async () => (await page.eval(`!document.getElementById('voice-btn').hidden`)) || null, { timeout: BUDGET.stage });
+
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
+
+  // the exact app.js path exercised when the last registered project goes away
+  await page.eval(`currentProject = ''; loadBoard();`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'inactive' || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`getComputedStyle(document.getElementById('voice-widget')).display`), 'none');
+
+  assert.deepEqual(page.errors, []);
+});
+
 test('UI voice: a viewer link never shows the mic control', async (t) => {
   if (!page) return t.skip(SKIP);
   const viewerToken = fs.readFileSync(path.join(process.env.TODOMD_HOME, '.todomd', 'token-viewer'), 'utf8').trim();
