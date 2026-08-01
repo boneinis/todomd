@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb3b-ae22-77a2-b342-3435a4e4a47f
+session_id: 019fbb41-c45b-70b0-ab87-f1e61ece1e33
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -188,3 +188,5 @@ Reachable starvation bug in `src/intake.js:442-491`: with supported `markSeen:fa
   - attempts_exhausted: Official `npm test` passed with normal process visibility: 236 core tests and 2 UI tests. Adversarial review found a reachable internationalization bug at src/screen.js:121: meaningful subjects are detected with ASCII-only `/[a-z0-9]/i`. A parsed, detailed Russian bug report titled `Ошибка экспорта` was reproduced as `unclear` with signal `no-subject`; pollSource therefore places it in Needs Human
 - 2026-08-01 02:56Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Official `npm test` passed: 236 core tests and 2 UI tests. However, `src/screen.js:17` recognizes auto-reply body text only at the start of a line. A parsed message with body `Thank you for your email. This is an automatic response. I will reply after August 5.` was classified as work with no signals. End-to-end intake created a Review card with no hold reason; pollSource would consequently trigge
+- 2026-08-01 03:02Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: Official verification passed: 236 core tests and 2 UI tests; git diff --check passed. However, src/screen.js:17 has reachable auto-reply misclassifications. A parsed message saying “I will be out of the office until August 12” was classified as work, creating a Review card and triggering triage. Conversely, a detailed human report beginning “OOO notifications are not delivered…” was classified as 
