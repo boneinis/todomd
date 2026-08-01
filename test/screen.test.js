@@ -823,6 +823,51 @@ test('pollSource: human bug reports about automated-mail features stay work and 
   for (const id of triaged) assert.equal(readCard(repo, id).data.status, 'Review');
 });
 
+test('pollSource: a trailing unsubscribe URL and postal block are screened as a footer', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const raw = rawEmail([
+    'From: Shop <no-reply@shop.example.com>',
+    'To: intake@example.com',
+    'Subject: Your weekly store offers',
+    'Message-ID: <legal-footer@shop.example.com>',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'This week only: save on products from every department in our store.',
+    '',
+    'Unsubscribe: https://shop.example.com/unsubscribe/account-123',
+    'Shop Example LLC',
+    '123 Market Street, New York, NY 10001',
+    '',
+  ]);
+  const parsed = await simpleParser(raw);
+  const verdict = screenEmail(parsed);
+  assert.equal(verdict.verdict, 'spam');
+  assert.deepEqual(verdict.signals, ['noreply-sender', 'unsubscribe-footer']);
+
+  const fakeClient = {
+    mailbox: { uidValidity: '1', uidNext: 2 },
+    on() { return this; },
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch() { yield { uid: 1, source: Buffer.from(raw) }; },
+    async logout() {},
+  };
+  const triaged = [];
+  await pollSource({
+    label: 'legal-footer-regression',
+    conf: { host: 'imap.example.com', user: 'inbox', pass: 'secret', markSeen: false },
+    resolve: () => 'repo', assigneeOf: () => null,
+  }, () => ({ path: repo, name: 'repo' }), {
+    createClient: () => fakeClient,
+    onCardCallback: (_project, id) => triaged.push(id),
+  });
+
+  assert.equal(cardFiles(repo).length, 0);
+  assert.equal(auditLines(repo).length, 1);
+  assert.deepEqual(triaged, []);
+});
+
 test('intakeMessage: a real bug report, parsed by mailparser, becomes a Review card', async () => {
   isolateHome();
   const repo = makeRepo();
