@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Queue
+status: Build
 type: module
 priority: medium
 labels: []
@@ -13,8 +13,9 @@ assignee:
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0037
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+base_branch: main
 ---
 
 ## Description
