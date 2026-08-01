@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbaf7-0a27-7cc0-81d8-c70ea8c200d8
+session_id: 019fbb00-3c6d-7b12-8914-e5348b67078a
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -158,3 +158,7 @@ Classifier defects remain in `src/screen.js`:
   - attempts_exhausted: `npm test` passed all 227 core and 2 UI tests outside the restricted sandbox; `git diff --check` also passed. However:
 
 1. `src/screen.js:16` misses common vacation auto-replies. A parsed email with subject `Vacation response: Export failure` and body `I am currently on vacation and will return...` was reproduced as `work` with no signals, so it would enter Review and trigger triage. Expand the au
+- 2026-08-01 01:50Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: `npm test` passed outside the listener-restricted sandbox: 229 core tests and 2 UI tests. `git diff --check` passed and the worktree remained clean.
+
+Adversarial review found a reachable duplicate-card defect in `src/intake.js:353-365`: work/unclear cards are created and committed before `rememberIntakeHandled` persists the intake key. If that persistence fails, the call rejects with no durable ha
