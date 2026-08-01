@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Planned
+status: Queue
 type: module
 priority: medium
 labels: []
