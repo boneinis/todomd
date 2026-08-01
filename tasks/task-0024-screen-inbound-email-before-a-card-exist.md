@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fba94-f789-7692-9b02-fa9b54cc69df
+session_id: 75c18949-6fb4-4982-9c5b-9e7881d34ee8
 worktree: todomd/task-0024
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 12.2276
+cost_usd: 14.7543
 needs_human_reason:
 recovery_stage:
 model:
@@ -113,4 +113,6 @@ mail keeps its attachments only in the mailbox.
 Usage: codex exec resume --json <SESSION_ID> [PROMPT]
 
 For more information, try '--help'.
-
+- 2026-08-01 00:01Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
+- 2026-08-01 00:04Z · Escalate attempt 2 · 26 turns · $2.527 · diagnosis complete
