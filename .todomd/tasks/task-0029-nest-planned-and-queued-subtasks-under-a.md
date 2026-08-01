@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Needs Human
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0029
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 6.2014
-needs_human_reason: retry_failed
+needs_human_reason:
 recovery_stage:
 model:
 effort:
