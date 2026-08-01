@@ -351,6 +351,23 @@ test('intakeMessage: a persistent mailbox key prevents repeat audits without Mes
   assert.equal(cardFiles(repo).length, 0);
 });
 
+test('intakeMessage: overlapping calls claim one key and perform side effects once', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const parsed = await simpleParser(RAW_BUG_REPORT);
+  const options = { label: 'main', intakeKey: 'main:uid:concurrent' };
+
+  const results = await Promise.all([
+    intakeMessage({ path: repo, name: 'repo' }, parsed, options),
+    intakeMessage({ path: repo, name: 'repo' }, parsed, options),
+  ]);
+
+  assert.equal(results.filter((r) => r.created).length, 1);
+  assert.equal(results.filter((r) => r.duplicate).length, 1);
+  assert.equal(cardFiles(repo).length, 1);
+  assert.equal(auditLines(repo).length, 1);
+});
+
 test('intakeMessage: an audit failure after card creation does not create a duplicate', async () => {
   isolateHome();
   const repo = makeRepo();

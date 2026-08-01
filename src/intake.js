@@ -28,7 +28,7 @@ import { screenEmail, appendIntakeAudit } from './screen.js';
 const configFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake.json');
 const HANDLED_FILE = path.join('.todomd', 'intake-handled.json');
 const HANDLED_IGNORE_LINE = '.todomd/intake-handled.json';
-const HANDLED_MAX_KEYS = 5000;
+const cursorFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake-cursors.json');
 
 // Keep the MIME-body distinction intact for screening. Mailparser otherwise
 // synthesizes `text` from HTML, making a message with no text/plain part look
@@ -75,7 +75,6 @@ function rememberIntakeHandled(repoPath, key) {
       if (Array.isArray(parsed)) keys = parsed.filter((x) => typeof x === 'string');
     } catch { /* first write or recover from a partial/corrupt runtime file */ }
     if (!keys.includes(key)) keys.push(key);
-    if (keys.length > HANDLED_MAX_KEYS) keys = keys.slice(-HANDLED_MAX_KEYS);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(keys) + '\n');
@@ -91,6 +90,29 @@ export function mailboxIntakeKey(conf, mailbox, messageId, uid) {
   return JSON.stringify(messageId
     ? [...identity, 'message-id', messageId]
     : [...identity, 'uid', String(uid)]);
+}
+
+function mailboxScope(conf, mailbox) {
+  return JSON.stringify([
+    conf?.host || '', conf?.port || 993, conf?.user || '', conf?.folder || 'INBOX',
+    String(mailbox?.uidValidity || ''),
+  ]);
+}
+
+function intakeCursor(scope) {
+  try { return Number(JSON.parse(fs.readFileSync(cursorFile(), 'utf8'))?.[scope]) || 0; }
+  catch { return 0; }
+}
+
+function rememberIntakeCursor(scope, uid) {
+  const file = cursorFile();
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch {}
+  state[scope] = Math.max(Number(state[scope]) || 0, Number(uid) || 0);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, file);
 }
 
 function loadRaw() {
@@ -241,7 +263,7 @@ export function emailToCardFields(parsed) {
 //
 // Returns { verdict, created, handled, id?, reason }. `handled` means the
 // message reached a terminal decision, so the caller can stop reconsidering it.
-export async function intakeMessage(project, parsed, {
+async function intakeMessageOnce(project, parsed, {
   label = 'intake', assignee = null, maxAttachments = 5, intakeKey = '',
 } = {}) {
   if (intakeWasHandled(project.path, intakeKey)) {
@@ -299,6 +321,24 @@ export async function intakeMessage(project, parsed, {
   };
 }
 
+const inflightIntake = new Map();
+export async function intakeMessage(project, parsed, options = {}) {
+  const intakeKey = options.intakeKey || '';
+  if (!intakeKey) return intakeMessageOnce(project, parsed, options);
+  const gateKey = `${project.path}\n${intakeKey}`;
+  const prior = inflightIntake.get(gateKey);
+  if (prior) {
+    const outcome = await prior;
+    return outcome.handled
+      ? { verdict: 'duplicate', created: false, handled: true, duplicate: true }
+      : outcome;
+  }
+  const run = intakeMessageOnce(project, parsed, options);
+  inflightIntake.set(gateKey, run);
+  try { return await run; }
+  finally { inflightIntake.delete(gateKey); }
+}
+
 let onCard = () => {};   // set by start(): (project, id) => void  (e.g. trigger triage)
 let log = () => {};
 
@@ -326,13 +366,20 @@ async function pollSource(source, getProject) {
   client.on('error', (e) => log(`intake: "${label}" connection error: ${e.message}`));
   let lock;
   let created = 0;
-  let processed = 0;
+  let scanned = 0;
   try {
     await client.connect();
     lock = await client.getMailboxLock(conf.folder || 'INBOX');
+    const scope = mailboxScope(conf, client.mailbox);
+    const firstUid = intakeCursor(scope) + 1;
+    const uidNext = Number(client.mailbox?.uidNext) || firstUid;
+    const pendingMessages = firstUid < uidNext
+      ? client.fetch({ seen: false, uid: `${firstUid}:*` }, { source: true, uid: true })
+      : [];
     // only unseen messages; \Seen (default) is the primary idempotency key
-    for await (const msg of client.fetch({ seen: false }, { source: true, uid: true })) {
-      if (processed >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
+    for await (const msg of pendingMessages) {
+      if (scanned >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
+      scanned++;
       try {
         const parsed = await parseInboundMessage(msg.source);
         const mid = parsed.messageId;
@@ -345,7 +392,6 @@ async function pollSource(source, getProject) {
         const targetName = resolve(parsed);          // board → fixed; inbox → by recipient
         const project = targetName && getProject(targetName);
         if (!project) {
-          processed++;
           log(`intake: "${label}" skipped a message — ${targetName
             ? `project "${targetName}" not registered`
             : `no route matched (to: ${recipientAddresses(parsed).join(', ') || 'none'})`}`);
@@ -354,7 +400,6 @@ async function pollSource(source, getProject) {
           const outcome = await intakeMessage(project, parsed, {
             label, assignee, maxAttachments: conf.maxAttachments ?? 5, intakeKey,
           });
-          if (!outcome.duplicate) processed++;
           // screened-out mail is "handled" too — without this, a markSeen:false
           // mailbox would re-screen and re-audit the same spam on every tick
           if (outcome.handled) { handled.add(runKey); if (handled.size > 5000) handled.delete(handled.values().next().value); }
@@ -372,9 +417,10 @@ async function pollSource(source, getProject) {
           }
         }
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
+        rememberIntakeCursor(scope, msg.uid);
       } catch (e) {
-        processed++;
         log(`intake: "${label}" failed on a message: ${e.message}`);
+        break; // preserve a contiguous UID cursor; retry this message next poll
       }
     }
   } finally {
