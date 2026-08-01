@@ -9,11 +9,12 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
+import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
 import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 import { createMetadataScheduler } from './github-sync.js';
+import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction } from './voice.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -406,6 +407,51 @@ export function startServer({ port = 7337, lan = false } = {}) {
         skills: listSkills(project.path), // available command/skill names for the picker
       });
     }
+    // Voice Actions API (docs/voice.md): the speech model may only read and
+    // propose; TODOMD prepares, reads back, and — once a human confirms at the
+    // right tier — executes. Summary/card-status are read-only, so any viewer
+    // may ask; prepare/confirm/reject mutate (or gate a mutation) and need the
+    // PRIMARY desktop session specifically, like /api/voice/session — voice is
+    // a desktop-only feature this release, and a mobile link must not gain a
+    // spoken path to board mutation its own UI doesn't expose.
+    if (url.pathname === '/api/voice/summary' && req.method === 'GET') {
+      return json(res, 200, buildVoiceSummary(project));
+    }
+    const voiceCardMatch = url.pathname.match(/^\/api\/voice\/cards\/([\w.-]+)$/);
+    if (voiceCardMatch && req.method === 'GET') {
+      const cardStatus = await buildCardStatus(project, voiceCardMatch[1]);
+      if (!cardStatus) return json(res, 404, { error: 'card not found' });
+      return json(res, 200, cardStatus);
+    }
+    if (url.pathname === '/api/voice/actions' && req.method === 'POST') {
+      if (!primary(req)) return json(res, 403, { error: 'voice actions require the primary desktop session' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields;
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const { status, ...result } = await prepareVoiceAction(project, fields);
+      return json(res, status, result);
+    }
+    const voiceConfirmMatch = url.pathname.match(/^\/api\/voice\/actions\/([\w-]+)\/confirm$/);
+    if (voiceConfirmMatch && req.method === 'POST') {
+      if (!primary(req)) return json(res, 403, { error: 'voice actions require the primary desktop session' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields;
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const { status, ...result } = await confirmVoiceAction(project, voiceConfirmMatch[1], fields);
+      return json(res, status, result);
+    }
+    const voiceRejectMatch = url.pathname.match(/^\/api\/voice\/actions\/([\w-]+)\/reject$/);
+    if (voiceRejectMatch && req.method === 'POST') {
+      if (!primary(req)) return json(res, 403, { error: 'voice actions require the primary desktop session' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields = {};
+      try { if (body) fields = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const { status, ...result } = rejectVoiceAction(project, voiceRejectMatch[1], fields);
+      return json(res, status, result);
+    }
     if (url.pathname === '/api/models') { // model suggestions for the chosen vendor (CLI --help + config)
       // full token only: this spawns blocking CLI --help processes
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
@@ -582,12 +628,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let on;
       try { ({ archived: on } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-      if (on && pipeline.hasLiveRun(project.name, archiveMatch[1])) return json(res, 400, { error: 'run in progress — cancel it first' });
-      const archCard = readCard(project.path, archiveMatch[1]);
-      if (on && archCard?.data?.epic && pipeline.hasLiveBuildingChild(project, archiveMatch[1])) return json(res, 400, { error: 'a child card is building — cancel it first' });
-      if (on) await pipeline.releaseCardResources(project, archiveMatch[1]); // taking it off the board frees its build resources
-      if (on && archCard?.data?.epic) await pipeline.cascadeEpicCleanup(project, archiveMatch[1]);
-      const result = await setArchived(project.path, archiveMatch[1], !!on);
+      const result = await pipeline.archiveCard(project, archiveMatch[1], !!on);
       return json(res, result.ok ? 200 : 400, result);
     }
     if (url.pathname === '/api/resume-queues' && req.method === 'POST') {

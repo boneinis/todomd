@@ -833,6 +833,19 @@ export function cancel(project, id) {
   return { ok: true };
 }
 
+// Archive/unarchive with the same guards the HTTP route (and voice actions)
+// need: taking a card off the board while it — or, for an epic, one of its
+// children — is building would leak a live run, so archiving requires the same
+// live-run/building-child checks DELETE uses, plus the epic cascade.
+export async function archiveCard(project, id, on) {
+  if (on && hasLiveRun(project.name, id)) return { ok: false, error: 'run in progress — cancel it first' };
+  const card = readCard(project.path, id);
+  if (on && card?.data?.epic && hasLiveBuildingChild(project, id)) return { ok: false, error: 'a child card is building — cancel it first' };
+  if (on) await releaseCardResources(project, id); // taking it off the board frees its build resources
+  if (on && card?.data?.epic) await cascadeEpicCleanup(project, id);
+  return setArchived(project.path, id, !!on);
+}
+
 // Server shutdown: SIGTERM every tracked agent child, then SIGKILL any still
 // alive after a short grace — an exiting server must never orphan a running
 // (billing) agent CLI. Each child goes through the normal cancel path (run
