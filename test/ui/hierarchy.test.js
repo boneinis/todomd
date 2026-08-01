@@ -339,9 +339,13 @@ test('drawer: a card fetch that lands after Escape is discarded, not re-shown', 
   await page.eval(`(() => {
     window.__origFetch = window.fetch;
     window.__held = false;
+    window.__cardActions = [];
     const gate = new Promise((resolve) => { window.__release = resolve; });
     window.fetch = (input, init) => {
       const url = String(typeof input === 'string' ? input : input.url);
+      if ((init?.method || 'GET') !== 'GET' && url.includes('/api/cards/')) {
+        window.__cardActions.push(url);
+      }
       if (!window.__held && url.includes('/api/cards/task-0002?')) {
         window.__held = true;
         window.__heldDone = gate
@@ -355,7 +359,13 @@ test('drawer: a card fetch that lands after Escape is discarded, not re-shown', 
 
   await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"]').click()`);
   await until(async () => (await page.eval(`window.__held === true`)) || null, { timeout: BUDGET.quick });
-  assert.equal(await page.eval(`drawerCard`), 'task-0002', 'the pending open has claimed the drawer');
+  assert.equal(await page.eval(`drawerCard`), 'task-0001',
+    'the pending child does not claim actions while the epic is still displayed');
+  assert.equal(await page.eval(`document.getElementById('drawer-id').textContent`), 'task-0001');
+  await page.eval(`document.getElementById('route-save').click()`);
+  await until(async () => (await page.eval(`window.__cardActions.length`)) || null, { timeout: BUDGET.quick });
+  assert.match(await page.eval(`window.__cardActions.at(-1)`), /\/api\/cards\/task-0001\/set\?/,
+    'a visible epic action cannot mutate the pending child');
 
   // Escape while the child is still loading closes the modal
   await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);

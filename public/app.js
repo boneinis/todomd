@@ -493,17 +493,20 @@ $('#drawer-tabs').addEventListener('click', (e) => {
 /* ── drawer ── */
 async function openDrawer(id) {
   const seq = ++drawerOpenSeq;
-  drawerCard = id;
-  $('#run-log').textContent = '';
-  $('#drawer-run').hidden = true;
-  $('#drawer-cancel').hidden = !runStates[id];
-  backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
   const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
   // Bail before touching the DOM if the modal was closed (Escape/backdrop/close)
   // or another card was opened while this fetch was in flight — otherwise
   // showDrawer() below would re-open the modal with drawerCard already cleared,
   // leaving every action button (answer, move, archive, delete…) a silent no-op.
-  if (seq !== drawerOpenSeq || drawerCard !== id) return;
+  if (seq !== drawerOpenSeq) return;
+  // Do not point action controls at the requested card until its data is ready
+  // to replace the currently rendered card. During a slow child fetch the old
+  // card remains visible, so its controls must continue to target that old ID.
+  drawerCard = id;
+  $('#run-log').textContent = '';
+  $('#drawer-run').hidden = true;
+  $('#drawer-cancel').hidden = !runStates[id];
+  backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
   $('#drawer-id').textContent = card.data.id;
   $('#drawer-title').textContent = card.data.title;
   $('#drawer-meta').innerHTML = [
