@@ -68,6 +68,9 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
     const fullCardIds = await page.eval(`[...document.querySelectorAll('.card')].map((c) => c.dataset.id).sort()`);
     assert.deepEqual(fullCardIds, ['task-0001', 'task-0004'],
       'the Queue/Planned children are nested rows, not peer cards; the Build child is a full card');
+    assert.equal(
+      await page.eval(`getComputedStyle(document.querySelector('.card[data-id="task-0004"] .card-epic')).display`),
+      'none', 'ordinary cards do not show an empty epic controls strip');
 
     // the two non-execution children render as subtask rows inside the epic
     const rowIds = await page.eval(
@@ -168,6 +171,19 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
     ); renderBoard()`);
     assert.equal(await page.eval(`!!document.querySelector('.card[data-id="task-0091"]')`), true,
       'a child of a non-epic parent remains a full card');
+
+    // A parent that cannot itself render as a full card cannot own nested rows.
+    await page.eval(`boardData.cards.push(
+      { id: 'task-0094', status: 'Unknown', title: 'Unknown-column epic', epic: true },
+      { id: 'task-0095', status: 'Planned', title: 'Visible child', parent: 'task-0094' },
+      { id: 'task-0096', status: 'Queue', title: 'Root epic', epic: true },
+      { id: 'task-0097', status: 'Planned', title: 'Nested epic', epic: true, parent: 'task-0096' },
+      { id: 'task-0098', status: 'Planned', title: 'Grandchild', parent: 'task-0097' }
+    ); renderBoard()`);
+    assert.equal(await page.eval(`!!document.querySelector('.card[data-id="task-0095"]')`), true,
+      'a child of an unknown-column epic remains visible as a full card');
+    assert.equal(await page.eval(`!!document.querySelector('.card[data-id="task-0098"]')`), true,
+      'a child of an epic that is itself nested remains visible as a full card');
 
     // Archived-only view must not leak an active child through an archived
     // epic. Both parent and child have to pass the current view predicate.

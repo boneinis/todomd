@@ -202,11 +202,13 @@ function renderBoard() {
   // still matches — the child surfaces as its own full card instead.
   const byId = new Map(boardData.cards.map((c) => [c.id, c]));
   const nested = TodomdHierarchy.nestedChildIds(boardData.cards, boardData.config);
+  const boardColumns = new Set(boardData.config.columns || []);
   const shownNested = new Set(
     [...nested].filter((id) => {
       const child = byId.get(id);
       const parent = byId.get(child?.parent);
-      return child && parent?.epic && passesView(child) && passesView(parent);
+      return child && parent?.epic && passesView(child) && passesView(parent)
+        && boardColumns.has(parent.status) && !nested.has(parent.id);
     })
   );
   boardEl.innerHTML = '';

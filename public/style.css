@@ -279,6 +279,7 @@ body.viewer .col-edit { display: none; }
 
 /* ── epic card: child progress + expand/collapse toggle ── */
 .card-epic { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.card-epic[hidden] { display: none; }
 .epic-progress {
   flex: 1; height: 4px; border-radius: 2px; overflow: hidden;
   background: var(--line);
