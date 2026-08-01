@@ -107,6 +107,30 @@ test('stage routing precedence: a column agent gates the queue; a card agent ove
   clearFakeAgent();
 });
 
+test('Verify column routing stays independent from a card Build-agent override', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  process.env.FAKE_CODEX_REQUIRE_STRICT_SCHEMA = '1';
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+
+  await setStageRouting(repo, 'Verify', { agent: 'codex', model: 'gpt-test', effort: 'high' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  await patchFrontmatter(repo, 'task-0001', { agent: 'claude', model: 'claude-build-model', effort: 'xhigh' });
+
+  try {
+    const r = await pipeline.humanMove(p, 'task-0001', 'Queue');
+    assert.equal(r.ok, true);
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    assert.equal(readCard(repo, 'task-0001').data.session_id, 'fake-codex-session',
+      'the explicit Verify route ran Codex despite the card-level Claude Build override');
+  } finally {
+    clearFakeAgent();
+  }
+});
+
 test('verification loop: fail then pass on retry → Done', async () => {
   isolateHome();
   // build writes wrong code first; we flip the verdict after the first verify
@@ -1138,7 +1162,7 @@ test('Codex Verify infrastructure failures retain diagnostics and Retry Verifica
   const p = project(repo);
   await setStageRouting(repo, 'Verify', { agent: 'codex' });
   writeCard(repo, 'task-0001', { status: 'Planned' });
-  await patchFrontmatter(repo, 'task-0001', { agent: '' });
+  await patchFrontmatter(repo, 'task-0001', { agent: 'claude' });
 
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');

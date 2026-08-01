@@ -128,21 +128,24 @@ async function orchMove(project, id, to, reason) {
 
 const SUPPORTED_VENDORS = new Set(['claude', 'codex']);
 
-// Override precedence is card → column → board: a card's own `agent`/`model`
-// wins; else the stage column's (`stages.<col>.agent|model`); else the board
-// default (`default_agent` / `default_model`). Pass the stage so the column
-// level resolves; omit it (e.g. triage) to fall straight through to the board.
+// Override precedence is normally card → column → board. Verify is the one
+// deliberate exception: an explicitly routed Verify column owns its provider
+// so a card's Build agent cannot silently replace independent quality control.
 function cardVendor(config, card, stageName) {
   const stageAgent = stageName && (config.stages || {})[stageName]?.agent;
+  if (stageName === 'Verify' && stageAgent) return stageAgent;
   return card?.data?.agent || stageAgent || config.default_agent || 'claude';
 }
 
 function stageConfig(config, stageName, card) {
   const stage = (config.stages || {})[stageName] || {};
+  const independentVerify = stageName === 'Verify' && !!stage.agent;
   return {
     command: stage.command || `todomd-${stageName.toLowerCase()}`,
-    model: card?.data?.model || stage.model || config.default_model,
-    effort: card?.data?.effort || stage.effort || config.default_effort,
+    // A model selected for the card's Build provider may be invalid for the
+    // independent verifier. Prefer Verify's own routing (or provider default).
+    model: independentVerify ? (stage.model || undefined) : (card?.data?.model || stage.model || config.default_model),
+    effort: independentVerify ? (stage.effort || config.default_effort) : (card?.data?.effort || stage.effort || config.default_effort),
     workflow: card?.data?.workflow || stage.workflow || '',
     // Zero deliberately means "let the provider choose its per-session cap".
     // Build continuations below still turn a provider cap into a checkpoint.
