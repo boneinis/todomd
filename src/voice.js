@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { loadBoard, loadConfig, readCard, withRepoLock } from './board.js';
 import {
   humanMove, cancel, resumeBuild, restartBuild, retryVerification, archiveCard,
-  recoveryActions, getRunStates, approvalEligibility,
+  recoveryActions, getRunStates, getRunGeneration, approvalEligibility,
 } from './pipeline.js';
 
 // Spoken summaries stay short even on a busy board — list at most this many
@@ -138,6 +138,7 @@ function computeEffects(project, card) {
     cascadeChildren,
     blockedDependencies,
     cardRevision: cardRevision(project, card),
+    runGeneration: getRunGeneration(project.name, id),
     worktree: !!card.data.worktree,
     budget: mode === 'budget',
   };
@@ -160,6 +161,7 @@ function fingerprint(card, fx) {
   return [
     `card:${cardDigest}`,
     `revision:${fx.cardRevision || '(uncommitted)'}`,
+    `run-generation:${fx.runGeneration}`,
     card.data.status || '(none)',
     card.data.archived ? 'archived' : 'active',
     fx.runState ? `run:${fx.runState.state}:${fx.runState.stage}:${fx.runState.external ? 'external' : 'local'}` : 'no-run',

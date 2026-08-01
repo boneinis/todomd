@@ -735,7 +735,7 @@ test('a queued Build cannot be retriaged under reversible voice confirmation', a
   }
 });
 
-test('a cancel proposal becomes stale when its queued run is canceled and replaced', async () => {
+test('a cancel proposal becomes stale when its queued run is replaced without a Git commit', async () => {
   isolateHome();
   const marker = path.join(tmp('voice-queue-aba'), 'started');
   useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
@@ -744,6 +744,7 @@ test('a cancel proposal becomes stale when its queued run is canceled and replac
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Planned' });
   writeCard(repo, 'task-0002', { status: 'Planned' });
+  const mergeHead = path.join(repo, '.git', 'MERGE_HEAD');
 
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');
@@ -754,9 +755,16 @@ test('a cancel proposal becomes stale when its queued run is canceled and replac
     assert.equal(prepared.status, 200);
     assert.equal(prepared.confirmation.tier, 'visible');
 
+    // Simulate a repository mid merge/rebase. Board moves intentionally still
+    // mutate in this state but their commits are refused, so card bytes and the
+    // latest card commit both return to their original values after this ABA
+    // cycle. The queue claim generation must be what makes the proposal stale.
+    fs.writeFileSync(mergeHead, 'synthetic\n');
     assert.equal((await pipeline.cancel(p, 'task-0002')).ok, true);
     assert.equal(status(repo, 'task-0002'), 'Planned');
-    assert.equal((await pipeline.humanMove(p, 'task-0002', 'Queue')).ok, true);
+    const replacement = await pipeline.humanMove(p, 'task-0002', 'Queue');
+    assert.equal(replacement.ok, true);
+    assert.match(replacement.warning, /not committed/);
     assert.equal(status(repo, 'task-0002'), 'Queue');
 
     const confirmed = await voice.confirmVoiceAction(p, prepared.proposalId, { visibleApproval: true });
@@ -765,6 +773,7 @@ test('a cancel proposal becomes stale when its queued run is canceled and replac
     assert.equal(status(repo, 'task-0002'), 'Queue');
     assert.deepEqual(pipeline.getRunStates(p.name)['task-0002'], { state: 'queued', stage: 'Build' });
   } finally {
+    fs.rmSync(mergeHead, { force: true });
     await pipeline.cancel(p, 'task-0002');
     pipeline.cancel(p, 'task-0001');
     await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });

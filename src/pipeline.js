@@ -59,6 +59,12 @@ const finalizationWaiters = new WeakMap(); // retained trigger run → completio
 // verify done → merge) so hasLiveRun/cancel/humanMove never see a false "idle".
 const pending = new Map();
 const queues = new Map();            // project name → [cardId]
+// Exact identity of the latest run/queue claim for a card. This advances in
+// memory before work starts, so cancel-and-requeue cannot recreate an earlier
+// identity even when Git is temporarily unable to commit the card transitions.
+// Voice proposals use it only for stale detection; it grants no capability.
+const runGenerations = new Map();     // runKey → { project, card, generation }
+let nextRunGeneration = 0;
 const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
@@ -69,6 +75,16 @@ function saveRetryFindings(project, id, findings) {
   const key = runKey(project.name, id);
   if (findings) retryFindings.set(key, { project: project.name, card: id, findings });
   else retryFindings.delete(key);
+}
+
+function bumpRunGeneration(projectName, id) {
+  const generation = ++nextRunGeneration;
+  runGenerations.set(runKey(projectName, id), { project: projectName, card: id, generation });
+  return generation;
+}
+
+export function getRunGeneration(projectName, id) {
+  return runGenerations.get(runKey(projectName, id))?.generation || 0;
 }
 
 // On a usage limit the card is parked back in Queue with its attempt rolled
@@ -496,6 +512,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
       finishTracking: () => {},
     });
   }
+  bumpRunGeneration(project.name, id);
   let run;
   let observedSession = null;
   const saveSession = (sessionId) => {
@@ -1126,6 +1143,7 @@ function enqueueBuild(project, id) {
   const q = queues.get(project.name);
   // dedupe: a concurrent double-approval or re-approval must not queue twice
   if (q.includes(id) || children.has(runKey(project.name, id))) return;
+  bumpRunGeneration(project.name, id);
   q.push(id);
   sendState(project, id, 'queued', 'Build');
   // Voice confirmation can enqueue while holding the repository transaction.
@@ -1657,6 +1675,7 @@ export async function maybeTriage(project, id) {
   const done = new Promise((resolve) => { resolveClaim = resolve; });
   const claim = { project: project.name, card: id, cancelled: false, done, resolve: resolveClaim };
   triaging.set(key, claim); // claimed before any await — no two concurrent calls proceed
+  bumpRunGeneration(project.name, id);
 
   try {
     const config = await execConfig(project.path);
@@ -1987,6 +2006,7 @@ export function forgetProject(projectName) {
   for (const [k, entry] of recoveryBuilds) if (entry.project === projectName) recoveryBuilds.delete(k);
   for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
   for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);
+  for (const [k, entry] of runGenerations) if (entry.project === projectName) runGenerations.delete(k);
 }
 
 export function usage(projectName) {
