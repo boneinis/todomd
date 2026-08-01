@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbabb-1d2b-71f2-bdf0-d92c67554d0e
+session_id: 019fbac3-3af2-7151-941f-a7ec1e3a3863
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -124,3 +124,7 @@ For more information, try '--help'.
 - 2026-08-01 00:36Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: 1. Official `npm test` fails: 211/212 core tests passed, but `test/intake.test.js:18` still expects the HTML-only placeholder while `src/intake.js:185-187` now returns readable HTML text. Reconcile/update this regression test. Separate UI tests passed 2/2.
 2. Exact-once auditing is broken for supported `markSeen:false` mailboxes. `src/intake.js:287-303` deduplicates only by an in-memory Message-ID
+- 2026-08-01 00:44Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 3)
+  - attempts_exhausted: The unsandboxed `npm test` passed all 214 core and 2 UI tests, but adversarial review found reachable defects:
+
+1. `src/screen.js:19` does not recognize the common bare footer phrase “View in browser.” A plain-text marketing message containing that exact phrase, with a human-looking sender, was reproduced as `work` with no signals, so it enters Review and triggers triage. Expand `FOOTER_RE` and ad
