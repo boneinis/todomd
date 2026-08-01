@@ -1,7 +1,7 @@
 ---
 id: task-0025
 title: Apply the screen to the push API and surface screened mail
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 3/3 of task-0022)
-session_id: ece72499-23fc-4bd7-82bb-ec475695d341
+session_id: 9bb8d13b-8d34-4c6c-a154-f9eba38e8a4a
 worktree: todomd/task-0025
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 9.4887
+needs_human_reason: bad_verdict
+recovery_stage:
 ---
 
 ## Description
@@ -57,3 +59,5 @@ real assertion.
 ## Run Log
 - 2026-08-01 04:12Z · Build attempt 1 · 101 turns · $6.683 · checkpoint 1: progress detected; continuing
 - 2026-08-01 04:16Z · Build attempt 1 · 21 turns · $2.806 · ok
+- 2026-08-01 04:16Z · Verify attempt 1 · malformed verdict, re-running once
+- 2026-08-01 04:16Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
