@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
-session_id: 019fbfb7-3bf5-7d10-bfba-e8e3bbbadcec
+session_id: 019fbfbe-b724-7121-a2e7-65fbe8df4e60
 worktree: todomd/task-0037
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 28.5062
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -74,3 +74,7 @@ local speech or provider configuration is unavailable.
   - attempts_exhausted: `npm test` passed: 413 unit/API tests and 12 browser tests. However, adversarial review found three reachable bugs:
 
 1. Fresh supported Chrome profiles cannot install a downloadable language pack. The `install:false` probe reports `supported:false` for `downloadable`, and [main.js](/Users/irvinbowman/web%20dev/TODOMD/.todomd/worktrees/task-0037/public/voice/main.js:110) hides the Arm button. That 
+- 2026-08-01 23:58Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: The configured `npm test` passed with normal listener/process permissions: 414 core/API tests and 14 browser tests. `git diff --check main...HEAD` also passed. Adversarial review found three reachable defects:
+
+1. Startup race: `public/app.js:109` emits the one-shot `todomd:context` event after asynchronous board loading, while `public/voice/main.js:91` registers its listener only after the voice 
