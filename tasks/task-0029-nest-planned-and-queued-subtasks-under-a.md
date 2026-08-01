@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
