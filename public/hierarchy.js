@@ -83,10 +83,10 @@
   // must still render as a full card or it vanishes from the board entirely.
   function nestedChildIds(cards, config) {
     const list = Array.isArray(cards) ? cards : [];
-    const byId = new Set(list.filter((c) => c && c.id).map((c) => c.id));
+    const byId = new Map(list.filter((c) => c && c.id).map((c) => [c.id, c]));
     const nested = new Set();
     for (const c of list) {
-      if (!c || !c.parent || !byId.has(c.parent)) continue;
+      if (!c || !c.parent || !byId.get(c.parent)?.epic) continue;
       if (isExecutionColumn(c.status, config)) continue;
       nested.add(c.id);
     }

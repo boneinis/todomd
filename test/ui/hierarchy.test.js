@@ -136,8 +136,36 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
       'the filtered-in child renders as its own full card');
     assert.equal(await page.eval(`!!document.querySelector('.card[data-id="task-0001"]')`), false,
       'the non-matching epic parent is hidden by the filter, as any other non-matching card would be');
+
+    // If only the parent matches, nonmatching children stay hidden rather than
+    // leaking through as nested rows.
+    await page.eval(`document.getElementById('filter').value = 'sequential';
+      document.getElementById('filter').dispatchEvent(new Event('input'))`);
+    assert.equal(await page.eval(`document.querySelectorAll('.subtask-row').length`), 0,
+      'a parent-only filter match does not expose nonmatching child rows');
     await page.eval(`document.getElementById('filter').value = '';
       document.getElementById('filter').dispatchEvent(new Event('input'))`);
+
+    // Hostile hand-edited metadata: a parent link to a normal card must not
+    // make the child disappear merely because the referenced card exists.
+    await page.eval(`boardData.cards.push(
+      { id: 'task-0090', status: 'Queue', title: 'Ordinary parent' },
+      { id: 'task-0091', status: 'Planned', title: 'Child of ordinary card', parent: 'task-0090' }
+    ); renderBoard()`);
+    assert.equal(await page.eval(`!!document.querySelector('.card[data-id="task-0091"]')`), true,
+      'a child of a non-epic parent remains a full card');
+
+    // Archived-only view must not leak an active child through an archived
+    // epic. Both parent and child have to pass the current view predicate.
+    await page.eval(`boardData.cards.push(
+      { id: 'task-0092', status: 'Queue', title: 'Archived epic', epic: true, archived: true },
+      { id: 'task-0093', status: 'Planned', title: 'Active child', parent: 'task-0092', archived: false }
+    ); showArchived = true; renderBoard()`);
+    assert.equal(await page.eval(`!!document.querySelector('.card[data-id="task-0092"]')`), true);
+    assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0092"] .subtask-row[data-id="task-0093"]')`), false,
+      'archived-only view does not expose an active child as a nested row');
+    assert.equal(await page.eval(`!!document.querySelector('.card[data-id="task-0093"]')`), false,
+      'archived-only view does not expose an active child as a full card either');
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
   }

@@ -139,6 +139,14 @@ test('nestedChildIds: a child whose parent is missing from the board renders ful
   assert.equal(nested.has('orphan'), false);
 });
 
+test('nestedChildIds: a child pointing at a non-epic parent renders full, never vanishes', () => {
+  const cards = [
+    { id: 'ordinary-parent', status: 'Queue' },
+    { id: 'child', parent: 'ordinary-parent', status: 'Planned' },
+  ];
+  assert.equal(H.nestedChildIds(cards, STAGE_CONFIG).has('child'), false);
+});
+
 test('hostile board fixture (mirrors test/ui/ui-smoke.test.js hostileBoard): no throw, sane values', () => {
   const cards = [
     { id: 'task-0002', status: 'Queue', labels: { a: 1 } },

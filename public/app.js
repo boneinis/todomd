@@ -203,8 +203,9 @@ function renderBoard() {
   const nested = TodomdHierarchy.nestedChildIds(boardData.cards, boardData.config);
   const shownNested = new Set(
     [...nested].filter((id) => {
-      const parent = byId.get(byId.get(id)?.parent);
-      return parent && passesView(parent);
+      const child = byId.get(id);
+      const parent = byId.get(child?.parent);
+      return child && parent?.epic && passesView(child) && passesView(parent);
     })
   );
   boardEl.innerHTML = '';
