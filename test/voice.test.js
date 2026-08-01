@@ -35,6 +35,11 @@ test('allowlist: unknown or disallowed actions are refused, and delete is never 
   // an invalid card id is rejected before any file lookup
   const bad = await voice.prepareVoiceAction(p, { cardId: '../../etc/passwd', action: 'retriage' });
   assert.equal(bad.status, 400);
+
+  assert.equal((await voice.prepareVoiceAction(p, null)).status, 400);
+  const inherited = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'toString' });
+  assert.equal(inherited.status, 400);
+  assert.match(inherited.error, /unknown or disallowed/);
 });
 
 test('read-only summary and card status are deterministic and surface Needs Human + active runs', async () => {
@@ -698,6 +703,34 @@ test('stale detection covers every input the policy was derived from, not just t
   assert.equal(r.status, 409);
   assert.match(r.error, /stale/);
   assert.equal(status(repo, 'task-0003'), 'Planned', 'the child was never cascaded');
+
+  // (3) approval eligibility changes when a dependency stops being Done.
+  writeCard(repo, 'task-0004', { status: 'Planned', deps: ['task-0005'] });
+  writeCard(repo, 'task-0005', { status: 'Done' });
+  prep = await voice.prepareVoiceAction(p, { cardId: 'task-0004', action: 'approve' });
+  assert.equal(prep.status, 200);
+  await patchFrontmatter(repo, 'task-0005', { status: 'Review' });
+  r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: prep.confirmation.challenge });
+  assert.equal(r.status, 409);
+  assert.match(r.error, /stale/);
+  assert.equal(status(repo, 'task-0004'), 'Planned');
+});
+
+test('confirm revalidation and mutation are atomic with concurrent board writes', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Build' });
+  const prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+
+  const confirm = voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
+  // This writer queues behind the confirmation transaction. It must land after
+  // the confirmed Review move, never be overwritten by a stale confirm.
+  const concurrent = patchFrontmatter(repo, 'task-0001', { status: 'Needs Human' });
+  const [confirmed] = await Promise.all([confirm, concurrent]);
+  assert.equal(confirmed.status, 200);
+  assert.equal(status(repo, 'task-0001'), 'Needs Human');
 });
 
 test('a run that goes live between prepare and confirm makes the proposal stale, not destructive', async () => {

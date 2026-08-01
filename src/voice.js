@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { loadBoard, loadConfig, readCard } from './board.js';
+import { loadBoard, loadConfig, readCard, withRepoLock } from './board.js';
 import {
   humanMove, cancel, resumeBuild, restartBuild, retryVerification, archiveCard,
   recoveryActions, getRunStates, hasLiveRun,
@@ -42,6 +42,10 @@ function argumentless(fields) {
   return { ok: true, value: {} };
 }
 
+function requestObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 // What an action would ACTUALLY do to this card, right now.
 //
 // The guarded operations behind the allowlist are state-polymorphic: the single
@@ -57,11 +61,14 @@ function computeEffects(project, card) {
   // spawned child AND a chain claimed between spawns
   const live = hasLiveRun(project.name, id);
   // mirrors cascadeEpicCleanup's own filter (active, non-Done, non-epic children)
-  let cascadeChildren = 0;
-  if (card.data.epic) {
-    cascadeChildren = loadBoard(project.path).cards
-      .filter((c) => c.parent === id && c.status !== 'Done' && !c.epic).length;
-  }
+  const board = loadBoard(project.path, { includeArchived: true });
+  const cascadeChildren = card.data.epic
+    ? board.cards.filter((c) => c.parent === id && c.status !== 'Done' && !c.epic && !c.archived).length
+    : 0;
+  const dependencies = Array.isArray(card.data.dependencies) ? card.data.dependencies : [];
+  const blockedDependencies = dependencies
+    .filter((dep) => board.cards.find((c) => c.id === dep)?.status !== 'Done')
+    .sort();
   let mode = 'launcher';
   try { mode = loadConfig(project.path).mode || 'launcher'; } catch { /* unreadable config reads as the default */ }
   return {
@@ -70,6 +77,7 @@ function computeEffects(project, card) {
     runState: getRunStates(project.name)[id] || null,
     epic: !!card.data.epic,
     cascadeChildren,
+    blockedDependencies,
     worktree: !!card.data.worktree,
     budget: mode === 'budget',
   };
@@ -87,6 +95,7 @@ function fingerprint(card, fx) {
     fx.live ? 'live' : 'idle',
     fx.worktree ? 'worktree' : 'no-worktree',
     `children:${fx.cascadeChildren}`,
+    `blocked:${fx.blockedDependencies.join(',')}`,
     fx.budget ? 'budget' : 'launcher',
   ].join(' ');
 }
@@ -162,8 +171,11 @@ const ALLOWED_ACTIONS = {
     // epic approvals and leaves them to the visible board UI.
     eligible: (card, project, fx) => (card.data.epic
       ? (notEpicCascade(card, fx) || { ok: false, error: 'epic approvals are not available by voice' })
-      : (card.data.status === 'Planned'
-        ? { ok: true } : { ok: false, error: `${card.data.id} is not in Planned` })),
+      : (card.data.status !== 'Planned'
+        ? { ok: false, error: `${card.data.id} is not in Planned` }
+        : (fx.blockedDependencies.length
+          ? { ok: false, error: `blocked by: ${fx.blockedDependencies.join(', ')}` }
+          : { ok: true }))),
     execute: (project, id) => humanMove(project, id, 'Queue'),
   },
   retry_planned: {
@@ -361,12 +373,13 @@ export async function buildCardStatus(project, cardId) {
 // what makes the ambiguity check race-free rather than merely a best effort.
 export async function prepareVoiceAction(project, fields = {}) {
   pruneExpired();
+  if (!requestObject(fields)) return { status: 400, ok: false, error: 'request body must be a JSON object' };
   const requestedCardId = String(fields.cardId || '');
   const action = String(fields.action || '');
   const normalizedArguments = argumentless(fields);
   if (!normalizedArguments.ok) return { status: 400, ok: false, error: normalizedArguments.error };
   if (!CARD_ID.test(requestedCardId)) return { status: 400, ok: false, error: 'invalid card id' };
-  const def = ALLOWED_ACTIONS[action];
+  const def = Object.hasOwn(ALLOWED_ACTIONS, action) ? ALLOWED_ACTIONS[action] : null;
   if (!def) return { status: 400, ok: false, error: `unknown or disallowed voice action: ${action}` };
   const card = readCard(project.path, requestedCardId);
   if (!card) return { status: 404, ok: false, error: `card not found: ${requestedCardId}` };
@@ -425,6 +438,7 @@ export async function prepareVoiceAction(project, fields = {}) {
 // consumed before the guarded operation runs, so a slow or failing execute
 // still can't be replayed).
 export async function confirmVoiceAction(project, proposalId, body = {}) {
+  if (!requestObject(body)) return { status: 400, ok: false, error: 'request body must be a JSON object' };
   const found = getProposal(proposalId);
   if (!found.ok) {
     return found.reason === 'expired'
@@ -441,24 +455,45 @@ export async function confirmVoiceAction(project, proposalId, body = {}) {
   const phrase = checkPhrase(p, body);
   if (!phrase.ok) return { status: 400, ok: false, error: phrase.error };
 
-  // Consume now that the confirmation itself checks out — a concurrent or
-  // replayed confirm loses the race here and gets "already used", never a
-  // second execution.
-  if (!proposals.delete(proposalId)) return { status: 409, ok: false, error: 'proposal already used' };
+  // Revalidation + eligibility + consumption + mutation are one repository
+  // transaction. Every board writer uses this same cross-process lock, and its
+  // reentrant in-process layer lets the guarded pipeline operation call its
+  // normal board helpers without deadlocking.
+  return withRepoLock(project.path, async () => {
+    const current = getProposal(proposalId);
+    if (!current.ok) {
+      return current.reason === 'expired'
+        ? { status: 410, ok: false, error: 'proposal expired' }
+        : { status: 404, ok: false, error: 'no such pending proposal' };
+    }
+    if (current.proposal !== p) return { status: 409, ok: false, error: 'proposal already used' };
 
-  const card = readCard(project.path, p.cardId);
-  if (!card || fingerprint(card, computeEffects(project, card)) !== p.expectedFingerprint) {
-    return { status: 409, ok: false, error: `stale: ${p.cardId} changed since this action was prepared` };
-  }
+    const card = readCard(project.path, p.cardId);
+    const effects = card ? computeEffects(project, card) : null;
+    if (!card || fingerprint(card, effects) !== p.expectedFingerprint) {
+      proposals.delete(proposalId);
+      return { status: 409, ok: false, error: `stale: ${p.cardId} changed since this action was prepared` };
+    }
 
-  const def = ALLOWED_ACTIONS[p.action];
-  const result = await def.execute(project, p.cardId, card);
-  // status last: it must win over anything (unexpectedly) named `status` in a
-  // guarded function's own result — the HTTP status code is never negotiable.
-  return { ...result, proposalId, action: p.action, cardId: p.cardId, status: result.ok ? 200 : 400 };
+    const def = ALLOWED_ACTIONS[p.action];
+    const eligible = await def.eligible(card, project, effects);
+    if (!eligible.ok) {
+      proposals.delete(proposalId);
+      return { status: 409, ok: false, error: `stale: ${eligible.error}` };
+    }
+
+    // Consume only after the locked live checks pass. A concurrent or replayed
+    // confirm then loses on getProposal above and can never execute twice.
+    if (!proposals.delete(proposalId)) return { status: 409, ok: false, error: 'proposal already used' };
+    const result = await def.execute(project, p.cardId, card);
+    // status last: it must win over anything (unexpectedly) named `status` in a
+    // guarded function's own result — the HTTP status code is never negotiable.
+    return { ...result, proposalId, action: p.action, cardId: p.cardId, status: result.ok ? 200 : 400 };
+  });
 }
 
 export function rejectVoiceAction(project, proposalId, body = {}) {
+  if (!requestObject(body)) return { status: 400, ok: false, error: 'request body must be a JSON object' };
   const found = getProposal(proposalId);
   if (!found.ok) {
     return found.reason === 'expired'

@@ -130,6 +130,22 @@ test('full prepare → confirm round trip over HTTP moves the card exactly once'
   } finally { srv.close(); }
 });
 
+test('voice action routes reject null and prototype-property actions without HTTP 500', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Build' });
+    let r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: 'null' });
+    assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/voice/actions${q}`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ cardId: 'task-0001', action: 'toString' }),
+    });
+    assert.equal(r.status, 400);
+  } finally { srv.close(); }
+});
+
 test('reject endpoint over HTTP: consumes the proposal, never executes it', async () => {
   isolateHome();
   const { repo, base, srv, q } = await boot();

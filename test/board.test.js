@@ -4,7 +4,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks } from '../src/board.js';
+import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks, withRepoLock } from '../src/board.js';
+
+test('withRepoLock is reentrant for a guarded operation that uses board helpers', async () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001');
+  const result = await withRepoLock(repo, async () => {
+    await patchFrontmatter(repo, 'task-0001', { priority: 'high' });
+    return moveCard(repo, 'task-0001', 'Plan');
+  });
+  assert.equal(result.ok, true);
+  assert.equal(readCard(repo, 'task-0001').data.priority, 'high');
+  assert.equal(readCard(repo, 'task-0001').data.status, 'Plan');
+});
 
 test('loadBoard parses cards and criteria progress', () => {
   const repo = makeRepo();

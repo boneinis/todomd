@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
@@ -316,6 +317,7 @@ function setStatusInFrontmatter(raw, newStatus) {
 // One write at a time per repo: a human drag and (in phase 2) an agent-run
 // transition must never interleave read-modify-write on the same files.
 const repoLocks = new Map();
+const heldRepoLocks = new AsyncLocalStorage();
 // exported so coordination's ACTIVE.md read-modify-write-commit serializes with
 // board writes/commits on the same repo (no git-index race, no lost update).
 // Two layers: an in-process promise chain (cheap, serializes this process's
@@ -323,10 +325,22 @@ const repoLocks = new Map();
 // processes — a second server, or a budget-mode dispatch session committing via
 // its own shell git). The dispatch command grabs the same on-disk lock.
 export function withRepoLock(repoPath, fn) {
-  const guarded = () => withFileLock(repoPath, fn);
-  const prev = repoLocks.get(repoPath) || Promise.resolve();
+  const key = path.resolve(repoPath);
+  const held = heldRepoLocks.getStore();
+  // A voice confirmation holds this lock across revalidation and its guarded
+  // operation. Board helpers called by that operation acquire the same lock;
+  // treat those nested calls as part of the existing transaction instead of
+  // queueing behind ourselves forever.
+  if (held?.has(key)) return Promise.resolve().then(fn);
+
+  const guarded = () => withFileLock(key, () => {
+    const nextHeld = new Set(held || []);
+    nextHeld.add(key);
+    return heldRepoLocks.run(nextHeld, fn);
+  });
+  const prev = repoLocks.get(key) || Promise.resolve();
   const next = prev.then(guarded, guarded);
-  repoLocks.set(repoPath, next.then(() => {}, () => {}));
+  repoLocks.set(key, next.then(() => {}, () => {}));
   return next;
 }
 
