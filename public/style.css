@@ -302,6 +302,7 @@ body.viewer .col-edit { display: none; }
   cursor: pointer;
 }
 .subtask-row:hover { border-left-color: var(--accent); }
+.subtask-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-left-color: var(--accent); }
 .subtask-title {
   flex: 1; min-width: 0; font-size: 11.5px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -317,7 +318,10 @@ body.viewer .col-edit { display: none; }
   font-size: 7.5px; font-weight: 600;
   display: inline-flex; align-items: center; justify-content: center;
 }
-.subtask-assignee:empty { display: none; }
+.subtask-assignee.unassigned {
+  width: auto; height: auto; border-radius: 0; background: none; color: var(--faint);
+  font-size: 9px; font-family: var(--mono); font-weight: 400;
+}
 
 .col-empty {
   margin: 12px 10px; color: var(--faint);
@@ -325,17 +329,27 @@ body.viewer .col-edit { display: none; }
 }
 
 /* ── drawer ── */
+.drawer-backdrop {
+  position: fixed; inset: 0; z-index: 59;
+  display: flex; align-items: center; justify-content: center;
+  padding: clamp(16px, 4vw, 52px);
+  background: rgb(0 0 0 / .28);
+  backdrop-filter: blur(1px);
+}
+.drawer-backdrop[hidden] { display: none; }
 .drawer {
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(620px, 94vw);
+  position: relative; width: min(760px, calc(100vw - 32px));
+  max-height: min(88dvh, 900px);
   background: var(--panel);
-  border-left: 1px solid var(--line);
+  border: 1px solid var(--line); border-radius: var(--r-card);
   box-shadow: var(--shadow-pop);
   padding: 18px 22px;
   z-index: 60;
-  animation: slide .22s ease;
+  animation: modal-in .18s ease;
   display: flex; flex-direction: column;
+  box-sizing: border-box;
 }
-@keyframes slide { from { transform: translateX(30px); opacity: 0; } }
+@keyframes modal-in { from { transform: translateY(10px) scale(.985); opacity: 0; } }
 
 .drawer-head { display: flex; justify-content: space-between; align-items: center; flex: none; }
 .drawer-close {
@@ -701,7 +715,8 @@ body.viewer .drawer-question { display: none; }
     scroll-snap-type: x mandatory;
   }
   .column { flex: 0 0 86vw; scroll-snap-align: start; }
-  .drawer { width: 100vw; padding: 16px 16px 28px; overflow-y: auto; }
+  .drawer-backdrop { padding: 0; align-items: stretch; }
+  .drawer { width: 100vw; max-height: 100dvh; height: 100dvh; padding: 16px 16px 28px; overflow-y: auto; border: 0; border-radius: 0; }
   .drawer-cols { flex-direction: column; height: auto; }
   .drawer-main { height: auto; overflow-y: visible; }
   .drawer-rail { flex: none; width: 100%; position: static; margin-top: 8px; max-height: none; overflow-y: visible; }

@@ -275,14 +275,22 @@ function initials(name) {
 function renderSubtaskRow(kid) {
   const el = $('#subtask-row-tpl').content.firstElementChild.cloneNode(true);
   el.dataset.id = kid.id;
+  el.tabIndex = 0;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', `open ${kid.title || kid.id}`);
   el.querySelector('.subtask-title').textContent = kid.title || kid.id;
   el.querySelector('.subtask-status').textContent = kid.status || '';
   const dep = el.querySelector('.subtask-dep');
   const { blocked, waitingOn } = TodomdHierarchy.dependencyState(kid, boardData.cards);
-  dep.textContent = blocked ? `🔒 waiting on ${waitingOn[0].id}` : '';
+  dep.textContent = blocked ? `🔒 waiting on ${waitingOn.map((item) => item.id).join(', ')}` : 'ready';
   const av = el.querySelector('.subtask-assignee');
   if (kid.assignee) { av.textContent = initials(kid.assignee); av.title = `@${kid.assignee}`; }
-  el.addEventListener('click', (e) => { e.stopPropagation(); openDrawer(kid.id); });
+  else { av.textContent = 'unassigned'; av.classList.add('unassigned'); }
+  const open = (e) => { e.stopPropagation(); openDrawer(kid.id); };
+  el.addEventListener('click', open);
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); }
+  });
   return el;
 }
 
@@ -437,6 +445,34 @@ function splitChunksSection(body) {
 
 /* ── drawer tabs: Details / Subtasks (epics only) ── */
 let drawerTab = 'details';
+let drawerReturnFocus = null;
+const drawerEl = $('#drawer');
+const drawerBackdropEl = $('#drawer-backdrop');
+const drawerBackground = [document.querySelector('.topbar'), $('#banners'), boardEl].filter(Boolean);
+
+function drawerFocusable() {
+  return [...drawerEl.querySelectorAll('button, [href], input, select, textarea, details > summary, [tabindex]')]
+    .filter((el) => !el.disabled && el.tabIndex !== -1 && !el.closest('[hidden]'));
+}
+
+function showDrawer() {
+  if (drawerEl.hidden) drawerReturnFocus = document.activeElement;
+  drawerBackdropEl.hidden = false;
+  drawerEl.hidden = false;
+  drawerBackground.forEach((el) => { el.inert = true; });
+  requestAnimationFrame(() => $('#drawer-close').focus());
+}
+
+function closeDrawer() {
+  drawerEl.hidden = true;
+  drawerBackdropEl.hidden = true;
+  drawerBackground.forEach((el) => { el.inert = false; });
+  drawerCard = null;
+  const target = drawerReturnFocus;
+  drawerReturnFocus = null;
+  if (target?.isConnected) target.focus();
+}
+
 function setDrawerTab(tab) {
   drawerTab = tab;
   $('#drawer-details').hidden = tab !== 'details';
@@ -543,7 +579,7 @@ async function openDrawer(id) {
   const q = card.data.question;
   $('#drawer-question').hidden = !q;
   if (q) { $('#question-text').textContent = q; $('#answer-input').value = ''; }
-  $('#drawer').hidden = false;
+  showDrawer();
 }
 
 $('#drawer-rel').addEventListener('click', (e) => {
@@ -566,7 +602,7 @@ $('#answer-submit').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'failed');
     toast('answered — resuming the build');
-    $('#drawer').hidden = true;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -590,7 +626,7 @@ $('#drawer-archive').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'failed');
     toast(archiving ? 'archived' : 'restored');
-    $('#drawer').hidden = true;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -611,7 +647,7 @@ $('#drawer-delete').addEventListener('click', async () => {
     if (!res.ok) { resetDeleteBtn(); return toast(out.error || 'delete failed'); }
     toast('deleted');
     resetDeleteBtn();
-    $('#drawer').hidden = true;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -627,7 +663,7 @@ $('#move-apply').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'move failed');
     toast(out.warning || `moved to ${$('#move-select').value}`);
-    $('#drawer').hidden = true;
+    closeDrawer();
     drawerCard = null;
     loadBoard();
   } catch {
@@ -676,7 +712,6 @@ async function uploadFiles(files) {
 }
 $('#drawer-attach').addEventListener('click', () => $('#attach-input').click());
 $('#attach-input').addEventListener('change', (e) => { uploadFiles(e.target.files); e.target.value = ''; });
-const drawerEl = $('#drawer');
 drawerEl.addEventListener('dragover', (e) => { e.preventDefault(); drawerEl.classList.add('drag-file'); });
 drawerEl.addEventListener('dragleave', () => drawerEl.classList.remove('drag-file'));
 drawerEl.addEventListener('drop', (e) => {
@@ -700,8 +735,21 @@ $('#drawer-body').addEventListener('click', async (e) => {
   } catch { toast('server unreachable'); }
 });
 
-$('#drawer-close').addEventListener('click', () => { $('#drawer').hidden = true; drawerCard = null; });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#drawer').hidden = true; drawerCard = null; } });
+$('#drawer-close').addEventListener('click', closeDrawer);
+drawerBackdropEl.addEventListener('click', (e) => { if (e.target === drawerBackdropEl) closeDrawer(); });
+document.addEventListener('keydown', (e) => {
+  if (drawerEl.hidden) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeDrawer(); return; }
+  if (e.key !== 'Tab') return;
+  const focusable = drawerFocusable();
+  if (!focusable.length) { e.preventDefault(); drawerEl.focus(); return; }
+  const first = focusable[0], last = focusable.at(-1);
+  if (e.shiftKey && (document.activeElement === first || !drawerEl.contains(document.activeElement))) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && (document.activeElement === last || !drawerEl.contains(document.activeElement))) {
+    e.preventDefault(); first.focus();
+  }
+});
 $('#drawer-cancel').addEventListener('click', async () => {
   if (!drawerCard) return;
   const res = await fetch(`/api/cards/${drawerCard}/cancel?project=${encodeURIComponent(currentProject)}`,
@@ -717,8 +765,7 @@ $('#drawer-retry-verify').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not retry verification');
     toast('verification retry started');
-    $('#drawer').hidden = true;
-    drawerCard = null;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -730,8 +777,7 @@ $('#drawer-resume-build').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not resume build');
     toast('build resumed in the preserved worktree');
-    $('#drawer').hidden = true;
-    drawerCard = null;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -743,8 +789,7 @@ $('#drawer-restart-build').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not restart build');
     toast('fresh build started');
-    $('#drawer').hidden = true;
-    drawerCard = null;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });

@@ -183,6 +183,21 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
       'an epic with a Chunks section shows the Planner record');
     assert.equal(await page.eval(`document.getElementById('drawer-planner').open`), false,
       'the Planner record is closed by default');
+    await new Promise((resolve) => setTimeout(resolve, 250)); // let the modal entrance transform settle
+    const modalGeometry = await page.eval(`(() => {
+      const r = document.getElementById('drawer').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2,
+        viewportX: innerWidth / 2, viewportY: innerHeight / 2 };
+    })()`);
+    assert.ok(Math.abs(modalGeometry.x - modalGeometry.viewportX) < 2,
+      `the card details surface is centered horizontally over visible board context: ${JSON.stringify(modalGeometry)}`);
+    assert.ok(Math.abs(modalGeometry.y - modalGeometry.viewportY) < 2,
+      `the card details surface is centered vertically over visible board context: ${JSON.stringify(modalGeometry)}`);
+    assert.equal(await page.eval(`document.getElementById('board').inert`), true,
+      'the board is inert while the modal is open');
+    await until(async () =>
+      (await page.eval(`document.activeElement === document.getElementById('drawer-close')`)) || null,
+    { timeout: BUDGET.quick });
     await page.eval(`document.getElementById('drawer-planner').open = true`);
     assert.match(
       await page.eval(`document.getElementById('drawer-planner-body').textContent`),
@@ -203,7 +218,16 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
     assert.match(
       await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"] .subtask-dep').textContent`),
       /waiting on task-0003/);
-    await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0004"]').click()`);
+    assert.equal(
+      await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0003"] .subtask-dep').textContent`),
+      'ready', 'an unblocked child shows an explicit dependency state');
+    assert.equal(
+      await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0003"] .subtask-assignee').textContent`),
+      'unassigned', 'a child without an assignee shows an explicit assignee state');
+    await page.eval(`(() => {
+      const row = document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0004"]');
+      row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    })()`);
     await until(async () =>
       (await page.eval(`document.getElementById('drawer-id').textContent === 'task-0004'`)) || null, { timeout: BUDGET.quick });
     assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /Gamma execution subtask/);
@@ -221,6 +245,11 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
     await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
     await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
     await page.setViewport(1200, 900);
+    const centeredWide = await page.eval(`(() => {
+      const r = document.getElementById('drawer').getBoundingClientRect();
+      return Math.abs(r.left + r.width / 2 - innerWidth / 2) < 2;
+    })()`);
+    assert.equal(centeredWide, true, 'the wide card details surface remains centered');
     assert.equal(
       await page.eval(`getComputedStyle(document.querySelector('.drawer-rail')).position`),
       'sticky', 'the rail is sticky alongside the details at a wide viewport');
@@ -232,7 +261,17 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
       await page.eval(`getComputedStyle(document.querySelector('.drawer-rail')).position`),
       'static', 'the rail stacks under the details instead of sticking to a collapsed column at a narrow viewport');
     await page.setViewport(1200, 900);
-    await page.eval(`document.getElementById('drawer-close').click()`);
+    // Escape closes the modal, removes the inert background, and restores focus.
+    await page.eval(`document.getElementById('filter').focus(); closeDrawer();
+      document.getElementById('filter').focus(); openDrawer('task-0001')`);
+    await until(async () =>
+      (await page.eval(`document.activeElement === document.getElementById('drawer-close')`)) || null,
+    { timeout: BUDGET.quick });
+    await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    assert.equal(await page.eval(`document.getElementById('drawer').hidden`), true);
+    assert.equal(await page.eval(`document.getElementById('board').inert`), false);
+    assert.equal(await page.eval(`document.activeElement === document.getElementById('filter')`), true,
+      'closing restores focus to the control that opened the modal');
 
     // Hostile hand-edited metadata: a parent link to a normal card must not
     // make the child disappear merely because the referenced card exists.
