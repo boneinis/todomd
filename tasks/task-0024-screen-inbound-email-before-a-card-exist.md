@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb6b-0e1c-73c0-aa7d-280d474e6381
+session_id: 019fbb70-1fc5-7913-a98f-75f6e7afb999
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -214,3 +214,7 @@ Reachable classifier defects remain:
   - attempts_exhausted: The configured `npm test` passed all 236 core tests and 2 UI tests, and `git diff --check main...HEAD` passed. However, a reachable classifier defect remains at `src/screen.js:17`: common explicit leave replies are missed when `leave` ends the sentence or is followed by punctuation. A parser-level message with body “Thank you for your message. I am currently on annual leave.” and an ordinary reply
 - 2026-08-01 03:47Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Official `npm test` passed: 236 core tests and 2 UI tests. However, `src/screen.js:17` has a reachable false positive: a parsed, detailed human bug report saying “I am on the annual leave screen and the Save button is disabled…” is classified `unclear` with signal `auto-reply`. `pollSource` consequently places it in Needs Human and suppresses triage. Narrow the leave regex by excluding product-con
+- 2026-08-01 03:52Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Official `npm test` passed with normal process/listener permissions: 236 core tests and 2 UI tests. `git diff --check main...HEAD` also passed. Two reachable defects remain:
+
+1. `src/screen.js:17` falsely treats actionable leave-related work as an auto-reply. A parsed message titled “Sick leave request rejected” with body “I am on sick leave, but the HR portal rejects my medical certificate with H
