@@ -117,6 +117,15 @@ export function screenEmail(parsed) {
 
   if (BOUNCE_ADDR_RE.test(fromAddr) || BOUNCE_SUBJECT_RE.test(subject)) unclear.push('bounce');
 
+  // A delivery-status notice or explicit auto-reply is automated by design,
+  // so Auto-Submitted commonly appears alongside it. Those explicit message
+  // types belong in Needs Human; do not let the generic automation signal drop
+  // them as spam. Keep every matched signal in the explanation for auditing.
+  if (unclear.includes('bounce') || unclear.includes('auto-reply')) {
+    const held = [...unclear, ...spamStrong, ...spamWeak];
+    return { verdict: 'unclear', reason: `Unclear whether this is real work (${describe(held)})`, signals: held };
+  }
+
   if (spamStrong.length || spamWeak.length >= 2) {
     const matched = [...spamStrong, ...spamWeak];
     return { verdict: 'spam', reason: `Looks like marketing/automated mail (${describe(matched)})`, signals: matched };

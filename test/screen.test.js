@@ -352,6 +352,25 @@ test('screenEmail: a List-Id newsletter parsed for real still reads as a bulk-ma
   assert.ok(r.signals.includes('esp-header'));
 });
 
+test('screenEmail: a parsed delivery-status bounce stays unclear despite Auto-Submitted', async () => {
+  const parsed = await simpleParser(rawEmail([
+    'From: Mail Delivery System <mailer-daemon@example.com>',
+    'To: sender@example.com',
+    'Subject: Delivery Status Notification (Failure)',
+    'Auto-Submitted: auto-generated',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Delivery to recipient@example.com failed permanently.',
+    '',
+  ]));
+
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'unclear');
+  assert.ok(r.signals.includes('bounce'));
+  assert.ok(r.signals.includes('auto-submitted-bulk'), 'the audit explanation keeps the generic automation signal');
+  assert.match(r.reason, /bounce|mailer-daemon/i);
+});
+
 test('intakeMessage: a real newsletter, parsed by mailparser, never reaches the board', async () => {
   isolateHome();
   const repo = makeRepo();
