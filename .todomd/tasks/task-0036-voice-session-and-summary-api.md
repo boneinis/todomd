@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Done
 type: module
 priority: medium
 labels: []
@@ -12,10 +12,10 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbf5b-cd99-7030-81b9-d8529d8cb55d
-worktree: todomd/task-0036
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-base_branch: main
+session_id: 019fbf62-d97d-7123-8147-e40816d0be6e
+worktree:
+verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
+base_branch:
 cost_usd: 21.2105
 needs_human_reason:
 recovery_stage:
@@ -114,3 +114,4 @@ Actionable defect: stale-state binding does not include the preserved worktree鈥
   - attempts_exhausted: Reachable retry-verification race: `retryVerification` moves the card to Verify and launches `verify()` without first registering a synchronous run claim or bumping its run generation (`src/pipeline.js:871-876`). Because `verify()` awaits configuration before `spawnTracked`, `getRunStates()` temporarily reports no run. Reproduced: immediately after Retry Verification returned `{ok:true}`, the summ
 - 2026-08-01 22:10Z 路 Verify attempt 3 路 1 turns 路 $0.000 路 verdict: fail
   - attempts_exhausted: Adversarial review found a reachable cancellation bug in `runTriggerStage()` in `src/pipeline.js`. When a Plan is cancelled while `fanOutChunks()` is materializing children, `finishCancellation()` moves the resulting epic to Review but does not call the epic cleanup that normal `humanMove(..., 'Review')` performs. Reproduced with 12 chunks: cancellation returned `{ok:true,cancelled:true}` and the 
+- 2026-08-01 22:16Z 路 Verify attempt 3 路 1 turns 路 $0.000 路 verdict: pass
