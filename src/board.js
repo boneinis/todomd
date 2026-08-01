@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
@@ -619,6 +620,24 @@ export function ensureGitignored(repoPath, line) {
   if (cur.split(/\r?\n/).some((l) => l.trim() === line)) return false;
   writeFileAtomic(gi, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n');
   return true;
+}
+
+// Runtime files discovered by an upgraded board should not dirty a legacy
+// checkout just to teach Git about them. New boards receive the same patterns
+// in their committed .gitignore during init; older boards get a local-only
+// exclusion here when the runtime path is first used.
+export function ensureGitExcluded(repoPath, line) {
+  try {
+    const resolved = execFileSync('git', ['-C', repoPath, 'rev-parse', '--git-path', 'info/exclude'],
+      { encoding: 'utf8' }).trim();
+    const file = path.isAbsolute(resolved) ? resolved : path.join(repoPath, resolved);
+    let cur = '';
+    try { cur = fs.readFileSync(file, 'utf8'); } catch { /* first local exclusion */ }
+    if (cur.split(/\r?\n/).some((l) => l.trim() === line)) return false;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n');
+    return true;
+  } catch { return false; }
 }
 
 // Never commits: no commitPaths call here, unlike writeCommandFile.

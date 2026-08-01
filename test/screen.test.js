@@ -224,9 +224,12 @@ test('intakeMessage: attachments still ride along on a card that was created', a
 
 /* ── the audit log itself ── */
 
-test('appendIntakeAudit: appends one line per decision and gitignores itself', async () => {
+test('appendIntakeAudit: appends decisions without dirtying a legacy board', async () => {
   isolateHome();
   const repo = makeRepo();
+  const ignore = path.join(repo, '.gitignore');
+  assert.ok(!fs.readFileSync(ignore, 'utf8').includes('.todomd/intake-audit.jsonl'),
+    'fixture represents a board from before intake auditing');
   await appendIntakeAudit(repo, { verdict: 'spam', subject: 'first' });
   await appendIntakeAudit(repo, { verdict: 'work', subject: 'second' });
 
@@ -234,10 +237,11 @@ test('appendIntakeAudit: appends one line per decision and gitignores itself', a
   assert.equal(lines.length, 2);
   assert.equal(lines[1].subject, 'second');
 
-  assert.ok(fs.readFileSync(path.join(repo, '.gitignore'), 'utf8')
-    .split('\n').some((l) => l.trim() === '.todomd/intake-audit.jsonl'), 'the line is added even to a board that predates it');
-  // an operational log about untrusted mail must never be committable
-  assert.ok(!git(repo, ['status', '--porcelain']).includes('intake-audit.jsonl'));
+  assert.ok(!fs.readFileSync(ignore, 'utf8').includes('.todomd/intake-audit.jsonl'),
+    'runtime migration does not edit the tracked .gitignore');
+  assert.equal(git(repo, ['status', '--porcelain']), '', 'the legacy checkout stays clean');
+  assert.match(git(repo, ['check-ignore', '-v', '.todomd/intake-audit.jsonl']), /info\/exclude/,
+    'the operational log is protected by a local Git exclusion');
 });
 
 test('appendIntakeAudit: trims to the newest 500 lines so it cannot grow unbounded', async () => {
@@ -520,6 +524,22 @@ test('screenEmail: a parsed out-of-office body is held even with an ordinary rep
   assert.ok(r.signals.includes('auto-reply'));
 });
 
+test('screenEmail: parsed vacation replies are held instead of entering Review', async () => {
+  const parsed = await parseInboundMessage(rawEmail([
+    'From: Jane Doe <jane@example.com>',
+    'To: intake@example.com',
+    'Subject: Vacation response: Export failure',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'I am currently on vacation and will return next Monday.',
+    '',
+  ]));
+
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'unclear');
+  assert.ok(r.signals.includes('auto-reply'));
+});
+
 test('intakeMessage: a real newsletter, parsed by mailparser, never reaches the board', async () => {
   isolateHome();
   const repo = makeRepo();
@@ -616,6 +636,21 @@ test('intakeMessage: an audit failure after card creation does not create a dupl
   assert.match(first.audit_error, /directory|EISDIR/i);
   assert.equal(second.duplicate, true);
   assert.equal(cardFiles(repo).length, 1, 'retrying the same UID does not create another card');
+});
+
+test('intakeMessage: spam audit remains exactly once when handled-key persistence fails', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, '.todomd', 'intake-handled.json'), { recursive: true });
+  const parsed = await simpleParser(RAW_NEWSLETTER);
+  const options = { label: 'main', intakeKey: 'main:uid:44' };
+
+  await assert.rejects(intakeMessage({ path: repo, name: 'repo' }, parsed, options), /directory|EISDIR/i);
+  await assert.rejects(intakeMessage({ path: repo, name: 'repo' }, parsed, options), /directory|EISDIR/i);
+
+  assert.equal(cardFiles(repo).length, 0);
+  assert.equal(auditLines(repo).length, 1, 'retrying the same screened spam decision cannot duplicate its audit');
+  assert.equal(auditLines(repo)[0].intakeKey, options.intakeKey);
 });
 
 test('intakeMessage: a real bug report, parsed by mailparser, becomes a Review card', async () => {

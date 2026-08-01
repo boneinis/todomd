@@ -4,7 +4,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { createCard, attachCard, withRepoLock, ensureGitignored } from './board.js';
+import { createCard, attachCard, withRepoLock, ensureGitExcluded } from './board.js';
 import { screenEmail, appendIntakeAudit } from './screen.js';
 
 // Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json.
@@ -71,7 +71,7 @@ function intakeWasHandled(repoPath, key) {
 function rememberIntakeHandled(repoPath, key) {
   if (!key) return Promise.resolve();
   return withRepoLock(repoPath, async () => {
-    ensureGitignored(repoPath, HANDLED_IGNORE_LINE);
+    ensureGitExcluded(repoPath, HANDLED_IGNORE_LINE);
     const file = path.join(repoPath, HANDLED_FILE);
     let keys = [];
     try {
@@ -93,7 +93,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // the matching cross-process claim: a second board server must not get between
 // the durable handled check and the card/audit side effects for the same mail.
 async function withIntakeClaim(repoPath, key, fn) {
-  await withRepoLock(repoPath, () => ensureGitignored(repoPath, INTAKE_LOCK_IGNORE_LINE));
+  await withRepoLock(repoPath, () => ensureGitExcluded(repoPath, INTAKE_LOCK_IGNORE_LINE));
   const root = path.join(repoPath, '.todomd', '.intake-locks');
   fs.mkdirSync(root, { recursive: true });
   const dir = path.join(root, crypto.createHash('sha256').update(key).digest('hex'));
@@ -326,6 +326,7 @@ async function intakeMessageOnce(project, parsed, {
     verdict: screened.verdict,
     reason: screened.reason,
     card: '',
+    ...(intakeKey ? { intakeKey } : {}),
   };
 
   // Screened-out mail never reaches the board, so the audit line is its ONLY

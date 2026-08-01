@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { withRepoLock, ensureGitignored } from './board.js';
+import { withRepoLock, ensureGitExcluded } from './board.js';
 
 // Deterministic header/body heuristics that classify an inbound email BEFORE
 // any card exists. Runs inside pollSource() on the parsed message mailparser
@@ -13,7 +13,7 @@ const ESP_HEADERS = [
   'list-id', 'x-campaign', 'x-campaign-id', 'x-campaignid', 'x-mailgun-sid', 'x-sg-eid', 'x-sg-id',
   'x-ses-outgoing', 'x-mc-user', 'x-mandrill-user', 'x-mailchimp-id', 'x-klaviyo-message-id',
 ];
-const OOO_RE = /\b(out[- ]of[- ](?:the[- ])?office|automatic reply|auto[- ]?reply|away from (my |the )?(office|email|desk))\b/i;
+const OOO_RE = /\b(out[- ]of[- ](?:the[- ])?office|automatic reply|auto[- ]?reply|vacation (?:response|reply)|(?:currently )?on vacation|away from (my |the )?(office|email|desk))\b/i;
 const BOUNCE_ADDR_RE = /\b(mailer-daemon|postmaster)\b/i;
 const BOUNCE_SUBJECT_RE = /\b(undeliverable|delivery status notification|returned to sender|delivery (?:has )?failed|delivery failure|mail delivery failed)\b/i;
 const FOOTER_RE = /unsubscribe|view(?: (?:this|the|your|an?|it))?(?: (?:email|message))? in (?:an? |your )?browser|manage your (email )?preferences/i;
@@ -157,10 +157,14 @@ const AUDIT_MAX_LINES = 500; // an operational log, not board history — cap so
 // Trims to the last AUDIT_MAX_LINES on every write.
 export function appendIntakeAudit(repoPath, record) {
   return withRepoLock(repoPath, async () => {
-    ensureGitignored(repoPath, AUDIT_IGNORE_LINE);
+    ensureGitExcluded(repoPath, AUDIT_IGNORE_LINE);
     const file = path.join(repoPath, AUDIT_FILE);
     let lines = [];
     try { lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean); } catch { /* first write */ }
+    if (record?.intakeKey && lines.some((line) => {
+      try { return JSON.parse(line).intakeKey === record.intakeKey; }
+      catch { return false; }
+    })) return { ok: true, duplicate: true };
     lines.push(JSON.stringify(record));
     if (lines.length > AUDIT_MAX_LINES) lines = lines.slice(-AUDIT_MAX_LINES);
     fs.mkdirSync(path.dirname(file), { recursive: true });
