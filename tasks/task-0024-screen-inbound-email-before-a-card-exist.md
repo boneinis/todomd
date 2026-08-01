@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbae9-b2a9-7fc2-bbdb-4fa38a2ebe7e
+session_id: 019fbaef-ab7d-7803-a988-33facb7eba59
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -148,3 +148,9 @@ Reachable classification bug: `src/screen.js:97-123` misclassifies a realistic b
   - attempts_exhausted: The official `npm test` passed (222 core tests plus UI tests), and the worktree remained clean. However, parser-level adversarial testing found classification defects in `src/screen.js`:
 
 1. A common Outlook bounce with subject `Delivery has failed to these recipients or groups:` and `Auto-Submitted: auto-generated` is classified as spam because `BOUNCE_SUBJECT_RE` does not recognize that wording.
+- 2026-08-01 01:34Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: The official `npm test` passed outside the restricted listener sandbox: 225 core tests and 2 UI tests. `git diff --check` also passed.
+
+Classifier defects remain in `src/screen.js`:
+
+1. Line 19 misses common view-in-browser footer variants such as “View email in browser,” “View message in browser,” and “View this email in a browser.” A parser-level reproduction combining `no-reply@shop.example.com
