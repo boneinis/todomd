@@ -116,6 +116,7 @@ test('budget-mode columns and fresh leases are externally active and cannot be m
   writeCard(repo, 'task-0004', { status: 'Plan', extra: `lease: "${now} worker@host"\n` });
   writeCard(repo, 'task-0005', { status: 'Review', extra: `lease: "${now} worker@host"\n` });
   writeCard(repo, 'task-0006', { status: 'Plan', extra: `lease: "${now - 901} old@host"\n` });
+  writeCard(repo, 'task-0007', { status: 'Plan', extra: `lease: "${now + 3600} future@host"\n` });
 
   const summary = voice.buildVoiceSummary(p);
   assert.deepEqual(summary.activeRuns, [
@@ -143,6 +144,8 @@ test('budget-mode columns and fresh leases are externally active and cannot be m
   assert.match(leased.error, /external Plan run.*dispatcher/);
   const staleLease = await voice.prepareVoiceAction(p, { cardId: 'task-0006', action: 'retriage' });
   assert.equal(staleLease.status, 200, 'an expired dispatcher lease does not freeze voice actions');
+  const futureLease = await voice.prepareVoiceAction(p, { cardId: 'task-0007', action: 'retriage' });
+  assert.equal(futureLease.status, 200, 'a future-dated lease does not freeze voice actions');
 
   // Confirmation re-derives external ownership rather than trusting the state
   // captured while the card was still idle.

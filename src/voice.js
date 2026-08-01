@@ -58,7 +58,8 @@ function hasFreshBudgetLease(card, nowSec) {
   const [claimedAt = ''] = safeText(card.lease).trim().split(/\s+/);
   if (!/^\d+$/.test(claimedAt)) return false;
   const timestamp = Number(claimedAt);
-  return Number.isSafeInteger(timestamp) && nowSec - timestamp <= BUDGET_LEASE_TTL_SEC;
+  const age = nowSec - timestamp;
+  return Number.isSafeInteger(timestamp) && age >= 0 && age <= BUDGET_LEASE_TTL_SEC;
 }
 
 // Launcher runs live in pipeline.js's process maps. Budget-mode Build/Verify
