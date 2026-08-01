@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbeff-dcbc-7f61-918c-c94e6bee2290
+session_id: 019fbf43-ba24-7671-9927-3b311bdd9e1d
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -106,3 +106,5 @@ Actionable defect: stale-state binding does not include the preserved worktree�
   - attempts_exhausted: Reachable launcher auto-triage race: `runTriage()` calls `spawnTracked()` without `retainUntilFinalized`. When the agent child exits, `spawnTracked()` removes run tracking before `recordRun`, frontmatter updates, and `commitCardChanges` finish. Reproduction while blocking those finalizer writes showed `hasLiveRun=false`, no `summary.activeRuns`, “Nothing building right now,” and successful prepara
 - 2026-08-01 20:29Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Adversarial testing found an ABA stale-proposal bug. I prepared a visible `cancel` proposal for task-0002 while it was queued, canceled that queue entry through the normal guarded operation, re-approved the card to create a new queue entry, then confirmed the old proposal. Confirmation returned 200 and canceled the replacement queue entry. The fingerprint only records card content and the coarse `
+- 2026-08-01 21:43Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Reproduced an ABA stale-proposal bug. When Git cannot record board commits—for example, during a merge/rebase—`moveCard` still mutates the card and returns `ok: true` with a warning. After a queued run was canceled and replaced, Queue→Planned→Queue restored identical card bytes while `cardRevision()` remained unchanged because neither transition committed. The old cancel proposal therefore confirm
