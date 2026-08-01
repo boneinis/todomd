@@ -280,13 +280,13 @@ function renderCard(card, color, i) {
   // epic/chunk relationship badge (sequential chunking)
   const rel = el.querySelector('.card-rel');
   if (card.epic) {
-    const kids = boardData.cards.filter((c) => c.parent === card.id);
-    const done = kids.filter((c) => c.status === 'Done').length;
-    rel.textContent = `⊞ epic ${done}/${kids.length}`;
+    const { done, total } = TodomdHierarchy.epicProgress(boardData.cards, card.id);
+    rel.textContent = `⊞ epic ${done}/${total}`;
   } else if (card.parent) {
-    // asList, not `|| []`: a scalar `dependencies:` throws here, and this runs
-    // inside the board render — one hand-edited card would blank the WHOLE board
-    const blocked = asList(card.dependencies).some((d) => boardData.cards.find((c) => c.id === d)?.status !== 'Done');
+    // dependencyState tolerates a scalar/mapping/missing `dependencies:` — this
+    // runs inside the board render, so one hand-edited card must not throw and
+    // blank the WHOLE board
+    const { blocked } = TodomdHierarchy.dependencyState(card, boardData.cards);
     rel.textContent = blocked ? '⊞ chunk 🔒' : '⊞ chunk';
     if (blocked) rel.classList.add('blocked');
   }
@@ -344,10 +344,13 @@ function relChip(id, label) {
   return `<button type="button" class="rel-chip" data-id="${esc(id)}">${esc(displayLabel)} <span class="rel-status">${status}</span></button>`;
 }
 
-function depChip(id) {
-  const bc = findBoardCard(id);
-  const done = bc?.status === 'Done';
-  return `<span class="dep-chip ${done ? 'dep-done' : 'dep-blocked'}">${done ? '' : '🔒 '}${esc(id)} <span class="rel-status">${bc ? esc(bc.status) : '?'}</span></span>`;
+// `state` is this card's TodomdHierarchy.dependencyState(...): waitingOn holds
+// only the blocking dependencies, so an id absent from it is Done
+function depChip(id, state) {
+  const waiting = state.waitingOn.find((w) => w.id === id);
+  const done = !waiting;
+  const status = done ? 'Done' : (waiting.status || '?');
+  return `<span class="dep-chip ${done ? 'dep-done' : 'dep-blocked'}">${done ? '' : '🔒 '}${esc(id)} <span class="rel-status">${esc(status)}</span></span>`;
 }
 
 /* ── drawer ── */
@@ -374,16 +377,17 @@ async function openDrawer(id) {
   if (card.data.epic) {
     // same coercion as labels: a scalar `children:` survives the .length check
     // and then throws on .map, taking the whole drawer with it
-    const children = asList(card.data.children);
+    const children = TodomdHierarchy.asList(card.data.children);
     const chipsHtml = children.length
       ? children.map((cid) => relChip(cid, cid)).join('')
       : '<span class="rel-empty">no chunks</span>';
     relEl.innerHTML = `<span class="rel-label">chunks</span>${chipsHtml}`;
     relEl.hidden = false;
   } else if (card.data.parent) {
-    const deps = asList(card.data.dependencies);
+    const state = TodomdHierarchy.dependencyState(card.data, boardData.cards);
+    const deps = TodomdHierarchy.asList(card.data.dependencies);
     const depsHtml = deps.length
-      ? `<span class="rel-label">depends on</span>${deps.map(depChip).join('')}`
+      ? `<span class="rel-label">depends on</span>${deps.map((id) => depChip(id, state)).join('')}`
       : '';
     relEl.innerHTML = `<span class="rel-label">epic</span>${relChip(card.data.parent, card.data.parent)}${depsHtml}`;
     relEl.hidden = false;
