@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
-session_id: 89fa42bc-1e4e-4c5d-8d1f-4bdafa4a8817
+session_id: 65cd2019-02f3-4926-8574-606dcad7c071
 worktree: todomd/task-0037
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 23.0693
+cost_usd: 28.5062
 needs_human_reason:
 recovery_stage:
 ---
@@ -69,3 +69,4 @@ local speech or provider configuration is unavailable.
 - 2026-08-01 23:28Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 3)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 23:32Z · Escalate attempt 2 · 24 turns · $2.887 · diagnosis complete
+- 2026-08-01 23:44Z · Build attempt 3 · 72 turns · $5.437 · ok (escalation repair)
