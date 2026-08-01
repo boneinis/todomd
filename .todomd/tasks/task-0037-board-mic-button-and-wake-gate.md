@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0037
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 20.1825
-needs_human_reason:
+needs_human_reason: bad_verdict
 recovery_stage:
 ---
 
@@ -62,3 +62,7 @@ local speech or provider configuration is unavailable.
   - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
 - 2026-08-01 23:10Z · Resume Build · continuing attempt 2 in preserved worktree todomd/task-0037
 - 2026-08-01 23:18Z · Build attempt 2 · 5 turns · $4.109 · ok
+- 2026-08-01 23:18Z · Verify attempt 2 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
+- 2026-08-01 23:18Z · Verify attempt 2 · malformed verdict, re-running once
+- 2026-08-01 23:18Z · Verify attempt 2 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
+  - bad_verdict: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or
