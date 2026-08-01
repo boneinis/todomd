@@ -486,6 +486,30 @@ const RAW_PUSH_BUG_REPORT = rawEmail([
   '',
 ]);
 
+const RAW_PUSH_BINARY_ATTACHMENT = Buffer.concat([
+  Buffer.from(rawEmail([
+    'From: Jane Doe <jane@example.com>',
+    'To: intake@example.com',
+    'Subject: Binary attachment remains intact',
+    'Message-ID: <push-binary-1@example.com>',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/mixed; boundary="raw-boundary"',
+    '',
+    '--raw-boundary',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Please inspect the attached binary reproduction file for this issue.',
+    '--raw-boundary',
+    'Content-Type: application/octet-stream',
+    'Content-Disposition: attachment; filename="blob.bin"',
+    'Content-Transfer-Encoding: binary',
+    '',
+    '',
+  ]), 'ascii'),
+  Buffer.from([0, 127, 128, 255, 65]),
+  Buffer.from('\r\n--raw-boundary--\r\n', 'ascii'),
+]);
+
 test('email push API: applies the same screen as mailbox polling and reports the verdict', async () => {
   isolateHome();
   const { repo, name, base, srv, q } = await boot();
@@ -534,8 +558,19 @@ test('email push API: applies the same screen as mailbox polling and reports the
     const worked = readCard(repo, out.id);
     assert.equal(worked.data.status, 'Review');
     assert.equal(worked.data.source, 'email');
-
     const workId = out.id;
+
+    // The raw RFC 5322 endpoint must not decode the request as UTF-8 before
+    // mailparser sees it: binary MIME attachments need byte-for-byte fidelity.
+    r = await push(RAW_PUSH_BINARY_ATTACHMENT);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'work');
+    assert.deepEqual(
+      [...fs.readFileSync(path.join(repo, '.todomd', 'attachments', out.id, 'blob.bin'))],
+      [0, 127, 128, 255, 65],
+    );
+
     r = await push(RAW_PUSH_BUG_REPORT);
     out = await r.json();
     assert.equal(out.verdict, 'work', 'a work retry preserves the original screen verdict');
@@ -543,7 +578,7 @@ test('email push API: applies the same screen as mailbox polling and reports the
     assert.equal(out.id, workId, 'the retry reports the original card instead of creating another');
 
     board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
-    assert.equal(board.cards.length, startCount + 2, 'exactly the unclear and work pushes created cards');
+    assert.equal(board.cards.length, startCount + 3, 'exactly the unclear and two work pushes created cards');
 
     // a viewer token cannot push (mutating, full access only)
     const viewer = deviceToken('token-viewer');
