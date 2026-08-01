@@ -226,6 +226,12 @@ test('ambiguous: a second pending proposal for the same card is refused, and a m
   assert.equal(dupe.status, 409);
   assert.match(dupe.error, /ambiguous/);
 
+  // readCard also accepts the filename slug as an alias; it must canonicalize
+  // to the same physical card reservation, not create a second proposal.
+  const alias = await voice.prepareVoiceAction(p, { cardId: 'task-0001-card', action: 'retriage' });
+  assert.equal(alias.status, 409);
+  assert.match(alias.error, /ambiguous/);
+
   // a different card can still be prepared concurrently
   const other = await voice.prepareVoiceAction(p, { cardId: 'task-0002', action: 'retriage' });
   assert.equal(other.status, 200);
@@ -610,9 +616,14 @@ test('epic-wide cascades are unavailable by voice: retriage, approve, and archiv
   }
   assert.equal(status(repo, 'task-0002'), 'Planned', 'the refused prepares archived nothing');
 
-  // once no child would be cascaded, the single-card action is available again
+  // Once no child would be cascaded, retriage is single-card again. Approval is
+  // still refused because an all-Done epic completes rather than starting an
+  // agent, so its read-back/tier could not match this action's contract.
   fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0002-card.md'),
     fs.readFileSync(path.join(repo, '.todomd/tasks/task-0002-card.md'), 'utf8').replace('status: Planned', 'status: Done'));
+  const approveDoneEpic = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'approve' });
+  assert.equal(approveDoneEpic.status, 400);
+  assert.match(approveDoneEpic.error, /epic approvals/);
   const ok = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
   assert.equal(ok.status, 200);
   assert.equal(ok.confirmation.tier, 'reversible');
@@ -634,11 +645,11 @@ test('read-backs are generated from the real effect: project mode and worktree d
     'approve task-0001 and start the build');
   assert.equal((await voice.prepareVoiceAction(budget, { cardId: 'task-0001', action: 'approve' })).readback,
     'approve task-0001 and queue it for the dispatcher');
-  // approving an epic releases its first chunk rather than building the epic
-  assert.equal((await voice.prepareVoiceAction(launcher, { cardId: 'task-0002', action: 'approve' })).readback,
-    'approve task-0002 and start its first chunk building');
-  assert.equal((await voice.prepareVoiceAction(budget, { cardId: 'task-0002', action: 'approve' })).readback,
-    'approve task-0002 and queue its first chunk for the dispatcher');
+  // A childless epic has no truthful agent-starting read-back and is refused.
+  assert.match((await voice.prepareVoiceAction(launcher, { cardId: 'task-0002', action: 'approve' })).error,
+    /epic approvals/);
+  assert.match((await voice.prepareVoiceAction(budget, { cardId: 'task-0002', action: 'approve' })).error,
+    /epic approvals/);
 
   // a move that deletes a preserved worktree says so, and leaves the reversible tier
   const p = project(makeRepo());

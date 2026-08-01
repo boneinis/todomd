@@ -1814,8 +1814,10 @@ export function hasLiveBuildingChild(project, epicId) {
 
 // Any live agent run for this project (used to refuse removing a busy project).
 export function projectHasLiveRun(projectName) {
-  // Every spawned child belongs to a pending chain, whose value has exact
-  // structured ownership (unlike the legacy `project:card` map key).
+  // Plan/custom-trigger children are tracked in `runs` but do not belong to a
+  // pending Build chain. Check both structured values; project names may
+  // contain `:`, so composite-key prefix matching is not safe here.
+  for (const run of runs.values()) if (run.project === projectName) return true;
   for (const entry of pending.values()) if (entry.project === projectName) return true;
   return false;
 }

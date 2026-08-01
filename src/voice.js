@@ -155,14 +155,15 @@ const ALLOWED_ACTIONS = {
     tier: () => 'agent',
     // budget mode has no launcher: Planned→Queue only parks the card for the
     // /todomd-dispatch session, so promising "start the build" would be a lie
-    label: (card, fx) => {
-      const what = fx.epic
-        ? (fx.budget ? 'queue its first chunk for the dispatcher' : 'start its first chunk building')
-        : (fx.budget ? 'queue it for the dispatcher' : 'start the build');
-      return `approve ${card.data.id} and ${what}`;
-    },
-    eligible: (card, project, fx) => notEpicCascade(card, fx) || (card.data.status === 'Planned'
-      ? { ok: true } : { ok: false, error: `${card.data.id} is not in Planned` }),
+    label: (card, fx) => `approve ${card.data.id} and ${fx.budget ? 'queue it for the dispatcher' : 'start the build'}`,
+    // Epic approval either releases multiple unfinished children, completes an
+    // all-Done tracker, or strands a childless tracker in Queue. None matches
+    // this single-card, agent-starting action's contract, so voice refuses all
+    // epic approvals and leaves them to the visible board UI.
+    eligible: (card, project, fx) => (card.data.epic
+      ? (notEpicCascade(card, fx) || { ok: false, error: 'epic approvals are not available by voice' })
+      : (card.data.status === 'Planned'
+        ? { ok: true } : { ok: false, error: `${card.data.id} is not in Planned` })),
     execute: (project, id) => humanMove(project, id, 'Queue'),
   },
   retry_planned: {
@@ -360,15 +361,20 @@ export async function buildCardStatus(project, cardId) {
 // what makes the ambiguity check race-free rather than merely a best effort.
 export async function prepareVoiceAction(project, fields = {}) {
   pruneExpired();
-  const cardId = String(fields.cardId || '');
+  const requestedCardId = String(fields.cardId || '');
   const action = String(fields.action || '');
   const normalizedArguments = argumentless(fields);
   if (!normalizedArguments.ok) return { status: 400, ok: false, error: normalizedArguments.error };
-  if (!CARD_ID.test(cardId)) return { status: 400, ok: false, error: 'invalid card id' };
+  if (!CARD_ID.test(requestedCardId)) return { status: 400, ok: false, error: 'invalid card id' };
   const def = ALLOWED_ACTIONS[action];
   if (!def) return { status: 400, ok: false, error: `unknown or disallowed voice action: ${action}` };
-  const card = readCard(project.path, cardId);
-  if (!card) return { status: 404, ok: false, error: `card not found: ${cardId}` };
+  const card = readCard(project.path, requestedCardId);
+  if (!card) return { status: 404, ok: false, error: `card not found: ${requestedCardId}` };
+  // readCard accepts a filename prefix for existing UI routes. Voice proposals
+  // must collapse every such alias onto the physical card's frontmatter id, or
+  // two aliases can reserve and execute against the same card concurrently.
+  const cardId = String(card.data.id || '');
+  if (!CARD_ID.test(cardId)) return { status: 400, ok: false, error: 'card has an invalid canonical id' };
   if (pendingFor(project.path, cardId)) {
     return { status: 409, ok: false, error: 'ambiguous: a pending proposal already exists for this card — confirm or reject it first' };
   }

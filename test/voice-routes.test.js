@@ -104,6 +104,12 @@ test('full prepare → confirm round trip over HTTP moves the card exactly once'
     assert.equal(r.status, 200);
     const prep = await r.json();
     assert.equal(prep.confirmation.tier, 'reversible');
+    assert.equal(prep.cardId, 'task-0001');
+
+    // The filename slug is a readCard alias for the same physical card; the
+    // HTTP API canonicalizes it and refuses a concurrent second proposal.
+    r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001-card', action: 'retriage' }) });
+    assert.equal(r.status, 409);
 
     // wrong phrase → 400, board untouched
     r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'nah' }) });

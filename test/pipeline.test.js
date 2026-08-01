@@ -416,6 +416,27 @@ test('forgetProject + projectHasLiveRun', async () => {
   pipeline.forgetProject('nope'); // no-op, must not throw
 });
 
+test('projectHasLiveRun includes a live Plan child outside the pending Build chain', async () => {
+  isolateHome();
+  const marker = path.join(tmp('plan-live-project'), 'started');
+  useFakeAgent({ hang: 'plan', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+    assert.equal(pipeline.getRunStates(p.name)['task-0001'].stage, 'Plan');
+    assert.equal(pipeline.projectHasLiveRun(p.name), true);
+  } finally {
+    await pipeline.humanMove(p, 'task-0001', 'Review');
+    await until(() => status(repo, 'task-0001') === 'Review', { timeout: BUDGET.stage });
+    clearFakeAgent();
+  }
+});
+
 test('coordination: a card claims ACTIVE.md while building and releases it on Done', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });
