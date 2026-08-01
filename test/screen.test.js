@@ -371,6 +371,47 @@ test('screenEmail: a parsed delivery-status bounce stays unclear despite Auto-Su
   assert.match(r.reason, /bounce|mailer-daemon/i);
 });
 
+test('screenEmail: a parsed multipart message checks the HTML footer as well as plain text', async () => {
+  const parsed = await parseInboundMessage(rawEmail([
+    'From: Shop <no-reply@shop.example.com>',
+    'To: intake@example.com',
+    'Subject: Your weekly account summary',
+    'Content-Type: multipart/alternative; boundary="parts"',
+    '',
+    '--parts',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Here is the account summary you requested for this week.',
+    '--parts',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    '<p>Here is the account summary you requested for this week.</p><a href="/leave">Unsubscribe</a>',
+    '--parts--',
+    '',
+  ]));
+
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'spam');
+  assert.ok(r.signals.includes('noreply-sender'));
+  assert.ok(r.signals.includes('unsubscribe-footer'));
+});
+
+test('screenEmail: a parsed out-of-office body is held even with an ordinary reply subject', async () => {
+  const parsed = await parseInboundMessage(rawEmail([
+    'From: Jane Doe <jane@example.com>',
+    'To: intake@example.com',
+    'Subject: Re: Export failure',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'I am out of the office until August 12 and will respond when I return.',
+    '',
+  ]));
+
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'unclear');
+  assert.ok(r.signals.includes('auto-reply'));
+});
+
 test('intakeMessage: a real newsletter, parsed by mailparser, never reaches the board', async () => {
   isolateHome();
   const repo = makeRepo();

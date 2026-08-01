@@ -13,7 +13,7 @@ const ESP_HEADERS = [
   'list-id', 'x-campaign-id', 'x-campaignid', 'x-mailgun-sid', 'x-sg-eid', 'x-sg-id',
   'x-ses-outgoing', 'x-mc-user', 'x-mandrill-user', 'x-mailchimp-id', 'x-klaviyo-message-id',
 ];
-const OOO_RE = /\b(out[- ]of[- ]office|automatic reply|auto[- ]?reply|away from (my |the )?(office|email|desk))\b/i;
+const OOO_RE = /\b(out[- ]of[- ](?:the[- ])?office|automatic reply|auto[- ]?reply|away from (my |the )?(office|email|desk))\b/i;
 const BOUNCE_ADDR_RE = /\b(mailer-daemon|postmaster)\b/i;
 const BOUNCE_SUBJECT_RE = /\b(undeliverable|delivery status notification|returned to sender|delivery failure|mail delivery failed)\b/i;
 const FOOTER_RE = /unsubscribe|view(?: (?:this|it)(?: email| message)?)? in (?:your )?browser|manage your (email )?preferences/i;
@@ -81,6 +81,7 @@ export function screenEmail(parsed) {
   const subject = String(parsed?.subject || '').trim();
   const text = String(parsed?.text || '').trim();
   const html = parsed?.html;
+  const bodyText = [text, stripHtml(html)].filter(Boolean).join('\n');
 
   const spamStrong = [];
   const spamWeak = [];
@@ -103,7 +104,7 @@ export function screenEmail(parsed) {
 
   if (/no-?reply@/i.test(fromAddr)) spamWeak.push('noreply-sender');
 
-  if (FOOTER_RE.test(text || stripHtml(html))) spamWeak.push('unsubscribe-footer');
+  if (FOOTER_RE.test(bodyText)) spamWeak.push('unsubscribe-footer');
 
   if (!text && html) spamWeak.push('html-only');
 
@@ -113,7 +114,7 @@ export function screenEmail(parsed) {
 
   if (!subject || !/[a-z0-9]/i.test(subject)) unclear.push('no-subject');
 
-  if (autoSubmitted === 'auto-replied' || OOO_RE.test(subject)) unclear.push('auto-reply');
+  if (autoSubmitted === 'auto-replied' || OOO_RE.test(subject) || OOO_RE.test(bodyText)) unclear.push('auto-reply');
 
   if (BOUNCE_ADDR_RE.test(fromAddr) || BOUNCE_SUBJECT_RE.test(subject)) unclear.push('bounce');
 
