@@ -37,7 +37,8 @@
 
 <main id="board" class="board" aria-label="kanban board"></main>
 
-<aside id="drawer" class="drawer" hidden>
+<div id="drawer-backdrop" class="drawer-backdrop" hidden>
+<aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
   <header class="drawer-head">
     <span class="card-id" id="drawer-id"></span>
     <button id="drawer-close" class="drawer-close" title="close">✕</button>
@@ -48,22 +49,35 @@
     <div class="drawer-main">
       <div class="drawer-meta" id="drawer-meta"></div>
       <section id="drawer-rel" class="drawer-rel" hidden></section>
-      <div id="drawer-criteria" class="criteria-bar" hidden>
-        <div class="criteria-track"><div class="criteria-fill" id="criteria-fill"></div></div>
-        <span id="criteria-label"></span>
+      <nav id="drawer-tabs" class="drawer-tabs" hidden>
+        <button type="button" class="drawer-tab active" data-tab="details">details</button>
+        <button type="button" class="drawer-tab" data-tab="subtasks">subtasks</button>
+      </nav>
+      <div id="drawer-details">
+        <div id="drawer-criteria" class="criteria-bar" hidden>
+          <div class="criteria-track"><div class="criteria-fill" id="criteria-fill"></div></div>
+          <span id="criteria-label"></span>
+        </div>
+        <section id="drawer-question" class="drawer-question" hidden>
+          <h2 class="run-title">⚠ the agent needs a decision</h2>
+          <p id="question-text" class="question-text"></p>
+          <textarea id="answer-input" class="answer-input" rows="2" placeholder="your answer — fed into the next build…" spellcheck="false"></textarea>
+          <button id="answer-submit" class="route-save">answer &amp; resume</button>
+        </section>
+        <article class="drawer-body" id="drawer-body"></article>
+        <details id="drawer-planner" class="drawer-planner" hidden>
+          <summary>planner record</summary>
+          <pre id="drawer-planner-body"></pre>
+        </details>
+        <section id="drawer-run" class="drawer-run" hidden>
+          <h2 class="run-title">live run</h2>
+          <div id="run-log" class="run-log"></div>
+        </section>
+        <footer class="drawer-foot" id="drawer-file"></footer>
       </div>
-      <section id="drawer-question" class="drawer-question" hidden>
-        <h2 class="run-title">⚠ the agent needs a decision</h2>
-        <p id="question-text" class="question-text"></p>
-        <textarea id="answer-input" class="answer-input" rows="2" placeholder="your answer — fed into the next build…" spellcheck="false"></textarea>
-        <button id="answer-submit" class="route-save">answer &amp; resume</button>
+      <section id="drawer-subtasks" class="drawer-subtasks" hidden>
+        <ul id="drawer-subtasks-list" class="drawer-subtasks-list"></ul>
       </section>
-      <article class="drawer-body" id="drawer-body"></article>
-      <section id="drawer-run" class="drawer-run" hidden>
-        <h2 class="run-title">live run</h2>
-        <div id="run-log" class="run-log"></div>
-      </section>
-      <footer class="drawer-foot" id="drawer-file"></footer>
     </div>
     <div class="drawer-rail">
       <span class="rail-label">actions</span>
@@ -91,6 +105,7 @@
     </div>
   </div>
 </aside>
+</div>
 
 <template id="card-tpl">
   <article class="card" draggable="true">

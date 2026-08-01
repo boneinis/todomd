@@ -31,6 +31,12 @@ function hierarchyBoard() {
   const cfg = path.join(repo, '.todomd/config.yml');
   fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
   writeCard(repo, 'task-0001', { status: 'Queue', title: 'Sequential chunking epic', extra: 'epic: true\nchildren: [task-0002, task-0003, task-0004]\n' });
+  // give the epic a raw "## Chunks" planner section (the same shape src/board.js
+  // parseChunks reads) so the drawer's Subtasks/Planner split has something to split
+  const epicFile = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(epicFile, fs.readFileSync(epicFile, 'utf8').replace('## Run Log\n',
+    '## Chunks\n\n```yaml\n- title: Alpha subtask\n  plan: do the alpha work\n  criteria: ["alpha done"]\n```\n\n' +
+    'Risks:\n- none noted\n\n## Run Log\n'));
   writeCard(repo, 'task-0002', { status: 'Queue', title: 'Alpha subtask', deps: ['task-0003'], extra: 'parent: task-0001\nassignee: Ada Lovelace\n' });
   writeCard(repo, 'task-0003', { status: 'Planned', title: 'Beta subtask', extra: 'parent: task-0001\n' });
   writeCard(repo, 'task-0004', { status: 'Build', title: 'Gamma execution subtask', extra: 'parent: task-0001\n' });
@@ -163,6 +169,110 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
     await page.eval(`document.getElementById('filter').value = '';
       document.getElementById('filter').dispatchEvent(new Event('input'))`);
 
+    // ── drawer Subtasks/Planner view (task-0030) ──
+    // opening the epic's own drawer strips the raw "## Chunks" yaml out of the
+    // main details flow and hides it behind a closed-by-default Planner record
+    await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
+    assert.doesNotMatch(
+      await page.eval(`document.getElementById('drawer-body').textContent`),
+      /Alpha subtask/, 'the raw Chunks yaml is stripped out of the main details flow');
+    assert.equal(await page.eval(`document.getElementById('drawer-tabs').hidden`), false,
+      'an epic card shows the Details/Subtasks tabs');
+    assert.equal(await page.eval(`document.getElementById('drawer-planner').hidden`), false,
+      'an epic with a Chunks section shows the Planner record');
+    assert.equal(await page.eval(`document.getElementById('drawer-planner').open`), false,
+      'the Planner record is closed by default');
+    await new Promise((resolve) => setTimeout(resolve, 250)); // let the modal entrance transform settle
+    const modalGeometry = await page.eval(`(() => {
+      const r = document.getElementById('drawer').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2,
+        viewportX: innerWidth / 2, viewportY: innerHeight / 2 };
+    })()`);
+    assert.ok(Math.abs(modalGeometry.x - modalGeometry.viewportX) < 2,
+      `the card details surface is centered horizontally over visible board context: ${JSON.stringify(modalGeometry)}`);
+    assert.ok(Math.abs(modalGeometry.y - modalGeometry.viewportY) < 2,
+      `the card details surface is centered vertically over visible board context: ${JSON.stringify(modalGeometry)}`);
+    assert.equal(await page.eval(`document.getElementById('board').inert`), true,
+      'the board is inert while the modal is open');
+    await until(async () =>
+      (await page.eval(`document.activeElement === document.getElementById('drawer-close')`)) || null,
+    { timeout: BUDGET.quick });
+    await page.eval(`document.getElementById('drawer-planner').open = true`);
+    assert.match(
+      await page.eval(`document.getElementById('drawer-planner-body').textContent`),
+      /Alpha subtask/, 'the raw planner yaml is still reachable once opened');
+
+    // Subtasks tab lists ALL of the epic's children (not just the nested ones —
+    // the Build child belongs here too) with dependency state; a row click opens
+    // that child
+    assert.equal(await page.eval(`document.getElementById('drawer-details').hidden`), false);
+    assert.equal(await page.eval(`document.getElementById('drawer-subtasks').hidden`), true);
+    await page.eval(`document.querySelector('.drawer-tab[data-tab="subtasks"]').click()`);
+    assert.equal(await page.eval(`document.getElementById('drawer-details').hidden`), true);
+    assert.equal(await page.eval(`document.getElementById('drawer-subtasks').hidden`), false);
+    const drawerRowIds = await page.eval(
+      `[...document.querySelectorAll('#drawer-subtasks-list .subtask-row')].map((r) => r.dataset.id).sort()`);
+    assert.deepEqual(drawerRowIds, ['task-0002', 'task-0003', 'task-0004'],
+      'the drawer Subtasks tab lists every child, including the Build (execution-column) one');
+    assert.match(
+      await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"] .subtask-dep').textContent`),
+      /waiting on task-0003/);
+    assert.equal(
+      await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0003"] .subtask-dep').textContent`),
+      'ready', 'an unblocked child shows an explicit dependency state');
+    assert.equal(
+      await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0003"] .subtask-assignee').textContent`),
+      'unassigned', 'a child without an assignee shows an explicit assignee state');
+    await page.eval(`(() => {
+      const row = document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0004"]');
+      row.focus(); row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    })()`);
+    await until(async () =>
+      (await page.eval(`document.getElementById('drawer-id').textContent === 'task-0004'`)) || null, { timeout: BUDGET.quick });
+    assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /Gamma execution subtask/);
+    // the click-through lands on Details, and the child (not itself an epic) shows
+    // neither the Subtasks tab nor the Planner record
+    assert.equal(await page.eval(`document.getElementById('drawer-tabs').hidden`), true,
+      'a non-epic card shows neither the Subtasks tab nor the planner record');
+    assert.equal(await page.eval(`document.getElementById('drawer-planner').hidden`), true);
+    assert.equal(await page.eval(`document.getElementById('drawer-details').hidden`), false,
+      'the drawer resets to Details so a click-through never lands on a tab this card doesn\'t have');
+    await page.eval(`document.getElementById('drawer-close').click()`);
+
+    // responsive rail: sticky alongside the details at a wide viewport, stacks
+    // under it (static position, full width) at a narrow one
+    await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
+    await page.setViewport(1200, 900);
+    const centeredWide = await page.eval(`(() => {
+      const r = document.getElementById('drawer').getBoundingClientRect();
+      return Math.abs(r.left + r.width / 2 - innerWidth / 2) < 2;
+    })()`);
+    assert.equal(centeredWide, true, 'the wide card details surface remains centered');
+    assert.equal(
+      await page.eval(`getComputedStyle(document.querySelector('.drawer-rail')).position`),
+      'sticky', 'the rail is sticky alongside the details at a wide viewport');
+    await page.setViewport(400, 800);
+    assert.equal(
+      await page.eval(`getComputedStyle(document.querySelector('.drawer-cols')).flexDirection`),
+      'column', 'the details/rail columns stack at a narrow viewport');
+    assert.equal(
+      await page.eval(`getComputedStyle(document.querySelector('.drawer-rail')).position`),
+      'static', 'the rail stacks under the details instead of sticking to a collapsed column at a narrow viewport');
+    await page.setViewport(1200, 900);
+    // Escape closes the modal, removes the inert background, and restores focus.
+    await page.eval(`document.getElementById('filter').focus(); closeDrawer();
+      document.getElementById('filter').focus(); openDrawer('task-0001')`);
+    await until(async () =>
+      (await page.eval(`document.activeElement === document.getElementById('drawer-close')`)) || null,
+    { timeout: BUDGET.quick });
+    await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    assert.equal(await page.eval(`document.getElementById('drawer').hidden`), true);
+    assert.equal(await page.eval(`document.getElementById('board').inert`), false);
+    assert.equal(await page.eval(`document.activeElement === document.getElementById('filter')`), true,
+      'closing restores focus to the control that opened the modal');
+
     // Hostile hand-edited metadata: a parent link to a normal card must not
     // make the child disappear merely because the referenced card exists.
     await page.eval(`boardData.cards.push(
@@ -199,4 +309,96 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
   }
+});
+
+// Opening a card is async: the subtask-row click fires the card fetch and the
+// rest of openDrawer runs whenever the response lands. If you press Escape in
+// between, the late response must be dropped — otherwise it re-shows the modal
+// with drawerCard already cleared, and every action button (answer, move,
+// archive, delete, cancel, retry-verify, resume/restart-build) silently no-ops.
+// The gating here is promise-based rather than sleep-based on purpose: this
+// suite has to survive a load-starved box without inventing timeout failures.
+test('drawer: a card fetch that lands after Escape is discarded, not re-shown', async (t) => {
+  if (!page) return t.skip(SKIP);
+
+  // fresh page — the flow above leaves boardData patched with synthetic cards
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await page.setViewport(1200, 900);
+
+  // open the epic's modal and switch to its Subtasks tab
+  await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+  await until(async () => (await page.eval(
+    `!document.getElementById('drawer').hidden && document.getElementById('drawer-id').textContent === 'task-0001'`,
+  )) || null, { timeout: BUDGET.quick });
+  await page.eval(`document.querySelector('.drawer-tab[data-tab="subtasks"]').click()`);
+
+  // hold the NEXT task-0002 card fetch open (its /runlog sibling and the board
+  // poll pass straight through); __heldDone resolves only once the body landed,
+  // so the release below needs no sleep to know the response was delivered
+  await page.eval(`(() => {
+    window.__origFetch = window.fetch;
+    window.__held = false;
+    window.__cardActions = [];
+    const gate = new Promise((resolve) => { window.__release = resolve; });
+    window.fetch = (input, init) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      if ((init?.method || 'GET') !== 'GET' && url.includes('/api/cards/')) {
+        window.__cardActions.push(url);
+      }
+      if (!window.__held && url.includes('/api/cards/task-0002?')) {
+        window.__held = true;
+        window.__heldDone = gate
+          .then(() => window.__origFetch(input, init))
+          .then((res) => res.clone().json().then(() => res));
+        return window.__heldDone;
+      }
+      return window.__origFetch(input, init);
+    };
+  })()`);
+
+  await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"]').click()`);
+  await until(async () => (await page.eval(`window.__held === true`)) || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`drawerCard`), 'task-0001',
+    'the pending child does not claim actions while the epic is still displayed');
+  assert.equal(await page.eval(`document.getElementById('drawer-id').textContent`), 'task-0001');
+  await page.eval(`document.getElementById('route-save').click()`);
+  await until(async () => (await page.eval(`window.__cardActions.length`)) || null, { timeout: BUDGET.quick });
+  assert.match(await page.eval(`window.__cardActions.at(-1)`), /\/api\/cards\/task-0001\/set\?/,
+    'a visible epic action cannot mutate the pending child');
+
+  // Escape while the child is still loading closes the modal
+  await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  assert.equal(await page.eval(`document.getElementById('drawer').hidden`), true);
+  assert.equal(await page.eval(`drawerCard === null`), true, 'closing clears the open card');
+
+  // …and releasing the response must leave it closed, not resurrect it
+  await page.eval(`(async () => {
+    window.__release();
+    await window.__heldDone;
+    for (let i = 0; i < 5; i++) await new Promise((r) => requestAnimationFrame(r));
+  })()`);
+  assert.equal(await page.eval(`document.getElementById('drawer').hidden`), true,
+    'the cancelled open\'s late response does not re-show the modal');
+  assert.equal(await page.eval(`document.getElementById('drawer-backdrop').hidden`), true);
+  assert.equal(await page.eval(`document.getElementById('board').inert`), false,
+    'a cancelled open does not re-inert the board behind an invisible modal');
+  assert.equal(await page.eval(`drawerCard === null`), true);
+  await page.eval(`window.fetch = window.__origFetch`);
+
+  // the staleness token must not over-cancel: the same subtask still opens
+  await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+  await until(async () => (await page.eval(
+    `!document.getElementById('drawer').hidden && document.getElementById('drawer-id').textContent === 'task-0001'`,
+  )) || null, { timeout: BUDGET.quick });
+  await page.eval(`document.querySelector('.drawer-tab[data-tab="subtasks"]').click()`);
+  await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"]').click()`);
+  await until(async () =>
+    (await page.eval(`document.getElementById('drawer-id').textContent === 'task-0002'`)) || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`document.getElementById('drawer').hidden`), false);
+  assert.equal(await page.eval(`drawerCard`), 'task-0002', 'the reopened card is live, not an inoperative modal');
+  assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /Alpha subtask/);
+  await page.eval(`document.getElementById('drawer-close').click()`);
+
+  assert.deepEqual(page.errors, [], 'no uncaught exception or console error in the cancelled-open flow');
 });

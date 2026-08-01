@@ -275,14 +275,22 @@ function initials(name) {
 function renderSubtaskRow(kid) {
   const el = $('#subtask-row-tpl').content.firstElementChild.cloneNode(true);
   el.dataset.id = kid.id;
+  el.tabIndex = 0;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', `open ${kid.title || kid.id}`);
   el.querySelector('.subtask-title').textContent = kid.title || kid.id;
   el.querySelector('.subtask-status').textContent = kid.status || '';
   const dep = el.querySelector('.subtask-dep');
   const { blocked, waitingOn } = TodomdHierarchy.dependencyState(kid, boardData.cards);
-  dep.textContent = blocked ? `🔒 waiting on ${waitingOn[0].id}` : '';
+  dep.textContent = blocked ? `🔒 waiting on ${waitingOn.map((item) => item.id).join(', ')}` : 'ready';
   const av = el.querySelector('.subtask-assignee');
   if (kid.assignee) { av.textContent = initials(kid.assignee); av.title = `@${kid.assignee}`; }
-  el.addEventListener('click', (e) => { e.stopPropagation(); openDrawer(kid.id); });
+  else { av.textContent = 'unassigned'; av.classList.add('unassigned'); }
+  const open = (e) => { e.stopPropagation(); openDrawer(kid.id); };
+  el.addEventListener('click', open);
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(e); }
+  });
   return el;
 }
 
@@ -415,14 +423,90 @@ function depChip(id, state) {
   return `<span class="dep-chip ${done ? 'dep-done' : 'dep-blocked'}">${done ? '' : '🔒 '}${esc(id)} <span class="rel-status">${esc(status)}</span></span>`;
 }
 
+// Splits the raw "## Chunks" section (planner's fenced yaml breakdown, plus any
+// trailing prose) out of a card body — mirrors src/board.js parseChunks's
+// fenced-aware "## " heading split exactly, so the drawer's idea of "the
+// Chunks section" and the parser's idea never disagree.
+function splitChunksSection(body) {
+  const raw = body || '';
+  let fenced = false;
+  const sections = [{ prefix: '', text: '' }];
+  for (const ln of raw.split('\n')) {
+    if (/^\s*(```|~~~)/.test(ln)) fenced = !fenced;
+    if (!fenced && /^## /.test(ln)) sections.push({ prefix: '## ', text: ln.slice(3) + '\n' });
+    else sections[sections.length - 1].text += ln + '\n';
+  }
+  const idx = sections.findIndex((s) => s.prefix && /^Chunks\s*(\r?\n|$)/.test(s.text));
+  if (idx === -1) return { body: raw, planner: '' };
+  const planner = sections[idx].text.replace(/^Chunks\r?\n?/, '').trim();
+  const body2 = sections.filter((_, i) => i !== idx).map((s) => s.prefix + s.text).join('');
+  return { body: body2, planner };
+}
+
+/* ── drawer tabs: Details / Subtasks (epics only) ── */
+let drawerTab = 'details';
+let drawerReturnFocus = null;
+// Generation token for openDrawer's in-flight card fetch. Opening or closing the
+// modal invalidates any open still awaiting its response, so a reply that lands
+// after an Escape (or after you moved on to another card) can't re-show the
+// modal or overwrite fresher content — same idea as backfillRunLog's guard.
+let drawerOpenSeq = 0;
+const drawerEl = $('#drawer');
+const drawerBackdropEl = $('#drawer-backdrop');
+const drawerBackground = [document.querySelector('.topbar'), $('#banners'), boardEl].filter(Boolean);
+
+function drawerFocusable() {
+  return [...drawerEl.querySelectorAll('button, [href], input, select, textarea, details > summary, [tabindex]')]
+    .filter((el) => !el.disabled && el.tabIndex !== -1 && !el.closest('[hidden]') && el.getClientRects().length);
+}
+
+function showDrawer() {
+  if (drawerEl.hidden) drawerReturnFocus = document.activeElement;
+  drawerBackdropEl.hidden = false;
+  drawerEl.hidden = false;
+  drawerBackground.forEach((el) => { el.inert = true; });
+  requestAnimationFrame(() => $('#drawer-close').focus());
+}
+
+function closeDrawer() {
+  drawerEl.hidden = true;
+  drawerBackdropEl.hidden = true;
+  drawerBackground.forEach((el) => { el.inert = false; });
+  drawerOpenSeq++; // a pending open must not re-show the modal after this close
+  drawerCard = null;
+  const target = drawerReturnFocus;
+  drawerReturnFocus = null;
+  if (target?.isConnected) target.focus();
+}
+
+function setDrawerTab(tab) {
+  drawerTab = tab;
+  $('#drawer-details').hidden = tab !== 'details';
+  $('#drawer-subtasks').hidden = tab !== 'subtasks';
+  document.querySelectorAll('.drawer-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+}
+$('#drawer-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.drawer-tab');
+  if (btn) setDrawerTab(btn.dataset.tab);
+});
+
 /* ── drawer ── */
 async function openDrawer(id) {
+  const seq = ++drawerOpenSeq;
+  const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
+  // Bail before touching the DOM if the modal was closed (Escape/backdrop/close)
+  // or another card was opened while this fetch was in flight — otherwise
+  // showDrawer() below would re-open the modal with drawerCard already cleared,
+  // leaving every action button (answer, move, archive, delete…) a silent no-op.
+  if (seq !== drawerOpenSeq) return;
+  // Do not point action controls at the requested card until its data is ready
+  // to replace the currently rendered card. During a slow child fetch the old
+  // card remains visible, so its controls must continue to target that old ID.
   drawerCard = id;
   $('#run-log').textContent = '';
   $('#drawer-run').hidden = true;
   $('#drawer-cancel').hidden = !runStates[id];
   backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
-  const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
   $('#drawer-id').textContent = card.data.id;
   $('#drawer-title').textContent = card.data.title;
   $('#drawer-meta').innerHTML = [
@@ -434,6 +518,23 @@ async function openDrawer(id) {
     // no way to read it, answer its question, or delete it)
     ['labels', asList(card.data.labels).join(', ') || null],
   ].filter(([, v]) => v).map(([k, v]) => `<span class="meta-chip">${esc(k)} <b>${esc(String(v))}</b></span>`).join('');
+  // Subtasks view (epics only) replaces the raw "## Chunks" planner YAML in the
+  // main details flow — the fenced block is still reachable in a collapsed,
+  // closed-by-default Planner record for auditability.
+  const isEpic = !!card.data.epic;
+  $('#drawer-tabs').hidden = !isEpic;
+  setDrawerTab('details'); // reset so a click-through from a subtask row never lands on a tab the child doesn't have
+  const { body: bodyForDisplay, planner } = isEpic ? splitChunksSection(card.body) : { body: card.body, planner: '' };
+  $('#drawer-planner').hidden = !isEpic || !planner;
+  $('#drawer-planner').open = false; // always closed by default, even reopening a different epic
+  $('#drawer-planner-body').textContent = planner;
+  const subtasksList = $('#drawer-subtasks-list');
+  subtasksList.innerHTML = '';
+  if (isEpic) {
+    const kids = TodomdHierarchy.childrenOf(boardData.cards, card.data.id);
+    if (kids.length) kids.forEach((kid) => subtasksList.appendChild(renderSubtaskRow(kid)));
+    else subtasksList.innerHTML = '<li class="subtask-empty">no subtasks yet</li>';
+  }
   // relationship section: epic → children, chunk → parent + deps
   const relEl = $('#drawer-rel');
   if (card.data.epic) {
@@ -467,7 +568,7 @@ async function openDrawer(id) {
     $('#criteria-fill').classList.toggle('full', critDone === critTotal);
     $('#criteria-label').textContent = `${critDone}/${critTotal} criteria`;
   }
-  $('#drawer-body').innerHTML = mdToHtml(card.body);
+  $('#drawer-body').innerHTML = mdToHtml(bodyForDisplay);
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
   $('#route-agent').value = card.data.agent || 'claude';
   setModelOptions($('#route-agent').value); // suggestions match the card's vendor
@@ -493,7 +594,7 @@ async function openDrawer(id) {
   const q = card.data.question;
   $('#drawer-question').hidden = !q;
   if (q) { $('#question-text').textContent = q; $('#answer-input').value = ''; }
-  $('#drawer').hidden = false;
+  showDrawer();
 }
 
 $('#drawer-rel').addEventListener('click', (e) => {
@@ -516,7 +617,7 @@ $('#answer-submit').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'failed');
     toast('answered — resuming the build');
-    $('#drawer').hidden = true;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -540,7 +641,7 @@ $('#drawer-archive').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'failed');
     toast(archiving ? 'archived' : 'restored');
-    $('#drawer').hidden = true;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -561,7 +662,7 @@ $('#drawer-delete').addEventListener('click', async () => {
     if (!res.ok) { resetDeleteBtn(); return toast(out.error || 'delete failed'); }
     toast('deleted');
     resetDeleteBtn();
-    $('#drawer').hidden = true;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -577,7 +678,7 @@ $('#move-apply').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'move failed');
     toast(out.warning || `moved to ${$('#move-select').value}`);
-    $('#drawer').hidden = true;
+    closeDrawer();
     drawerCard = null;
     loadBoard();
   } catch {
@@ -626,7 +727,6 @@ async function uploadFiles(files) {
 }
 $('#drawer-attach').addEventListener('click', () => $('#attach-input').click());
 $('#attach-input').addEventListener('change', (e) => { uploadFiles(e.target.files); e.target.value = ''; });
-const drawerEl = $('#drawer');
 drawerEl.addEventListener('dragover', (e) => { e.preventDefault(); drawerEl.classList.add('drag-file'); });
 drawerEl.addEventListener('dragleave', () => drawerEl.classList.remove('drag-file'));
 drawerEl.addEventListener('drop', (e) => {
@@ -650,8 +750,21 @@ $('#drawer-body').addEventListener('click', async (e) => {
   } catch { toast('server unreachable'); }
 });
 
-$('#drawer-close').addEventListener('click', () => { $('#drawer').hidden = true; drawerCard = null; });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#drawer').hidden = true; drawerCard = null; } });
+$('#drawer-close').addEventListener('click', closeDrawer);
+drawerBackdropEl.addEventListener('click', (e) => { if (e.target === drawerBackdropEl) closeDrawer(); });
+document.addEventListener('keydown', (e) => {
+  if (drawerEl.hidden) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeDrawer(); return; }
+  if (e.key !== 'Tab') return;
+  const focusable = drawerFocusable();
+  if (!focusable.length) { e.preventDefault(); drawerEl.focus(); return; }
+  const first = focusable[0], last = focusable.at(-1);
+  if (e.shiftKey && (document.activeElement === first || !drawerEl.contains(document.activeElement))) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && (document.activeElement === last || !drawerEl.contains(document.activeElement))) {
+    e.preventDefault(); first.focus();
+  }
+});
 $('#drawer-cancel').addEventListener('click', async () => {
   if (!drawerCard) return;
   const res = await fetch(`/api/cards/${drawerCard}/cancel?project=${encodeURIComponent(currentProject)}`,
@@ -667,8 +780,7 @@ $('#drawer-retry-verify').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not retry verification');
     toast('verification retry started');
-    $('#drawer').hidden = true;
-    drawerCard = null;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -680,8 +792,7 @@ $('#drawer-resume-build').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not resume build');
     toast('build resumed in the preserved worktree');
-    $('#drawer').hidden = true;
-    drawerCard = null;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
@@ -693,8 +804,7 @@ $('#drawer-restart-build').addEventListener('click', async () => {
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not restart build');
     toast('fresh build started');
-    $('#drawer').hidden = true;
-    drawerCard = null;
+    closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
 });
