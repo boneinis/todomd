@@ -13,9 +13,10 @@ const ESP_HEADERS = [
   'list-id', 'x-campaign', 'x-campaign-id', 'x-campaignid', 'x-mailgun-sid', 'x-sg-eid', 'x-sg-id',
   'x-ses-outgoing', 'x-mc-user', 'x-mandrill-user', 'x-mailchimp-id', 'x-klaviyo-message-id',
 ];
-const OOO_RE = /\b(out[- ]of[- ](?:the[- ])?office|automatic reply|auto[- ]?reply|vacation (?:response|reply)|(?:currently )?on vacation|away from (my |the )?(office|email|desk))\b/i;
+const AUTO_REPLY_SUBJECT_RE = /^(?:automatic reply|auto[- ]?reply|out[- ]of[- ](?:the[- ])?office)(?:\s*:|\s*$)/i;
+const AUTO_REPLY_BODY_RE = /(?:^|\n)\s*(?:this is (?:an? )?automatic reply\b|i(?: am|'m) (?:currently )?(?:out[- ]of[- ](?:the[- ])?office|on vacation|away from (?:my |the )?(?:office|email|desk))\b)/i;
 const BOUNCE_ADDR_RE = /\b(mailer-daemon|postmaster)\b/i;
-const BOUNCE_SUBJECT_RE = /\b(undeliverable|delivery status notification|returned to sender|delivery (?:has )?failed|delivery failure|mail delivery failed)\b/i;
+const BOUNCE_SUBJECT_RE = /^(?:undeliverable|delivery status notification|returned to sender|delivery (?:has )?failed(?:\s+to\b[^:]*)?|delivery failure|mail delivery failed)(?:\s*:|\s*$|\s*\()/i;
 const FOOTER_RE = /(?:click here to unsubscribe|unsubscribe from (?:this|these|our) emails?|(?:^|\n|\s{2,})unsubscribe|view(?: (?:this|the|your|an?|it))?(?: (?:email|message))? in (?:an? |your )?browser|manage your (?:email )?preferences)[\s.!]*$/i;
 const MIN_BODY_LEN = 20; // shorter than this and there's rarely enough to act on
 
@@ -116,7 +117,9 @@ export function screenEmail(parsed) {
   const noSubjectPlaceholder = /^[[(<]?\s*no\s+subject\s*[\])>]?$/i.test(subjectCore);
   if (!subjectCore || noSubjectPlaceholder || !/[a-z0-9]/i.test(subjectCore)) unclear.push('no-subject');
 
-  if (autoSubmitted === 'auto-replied' || OOO_RE.test(subject) || OOO_RE.test(bodyText)) unclear.push('auto-reply');
+  if (autoSubmitted === 'auto-replied' || AUTO_REPLY_SUBJECT_RE.test(subject) || AUTO_REPLY_BODY_RE.test(bodyText)) {
+    unclear.push('auto-reply');
+  }
 
   const contentType = headers && typeof headers.get === 'function' ? headers.get('content-type') : null;
   const deliveryReport = String(contentType?.value || contentType || '').toLowerCase() === 'multipart/report'

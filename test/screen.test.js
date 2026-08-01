@@ -722,13 +722,16 @@ test('pollSource: a poison message does not starve later UIDs and remains recove
   assert.equal(triaged.length, 1, 'the recovered work card still enters normal triage');
 });
 
-test('pollSource: human bug reports about footer features stay work and trigger triage', async () => {
+test('pollSource: human bug reports about automated-mail features stay work and trigger triage', async () => {
   isolateHome();
   const repo = makeRepo();
   const cases = [
     ['Unsubscribe endpoint returns 500', 'The unsubscribe endpoint returns a 500 after submitting the account form.'],
     ['Manage preferences page returns 500', 'When I click manage your email preferences, the server returns a 500.'],
     ['View-in-browser link is broken', 'The view this email in browser link returns a 404 for customer receipts.'],
+    ['Out-of-office settings fail to save', 'The out-of-office settings form loses the selected return date after saving.'],
+    ['Vacation response strips Unicode', 'The vacation response editor removes accented characters from the saved template.'],
+    ['Delivery failed alert has wrong link', 'The delivery failed alert links to the wrong message in the activity view.'],
   ];
   const messages = [];
   for (const [i, [subject, detail]] of cases.entries()) {
