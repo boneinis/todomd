@@ -137,6 +137,7 @@ test('screenEmail: an HTML-only body is held, and its footer is still read', () 
   const htmlOnly = screenEmail(work({ text: '', html: '<p>Please look at the export button.</p>' }));
   assert.equal(htmlOnly.verdict, 'unclear');
   assert.ok(htmlOnly.signals.includes('html-only'));
+  assert.ok(!htmlOnly.signals.includes('empty-body'), 'readable HTML is not described as an empty body');
   // html-only (weak) + a footer found in the stripped HTML (weak) = marketing
   const withFooter = screenEmail(work({
     from: { text: 'Shop <no-reply@shop.example.com>', value: [{ address: 'no-reply@shop.example.com' }] },
@@ -894,12 +895,49 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       'Click the unsubscribe link below.',
       '',
     ]),
+    rawEmail([
+      'From: Support <support@example.com>',
+      'To: intake@example.com',
+      'Subject: Automated response: Ticket received',
+      'Message-ID: <automated-response@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'We have received your request and a support agent will reply soon.',
+      '',
+    ]),
+    rawEmail([
+      'From: Shop <no-reply@shop.example.com>',
+      'To: intake@example.com',
+      'Subject: Monthly shop news',
+      'Message-ID: <to-unsubscribe@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'New products and offers are available this month.',
+      '',
+      'To unsubscribe, click here: https://shop.example.com/leave',
+      '',
+    ]),
+    rawEmail([
+      'From: Shop <no-reply@shop.example.com>',
+      'To: intake@example.com',
+      'Subject: More shop news',
+      'Message-ID: <unsubscribe-here@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Another collection of products selected for your account.',
+      '',
+      'Unsubscribe here: https://shop.example.com/leave',
+      '',
+    ]),
   ];
   assert.equal(screenEmail(await simpleParser(messages[0])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[1])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[2])).verdict, 'unclear');
+  assert.equal(screenEmail(await simpleParser(messages[3])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[4])).verdict, 'spam');
 
   const fakeClient = {
-    mailbox: { uidValidity: '1', uidNext: 3 },
+    mailbox: { uidValidity: '1', uidNext: messages.length + 1 },
     on() { return this; },
     async connect() {},
     async getMailboxLock() { return { release() {} }; },
@@ -918,9 +956,11 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
     onCardCallback: (_project, id) => triaged.push(id),
   });
 
-  assert.equal(cardFiles(repo).length, 1, 'only the held auto-response creates a card');
-  assert.equal(readCard(repo, cardFiles(repo)[0].match(/task-\d+/)[0]).data.status, 'Needs Human');
-  assert.equal(auditLines(repo).length, 2);
+  assert.equal(cardFiles(repo).length, 2, 'only the held auto-responses create cards');
+  for (const file of cardFiles(repo)) {
+    assert.equal(readCard(repo, file.match(/task-\d+/)[0]).data.status, 'Needs Human');
+  }
+  assert.equal(auditLines(repo).length, messages.length);
   assert.deepEqual(triaged, []);
 });
 
