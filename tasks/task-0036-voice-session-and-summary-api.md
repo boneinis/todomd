@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbe62-1feb-76d1-8f84-8b36ce6745a5
+session_id: 019fbe70-1463-7662-bfdd-5224cba47c64
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -81,3 +81,7 @@ an action but cannot execute or confirm it.
 - 2026-08-01 17:42Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: 1. `src/pipeline.js:162` silently converts any scalar `dependencies:` value to an empty list. A reproduced Planned card with `dependencies: task-0002`, while task-0002 remained in Review, received a successful approve proposal. Normalize scalar dependencies instead of discarding them, and test both voice and human approval gates.
 2. `src/voice.js:446` and `src/voice.js:501` validate optional card/
+- 2026-08-01 17:53Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Configured `npm test` passed with normal listener/process permissions: 319 core/API tests and 5 UI tests. `git diff --check main...HEAD` also passed, and the worktree remained clean.
+
+Actionable defect: stale-state binding does not include the preserved worktree’s identity. `fingerprint()` in src/voice.js records only `worktree` versus `no-worktree`. I prepared a visible retriage while `worktree: 
