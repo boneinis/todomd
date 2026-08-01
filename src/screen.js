@@ -169,6 +169,23 @@ export function findIntakeAudit(repoPath, intakeKey) {
   return null;
 }
 
+// The most recent audit records, newest first, bounded to `limit` — backs the
+// intake-audit API and the UI's Screened email list. `intakeKey` is an internal
+// dedup identifier (it can embed the mailbox account), so it's dropped here.
+export function readIntakeAudit(repoPath, limit = 50) {
+  let lines;
+  try { lines = fs.readFileSync(path.join(repoPath, AUDIT_FILE), 'utf8').split('\n').filter(Boolean); }
+  catch { return []; }
+  const records = [];
+  for (let i = lines.length - 1; i >= 0 && records.length < limit; i--) {
+    try {
+      const { intakeKey, ...record } = JSON.parse(lines[i]);
+      records.push(record);
+    } catch { /* skip a corrupt operational-log line */ }
+  }
+  return records;
+}
+
 // One JSON line per screened message — timestamp, source label, from, subject,
 // messageId, verdict, reason, and the card id when one was created. Every
 // verdict is logged, not just the screened-out ones: a `spam` line is the only

@@ -19,9 +19,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { isolateHome, makeRepo, until, git, BUDGET } from '../helpers.js';
+import { isolateHome, makeRepo, writeCard, until, git, BUDGET } from '../helpers.js';
 import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
+import { appendIntakeAudit } from '../../src/screen.js';
 import { openPage } from '../browser.js';
 
 function freePort() {
@@ -183,5 +184,70 @@ test('UI smoke: a viewer is not told its session expired when it opens a card', 
       `document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent`);
     assert.doesNotMatch(toast, /session expired/, 'a permitted-but-limited viewer is never told to restart todomd');
     assert.deepEqual(page.errors, [], 'no console error on the viewer path');
+  }
+});
+
+test('UI smoke: screened email list renders seeded records, and a held email card sits in Needs Human', async (t) => {
+  if (!page) return t.skip(SKIP);
+  {
+    // a separate project so this doesn't disturb hostileBoard()'s card count
+    const repo = makeRepo();
+    const cfg = path.join(repo, '.todomd/config.yml');
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+    addProject(repo);
+    const emailProject = path.basename(repo);
+
+    writeCard(repo, 'task-0001', {
+      status: 'Needs Human',
+      title: 'Quick question about export',
+      body: 'From: Jane Doe <jane@example.com>\n\nDoes the export feature support CSV?',
+      extra: 'needs_human_reason: "Unclear whether this is real work (body is very short)"\n',
+    });
+    await appendIntakeAudit(repo, {
+      timestamp: '2026-07-31T10:00:00.000Z', source: 'main', from: 'Shop <no-reply@shop.example.com>',
+      subject: 'Summer sale', messageId: '<a@shop.example.com>', verdict: 'spam',
+      reason: 'Looks like marketing/automated mail (has a List-Unsubscribe header)', card: '',
+    });
+    await appendIntakeAudit(repo, {
+      timestamp: '2026-07-31T11:00:00.000Z', source: 'main', from: 'Jane Doe <jane@example.com>',
+      subject: 'Quick question about export', messageId: '<b@example.com>', verdict: 'unclear',
+      reason: 'Unclear whether this is real work (body is very short)', card: 'task-0001',
+    });
+
+    page.errors.length = 0;
+    // the project switcher (not a URL param) is how the client picks a board —
+    // reload, wait for the registry-backed <select> to list both projects, then
+    // switch to the freshly-registered one the way a user would.
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}`);
+    await until(async () => (await page.eval(`document.querySelectorAll('#project option').length`)) >= 2 || null,
+      { timeout: BUDGET.stage });
+    await page.eval(`(() => {
+      const sel = document.getElementById('project');
+      sel.value = ${JSON.stringify(emailProject)};
+      sel.dispatchEvent(new Event('change'));
+    })()`);
+
+    // the held email card renders in the Needs Human column
+    await until(async () => (await page.eval(
+      `!!document.querySelector('.column[data-status="Needs Human"] [data-id="task-0001"]')`)) || null,
+    { timeout: BUDGET.stage });
+
+    // open the intake settings panel and wait for the screened-email list to load
+    await page.eval(`document.getElementById('intake-btn').click()`);
+    await until(async () => (await page.eval(`!document.getElementById('intake-backdrop').hidden`)) || null, { timeout: BUDGET.quick });
+    await until(async () => (await page.eval(`document.querySelectorAll('#intake-audit-list .intake-audit-row').length`)) || null,
+      { timeout: BUDGET.quick });
+
+    const rows = await page.eval(
+      `[...document.querySelectorAll('#intake-audit-list .intake-audit-row')].map((r) => r.textContent)`);
+    assert.equal(rows.length, 2);
+    assert.match(rows[0], /Quick question about export/, 'newest record first');
+    assert.match(rows[0], /unclear/);
+    assert.match(rows[1], /Summer sale/);
+    assert.match(rows[1], /spam/);
+    assert.equal(await page.eval(`document.getElementById('intake-audit-empty').hidden`), true,
+      'the empty state is hidden once records are present');
+
+    assert.deepEqual(page.errors, [], 'no uncaught exception or console error rendering the screened-email list');
   }
 });

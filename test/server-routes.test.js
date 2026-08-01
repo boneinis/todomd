@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
+import { readCard } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 
 // The epic-delete test drives a build that hangs until it's signalled. A live
@@ -447,5 +448,114 @@ test('API attachment uploads are capped: the 5th concurrent upload gets a 429', 
     await Promise.all(pending);
     r = await fetch(`${base}/api/cards/${id}/attach${q}`, { method: 'POST', headers: h, body: 'after' });
     assert.equal(r.status, 200);
+  } finally { srv.close(); }
+});
+
+/* ── email push API (task-0025): same screen as mailbox polling ── */
+
+const rawEmail = (lines) => lines.join('\r\n');
+const RAW_PUSH_NEWSLETTER = rawEmail([
+  'From: Shop News <news@shop.example.com>',
+  'To: intake@example.com',
+  'Subject: Summer sale is on',
+  'Message-ID: <push-newsletter-1@shop.example.com>',
+  'List-Unsubscribe: <mailto:leave@shop.example.com>',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  'Big savings this week on everything in the store. Come take a look.',
+  '',
+]);
+const RAW_PUSH_HTML_ONLY = rawEmail([
+  'From: Web Form <forms@example.com>',
+  'To: intake@example.com',
+  'Subject: New website update',
+  'Message-ID: <push-html-only-1@example.com>',
+  'Content-Type: text/html; charset=utf-8',
+  '',
+  '<p>This message has enough visible content to look actionable after HTML-to-text conversion.</p>',
+  '',
+]);
+const RAW_PUSH_BUG_REPORT = rawEmail([
+  'From: Jane Doe <jane@example.com>',
+  'To: intake@example.com',
+  'Subject: Export button 500s on filtered reports',
+  'Message-ID: <push-real-1@example.com>',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  'Repro: open /reports, filter by month, click Export. Server returns a 500.',
+  '',
+]);
+
+test('email push API: applies the same screen as mailbox polling and reports the verdict', async () => {
+  isolateHome();
+  const { repo, name, base, srv, q } = await boot();
+  const full = { 'x-todomd-token': srv.token, origin: base, 'content-type': 'message/rfc822' };
+  const push = (raw) => fetch(`${base}/api/projects/${encodeURIComponent(name)}/email`, { method: 'POST', headers: full, body: raw });
+  try {
+    const boardBefore = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    const startCount = boardBefore.cards.length;
+
+    // spam — the exact List-Unsubscribe signal pollSource screens on — creates no card
+    let r = await push(RAW_PUSH_NEWSLETTER);
+    assert.equal(r.status, 200);
+    let out = await r.json();
+    assert.equal(out.verdict, 'spam');
+    assert.equal('id' in out, false, 'a spam verdict reports no card id');
+    assert.match(out.reason, /List-Unsubscribe/);
+    let board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    assert.equal(board.cards.length, startCount, 'no card was created for the spam push');
+
+    // unclear — HTML-only body — held in Needs Human, not dropped
+    r = await push(RAW_PUSH_HTML_ONLY);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'unclear');
+    assert.match(out.id, /^task-\d+$/);
+    const held = readCard(repo, out.id);
+    assert.equal(held.data.status, 'Needs Human');
+    assert.match(held.data.needs_human_reason, /HTML-only/i);
+
+    // work — an ordinary bug report still creates a normal Review card
+    r = await push(RAW_PUSH_BUG_REPORT);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'work');
+    assert.match(out.id, /^task-\d+$/);
+    const worked = readCard(repo, out.id);
+    assert.equal(worked.data.status, 'Review');
+    assert.equal(worked.data.source, 'email');
+
+    board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    assert.equal(board.cards.length, startCount + 2, 'exactly the unclear and work pushes created cards');
+
+    // a viewer token cannot push (mutating, full access only)
+    const viewer = deviceToken('token-viewer');
+    r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/email`, {
+      method: 'POST', headers: { 'x-todomd-token': viewer, origin: base, 'content-type': 'message/rfc822' }, body: RAW_PUSH_BUG_REPORT,
+    });
+    assert.equal(r.status, 403);
+
+    // unknown project → 404; malformed body → 400
+    r = await fetch(`${base}/api/projects/nope/email`, { method: 'POST', headers: full, body: RAW_PUSH_BUG_REPORT });
+    assert.equal(r.status, 404);
+    r = await push('');
+    assert.equal(r.status, 400);
+
+    // the audit endpoint returns the seeded records newest first
+    r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': srv.token } });
+    assert.equal(r.status, 200);
+    const { records } = await r.json();
+    assert.ok(records.length >= 3);
+    assert.equal(records[0].subject, 'Export button 500s on filtered reports', 'most recent push is first');
+    assert.equal(records[0].verdict, 'work');
+    assert.equal(records[1].subject, 'New website update');
+    assert.equal(records[1].verdict, 'unclear');
+    assert.equal(records[2].subject, 'Summer sale is on');
+    assert.equal(records[2].verdict, 'spam');
+    assert.equal('intakeKey' in records[0], false, 'the internal dedup key is not exposed to the client');
+
+    // a viewer token cannot read the audit log either
+    r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': viewer } });
+    assert.equal(r.status, 403);
   } finally { srv.close(); }
 });
