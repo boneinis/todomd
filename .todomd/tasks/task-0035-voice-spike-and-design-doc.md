@@ -1,7 +1,7 @@
 ---
 id: task-0035
 title: Voice spike and design doc
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
