@@ -1,7 +1,7 @@
 ---
 id: task-0025
 title: Apply the screen to the push API and surface screened mail
-status: Needs Human
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0025
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 9.4887
-needs_human_reason: error
+needs_human_reason:
 recovery_stage:
 ---
 
