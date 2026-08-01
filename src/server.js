@@ -30,14 +30,24 @@ const MAX_BODY = 1024 * 1024; // 1 MB
 // the 25 MB per-request cap) — beyond the cap the extra upload gets a 429.
 const MAX_UPLOADS = 4;
 let uploadsInFlight = 0;
-// Returns the body string, or null when it exceeds MAX_BODY (caller sends 413).
-async function readBody(req) {
-  let body = '';
+// Returns the body bytes, or null when it exceeds MAX_BODY (caller sends 413).
+// Keep this byte-safe: message/rfc822 bodies may contain binary MIME parts.
+async function readBodyBuffer(req) {
+  const chunks = [];
+  let length = 0;
   for await (const chunk of req) {
-    body += chunk;
-    if (body.length > MAX_BODY) return null;
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    length += bytes.length;
+    if (length > MAX_BODY) return null;
+    chunks.push(bytes);
   }
-  return body;
+  return Buffer.concat(chunks, length);
+}
+
+// JSON/form callers consume text; the raw-email route calls readBodyBuffer.
+async function readBody(req) {
+  const body = await readBodyBuffer(req);
+  return body === null ? null : body.toString('utf8');
 }
 
 // Real card ids come from createCard: task-0001 (zero-padded, growing past 4
@@ -45,7 +55,8 @@ async function readBody(req) {
 // or other junk in a card route is a clean 400, not a filename-lookup accident.
 const CARD_ID = /^task-\d{1,6}(-[\w-]*)?$/;
 import * as pipeline from './pipeline.js';
-import { startIntake, restartIntake, publicIntake, saveBoardIntake, testIntake } from './intake.js';
+import { startIntake, restartIntake, publicIntake, saveBoardIntake, testIntake, intakeMessage, parseInboundMessage } from './intake.js';
+import { readIntakeAudit } from './screen.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml' };
@@ -233,6 +244,49 @@ export function startServer({ port = 7337, lan = false } = {}) {
         const r = await testIntake(name);
         return json(res, r.ok ? 200 : 400, r);
       }
+    }
+    // Push a raw email into the board — a webhook/automation counterpart to
+    // IMAP polling. Screened through the exact same screenEmail/intakeMessage
+    // path pollSource uses, so a pushed message gets identical work/spam/unclear
+    // handling and audit logging (no card, or a Needs Human hold, for the same
+    // reasons a polled message would get one).
+    const emailPushMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/email$/);
+    if (emailPushMatch && req.method === 'POST') {
+      let pname;
+      try { pname = decodeURIComponent(emailPushMatch[1]); } catch { return json(res, 400, { error: 'bad project name' }); }
+      const proj = findProject(pname);
+      if (!proj) return json(res, 404, { error: 'unknown project' });
+      const body = await readBodyBuffer(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      if (!body.length) return json(res, 400, { error: 'empty body — send the raw email source (RFC 5322 / message/rfc822)' });
+      let parsed;
+      try { parsed = await parseInboundMessage(body); } catch (e) { return json(res, 400, { error: `couldn't parse email: ${e.message}` }); }
+      // dedup key mirrors mailboxIntakeKey's shape but scoped to this project +
+      // route instead of a mailbox account; messages with no Message-ID skip
+      // dedup entirely rather than risk colliding on an empty key
+      const intakeKey = parsed.messageId ? JSON.stringify(['push', proj.name, parsed.messageId]) : '';
+      const outcome = await intakeMessage(proj, parsed, { label: 'push', intakeKey });
+      if (outcome.error) return json(res, 400, { error: outcome.error });
+      if (outcome.verdict === 'work' && (outcome.created || outcome.recovered)) {
+        pipeline.maybeTriage(proj, outcome.id).catch(() => {}); // only real work is auto-triaged
+      }
+      return json(res, 200, {
+        ok: true, verdict: outcome.verdict, reason: outcome.reason || '', duplicate: !!outcome.duplicate,
+        ...(outcome.id ? { id: outcome.id } : {}),
+      });
+    }
+    // Recent screened-out/held email, newest first — backs the Screened email
+    // list in the intake settings panel. Full token only, same as /api/intake:
+    // sender/subject/reason are meaningful content, not just connection status.
+    const auditMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/intake-audit$/);
+    if (auditMatch && req.method === 'GET') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      let pname;
+      try { pname = decodeURIComponent(auditMatch[1]); } catch { return json(res, 400, { error: 'bad project name' }); }
+      const proj = findProject(pname);
+      if (!proj) return json(res, 404, { error: 'unknown project' });
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+      return json(res, 200, { records: readIntakeAudit(proj.path, limit) });
     }
     // LAN access state + runtime toggle. Enabling exposes the board to the
     // network, so the toggle needs the PRIMARY desktop token (not mobile).

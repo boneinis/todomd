@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { simpleParser } from 'mailparser';
 import { makeRepo, isolateHome, git } from './helpers.js';
-import { screenEmail, appendIntakeAudit } from '../src/screen.js';
+import { screenEmail, appendIntakeAudit, readIntakeAudit } from '../src/screen.js';
 import { intakeMessage, parseInboundMessage, pollSource } from '../src/intake.js';
 import { readCard } from '../src/board.js';
 
@@ -243,6 +243,32 @@ test('appendIntakeAudit: appends decisions without dirtying a legacy board', asy
   assert.equal(git(repo, ['status', '--porcelain']), '', 'the legacy checkout stays clean');
   assert.match(git(repo, ['check-ignore', '-v', '.todomd/intake-audit.jsonl']), /info\/exclude/,
     'the operational log is protected by a local Git exclusion');
+});
+
+test('readIntakeAudit: sorts by timestamp before applying the newest-record limit', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  await appendIntakeAudit(repo, { timestamp: '2026-08-01T12:00:00.000Z', subject: 'newest' });
+  await appendIntakeAudit(repo, { timestamp: '2026-08-01T10:00:00.000Z', subject: 'oldest' });
+  await appendIntakeAudit(repo, { timestamp: '2026-08-01T11:00:00.000Z', subject: 'middle' });
+
+  assert.deepEqual(readIntakeAudit(repo, 2).map((record) => record.subject), ['newest', 'middle']);
+});
+
+test('readIntakeAudit: accepted mail cannot crowd screened-out mail out of the window', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  // one screened-out record, then a burst of newer accepted ones larger than the
+  // default limit — filtering has to happen before the slice or the spam is lost
+  fs.writeFileSync(auditFile(repo), [
+    JSON.stringify({ timestamp: '2026-08-01T09:00:00.000Z', verdict: 'spam', subject: 'sale' }),
+    JSON.stringify({ timestamp: '2026-08-01T09:30:00.000Z', verdict: 'unclear', subject: 'Re:' }),
+    ...Array.from({ length: 60 }, (_, i) =>
+      JSON.stringify({ timestamp: `2026-08-01T10:${String(i).padStart(2, '0')}:00.000Z`, verdict: 'work', subject: `work ${i}`, card: `task-${i}` })),
+  ].join('\n') + '\n');
+
+  assert.deepEqual(readIntakeAudit(repo).map((record) => record.subject), ['Re:', 'sale']);
+  assert.equal(auditLines(repo).length, 62, 'the file still holds the full trace, including work lines');
 });
 
 test('appendIntakeAudit: trims to the newest 500 lines so it cannot grow unbounded', async () => {
@@ -587,6 +613,7 @@ test('intakeMessage: overlapping calls claim one key and perform side effects on
 
   assert.equal(results.filter((r) => r.created).length, 1);
   assert.equal(results.filter((r) => r.duplicate).length, 1);
+  assert.ok(results.every((r) => r.verdict === 'work'), 'both callers receive the original screen verdict');
   assert.equal(cardFiles(repo).length, 1);
   assert.equal(auditLines(repo).length, 1);
 });
@@ -601,7 +628,8 @@ test('intakeMessage: overlapping processes claim one key and perform side effect
   fs.writeFileSync(gate, 'go');
   const results = await resultsPromise;
 
-  assert.equal(results.filter((r) => r.verdict === 'spam').length, 1);
+  assert.equal(results.filter((r) => r.verdict === 'spam').length, 2,
+    'both processes receive the original screen verdict');
   assert.equal(results.filter((r) => r.duplicate).length, 1);
   assert.equal(cardFiles(repo).length, 0);
   assert.equal(auditLines(repo).length, 1);
@@ -611,14 +639,51 @@ test('intakeMessage: durable handled keys retain a bounded recent window', async
   isolateHome();
   const repo = makeRepo();
   const file = path.join(repo, '.todomd', 'intake-handled.json');
+  // the legacy on-disk shape: bare key strings, no decision stored with them
   fs.writeFileSync(file, JSON.stringify(Array.from({ length: 5000 }, (_, i) => `old:${i}`)));
 
   await intakeMessage({ path: repo, name: 'repo' }, work(), { label: 'main', intakeKey: 'new:key' });
 
-  const keys = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.equal(keys.length, 5000);
-  assert.equal(keys.includes('old:0'), false);
-  assert.equal(keys.at(-1), 'new:key');
+  const entries = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(entries.length, 5000);
+  assert.equal(entries.some((e) => e.key === 'old:0'), false);
+  assert.equal(entries.at(-1).key, 'new:key');
+  assert.equal(entries.at(-1).verdict, 'work', 'the screen decision is stored alongside the key');
+  assert.match(entries.at(-1).card, /^task-\d+$/);
+  assert.equal(entries[0].key, 'old:1', 'legacy string keys survive the upgrade as key-only entries');
+});
+
+// The audit log trims at 500 lines while handled keys retain 5000, so there is a
+// 4500-key window where the key outlives its audit line. A retry landing in it
+// must still report the screen verdict — 'duplicate' is not a screen outcome.
+test('intakeMessage: a retry reports the screen verdict after its audit line rotates out', async () => {
+  const cases = [
+    ['spam', RAW_NEWSLETTER, 0],
+    ['work', RAW_BUG_REPORT, 1],
+  ];
+
+  for (const [verdict, raw, expectedCards] of cases) {
+    isolateHome();
+    const repo = makeRepo();
+    const parsed = await simpleParser(raw);
+    const options = { label: 'main', intakeKey: `main:uid:rotated-${verdict}` };
+
+    const first = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
+    assert.equal(first.verdict, verdict);
+
+    // simulate the audit line being trimmed away while the handled key remains
+    fs.writeFileSync(auditFile(repo), '');
+    const retry = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
+
+    assert.equal(retry.verdict, verdict, `${verdict} survives audit rotation`);
+    assert.equal(retry.duplicate, true, verdict);
+    assert.equal(retry.created, false, verdict);
+    assert.ok(retry.reason, `${verdict} retry still explains itself`);
+    assert.equal(cardFiles(repo).length, expectedCards, `${verdict} retry creates no further card`);
+    if (expectedCards) assert.equal(retry.id, first.id, 'the retry still reports the original card');
+    else assert.equal('id' in retry, false, 'a spam retry reports no card id');
+    assert.equal(auditLines(repo).length, 0, 'a retry does not re-append the rotated audit line');
+  }
 });
 
 test('intakeMessage: an audit failure after card creation does not create a duplicate', async () => {

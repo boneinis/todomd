@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
+import { readCard } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 
 // The epic-delete test drives a build that hangs until it's signalled. A live
@@ -447,5 +448,235 @@ test('API attachment uploads are capped: the 5th concurrent upload gets a 429', 
     await Promise.all(pending);
     r = await fetch(`${base}/api/cards/${id}/attach${q}`, { method: 'POST', headers: h, body: 'after' });
     assert.equal(r.status, 200);
+  } finally { srv.close(); }
+});
+
+/* ── email push API (task-0025): same screen as mailbox polling ── */
+
+const rawEmail = (lines) => lines.join('\r\n');
+const RAW_PUSH_NEWSLETTER = rawEmail([
+  'From: Shop News <news@shop.example.com>',
+  'To: intake@example.com',
+  'Subject: Summer sale is on',
+  'Message-ID: <push-newsletter-1@shop.example.com>',
+  'List-Unsubscribe: <mailto:leave@shop.example.com>',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  'Big savings this week on everything in the store. Come take a look.',
+  '',
+]);
+const RAW_PUSH_HTML_ONLY = rawEmail([
+  'From: Web Form <forms@example.com>',
+  'To: intake@example.com',
+  'Subject: New website update',
+  'Message-ID: <push-html-only-1@example.com>',
+  'Content-Type: text/html; charset=utf-8',
+  '',
+  '<p>This message has enough visible content to look actionable after HTML-to-text conversion.</p>',
+  '',
+]);
+const RAW_PUSH_BUG_REPORT = rawEmail([
+  'From: Jane Doe <jane@example.com>',
+  'To: intake@example.com',
+  'Subject: Export button 500s on filtered reports',
+  'Message-ID: <push-real-1@example.com>',
+  'Content-Type: text/plain; charset=utf-8',
+  '',
+  'Repro: open /reports, filter by month, click Export. Server returns a 500.',
+  '',
+]);
+
+const RAW_PUSH_BINARY_ATTACHMENT = Buffer.concat([
+  Buffer.from(rawEmail([
+    'From: Jane Doe <jane@example.com>',
+    'To: intake@example.com',
+    'Subject: Binary attachment remains intact',
+    'Message-ID: <push-binary-1@example.com>',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/mixed; boundary="raw-boundary"',
+    '',
+    '--raw-boundary',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Please inspect the attached binary reproduction file for this issue.',
+    '--raw-boundary',
+    'Content-Type: application/octet-stream',
+    'Content-Disposition: attachment; filename="blob.bin"',
+    'Content-Transfer-Encoding: binary',
+    '',
+    '',
+  ]), 'ascii'),
+  Buffer.from([0, 127, 128, 255, 65]),
+  Buffer.from('\r\n--raw-boundary--\r\n', 'ascii'),
+]);
+
+test('email push API: applies the same screen as mailbox polling and reports the verdict', async () => {
+  isolateHome();
+  const { repo, name, base, srv, q } = await boot();
+  const full = { 'x-todomd-token': srv.token, origin: base, 'content-type': 'message/rfc822' };
+  const push = (raw) => fetch(`${base}/api/projects/${encodeURIComponent(name)}/email`, { method: 'POST', headers: full, body: raw });
+  try {
+    const boardBefore = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    const startCount = boardBefore.cards.length;
+
+    // spam — the exact List-Unsubscribe signal pollSource screens on — creates no card
+    let r = await push(RAW_PUSH_NEWSLETTER);
+    assert.equal(r.status, 200);
+    let out = await r.json();
+    assert.equal(out.verdict, 'spam');
+    assert.equal('id' in out, false, 'a spam verdict reports no card id');
+    assert.match(out.reason, /List-Unsubscribe/);
+    let board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    assert.equal(board.cards.length, startCount, 'no card was created for the spam push');
+
+    // webhook retries remain idempotent while still reporting the screen result
+    r = await push(RAW_PUSH_NEWSLETTER);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'spam', 'a retry preserves the original screen verdict');
+    assert.equal(out.duplicate, true);
+    assert.equal('id' in out, false);
+    board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    assert.equal(board.cards.length, startCount, 'retrying spam still creates no card');
+
+    // unclear — HTML-only body — held in Needs Human, not dropped
+    r = await push(RAW_PUSH_HTML_ONLY);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'unclear');
+    assert.match(out.id, /^task-\d+$/);
+    const held = readCard(repo, out.id);
+    assert.equal(held.data.status, 'Needs Human');
+    assert.match(held.data.needs_human_reason, /HTML-only/i);
+
+    // work — an ordinary bug report still creates a normal Review card
+    r = await push(RAW_PUSH_BUG_REPORT);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'work');
+    assert.match(out.id, /^task-\d+$/);
+    const worked = readCard(repo, out.id);
+    assert.equal(worked.data.status, 'Review');
+    assert.equal(worked.data.source, 'email');
+    const workId = out.id;
+
+    // The raw RFC 5322 endpoint must not decode the request as UTF-8 before
+    // mailparser sees it: binary MIME attachments need byte-for-byte fidelity.
+    r = await push(RAW_PUSH_BINARY_ATTACHMENT);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'work');
+    assert.deepEqual(
+      [...fs.readFileSync(path.join(repo, '.todomd', 'attachments', out.id, 'blob.bin'))],
+      [0, 127, 128, 255, 65],
+    );
+
+    r = await push(RAW_PUSH_BUG_REPORT);
+    out = await r.json();
+    assert.equal(out.verdict, 'work', 'a work retry preserves the original screen verdict');
+    assert.equal(out.duplicate, true);
+    assert.equal(out.id, workId, 'the retry reports the original card instead of creating another');
+
+    board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    assert.equal(board.cards.length, startCount + 3, 'exactly the unclear and two work pushes created cards');
+
+    // a viewer token cannot push (mutating, full access only)
+    const viewer = deviceToken('token-viewer');
+    r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/email`, {
+      method: 'POST', headers: { 'x-todomd-token': viewer, origin: base, 'content-type': 'message/rfc822' }, body: RAW_PUSH_BUG_REPORT,
+    });
+    assert.equal(r.status, 403);
+
+    // unknown project → 404; malformed body → 400
+    r = await fetch(`${base}/api/projects/nope/email`, { method: 'POST', headers: full, body: RAW_PUSH_BUG_REPORT });
+    assert.equal(r.status, 404);
+    r = await push('');
+    assert.equal(r.status, 400);
+
+    // the audit endpoint returns the screened-out records newest first — the
+    // accepted bug report is a card on the board, not screened email
+    r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': srv.token } });
+    assert.equal(r.status, 200);
+    const { records } = await r.json();
+    assert.equal(records.length, 2);
+    assert.equal(records[0].subject, 'New website update', 'most recent screened-out push is first');
+    assert.equal(records[0].verdict, 'unclear');
+    assert.equal(records[1].subject, 'Summer sale is on');
+    assert.equal(records[1].verdict, 'spam');
+    assert.equal(records.some((rec) => rec.verdict === 'work'), false, 'accepted mail is not listed as screened');
+    assert.equal('intakeKey' in records[0], false, 'the internal dedup key is not exposed to the client');
+
+    // a viewer token cannot read the audit log either
+    r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': viewer } });
+    assert.equal(r.status, 403);
+  } finally { srv.close(); }
+});
+
+// The audit file logs every verdict, but this endpoint is the Screened email
+// view. A board taking real work all day must not push its held mail out of the
+// bounded response.
+test('intake-audit endpoint: a burst of newer accepted mail cannot hide screened-out messages', async () => {
+  isolateHome();
+  const { repo, name, base, srv } = await boot();
+  try {
+    fs.mkdirSync(path.join(repo, '.todomd'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.todomd', 'intake-audit.jsonl'), [
+      JSON.stringify({ timestamp: '2026-08-01T08:00:00.000Z', source: 'push', from: 'Shop <news@shop.example.com>', subject: 'Summer sale is on', verdict: 'spam', reason: 'has a List-Unsubscribe header', card: '' }),
+      JSON.stringify({ timestamp: '2026-08-01T08:30:00.000Z', source: 'push', from: 'Web Form <forms@example.com>', subject: 'New website update', verdict: 'unclear', reason: 'HTML-only body with no text part', card: '' }),
+      // 60 accepted messages, all NEWER than both screened-out records and more
+      // numerous than the endpoint's default limit of 50
+      ...Array.from({ length: 60 }, (_, i) => JSON.stringify({
+        timestamp: `2026-08-01T09:${String(i).padStart(2, '0')}:00.000Z`,
+        source: 'push', from: 'Jane Doe <jane@example.com>', subject: `Bug report ${i}`,
+        verdict: 'work', reason: 'No spam or unclear signals matched', card: `task-${1000 + i}`,
+      })),
+    ].join('\n') + '\n');
+
+    const r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': srv.token } });
+    assert.equal(r.status, 200);
+    const { records } = await r.json();
+    assert.deepEqual(records.map((rec) => rec.subject), ['New website update', 'Summer sale is on'],
+      'both screened-out messages survive the default limit, newest first');
+    assert.equal(records.some((rec) => rec.verdict === 'work'), false);
+  } finally { srv.close(); }
+});
+
+// Handled keys retain 5000 entries while the audit log trims at 500, so a
+// pushed message can outlive its own audit line. A webhook retry in that window
+// still has to answer with the screen verdict, not "duplicate".
+test('email push API: a retry reports the screen verdict after its audit line rotates out', async () => {
+  isolateHome();
+  const { repo, name, base, srv, q } = await boot();
+  const full = { 'x-todomd-token': srv.token, origin: base, 'content-type': 'message/rfc822' };
+  const push = (raw) => fetch(`${base}/api/projects/${encodeURIComponent(name)}/email`, { method: 'POST', headers: full, body: raw });
+  const auditPath = path.join(repo, '.todomd', 'intake-audit.jsonl');
+  const cardCount = async () =>
+    (await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json()).cards.length;
+  // drop every audit line, leaving the handled key as the sole surviving record
+  const rotateAuditAway = () => fs.writeFileSync(auditPath, '');
+  try {
+    const startCount = await cardCount();
+
+    let out = await (await push(RAW_PUSH_NEWSLETTER)).json();
+    assert.equal(out.verdict, 'spam');
+    rotateAuditAway();
+
+    out = await (await push(RAW_PUSH_NEWSLETTER)).json();
+    assert.equal(out.verdict, 'spam', 'the spam verdict survives audit rotation');
+    assert.equal(out.duplicate, true);
+    assert.equal('id' in out, false, 'a spam retry still reports no card id');
+    assert.match(out.reason, /List-Unsubscribe/);
+    assert.equal(await cardCount(), startCount, 'the retry created no card');
+
+    out = await (await push(RAW_PUSH_BUG_REPORT)).json();
+    assert.equal(out.verdict, 'work');
+    const workId = out.id;
+    rotateAuditAway();
+
+    out = await (await push(RAW_PUSH_BUG_REPORT)).json();
+    assert.equal(out.verdict, 'work', 'the work verdict survives audit rotation');
+    assert.equal(out.duplicate, true);
+    assert.equal(out.id, workId, 'the retry still reports the original card');
+    assert.equal(await cardCount(), startCount + 1, 'the retry created no second card');
   } finally { srv.close(); }
 });

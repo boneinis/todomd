@@ -1110,8 +1110,30 @@ $('#intake-btn').addEventListener('click', async () => {
     intakeForm.pass.value = '';
     intakeForm.pass.placeholder = c.hasPassword ? 'saved — leave blank to keep' : 'app-specific password';
     $('#intake-backdrop').hidden = false;
+    loadIntakeAudit();
   } catch (e) { toast(e.message); }
 });
+// screened-out/held email, newest first — untrusted content (email headers/body), escape all of it
+function intakeAuditRow(r) {
+  const when = r.timestamp ? new Date(r.timestamp).toLocaleString() : 'unknown time';
+  return `<li class="intake-audit-row">
+    <span class="intake-audit-when">${esc(when)}</span>
+    <span class="intake-audit-verdict intake-audit-${esc(r.verdict || '')}">${esc(r.verdict || '')}</span>
+    <span class="intake-audit-from">${esc(r.from || 'unknown sender')}</span>
+    <span class="intake-audit-subject">${esc(r.subject || '(no subject)')}</span>
+    <span class="intake-audit-reason">${esc(r.reason || '')}</span>
+  </li>`;
+}
+async function loadIntakeAudit() {
+  const list = $('#intake-audit-list');
+  const empty = $('#intake-audit-empty');
+  try {
+    const { records } = await api(`projects/${encodeURIComponent(currentProject)}/intake-audit`);
+    if (!records.length) { list.hidden = true; list.innerHTML = ''; empty.hidden = false; return; }
+    list.innerHTML = records.map(intakeAuditRow).join('');
+    list.hidden = false; empty.hidden = true;
+  } catch { list.hidden = true; list.innerHTML = ''; empty.hidden = false; }
+}
 $('#intake-close').addEventListener('click', () => { $('#intake-backdrop').hidden = true; });
 $('#intake-backdrop').addEventListener('click', (e) => { if (e.target.id === 'intake-backdrop') $('#intake-backdrop').hidden = true; });
 function intakePayload() {
