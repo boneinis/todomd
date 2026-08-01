@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeRepo, writeCard, isolateHome } from './helpers.js';
-import { emailToCardFields } from '../src/intake.js';
+import { emailToCardFields, mailboxIntakeKey } from '../src/intake.js';
 import { createCard, readCard } from '../src/board.js';
 
 test('emailToCardFields maps subject/from/body and tags source=email', () => {
@@ -170,4 +170,13 @@ test('saveBoardIntake / publicIntake: round-trip, blank password keeps the saved
 test('emailToCardFields replaces subject control chars with spaces', () => {
   const f = emailToCardFields({ subject: 'login\x07 broke\x1fhere', text: 'x' });
   assert.equal(f.title, 'login broke here');
+});
+
+test('mailboxIntakeKey scopes reusable UIDs to account, folder, and UIDVALIDITY', () => {
+  const conf = { host: 'imap.example.com', port: 993, user: 'me@example.com', folder: 'INBOX' };
+  const base = mailboxIntakeKey(conf, { uidValidity: 10n }, '', 42);
+  assert.equal(base, mailboxIntakeKey(conf, { uidValidity: 10n }, '', 42));
+  assert.notEqual(base, mailboxIntakeKey({ ...conf, folder: 'Other' }, { uidValidity: 10n }, '', 42));
+  assert.notEqual(base, mailboxIntakeKey({ ...conf, user: 'other@example.com' }, { uidValidity: 10n }, '', 42));
+  assert.notEqual(base, mailboxIntakeKey(conf, { uidValidity: 11n }, '', 42));
 });

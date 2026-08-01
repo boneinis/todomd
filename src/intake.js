@@ -83,6 +83,16 @@ function rememberIntakeHandled(repoPath, key) {
   });
 }
 
+export function mailboxIntakeKey(conf, mailbox, messageId, uid) {
+  const identity = [
+    conf?.host || '', conf?.port || 993, conf?.user || '', conf?.folder || 'INBOX',
+    String(mailbox?.uidValidity || ''),
+  ];
+  return JSON.stringify(messageId
+    ? [...identity, 'message-id', messageId]
+    : [...identity, 'uid', String(uid)]);
+}
+
 function loadRaw() {
   try {
     const raw = JSON.parse(fs.readFileSync(configFile(), 'utf8'));
@@ -323,11 +333,10 @@ async function pollSource(source, getProject) {
     // only unseen messages; \Seen (default) is the primary idempotency key
     for await (const msg of client.fetch({ seen: false }, { source: true, uid: true })) {
       if (processed >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
-      processed++;
       try {
         const parsed = await parseInboundMessage(msg.source);
         const mid = parsed.messageId;
-        const intakeKey = `${label}:uid:${msg.uid}`;
+        const intakeKey = mailboxIntakeKey(conf, client.mailbox, mid, msg.uid);
         const runKey = mid || intakeKey;
         if (handled.has(runKey)) {                // already made a card for this message this run
           if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
@@ -336,6 +345,7 @@ async function pollSource(source, getProject) {
         const targetName = resolve(parsed);          // board → fixed; inbox → by recipient
         const project = targetName && getProject(targetName);
         if (!project) {
+          processed++;
           log(`intake: "${label}" skipped a message — ${targetName
             ? `project "${targetName}" not registered`
             : `no route matched (to: ${recipientAddresses(parsed).join(', ') || 'none'})`}`);
@@ -344,6 +354,7 @@ async function pollSource(source, getProject) {
           const outcome = await intakeMessage(project, parsed, {
             label, assignee, maxAttachments: conf.maxAttachments ?? 5, intakeKey,
           });
+          if (!outcome.duplicate) processed++;
           // screened-out mail is "handled" too — without this, a markSeen:false
           // mailbox would re-screen and re-audit the same spam on every tick
           if (outcome.handled) { handled.add(runKey); if (handled.size > 5000) handled.delete(handled.values().next().value); }
@@ -362,6 +373,7 @@ async function pollSource(source, getProject) {
         }
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
       } catch (e) {
+        processed++;
         log(`intake: "${label}" failed on a message: ${e.message}`);
       }
     }

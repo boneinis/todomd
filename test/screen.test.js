@@ -77,6 +77,12 @@ test('screenEmail: two weak signals are spam, but a lone weak signal is only unc
   assert.ok(both.signals.includes('unsubscribe-footer'));
 });
 
+test('screenEmail: a bare View in browser footer is a weak marketing signal', () => {
+  const r = screenEmail(work({ text: 'Weekly product updates and announcements. View in browser' }));
+  assert.equal(r.verdict, 'unclear');
+  assert.ok(r.signals.includes('unsubscribe-footer'));
+});
+
 test('screenEmail: thin or auto-generated messages are held as unclear, never dropped', () => {
   const cases = [
     ['empty-body', work({ text: '' })],
