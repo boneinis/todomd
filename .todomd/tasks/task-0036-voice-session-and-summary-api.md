@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 8af5d7f5-a946-4687-9505-41d9cbf46275
+session_id: 019fbdf1-5a35-79d1-a152-eb2366dfbc92
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
+needs_human_reason: attempts_exhausted
+recovery_stage:
 ---
 
 ## Description
@@ -58,3 +60,7 @@ an action but cannot execute or confirm it.
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 15:14Z · Escalate attempt 2 · 12 turns · $1.670 · diagnosis complete
 - 2026-08-01 15:28Z · Build attempt 3 · 50 turns · $4.645 · ok (escalation repair)
+- 2026-08-01 15:34Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 3)
+  - attempts_exhausted: Configured `npm test` passed outside the restricted sandbox: 305 core/API tests and 5 UI tests. `git diff --check` passed and the worktree remained clean. However, adversarial review found three reachable defects:
+
+1. Cross-project active-run leakage: `src/pipeline.js:1787-1791` associates pending runs using `key.startsWith(projectName + ':')`. With projects named `alpha` and `alpha:beta`, a pendi
