@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb07-2f65-7fa2-9600-22ffc6a9105b
+session_id: 019fbb0d-21af-76b3-b322-7544d0776777
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -166,3 +166,5 @@ Adversarial review found a reachable duplicate-card defect in `src/intake.js:353
   - attempts_exhausted: `npm test` passed outside the listener-restricted sandbox: 231 core tests and 2 UI tests. `git diff --check` also passed.
 
 Reachable classifier bug: `src/screen.js:19` matches `unsubscribe` anywhere in the message body, although the intended signal is unsubscribe footer text. An end-to-end reproduction using a detailed human bug report titled “Unsubscribe endpoint returns 500” produced an `unclear
+- 2026-08-01 02:06Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Official `npm test` passed outside the process-restricted sandbox: 232 core and 2 UI tests. However, `src/screen.js:19` treats the phrases “manage your email preferences” and “view this email in browser” as footer signals anywhere in the body. Parser-level probes of ordinary human bug reports discussing those features returned `unclear`; an end-to-end poll created a Needs Human card and made zero 
