@@ -25,6 +25,22 @@ The main listener is always loopback-only. Enabling LAN access (the ▦ button o
 that listener **and** terminates any WebSocket clients that connected through
 it. Use only on trusted networks.
 
+## Voice control
+
+Voice control's local wake boundary, post-wake Realtime credential flow, and
+confirmation policy are documented in `docs/voice.md`. The primary Chrome
+path requires on-device `SpeechRecognition` and has no application wake key.
+The long-lived `OPENAI_API_KEY` remains server-side: the primary-only
+`POST /api/voice/session` route forwards the browser's SDP offer with the
+server-owned session policy and returns only the SDP answer.
+
+That gate behaves like `/api/lan`'s, including the part worth knowing here:
+the route sits **after** the generic non-GET write guard rather than being
+special-cased ahead of it, so a viewer token is rejected by the shared
+read-only guard and a mobile token is rejected by the route's own
+`primary(req)` check. Two different 403 bodies, one outcome — only the
+desktop session that started todomd can create the post-wake voice transport.
+
 ## Pipeline hardening (prompt-injection surface)
 
 Cards can arrive from outside the UI (git pull, email intake), so every stage
