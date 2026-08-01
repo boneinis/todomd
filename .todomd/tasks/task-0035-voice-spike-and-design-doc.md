@@ -1,7 +1,7 @@
 ---
 id: task-0035
 title: Voice spike and design doc
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0020)
-session_id: 019fbd2f-565c-78e3-8376-4b17c5209899
+session_id: 019fbda7-c74b-7202-8d34-3a03e57105ef
 worktree: todomd/task-0035
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 5.7676
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -54,3 +54,5 @@ Voice spike and design doc
 - 2026-08-01 11:57Z · Build attempt 3 · 23 turns · $1.556 · ok (escalation repair)
 - 2026-08-01 12:01Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: `npm test` passes: 267 unit/integration and 5 UI tests. However, `docs/voice.md:30,76-83` incorrectly claims Chrome's Web Speech API cannot operate on-device and necessarily streams audio to Google. Chrome 139 added stable on-device recognition specifically to keep audio and transcripts local ([official release notes](https://developer.chrome.com/release-notes/139)). Porcupine may remain preferabl
+- 2026-08-01 14:14Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed: 267 unit/API and 5 browser tests. However, docs/voice.md:114-160 specifies an SDP-proxy endpoint and relegates ephemeral tokens to an unspecified fallback. Replace this with the required short-TTL token JSON contract—request body and `{ token, expiresAt, model }` response—and update docs/security.md consistently. Cross-file review also found incompatible downstream contracts: do
