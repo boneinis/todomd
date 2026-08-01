@@ -36,6 +36,12 @@ let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
 
+// project/card pairs whose subtask rows are collapsed — task ids repeat across
+// projects, so an id alone would leak UI state when the project selector moves.
+// The board is replaced wholesale on every poll, so this can't live in the DOM.
+const collapsedEpicIds = new Set();
+const epicCollapseKey = (id) => JSON.stringify([currentProject || '', id]);
+
 // model suggestions per vendor — pulled from the provider CLI (server reads
 // `<cli> --help` + config), cached per vendor. Still a datalist, so a custom
 // id is allowed. Falls back to a sane default until the fetch resolves.
@@ -186,14 +192,32 @@ function renderBoard() {
   if (!boardData) return;
   const filter = filterInput.value.trim().toLowerCase();
   const mine = viewMode === 'mine' && myName ? myName.toLowerCase() : null;
+  const passesView = (c) =>
+    (showArchived ? c.archived : true) && // archived view shows only archived cards
+    (!mine || String(c.assignee || '').toLowerCase() === mine) &&
+    (!filter || `${c.id} ${c.title} ${asList(c.labels).join(' ')} ${String(c.assignee || '')}`.toLowerCase().includes(filter));
+  // ids that nest under an epic card THIS render: structurally nestable (per
+  // hierarchy.js), and their epic parent will actually be shown. A parent
+  // hidden by the filter/mine/archived view must not swallow a child that
+  // still matches — the child surfaces as its own full card instead.
+  const byId = new Map(boardData.cards.map((c) => [c.id, c]));
+  const nested = TodomdHierarchy.nestedChildIds(boardData.cards, boardData.config);
+  const boardColumns = new Set(boardData.config.columns || []);
+  const shownNested = new Set(
+    [...nested].filter((id) => {
+      const child = byId.get(id);
+      const parent = byId.get(child?.parent);
+      return child && parent?.epic && passesView(child) && passesView(parent)
+        && boardColumns.has(parent.status) && !nested.has(parent.id);
+    })
+  );
   boardEl.innerHTML = '';
   for (const col of boardData.config.columns) {
     const color = COL_COLORS[col] || 'var(--dim)';
+    // .col-count must match what's actually appended below — a nested child is
+    // rendered inside its epic's card, not as a card of its own here.
     const cards = boardData.cards.filter(
-      (c) => c.status === col &&
-        (showArchived ? c.archived : true) && // archived view shows only archived cards
-        (!mine || String(c.assignee || '').toLowerCase() === mine) &&
-        (!filter || `${c.id} ${c.title} ${asList(c.labels).join(' ')} ${String(c.assignee || '')}`.toLowerCase().includes(filter))
+      (c) => c.status === col && passesView(c) && !shownNested.has(c.id)
     );
     const colEl = document.createElement('section');
     colEl.className = 'column';
@@ -211,7 +235,7 @@ function renderBoard() {
     const list = document.createElement('div');
     list.className = 'col-cards';
     if (!cards.length) list.innerHTML = `<p class="col-empty">empty</p>`;
-    cards.forEach((card, i) => list.appendChild(renderCard(card, color, i)));
+    cards.forEach((card, i) => list.appendChild(renderCard(card, color, i, shownNested)));
     colEl.appendChild(list);
     wireDrop(colEl);
     boardEl.appendChild(colEl);
@@ -245,7 +269,24 @@ function initials(name) {
   return (parts[0]?.[0] || '?').toUpperCase() + (parts[1]?.[0] || '').toUpperCase();
 }
 
-function renderCard(card, color, i) {
+// one subtask row: title, status, dependency state, assignee — click opens
+// that child's drawer. stopPropagation so the click doesn't also fire the
+// parent epic card's own click handler (which would open the epic instead).
+function renderSubtaskRow(kid) {
+  const el = $('#subtask-row-tpl').content.firstElementChild.cloneNode(true);
+  el.dataset.id = kid.id;
+  el.querySelector('.subtask-title').textContent = kid.title || kid.id;
+  el.querySelector('.subtask-status').textContent = kid.status || '';
+  const dep = el.querySelector('.subtask-dep');
+  const { blocked, waitingOn } = TodomdHierarchy.dependencyState(kid, boardData.cards);
+  dep.textContent = blocked ? `🔒 waiting on ${waitingOn[0].id}` : '';
+  const av = el.querySelector('.subtask-assignee');
+  if (kid.assignee) { av.textContent = initials(kid.assignee); av.title = `@${kid.assignee}`; }
+  el.addEventListener('click', (e) => { e.stopPropagation(); openDrawer(kid.id); });
+  return el;
+}
+
+function renderCard(card, color, i, nestedIds) {
   const el = $('#card-tpl').content.firstElementChild.cloneNode(true);
   if (boardData.access === 'viewer') el.draggable = false;
   el.style.setProperty('--col', color);
@@ -282,6 +323,27 @@ function renderCard(card, color, i) {
   if (card.epic) {
     const { done, total } = TodomdHierarchy.epicProgress(boardData.cards, card.id);
     rel.textContent = `⊞ epic ${done}/${total}`;
+    const epicBox = el.querySelector('.card-epic');
+    const subtasksEl = el.querySelector('.card-subtasks');
+    const kids = TodomdHierarchy.childrenOf(boardData.cards, card.id)
+      .filter((k) => nestedIds && nestedIds.has(k.id));
+    if (kids.length) {
+      epicBox.hidden = false;
+      epicBox.querySelector('.epic-progress-fill').style.width = `${total ? (done / total) * 100 : 0}%`;
+      const collapseKey = epicCollapseKey(card.id);
+      const collapsed = collapsedEpicIds.has(collapseKey);
+      const toggle = epicBox.querySelector('.epic-toggle');
+      toggle.setAttribute('aria-expanded', String(!collapsed));
+      toggle.textContent = `${collapsed ? '▸' : '▾'} ${kids.length} subtask${kids.length === 1 ? '' : 's'}`;
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (collapsed) collapsedEpicIds.delete(collapseKey); else collapsedEpicIds.add(collapseKey);
+        renderBoard();
+      });
+      subtasksEl.hidden = collapsed;
+      subtasksEl.innerHTML = '';
+      for (const kid of kids) subtasksEl.appendChild(renderSubtaskRow(kid));
+    }
   } else if (card.parent) {
     // dependencyState tolerates a scalar/mapping/missing `dependencies:` — this
     // runs inside the board render, so one hand-edited card must not throw and
