@@ -1,7 +1,7 @@
 ---
 id: task-0025
 title: Apply the screen to the push API and surface screened mail
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 3/3 of task-0022)
-session_id: c1183f07-fdd2-4605-8338-acf85156b933
+session_id: 3406f65e-a3e4-426a-9390-88dda139151a
 worktree: todomd/task-0025
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 12.5443
+cost_usd: 16.0398
 needs_human_reason:
 recovery_stage:
 ---
@@ -70,3 +70,4 @@ real assertion.
 - 2026-08-01 04:30Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 04:33Z · Escalate attempt 2 · 21 turns · $3.056 · diagnosis complete
+- 2026-08-01 04:41Z · Build attempt 3 · 58 turns · $3.496 · ok (escalation repair)
