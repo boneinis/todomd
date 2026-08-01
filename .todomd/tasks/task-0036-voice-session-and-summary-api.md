@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbe2e-be6a-7fc1-91cc-a738ae9b3d3b
+session_id: 019fbe3e-376d-7803-8525-9eb3b9cd255f
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -74,3 +74,5 @@ an action but cannot execute or confirm it.
   - attempts_exhausted: Blocking race: `confirmVoiceAction` revalidates at src/voice.js:449, then executes asynchronously at line 455 without holding the board mutation lock. Reproduction: prepare `approve` for a Planned card, begin confirmation, concurrently change it to Needs Human while `humanMove` awaits `isGitRepo`, and confirmation returns 200 after moving the now-stale card to Queue. Make revalidation, eligibility
 - 2026-08-01 16:45Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: Reachable repository-lock race: src/board.js:327-340 stores reentrancy ownership in AsyncLocalStorage, but detached async work created inside the lock inherits that ownership after the outer lock is released. Subsequent withRepoLock calls then bypass both the in-process queue and on-disk lock. This occurs when voice confirmation invokes agent-starting operations under its transaction (src/voice.js
+- 2026-08-01 17:02Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: Reachable eligibility/read-back bug: approve eligibility in src/voice.js:172-179 checks status, dependencies, and epic state, but omits guards enforced by humanMove in src/pipeline.js:564-604. Reproduction with a Planned card containing two unmaterialized `## Chunks`: preparation returns 200, an agent challenge, and a read-back promising approval/queueing; confirmation then consumes the proposal a
