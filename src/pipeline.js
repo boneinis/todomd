@@ -869,10 +869,21 @@ export async function retryVerification(project, id) {
   const attempt = Math.max(1, Number(verification.attempts) || 1);
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
   await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
-  await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
+  const moved = await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
+  if (!moved.ok) return moved;
+  const key = runKey(project.name, id);
+  const claim = {
+    project: project.name, card: id, stage: 'Verify',
+    cancelled: false, revertTo: 'Queue', noRequeue: false,
+    worktreeAbs, branch: card.data.worktree, attempt, maxAttempts,
+    lastVerdict: verification.last_verdict || '',
+  };
+  triggerClaims.set(key, claim);
+  bumpRunGeneration(project.name, id);
   withoutRepoLockContext(() => {
-    verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '')
-      .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)));
+    verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim)
+      .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)))
+      .finally(() => { if (triggerClaims.get(key) === claim) triggerClaims.delete(key); });
   });
   return { ok: true };
 }
@@ -909,7 +920,7 @@ export function cancel(project, id) {
     const triggerClaim = triggerClaims.get(key);
     if (triggerClaim) {
       triggerClaim.cancelled = true;
-      triggerClaim.revertTo = 'Review';
+      triggerClaim.revertTo = triggerClaim.stage === 'Verify' ? 'Queue' : 'Review';
       return { ok: true };
     }
     // chain claimed but between spawns (pre-spawn, or post-verify/pre-merge) —
@@ -994,7 +1005,7 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
   for (const claim of triaging.values()) claim.cancelled = true;
   for (const claim of triggerClaims.values()) {
     claim.cancelled = true;
-    claim.revertTo = 'Review';
+    claim.revertTo = claim.stage === 'Verify' ? 'Queue' : 'Review';
     claim.noRequeue = true;
   }
   // chains claimed but between spawns have no child to kill — flag them so they
@@ -1525,11 +1536,29 @@ async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, e
   return { ok: true, findings: `${findings}\n\nFable diagnosis:\n${diagnosis.diagnosis}\n\nRequired repair strategy:\n${diagnosis.repair_strategy}` };
 }
 
-async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
+async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings, triggerClaim = null) {
   const config = await execConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, 'Verify', card);
   const vendor = cardVendor(config, card, 'Verify');
+
+  if (triggerClaim?.cancelled) {
+    await releaseCoordination(project, id);
+    await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
+    await patchFrontmatter(project.path, id, {
+      worktree: '', base_branch: '',
+      verification: {
+        attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts,
+        last_verdict: triggerClaim.lastVerdict || '',
+      },
+    });
+    await orchMove(project, id, triggerClaim.revertTo || 'Queue', 'cancelled');
+    sendState(project, id, 'idle');
+    if (triggerClaim.revertTo === 'Queue' && !triggerClaim.noRequeue && (config.mode || 'launcher') !== 'budget') {
+      enqueueBuild(project, id);
+    }
+    return;
+  }
 
   // same between-spawns cancel window as buildChain (build done, verify not
   // yet spawned) — honor it before spawning
@@ -1540,6 +1569,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   }
 
   const { result, run } = await spawnTracked(project, id, 'Verify', 'Build', attempt, {
+    triggerClaim,
     vendor,
     cwd: worktreeAbs,
     prompt: stagePrompt(project, vendor, stage, id),

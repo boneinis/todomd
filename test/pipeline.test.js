@@ -1339,6 +1339,47 @@ test('Restart Build re-drives a legacy orphan only when its preserved assets are
   }
 });
 
+test('Retry Verification is claimed before its background spawn and refuses an immediate voice move', async () => {
+  isolateHome();
+  useFakeAgent({ hang: 'verify' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  const base = git(repo, ['branch', '--show-current']);
+  const branch = 'todomd/task-0001';
+  const worktree = path.join(repo, '.todomd/worktrees/task-0001');
+  writeCard(repo, 'task-0001', {
+    status: 'Needs Human',
+    extra: `needs_human_reason: bad_verdict\nsession_id: fake-session\nworktree: ${branch}\nbase_branch: ${base}\n`,
+  });
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'seed preserved verification']);
+  fs.mkdirSync(path.dirname(worktree), { recursive: true });
+  git(repo, ['worktree', 'add', '-q', worktree, '-b', branch]);
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    // No polling: the retry has returned but verify() may still be awaiting
+    // config. Its synchronous claim must already be visible and protective.
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'Verify' });
+    assert.deepEqual(voice.buildVoiceSummary(p).activeRuns,
+      [{ card: 'task-0001', state: 'running', stage: 'Verify', external: false }]);
+    const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(retriage.status, 400);
+    assert.match(retriage.error, /live run/);
+    assert.ok(fs.existsSync(worktree), 'the refused voice move preserved the verification worktree');
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'), { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('Codex Verify infrastructure failures retain diagnostics and Retry Verification runs Verify only', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });
