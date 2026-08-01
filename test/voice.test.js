@@ -591,18 +591,18 @@ test('argumentless proposals bind normalized arguments through confirm and rejec
   assert.equal(voice.rejectVoiceAction(p, reject.proposalId, { arguments: {} }).status, 200);
 });
 
-test('epic-wide cascades are unavailable by voice: retriage and archive refuse an epic with unfinished children', async () => {
+test('epic-wide cascades are unavailable by voice: retriage, approve, and archive refuse unfinished children', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = project(repo);
-  writeCard(repo, 'task-0001', { status: 'Queue', extra: 'epic: true\n' });
+  writeCard(repo, 'task-0001', { status: 'Planned', extra: 'epic: true\n' });
   writeCard(repo, 'task-0002', { status: 'Planned', extra: 'parent: task-0001\n' });
   writeCard(repo, 'task-0003', { status: 'Done', extra: 'parent: task-0001\n' });
 
-  // humanMove→Review and archiveCard both run cascadeEpicCleanup here, which
-  // would archive task-0002 as well — a bulk action, refused at preparation
-  for (const action of ['retriage', 'archive']) {
+  // Review/archive would clean up the child and approve would release it into
+  // Queue. All are multi-card effects, so all are refused at preparation.
+  for (const action of ['retriage', 'approve', 'archive']) {
     const r = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action });
     assert.equal(r.status, 400, action);
     assert.match(r.error, /epic with 1 unfinished child card/);

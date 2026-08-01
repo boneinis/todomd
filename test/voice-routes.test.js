@@ -143,16 +143,17 @@ test('reject endpoint over HTTP: consumes the proposal, never executes it', asyn
   } finally { srv.close(); }
 });
 
-test('an epic with unfinished children is refused at preparation — voice cannot reach a bulk cascade', async () => {
+test('an epic with unfinished children cannot be retriaged, approved, or archived by voice', async () => {
   isolateHome();
   const { repo, base, srv, q } = await boot();
   const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
   try {
-    writeCard(repo, 'task-0001', { status: 'Queue', extra: 'epic: true\n' });
+    writeCard(repo, 'task-0001', { status: 'Planned', extra: 'epic: true\n' });
     writeCard(repo, 'task-0002', { status: 'Planned', extra: 'parent: task-0001\n' });
 
-    // both of these run cascadeEpicCleanup, which would archive task-0002 too
-    for (const action of ['retriage', 'archive']) {
+    // Review/archive would clean up the child and approve would release it.
+    // Voice must not make any of those multi-card changes.
+    for (const action of ['retriage', 'approve', 'archive']) {
       const r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001', action }) });
       assert.equal(r.status, 400, action);
       const body = await r.json();

@@ -113,15 +113,15 @@ function notWhileLive(card, fx) {
     : null;
 }
 
-// Voice is strictly single-card. humanMove→Review and archiveCard both call
-// cascadeEpicCleanup, which cancels and archives EVERY non-Done child; that is a
-// bulk action, and bulk actions are unavailable by voice at any tier.
+// Voice is strictly single-card. Moving/archiving an epic can cascade cleanup,
+// while approving one releases its ready children; either affects multiple
+// cards, and bulk actions are unavailable by voice at any tier.
 function notEpicCascade(card, fx) {
   const n = fx.cascadeChildren;
   if (!n) return null;
   return {
     ok: false,
-    error: `${card.data.id} is an epic with ${n} unfinished child card${n === 1 ? '' : 's'} that this would archive too — epic-wide actions are not available by voice`,
+    error: `${card.data.id} is an epic with ${n} unfinished child card${n === 1 ? '' : 's'} — epic-wide actions are not available by voice`,
   };
 }
 
@@ -161,7 +161,7 @@ const ALLOWED_ACTIONS = {
         : (fx.budget ? 'queue it for the dispatcher' : 'start the build');
       return `approve ${card.data.id} and ${what}`;
     },
-    eligible: (card) => (card.data.status === 'Planned'
+    eligible: (card, project, fx) => notEpicCascade(card, fx) || (card.data.status === 'Planned'
       ? { ok: true } : { ok: false, error: `${card.data.id} is not in Planned` }),
     execute: (project, id) => humanMove(project, id, 'Queue'),
   },
