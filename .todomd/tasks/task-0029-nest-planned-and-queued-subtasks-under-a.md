@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 2/3 of task-0026)
-session_id: 8cfe4737-1651-41f0-a64d-1817607b15d6
+session_id: f89b6764-f4e0-41e1-9015-a0a77d2ae943
 worktree: todomd/task-0029
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 4.9389
+needs_human_reason: bad_verdict
+recovery_stage:
 ---
 
 ## Description
@@ -70,3 +72,5 @@ Nest planned and queued subtasks under an expandable epic card
 
 ## Run Log
 - 2026-08-01 00:22Z · Build attempt 1 · 83 turns · $4.939 · ok
+- 2026-08-01 00:22Z · Verify attempt 1 · malformed verdict, re-running once
+- 2026-08-01 00:22Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
