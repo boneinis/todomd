@@ -1,7 +1,7 @@
 ---
 id: task-0025
 title: Apply the screen to the push API and surface screened mail
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -12,10 +12,11 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 3/3 of task-0022)
-session_id:
+session_id: ece72499-23fc-4bd7-82bb-ec475695d341
 worktree: todomd/task-0025
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 9.4887
 ---
 
 ## Description
@@ -54,3 +55,5 @@ logic. Browser tests skip when no browser starts, so the API test must carry the
 real assertion.
 
 ## Run Log
+- 2026-08-01 04:12Z · Build attempt 1 · 101 turns · $6.683 · checkpoint 1: progress detected; continuing
+- 2026-08-01 04:16Z · Build attempt 1 · 21 turns · $2.806 · ok
