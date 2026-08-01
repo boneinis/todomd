@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Needs Human
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -10,15 +10,19 @@ parent: task-0026
 created_date: 2026-07-31
 source: chunk
 assignee:
-agent: claude
+agent: codex
 triaged: n/a (chunk 2/3 of task-0026)
 session_id: f89b6764-f4e0-41e1-9015-a0a77d2ae943
 worktree: todomd/task-0029
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 4.9389
-needs_human_reason: bad_verdict
+needs_human_reason:
 recovery_stage:
+model:
+effort:
+workflow:
+skill:
 ---
 
 ## Description
