@@ -514,6 +514,83 @@ test('a chain claimed between spawns counts as live everywhere: summary, cancel,
   }
 });
 
+test('pending run ownership uses exact project identity when names contain colons', async () => {
+  isolateHome();
+  const marker = path.join(tmp('voice-colon-project'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const plain = { ...project(makeRepo()), name: 'alpha' };
+  const nested = { ...project(makeRepo()), name: 'alpha:beta' };
+  writeCard(plain.path, 'task-0001', { status: 'Review' });
+  writeCard(nested.path, 'task-0002', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(nested, 'task-0002', 'Queue');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
+    assert.equal(pipeline.hasLiveRun(nested.name, 'task-0002'), true);
+    assert.deepEqual(pipeline.getRunStates(plain.name), {});
+    assert.equal(voice.buildVoiceSummary(plain).activeRuns.length, 0);
+    assert.match(voice.buildVoiceSummary(plain).text, /Nothing building right now/);
+  } finally {
+    pipeline.cancel(nested, 'task-0002');
+    await until(() => !pipeline.hasLiveRun(nested.name, 'task-0002'), { timeout: BUDGET.chain });
+    clearFakeAgent();
+  }
+});
+
+test('voice summaries sanitize and bound user-controlled card text', () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', {
+    status: 'Needs Human',
+    extra: `needs_human_reason: "${'x'.repeat(4000)}\\nsecond line"\n`,
+  });
+
+  const summary = voice.buildVoiceSummary(p);
+  assert.ok(summary.text.length <= 1200, `summary was ${summary.text.length} characters`);
+  assert.ok(summary.needsHuman[0].reason.length <= 160);
+  assert.doesNotMatch(summary.text, /[\u0000-\u001f\u007f]/);
+  assert.match(summary.needsHuman[0].reason, /…$/);
+});
+
+test('argumentless proposals bind normalized arguments through confirm and reject', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Build' });
+
+  let r = await voice.prepareVoiceAction(p, {
+    cardId: 'task-0001', action: 'retriage', arguments: { destination: 'Done' },
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.error, /accepts no arguments/);
+
+  const prep = await voice.prepareVoiceAction(p, {
+    cardId: 'task-0001', action: 'retriage', arguments: {},
+  });
+  assert.deepEqual(prep.arguments, {});
+
+  r = await voice.confirmVoiceAction(p, prep.proposalId, {
+    confirmation: 'Yes To-do', arguments: { destination: 'Done' },
+  });
+  assert.equal(r.status, 409);
+  assert.equal(status(repo, 'task-0001'), 'Build');
+
+  r = await voice.confirmVoiceAction(p, prep.proposalId, {
+    confirmation: 'Yes To-do', arguments: {},
+  });
+  assert.equal(r.status, 200);
+  assert.equal(status(repo, 'task-0001'), 'Review');
+
+  const reject = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'archive' });
+  r = voice.rejectVoiceAction(p, reject.proposalId, { arguments: { reason: 'different' } });
+  assert.equal(r.status, 409);
+  assert.equal(voice.rejectVoiceAction(p, reject.proposalId, { arguments: {} }).status, 200);
+});
+
 test('epic-wide cascades are unavailable by voice: retriage and archive refuse an epic with unfinished children', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });

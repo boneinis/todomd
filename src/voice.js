@@ -8,6 +8,8 @@ import {
 // Spoken summaries stay short even on a busy board — list at most this many
 // active runs / Needs Human cards by name, then say how many more there are.
 const MAX_SUMMARY_ITEMS = 5;
+const MAX_SUMMARY_FIELD_CHARS = 160;
+const MAX_SUMMARY_TEXT_CHARS = 1200;
 
 // Same shape createCard uses: task-0001, zero-padded, growing past 4 digits.
 // Voice card ids arrive in a JSON body rather than a URL path, so this route
@@ -16,6 +18,28 @@ const CARD_ID = /^task-\d{1,6}(-[\w-]*)?$/;
 
 function normalizePhrase(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function boundedText(value, max = MAX_SUMMARY_FIELD_CHARS) {
+  const clean = String(value || '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+// The current allowlist is deliberately argumentless. Normalize an omitted or
+// empty object to the exact value stored on the proposal, and refuse anything
+// else instead of silently dropping parameters that a caller may believe were
+// authorized.
+function argumentless(fields) {
+  if (fields.arguments === undefined) return { ok: true, value: {} };
+  const args = fields.arguments;
+  if (!args || Array.isArray(args) || typeof args !== 'object' || Object.keys(args).length) {
+    return { ok: false, error: 'this voice action accepts no arguments' };
+  }
+  return { ok: true, value: {} };
 }
 
 // What an action would ACTUALLY do to this card, right now.
@@ -283,11 +307,15 @@ export function buildVoiceSummary(project) {
   for (const c of board.cards) counts[c.status] = (counts[c.status] || 0) + 1;
 
   const activeRuns = Object.entries(runStates)
-    .map(([card, s]) => ({ card, state: s.state, stage: s.stage }))
+    .map(([card, s]) => ({ card, state: s.state, stage: boundedText(s.stage) }))
     .sort((a, b) => a.card.localeCompare(b.card));
   const needsHuman = board.cards
     .filter((c) => c.status === 'Needs Human')
-    .map((c) => ({ id: c.id, title: c.title || '', reason: c.needs_human_reason || '' }))
+    .map((c) => ({
+      id: c.id,
+      title: boundedText(c.title),
+      reason: boundedText(c.needs_human_reason),
+    }))
     .sort((a, b) => a.id.localeCompare(b.id));
 
   const parts = [`${board.cards.length} card${board.cards.length === 1 ? '' : 's'} on the board.`];
@@ -298,7 +326,7 @@ export function buildVoiceSummary(project) {
     ? `${needsHuman.length} need${needsHuman.length === 1 ? 's' : ''} you: ${describeList(needsHuman, (n) => `${n.id}${n.reason ? ` (${n.reason})` : ''}`)}.`
     : 'Nothing needs you.');
 
-  return { text: parts.join(' '), counts, activeRuns, needsHuman };
+  return { text: boundedText(parts.join(' '), MAX_SUMMARY_TEXT_CHARS), counts, activeRuns, needsHuman };
 }
 
 // A concise, deterministic diagnostic for one card — "Ask about a card".
@@ -334,6 +362,8 @@ export async function prepareVoiceAction(project, fields = {}) {
   pruneExpired();
   const cardId = String(fields.cardId || '');
   const action = String(fields.action || '');
+  const normalizedArguments = argumentless(fields);
+  if (!normalizedArguments.ok) return { status: 400, ok: false, error: normalizedArguments.error };
   if (!CARD_ID.test(cardId)) return { status: 400, ok: false, error: 'invalid card id' };
   const def = ALLOWED_ACTIONS[action];
   if (!def) return { status: 400, ok: false, error: `unknown or disallowed voice action: ${action}` };
@@ -353,6 +383,7 @@ export async function prepareVoiceAction(project, fields = {}) {
   const proposalId = crypto.randomBytes(16).toString('hex');
   const proposal = {
     id: proposalId, projectName: project.name, projectPath: project.path, cardId, action, tier,
+    arguments: normalizedArguments.value,
     createdAt: now, expiresAt: now + ttlMs,
   };
   proposals.set(proposalId, proposal); // reserved — no other prepare can claim this card until this settles
@@ -370,7 +401,7 @@ export async function prepareVoiceAction(project, fields = {}) {
   proposal.challenge = tier === 'agent' ? buildChallenge(action, cardId) : null;
 
   return {
-    status: 200, ok: true, proposalId, cardId, action,
+    status: 200, ok: true, proposalId, cardId, action, arguments: proposal.arguments,
     readback: def.label(card, effects),
     expiresAt: new Date(proposal.expiresAt).toISOString(),
     ttlMs,
@@ -399,6 +430,8 @@ export async function confirmVoiceAction(project, proposalId, body = {}) {
   if ((body.cardId && body.cardId !== p.cardId) || (body.action && body.action !== p.action)) {
     return { status: 409, ok: false, error: 'ambiguous: does not match the pending proposal' };
   }
+  const normalizedArguments = argumentless(body);
+  if (!normalizedArguments.ok) return { status: 409, ok: false, error: 'ambiguous: arguments do not match the pending proposal' };
   const phrase = checkPhrase(p, body);
   if (!phrase.ok) return { status: 400, ok: false, error: phrase.error };
 
@@ -428,7 +461,11 @@ export function rejectVoiceAction(project, proposalId, body = {}) {
   }
   const p = found.proposal;
   if (p.projectPath !== project.path) return { status: 404, ok: false, error: 'no such pending proposal' };
-  if (body.cardId && body.cardId !== p.cardId) return { status: 409, ok: false, error: 'ambiguous: does not match the pending proposal' };
+  if ((body.cardId && body.cardId !== p.cardId) || (body.action && body.action !== p.action)) {
+    return { status: 409, ok: false, error: 'ambiguous: does not match the pending proposal' };
+  }
+  const normalizedArguments = argumentless(body);
+  if (!normalizedArguments.ok) return { status: 409, ok: false, error: 'ambiguous: arguments do not match the pending proposal' };
   if (!proposals.delete(proposalId)) return { status: 409, ok: false, error: 'proposal already used' };
   return { status: 200, ok: true, rejected: true, proposalId, action: p.action, cardId: p.cardId };
 }

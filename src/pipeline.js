@@ -1034,7 +1034,13 @@ function processQueue(project) {
     // settles (the finally below — success: after merge + the Done move;
     // failure: after toNeedsHuman/revert completes)
     const key = runKey(project.name, id);
-    const entry = { cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false };
+    // Keep structured ownership on the value. Project names may contain `:`,
+    // so consumers must not recover identity by splitting/prefix-matching the
+    // composite map key.
+    const entry = {
+      project: project.name, card: id,
+      cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
+    };
     const recovery = recoveryBuilds.get(key) || null;
     recoveryBuilds.delete(key);
     pending.set(key, entry);
@@ -1785,11 +1791,9 @@ export function getRunStates(projectName) {
   // hasLiveRun/cancel/humanMove. Report it too, or callers that ask "what is
   // running?" see a false idle in exactly the windows the pipeline treats as
   // hands-off. The pending entry carries no stage, so the label is generic.
-  const prefix = `${projectName}:`;
-  for (const key of pending.keys()) {
-    if (!key.startsWith(prefix)) continue;
-    const id = key.slice(prefix.length);
-    if (!states[id]) states[id] = { state: 'running', stage: 'in progress' };
+  for (const entry of pending.values()) {
+    if (entry.project !== projectName) continue;
+    if (!states[entry.card]) states[entry.card] = { state: 'running', stage: 'in progress' };
   }
   return states;
 }
@@ -1810,9 +1814,9 @@ export function hasLiveBuildingChild(project, epicId) {
 
 // Any live agent run for this project (used to refuse removing a busy project).
 export function projectHasLiveRun(projectName) {
-  const prefix = `${projectName}:`;
-  for (const key of children.keys()) if (key.startsWith(prefix)) return true;
-  for (const key of pending.keys()) if (key.startsWith(prefix)) return true;
+  // Every spawned child belongs to a pending chain, whose value has exact
+  // structured ownership (unlike the legacy `project:card` map key).
+  for (const entry of pending.values()) if (entry.project === projectName) return true;
   return false;
 }
 
@@ -1824,7 +1828,7 @@ export function forgetProject(projectName) {
   const prefix = `${projectName}:`;
   for (const k of retryFindings.keys()) if (k.startsWith(prefix)) retryFindings.delete(k);
   for (const k of recoveryBuilds.keys()) if (k.startsWith(prefix)) recoveryBuilds.delete(k);
-  for (const k of pending.keys()) if (k.startsWith(prefix)) pending.delete(k);
+  for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
 }
 
 export function usage(projectName) {
