@@ -1,7 +1,7 @@
 ---
 id: task-0025
 title: Apply the screen to the push API and surface screened mail
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
