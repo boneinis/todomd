@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0026)
-session_id: 019fbab4-c3c5-71d3-bf37-56ce2f520472
+session_id: 9323f42d-aa59-4ddd-b027-3fd7fb21e762
 worktree: todomd/task-0029
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 4.9389
+cost_usd: 6.2014
 needs_human_reason:
 recovery_stage:
 model:
@@ -82,4 +82,6 @@ Nest planned and queued subtasks under an expandable epic card
   - retrying with findings (attempt 2/3)
 - 2026-08-01 00:28Z · Build attempt 2 · 0 turns · $0.000 · failed: agent
   - error: Error: thread/resume: thread/resume failed: no rollout found for thread id f89b6764-f4e0-41e1-9015-a0a77d2ae943 (code -32600)
-
+- 2026-08-01 00:33Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail
+  - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
+- 2026-08-01 00:36Z · Escalate attempt 2 · 16 turns · $1.263 · diagnosis complete
