@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -16,7 +16,7 @@ session_id: 63d840af-a120-414c-862c-91bfd64a73b0
 worktree: todomd/task-0037
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 16.0735
+cost_usd: 20.1825
 needs_human_reason:
 recovery_stage:
 ---
@@ -61,3 +61,4 @@ local speech or provider configuration is unavailable.
   - retrying with findings (attempt 2/3)
   - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
 - 2026-08-01 23:10Z · Resume Build · continuing attempt 2 in preserved worktree todomd/task-0037
+- 2026-08-01 23:18Z · Build attempt 2 · 5 turns · $4.109 · ok
