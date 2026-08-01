@@ -1,7 +1,7 @@
 ---
 id: task-0035
 title: Voice spike and design doc
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0020)
-session_id: 4d1936ec-95d8-4631-b0b6-f23418e09c6e
+session_id: 019fbd2f-565c-78e3-8376-4b17c5209899
 worktree: todomd/task-0035
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 5.7676
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -52,3 +52,5 @@ Voice spike and design doc
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 11:51Z · Escalate attempt 2 · 18 turns · $1.867 · diagnosis complete
 - 2026-08-01 11:57Z · Build attempt 3 · 23 turns · $1.556 · ok (escalation repair)
+- 2026-08-01 12:01Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: `npm test` passes: 267 unit/integration and 5 UI tests. However, `docs/voice.md:30,76-83` incorrectly claims Chrome's Web Speech API cannot operate on-device and necessarily streams audio to Google. Chrome 139 added stable on-device recognition specifically to keep audio and transcripts local ([official release notes](https://developer.chrome.com/release-notes/139)). Porcupine may remain preferabl
