@@ -19,23 +19,32 @@ verification: { attempts: 0, max_attempts: 3, last_verdict: }
 
 ## Description
 
-Voice session and summary API
+Add deterministic voice summaries and a prepare/confirm/reject Actions API. The
+API remains the sole authority for board changes; the speech model may propose
+an action but cannot execute or confirm it.
 
 ## Acceptance Criteria
 
-- [ ] `GET /api/voice/summary` returns a concise board status string derived from the live board.
-- [ ] `POST /api/voice/session` returns a short-TTL ephemeral token, 403 for non-primary clients, and 503 when no voice key is configured, and no response contains the long-lived key.
-- [ ] `npm run test:unit` passes, including the new coverage in `test/voice.test.js` and `test/server-routes.test.js`.
+- [ ] `GET /api/voice/summary` returns a deterministic concise status derived from the live board, including Needs Human and active-run details.
+- [ ] Voice action preparation returns an opaque proposal ID, exact read-back, expiry, and confirmation policy without changing the board.
+- [ ] Confirm and reject endpoints bind to the exact pending proposal, revalidate card state and eligibility, execute at most once, and reject stale, expired, ambiguous, or replayed requests.
+- [ ] The allowlist exposes only existing guarded board operations; arbitrary routes, shell commands, Git writes, source edits, deletion, and bulk actions are unavailable.
+- [ ] Focused unit and API tests pass.
 
 ## Implementation Plan
 
-1. New `src/voice.js`:
-   - `buildVoiceSummary(board)` takes the board object already produced for `/api/board` (see `src/board.js`) and returns `{ text, counts }`. `text` is one or two spoken sentences covering per-column counts, anything sitting in Needs Human, and the currently running card. Deterministic, under ~300 characters.
-   - `mintVoiceSession({ config, env, now })` reads the voice-service key from config/env and returns `{ token, expiresAt, model }` with a short TTL (60s), or `null` when unconfigured. It never returns the source key.
-2. `src/server.js`, inside `handleApi` alongside the existing `/api/...` branches:
-   - `GET /api/voice/summary` responds `json(res, 200, buildVoiceSummary(...))`.
-   - `POST /api/voice/session` responds 403 unless `primary(req)` (mirror the `/api/lan` gate), 503 with `{ error }` when `mintVoiceSession` returns null, else 200 with the minted session.
-3. New `test/voice.test.js` under `node --test`: summary text reflects column counts and flags Needs Human; `mintVoiceSession` returns null when unconfigured and a short-TTL token when configured; the minted payload does not contain the raw key.
-4. Extend `test/server-routes.test.js`: `GET /api/voice/summary` returns 200 with text; `POST /api/voice/session` returns 503 when unconfigured and 403 for a non-primary request.
+1. Add a deterministic summary builder over the existing board object. Keep the
+   spoken result short and include active runs and actionable Needs Human cards.
+2. Add primary-only endpoints to prepare, confirm, and reject one pending voice
+   action. Store an opaque, short-lived proposal bound to project, card, expected
+   state, action arguments, confirmation policy, and one-time nonce.
+3. Reuse the existing transition and recovery guards when confirming. Revalidate
+   against the live card before execution and consume the proposal atomically.
+4. Allow read-only report/card-status calls without confirmation. Require `Yes
+   To-do` for harmless reversible moves, a fresh task-specific challenge for
+   actions that start or resume agents, and visible approval for cancel,
+   restart-build, and archive. Never expose delete or arbitrary API dispatch.
+5. Add focused unit and server-route coverage for proposal binding, expiry,
+   replay, stale card state, ambiguity, confirmation tiers, and allowed actions.
 
 ## Run Log

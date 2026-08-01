@@ -19,23 +19,36 @@ verification: { attempts: 0, max_attempts: 3, last_verdict: }
 
 ## Description
 
-Command routing, confirmation, browser tests
+Connect Realtime read/proposal tools to the Actions API, implement deterministic
+confirmation and recovery commands, and verify the complete foreground flow.
 
 ## Acceptance Criteria
 
-- [ ] Board-changing voice intents perform no API call until a spoken confirmation is received, and a non-confirming reply discards the pending action.
-- [ ] `Report To-do` returns a board status with no confirmation step.
-- [ ] `test/ui/voice.test.js` drives the mic button through inactive, armed, and back to inactive in the browser harness with no real microphone or network.
-- [ ] `npm test` passes, covering the unit, API, and browser tests.
+- [ ] Realtime tools are limited to board report, card status, and action proposal; the model has no execute or confirm tool.
+- [ ] Read-only commands run immediately, while every mutation uses the server proposal and its required confirmation tier; unrelated speech, rejection, timeout, stale state, and replay execute nothing.
+- [ ] Voice exposes guarded Resume Build and Retry Verification using preserved worktrees, and clearly distinguishes Resume Build from destructive Restart Build.
+- [ ] Sign-off closes only the active conversation and returns to armed; offline stops all capture and returns to inactive.
+- [ ] Browser tests cover reporting, proposal/read-back/confirm, rejection, recovery actions, sign-off, offline, unavailable capability, and zero pre-wake network traffic.
+- [ ] `npm test` passes.
 
 ## Implementation Plan
 
-1. New `public/voice-commands.js`:
-   - `parseIntent(text)` returns `{ kind, ... }` for `report`, `confirm` (Yes To-do), `signoff` (That is all To-do), the board-changing intents (move a card to a stage, cancel a run, retry verify), and `unknown`.
-   - A `CHANGES_BOARD` set marks which kinds mutate the board. `report` and `signoff` are read-only.
-2. Extend `createVoiceSession` with a confirmation gate: a board-changing intent moves the session to `confirming` and stores the pending action together with a spoken read-back. The action's `execute()` runs only after a `confirm` intent; any other intent, or the confirm timeout, discards it. `report` executes immediately with no confirmation.
-3. `public/app.js`: map executed intents onto the existing endpoints (`POST /api/cards/:id/move`, `/set`, `/cancel`, `/retry-verify`) and map `report` onto `GET /api/voice/summary`, speaking the returned text.
-4. Extend the unit tests (in `test/voice-session.test.js` or a new `test/voice-commands.test.js`): a move intent performs no fetch until `Yes To-do` arrives and then performs exactly one; a non-confirming reply discards the pending action; `Report To-do` fetches the summary with no confirmation step.
-5. New `test/ui/voice.test.js` following the existing harness in `test/browser.js` as used by `test/ui/ui-smoke.test.js`: the mic button exists and starts inactive, clicking it moves it to armed, and a simulated `That is all To-do` returns it to inactive. Stub the wake-word engine and the mic so the test needs no real microphone and no network.
+1. Configure Realtime with only `read_board_report`, `read_card`, and
+   `propose_board_action`. Validate every tool argument and render deterministic
+   server results; never let model prose become an executable action.
+2. Implement normalized card references and constrained intents for report,
+   status, move, resume build, retry verification, restart build, cancel,
+   confirm, reject, sign-off, and offline. Ambiguity asks for clarification.
+3. Bind the browser confirmation state to the server proposal. Suppress model
+   tool/response generation while awaiting confirmation, discard buffered
+   audio, accept only finalized user input, and execute exactly once through the
+   confirm endpoint.
+4. Map Resume Build and Retry Verification to their existing eligibility guards
+   and preserved worktree behavior. Keep cancel, Restart Build, and archive
+   behind visible approval; never expose delete.
+5. Add mocked end-to-end browser coverage for wake, reports, action confirmation
+   tiers, cancellation paths, recovery actions, sign-off/offline, cleanup, and
+   unavailable states. Assert no real microphone, provider call, or pre-wake
+   network traffic is used in tests.
 
 ## Run Log
