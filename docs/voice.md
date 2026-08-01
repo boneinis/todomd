@@ -31,16 +31,36 @@ Three options were scored:
 
 **Selected: Picovoice Porcupine Web.** It ships an official
 `@picovoice/porcupine-web` package as prebuilt WASM + a JS worker file with no
-bundler required — the artifact is just static files, which is exactly what
-gets vendored under `public/vendor/porcupine/` (worker JS, `.wasm`, and one
-`.ppn` keyword model per wake phrase). It supports **custom multi-word
-keywords**: each of our four phrases is trained once in the Picovoice Console
-(a web UI, not part of this repo's toolchain) and the resulting `.ppn` file is
-committed under `public/vendor/porcupine/`. Recognition runs entirely
-on-device — no audio leaves the page to detect the wake phrase — which is the
-hard requirement of the privacy contract below. It also has a materially
-lower CPU/battery footprint than a general ASR model, which matters for an
-always-armed background listener in a browser tab.
+bundler required — the artifact is just static files. `PorcupineWorker.create()`
+needs more than the worker JS and one keyword file per phrase, and this repo
+vendors all of it under `public/vendor/porcupine/`:
+
+- The worker JS and its WASM binary (recent SDK builds embed the WASM as
+  base64 inside the worker JS; either way it ships as static files, no
+  bundler step).
+- `porcupine_params.pv` — the shared Porcupine **parameter model**: the
+  trained acoustic/language model `PorcupineWorker.create()` requires
+  regardless of which keyword is active. This is distinct from, and in
+  addition to, the per-phrase `.ppn` files below — omitting it is a hard
+  init failure, not a missing feature.
+- One `.ppn` **keyword model** per wake phrase. It supports **custom
+  multi-word keywords**: each of our four phrases is trained once in the
+  Picovoice Console (a web UI, not part of this repo's toolchain) and the
+  resulting `.ppn` file is committed here.
+
+`PorcupineWorker` itself never touches the microphone — the official browser
+integration pairs it with the companion `@picovoice/web-voice-processor`
+package's `WebVoiceProcessor`, which owns `getUserMedia`/`AudioWorklet`
+capture, resamples to 16 kHz, and pushes frames to whichever engine worker is
+subscribed to it. That package is vendored alongside Porcupine, under
+`public/vendor/web-voice-processor/`, and is what `createVoiceSession`
+(task-0037) calls to start and stop the mic; `PorcupineWorker` only ever sees
+frames `WebVoiceProcessor` hands it, never the raw `MediaStream`.
+
+Recognition runs entirely on-device — no audio leaves the page to detect the
+wake phrase — which is the hard requirement of the privacy contract below. It
+also has a materially lower CPU/battery footprint than a general ASR model,
+which matters for an always-armed background listener in a browser tab.
 
 **Rejected — onnxruntime-web / openWakeWord.** Also on-device and, unlike
 Porcupine, needs no account or key at all, which is attractive. But
@@ -62,9 +82,10 @@ voice service" (task-0020's own acceptance criterion) would already be
 violated by the wake-word check itself. It's also unsupported in Firefox and
 inconsistent in Safari.
 
-The chosen engine is **vendored under `public/vendor/porcupine/`** and is
-**loaded lazily via dynamic `import()` only after the mic button is
-pressed** — it is never on the critical path of loading the board.
+The chosen engine — Porcupine's worker/WASM/`.pv`/`.ppn` files plus
+`WebVoiceProcessor` — is **vendored under `public/vendor/`** and is **loaded
+lazily via dynamic `import()` only after the mic button is pressed** — it is
+never on the critical path of loading the board.
 
 ## Privacy contract
 
@@ -94,13 +115,27 @@ pressed** — it is never on the critical path of loading the board.
 
 ## Credential flow
 
-Two long-lived secrets are involved, and **neither ever reaches the
-browser**:
+Two long-lived secrets are involved, held only in server config/env — but
+only one of them is designed to stay off the browser entirely:
 
 - `TODOMD_VOICE_KEY` — the realtime voice-service API key (e.g. an OpenAI
-  Realtime key). Server-only.
+  Realtime key). Server-only, and **it never appears in any API response**.
+  The browser instead receives a short-TTL **ephemeral token** minted
+  server-side per session (see the response shape below).
 - `TODOMD_VOICE_WAKE_KEY` — the Picovoice AccessKey used to initialize the
-  wake-word engine. Also server-only.
+  wake-word engine. This one **does** reach the browser: Porcupine's web SDK
+  requires the AccessKey directly in the browser process to initialize the
+  WASM engine (there is no server-side wake-word detection step to proxy it
+  through), so every browser Porcupine integration works this way. Picovoice's
+  own docs still tell integrators to protect the AccessKey from public
+  exposure and abuse (https://picovoice.ai/docs/porcupine/) — it is a real
+  secret, not a throwaway value, and this repo does not pretend otherwise.
+  The mitigation here is *who can reach it*, not *how long it lives*:
+  `POST /api/voice/session` hands it to the browser verbatim as `wakeKey`,
+  but only after the same primary-only gate used for everything else on this
+  route, so only the desktop session that started todomd can ever obtain it —
+  exactly like `/api/lan`'s `canToggle`. It is not rotated or scoped to a TTL
+  the way `TODOMD_VOICE_KEY` is.
 
 Both are **environment variables, never `.todomd/config.yml` fields** — the
 same reasoning `docs/email-intake.md` already applies to IMAP credentials:
@@ -109,15 +144,6 @@ same reasoning `docs/email-intake.md` already applies to IMAP credentials:
 there would be pushed to whatever remote the repo has. Non-secret voice
 settings (e.g. which realtime model to use) may live under an optional
 `voice:` block in `config.yml`; the keys themselves never do.
-
-The browser never receives `TODOMD_VOICE_KEY`. It receives a **short-TTL
-ephemeral token** minted server-side per session. `TODOMD_VOICE_WAKE_KEY` is
-handled differently: Porcupine's web SDK requires the AccessKey directly in
-the browser process by design (there is no server-side wake-word detection
-step to proxy it through), so it is not secret in the same sense — but it is
-still gated behind the same primary-only check, so only the desktop session
-that started todomd can ever obtain it, exactly like `/api/lan`'s
-`canToggle`.
 
 ### `POST /api/voice/session`
 
@@ -142,7 +168,7 @@ No body fields are required; an empty object (or omitted body) is accepted.
 ```json
 {
   "token": "ek_9f2c...",
-  "expiresAt": "2026-08-01T12:00:60.000Z",
+  "expiresAt": "2026-08-01T12:01:00.000Z",
   "model": "realtime-mini",
   "wakeKey": "porcupine-access-key-value"
 }
@@ -150,10 +176,13 @@ No body fields are required; an empty object (or omitted body) is accepted.
 
 - `token` — the short-lived (60s TTL) ephemeral realtime-voice-service
   credential. Never the raw `TODOMD_VOICE_KEY`.
-- `expiresAt` — ISO 8601 timestamp, `now + 60s`.
+- `expiresAt` — ISO 8601 timestamp, `now + 60s` (a session minted at
+  `12:00:00.000Z` expires at `12:01:00.000Z`, as above).
 - `model` — the realtime model id the token is scoped to.
-- `wakeKey` — the Picovoice AccessKey, passed straight to the vendored
-  engine's `init()` call client-side.
+- `wakeKey` — the raw `TODOMD_VOICE_WAKE_KEY`, passed straight to the
+  vendored engine's `init()` call client-side. This is the one long-lived
+  secret that *does* reach the browser by design — see "Credential flow"
+  above for why, and what actually gates it.
 
 **Response — 403** (not the primary desktop session):
 
@@ -170,7 +199,9 @@ unset — `mintVoiceSession` returns `null`):
 
 `mintVoiceSession({ config, env, now })` (task-0036, `src/voice.js`) is the
 single place that reads both env vars and either returns the object above or
-`null`; the route just maps `null` → 503. It never returns either raw key.
+`null`; the route just maps `null` → 503. It never returns the raw
+`TODOMD_VOICE_KEY`; it does return the raw `TODOMD_VOICE_WAKE_KEY` verbatim
+as `wakeKey`, per "Credential flow" above.
 
 ## Phrases and confirmation
 

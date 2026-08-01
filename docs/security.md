@@ -28,8 +28,10 @@ it. Use only on trusted networks.
 ## Voice control
 
 Voice control's credential flow (ephemeral realtime-voice tokens, the
-`primary(req)`-gated `POST /api/voice/session`, and why the long-lived keys
-never reach the browser) is documented separately in `docs/voice.md`.
+`primary(req)`-gated `POST /api/voice/session`, and why only the realtime
+voice-service key — `TODOMD_VOICE_KEY` — never reaches the browser; the
+Picovoice wake-word key does, by necessity, and is protected by the same
+primary-only gate instead) is documented separately in `docs/voice.md`.
 
 ## Pipeline hardening (prompt-injection surface)
 
