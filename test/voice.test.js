@@ -224,7 +224,7 @@ test('reject consumes the proposal without ever executing it', async () => {
   writeCard(repo, 'task-0001', { status: 'Build' });
 
   const prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
-  let r = voice.rejectVoiceAction(p, prep.proposalId);
+  let r = await voice.rejectVoiceAction(p, prep.proposalId);
   assert.equal(r.status, 200);
   assert.equal(r.rejected, true);
   assert.equal(status(repo, 'task-0001'), 'Build', 'rejecting never executes the action');
@@ -232,6 +232,14 @@ test('reject consumes the proposal without ever executing it', async () => {
   // the rejected proposal cannot later be confirmed
   r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
   assert.equal(r.status, 404);
+
+  const stalePrep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+  await patchFrontmatter(repo, 'task-0001', { status: 'Needs Human' });
+  r = await voice.rejectVoiceAction(p, stalePrep.proposalId);
+  assert.equal(r.status, 409);
+  assert.match(r.error, /stale/);
+  assert.equal((await voice.rejectVoiceAction(p, stalePrep.proposalId)).status, 404,
+    'a stale rejection consumes the obsolete proposal');
 });
 
 test('expiry: a proposal outside its TTL can neither confirm nor reject', async () => {
@@ -251,7 +259,7 @@ test('expiry: a proposal outside its TTL can neither confirm nor reject', async 
 
     const prep2 = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
     await sleep(80);
-    r = voice.rejectVoiceAction(p, prep2.proposalId);
+    r = await voice.rejectVoiceAction(p, prep2.proposalId);
     assert.equal(r.status, 410);
   } finally {
     delete process.env.TODOMD_VOICE_PROPOSAL_TTL_MS;
@@ -321,12 +329,12 @@ test('ambiguous: a second pending proposal for the same card is refused, and a m
   assert.equal(r.status, 409, 'explicit falsy bindings are mismatches, not omitted fields');
   assert.match(r.error, /ambiguous/);
 
-  r = voice.rejectVoiceAction(p, other.proposalId, { cardId: 0, action: '' });
+  r = await voice.rejectVoiceAction(p, other.proposalId, { cardId: 0, action: '' });
   assert.equal(r.status, 409, 'reject applies the same exact property-presence binding');
   assert.match(r.error, /ambiguous/);
-  assert.equal(voice.rejectVoiceAction(p, other.proposalId, {
+  assert.equal((await voice.rejectVoiceAction(p, other.proposalId, {
     cardId: 'task-0002', action: 'retriage',
-  }).status, 200);
+  })).status, 200);
 
   // the correctly-bound confirm still works
   r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do', cardId: 'task-0001', action: 'retriage' });
@@ -398,7 +406,7 @@ test('agent challenges bind cryptographic proposal entropy and never reuse the s
     assert.equal(prepared.status, 200);
     assert.ok(prepared.confirmation.challenge.endsWith(prepared.proposalId.slice(0, 16)));
     challenges.add(prepared.confirmation.challenge);
-    assert.equal(voice.rejectVoiceAction(p, prepared.proposalId).status, 200);
+    assert.equal((await voice.rejectVoiceAction(p, prepared.proposalId)).status, 200);
   }
   assert.equal(challenges.size, 24);
 });
@@ -517,7 +525,7 @@ test('prepare is race-free: two concurrent prepares for the same card never both
   assert.equal(third.status, 409);
 
   // rejecting the winner frees the card for a fresh prepare again
-  const rej = voice.rejectVoiceAction(p, winner.proposalId);
+  const rej = await voice.rejectVoiceAction(p, winner.proposalId);
   assert.equal(rej.status, 200);
   const fresh = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'restart_build' });
   assert.equal(fresh.status, 200);
@@ -604,7 +612,7 @@ test('cancel read-back names the actual running stage', async () => {
     const prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'cancel' });
     assert.equal(prep.status, 200);
     assert.equal(prep.readback, 'cancel the running Plan run for task-0001');
-    assert.equal(voice.rejectVoiceAction(p, prep.proposalId).status, 200);
+    assert.equal((await voice.rejectVoiceAction(p, prep.proposalId)).status, 200);
   } finally {
     pipeline.cancel(p, 'task-0001');
     await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
@@ -658,7 +666,10 @@ test('a chain claimed between spawns counts as live everywhere: summary, cancel,
     assert.equal(c.status, 200);
     assert.equal(c.confirmation.tier, 'visible');
     assert.equal(c.readback, 'cancel the active run for task-0001');
-    assert.equal(voice.rejectVoiceAction(p, c.proposalId).status, 200);
+    // This fixture deliberately holds the repository transaction open. A real
+    // reject must wait for that transaction to revalidate atomically, so clear
+    // the test-only proposal synchronously instead of deadlocking the fixture.
+    voice.invalidateProject(repo);
   } finally {
     // flag the parked chain (revertTo Review, so it is not re-driven), then let
     // it reach its cancel checkpoint and settle
@@ -693,7 +704,7 @@ test('a queued Build cannot be retriaged under reversible voice confirmation', a
     const cancel = await voice.prepareVoiceAction(p, { cardId: 'task-0002', action: 'cancel' });
     assert.equal(cancel.status, 200);
     assert.equal(cancel.readback, 'take task-0002 out of the build queue');
-    assert.equal(voice.rejectVoiceAction(p, cancel.proposalId).status, 200);
+    assert.equal((await voice.rejectVoiceAction(p, cancel.proposalId)).status, 200);
   } finally {
     pipeline.cancel(p, 'task-0002');
     pipeline.cancel(p, 'task-0001');
@@ -726,13 +737,14 @@ test('pending run ownership uses exact project identity when names contain colon
   }
 });
 
-test('voice summaries sanitize and bound user-controlled card text', () => {
+test('voice summaries and card status sanitize and bound user-controlled card text', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = project(repo);
   writeCard(repo, 'task-0001', {
     status: 'Needs Human',
+    title: `Title ${'y'.repeat(4000)}`,
     extra: `needs_human_reason: "${'x'.repeat(4000)}\\nsecond line"\n`,
   });
 
@@ -741,6 +753,11 @@ test('voice summaries sanitize and bound user-controlled card text', () => {
   assert.ok(summary.needsHuman[0].reason.length <= 160);
   assert.doesNotMatch(summary.text, /[\u0000-\u001f\u007f]/);
   assert.match(summary.needsHuman[0].reason, /…$/);
+
+  const cardStatus = await voice.buildCardStatus(p, 'task-0001');
+  assert.ok(cardStatus.text.length <= 1200, `card status was ${cardStatus.text.length} characters`);
+  assert.doesNotMatch(cardStatus.text, /[\u0000-\u001f\u007f]/);
+  assert.match(cardStatus.text, /…/);
 });
 
 test('argumentless proposals bind normalized arguments through confirm and reject', async () => {
@@ -774,9 +791,9 @@ test('argumentless proposals bind normalized arguments through confirm and rejec
   assert.equal(status(repo, 'task-0001'), 'Review');
 
   const reject = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'archive' });
-  r = voice.rejectVoiceAction(p, reject.proposalId, { arguments: { reason: 'different' } });
+  r = await voice.rejectVoiceAction(p, reject.proposalId, { arguments: { reason: 'different' } });
   assert.equal(r.status, 409);
-  assert.equal(voice.rejectVoiceAction(p, reject.proposalId, { arguments: {} }).status, 200);
+  assert.equal((await voice.rejectVoiceAction(p, reject.proposalId, { arguments: {} })).status, 200);
 });
 
 test('epic-wide cascades are unavailable by voice: retriage, approve, and archive refuse unfinished children', async () => {
@@ -970,6 +987,14 @@ test('invalidateProject drops every pending proposal for a removed repository', 
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Build' });
 
+  // invalidation can interleave with an asynchronous eligibility check; the
+  // prepare call must not return 200 for an id already removed from the map
+  const preparing = voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+  voice.invalidateProject(repo);
+  const invalidated = await preparing;
+  assert.equal(invalidated.status, 409);
+  assert.match(invalidated.error, /invalidated while preparing/);
+
   const prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
   assert.equal(prep.status, 200);
 
@@ -977,7 +1002,7 @@ test('invalidateProject drops every pending proposal for a removed repository', 
 
   let r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
   assert.equal(r.status, 404);
-  r = voice.rejectVoiceAction(p, prep.proposalId);
+  r = await voice.rejectVoiceAction(p, prep.proposalId);
   assert.equal(r.status, 404);
   assert.equal(status(repo, 'task-0001'), 'Build');
 });

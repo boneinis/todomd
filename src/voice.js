@@ -20,12 +20,16 @@ const BUDGET_LEASE_TTL_SEC = 900;
 // validates them itself instead of relying on server.js's path-level guard.
 const CARD_ID = /^task-\d{1,6}(-[\w-]*)?$/;
 
+function safeText(value) {
+  try { return String(value ?? ''); } catch { return ''; }
+}
+
 function normalizePhrase(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return safeText(s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function boundedText(value, max = MAX_SUMMARY_FIELD_CHARS) {
-  const clean = String(value || '')
+  const clean = safeText(value)
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -51,7 +55,7 @@ function requestObject(value) {
 }
 
 function hasFreshBudgetLease(card, nowSec) {
-  const [claimedAt = ''] = String(card.lease ?? '').trim().split(/\s+/);
+  const [claimedAt = ''] = safeText(card.lease).trim().split(/\s+/);
   if (!/^\d+$/.test(claimedAt)) return false;
   const timestamp = Number(claimedAt);
   return Number.isSafeInteger(timestamp) && nowSec - timestamp <= BUDGET_LEASE_TTL_SEC;
@@ -140,7 +144,7 @@ function fingerprint(card, fx) {
     card.data.archived ? 'archived' : 'active',
     fx.runState ? `run:${fx.runState.state}:${fx.runState.stage}:${fx.runState.external ? 'external' : 'local'}` : 'no-run',
     fx.cancellableRunState ? 'cancellable' : 'not-cancellable',
-    `worktree:${String(card.data.worktree || '')}`,
+    `worktree:${safeText(card.data.worktree)}`,
     `children:${fx.cascadeChildren}`,
     `blocked:${fx.blockedDependencies.join(',')}`,
     fx.budget ? 'budget' : 'launcher',
@@ -412,18 +416,23 @@ export async function buildCardStatus(project, cardId) {
   const run = effectiveRunStates(project, board)[cardId];
   const recovery = await recoveryActions(project, cardId);
 
-  const bits = [`${cardId}: ${card.title || '(untitled)'} — ${card.status}`];
+  const bits = [`${cardId}: ${boundedText(card.title || '(untitled)')} — ${boundedText(card.status)}`];
   if (card.archived) bits.push('archived');
   if (run) bits.push(run.state === 'queued'
-    ? `queued for ${run.stage}`
-    : `running ${run.stage}${run.external ? ' through the dispatcher' : ''}`);
-  if (card.status === 'Needs Human' && card.needs_human_reason) bits.push(`reason: ${card.needs_human_reason}`);
+    ? `queued for ${boundedText(run.stage)}`
+    : `running ${boundedText(run.stage)}${run.external ? ' through the dispatcher' : ''}`);
+  if (card.status === 'Needs Human' && card.needs_human_reason) bits.push(`reason: ${boundedText(card.needs_human_reason)}`);
   if (card.criteria) bits.push(`${card.criteria.done} of ${card.criteria.total} acceptance criteria met`);
   const available = ['resume_build', 'restart_build', 'retry_verification']
     .filter((k) => recovery[k]).map((k) => k.replace(/_/g, ' '));
   if (available.length) bits.push(`available: ${available.join(', ')}`);
 
-  return { text: bits.join(' — '), id: cardId, status: card.status, archived: !!card.archived };
+  return {
+    text: boundedText(bits.join(' — '), MAX_SUMMARY_TEXT_CHARS),
+    id: cardId,
+    status: boundedText(card.status),
+    archived: !!card.archived,
+  };
 }
 
 // Prepare an action: validate + read back, but never touch the board. Returns
@@ -438,8 +447,11 @@ export async function buildCardStatus(project, cardId) {
 export async function prepareVoiceAction(project, fields = {}) {
   pruneExpired();
   if (!requestObject(fields)) return { status: 400, ok: false, error: 'request body must be a JSON object' };
-  const requestedCardId = String(fields.cardId || '');
-  const action = String(fields.action || '');
+  if (typeof fields.cardId !== 'string' || typeof fields.action !== 'string') {
+    return { status: 400, ok: false, error: 'cardId and action must be strings' };
+  }
+  const requestedCardId = fields.cardId;
+  const action = fields.action;
   const normalizedArguments = argumentless(fields);
   if (!normalizedArguments.ok) return { status: 400, ok: false, error: normalizedArguments.error };
   if (!CARD_ID.test(requestedCardId)) return { status: 400, ok: false, error: 'invalid card id' };
@@ -450,7 +462,8 @@ export async function prepareVoiceAction(project, fields = {}) {
   // readCard accepts a filename prefix for existing UI routes. Voice proposals
   // must collapse every such alias onto the physical card's frontmatter id, or
   // two aliases can reserve and execute against the same card concurrently.
-  const cardId = String(card.data.id || '');
+  if (typeof card.data.id !== 'string') return { status: 400, ok: false, error: 'card has an invalid canonical id' };
+  const cardId = card.data.id;
   if (!CARD_ID.test(cardId)) return { status: 400, ok: false, error: 'card has an invalid canonical id' };
   const archived = archivedEligibility(card, action);
   if (!archived.ok) return { status: 400, ok: false, error: archived.error };
@@ -477,6 +490,16 @@ export async function prepareVoiceAction(project, fields = {}) {
   if (!elig.ok) {
     proposals.delete(proposalId); // nothing was proposed; release the reservation
     return { status: 400, ok: false, error: elig.error };
+  }
+
+  // Project removal invalidates outstanding proposals. It can run while an
+  // asynchronous eligibility check above is in flight, so do not return a
+  // successful id that was already removed (or expired) during preparation.
+  const current = getProposal(proposalId);
+  if (!current.ok || current.proposal !== proposal) {
+    return current.reason === 'expired'
+      ? { status: 410, ok: false, error: 'proposal expired while preparing' }
+      : { status: 409, ok: false, error: 'proposal invalidated while preparing' };
   }
 
   // fingerprinted from the SAME snapshot the tier and read-back were derived
@@ -564,7 +587,7 @@ export async function confirmVoiceAction(project, proposalId, body = {}) {
   });
 }
 
-export function rejectVoiceAction(project, proposalId, body = {}) {
+export async function rejectVoiceAction(project, proposalId, body = {}) {
   if (!requestObject(body)) return { status: 400, ok: false, error: 'request body must be a JSON object' };
   const found = getProposal(proposalId);
   if (!found.ok) {
@@ -580,6 +603,40 @@ export function rejectVoiceAction(project, proposalId, body = {}) {
   }
   const normalizedArguments = argumentless(body);
   if (!normalizedArguments.ok) return { status: 409, ok: false, error: 'ambiguous: arguments do not match the pending proposal' };
-  if (!proposals.delete(proposalId)) return { status: 409, ok: false, error: 'proposal already used' };
-  return { status: 200, ok: true, rejected: true, proposalId, action: p.action, cardId: p.cardId };
+
+  // Rejection consumes no board action, but it is still a result about this
+  // exact proposal. Revalidate under the same transaction as confirmation so
+  // stale/expired/now-ineligible proposals are rejected rather than reported
+  // as a successful human rejection of an action that no longer exists.
+  return withRepoLock(project.path, async () => {
+    const current = getProposal(proposalId);
+    if (!current.ok) {
+      return current.reason === 'expired'
+        ? { status: 410, ok: false, error: 'proposal expired' }
+        : { status: 404, ok: false, error: 'no such pending proposal' };
+    }
+    if (current.proposal !== p) return { status: 409, ok: false, error: 'proposal already used' };
+
+    const card = readCard(project.path, p.cardId);
+    const effects = card ? computeEffects(project, card) : null;
+    if (!card || fingerprint(card, effects) !== p.expectedFingerprint) {
+      proposals.delete(proposalId);
+      return { status: 409, ok: false, error: `stale: ${p.cardId} changed since this action was prepared` };
+    }
+
+    const def = ALLOWED_ACTIONS[p.action];
+    const archived = archivedEligibility(card, p.action);
+    if (!archived.ok) {
+      proposals.delete(proposalId);
+      return { status: 409, ok: false, error: `stale: ${archived.error}` };
+    }
+    const eligible = await def.eligible(card, project, effects);
+    if (!eligible.ok) {
+      proposals.delete(proposalId);
+      return { status: 409, ok: false, error: `stale: ${eligible.error}` };
+    }
+
+    if (!proposals.delete(proposalId)) return { status: 409, ok: false, error: 'proposal already used' };
+    return { status: 200, ok: true, rejected: true, proposalId, action: p.action, cardId: p.cardId };
+  });
 }

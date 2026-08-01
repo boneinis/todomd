@@ -115,6 +115,11 @@ test('full prepare → confirm round trip over HTTP moves the card exactly once'
     r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'nah' }) });
     assert.equal(r.status, 400);
     assert.equal(readCard(repo, 'task-0001').data.status, 'Planned');
+    r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ confirmation: { toString: null, valueOf: null } }),
+    });
+    assert.equal(r.status, 400, 'hostile non-string confirmation is refused without HTTP 500');
 
     r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'Yes To-do' }) });
     assert.equal(r.status, 200);
@@ -143,6 +148,16 @@ test('voice action routes reject null and prototype-property actions without HTT
       body: JSON.stringify({ cardId: 'task-0001', action: 'toString' }),
     });
     assert.equal(r.status, 400);
+    for (const hostile of [
+      { cardId: { toString: null, valueOf: null }, action: 'retriage' },
+      { cardId: 'task-0001', action: { toString: null, valueOf: null } },
+    ]) {
+      r = await fetch(`${base}/api/voice/actions${q}`, {
+        method: 'POST', headers: h, body: JSON.stringify(hostile),
+      });
+      assert.equal(r.status, 400);
+      assert.match((await r.json()).error, /must be strings/);
+    }
   } finally { srv.close(); }
 });
 

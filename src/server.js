@@ -453,7 +453,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let fields = {};
       try { if (body) fields = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-      const { status, ...result } = rejectVoiceAction(project, voiceRejectMatch[1], fields);
+      const { status, ...result } = await rejectVoiceAction(project, voiceRejectMatch[1], fields);
       return json(res, status, result);
     }
     if (url.pathname === '/api/models') { // model suggestions for the chosen vendor (CLI --help + config)
