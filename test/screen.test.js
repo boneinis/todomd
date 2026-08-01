@@ -825,6 +825,7 @@ test('pollSource: human bug reports about automated-mail features stay work and 
     ['Manage preferences page returns 500', 'When I click manage your email preferences, the server returns a 500.'],
     ['View-in-browser link is broken', 'The view this email in browser link returns a 404 for customer receipts.'],
     ['Out-of-office settings fail to save', 'The out-of-office settings form loses the selected return date after saving.'],
+    ['Leave settings fail to save', 'I am on leave settings page and the return date form returns a 500.'],
     ['OOO notification bug', 'OOO notifications are not delivered when the schedule begins.'],
     ['Vacation response strips Unicode', 'The vacation response editor removes accented characters from the saved template.'],
     ['Delivery failed alert has wrong link', 'The delivery failed alert links to the wrong message in the activity view.'],
@@ -1123,6 +1124,26 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       '',
     ]),
     rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re: Export failure',
+      'Message-ID: <terminal-annual-leave@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Thank you for your message. I am currently on annual leave.',
+      '',
+    ]),
+    rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re: Export failure',
+      'Message-ID: <punctuated-parental-leave@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'I am on parental leave, returning September 3.',
+      '',
+    ]),
+    rawEmail([
       'From: Shop <no-reply@shop.example.com>',
       'To: intake@example.com',
       'Subject: Monthly shop news',
@@ -1150,7 +1171,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
   const expected = [
     'unclear', 'spam', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear',
     'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear',
-    'unclear', 'unclear', 'unclear', 'unclear', 'spam', 'spam',
+    'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'unclear', 'spam', 'spam',
   ];
   for (const [i, verdict] of expected.entries()) {
     assert.equal(screenEmail(await simpleParser(messages[i])).verdict, verdict);
@@ -1176,7 +1197,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
     onCardCallback: (_project, id) => triaged.push(id),
   });
 
-  assert.equal(cardFiles(repo).length, 19, 'only the held auto-responses create cards');
+  assert.equal(cardFiles(repo).length, 21, 'only the held auto-responses create cards');
   for (const file of cardFiles(repo)) {
     assert.equal(readCard(repo, file.match(/task-\d+/)[0]).data.status, 'Needs Human');
   }
