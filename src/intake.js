@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { createCard, attachCard, withRepoLock, ensureGitignored } from './board.js';
@@ -28,6 +29,9 @@ import { screenEmail, appendIntakeAudit } from './screen.js';
 const configFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake.json');
 const HANDLED_FILE = path.join('.todomd', 'intake-handled.json');
 const HANDLED_IGNORE_LINE = '.todomd/intake-handled.json';
+const HANDLED_MAX_KEYS = 5000;
+const INTAKE_LOCK_IGNORE_LINE = '.todomd/.intake-locks/';
+const INTAKE_LOCK_STALE_MS = 5 * 60_000;
 const cursorFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake-cursors.json');
 
 // Keep the MIME-body distinction intact for screening. Mailparser otherwise
@@ -75,11 +79,54 @@ function rememberIntakeHandled(repoPath, key) {
       if (Array.isArray(parsed)) keys = parsed.filter((x) => typeof x === 'string');
     } catch { /* first write or recover from a partial/corrupt runtime file */ }
     if (!keys.includes(key)) keys.push(key);
+    if (keys.length > HANDLED_MAX_KEYS) keys = keys.slice(-HANDLED_MAX_KEYS);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(keys) + '\n');
     fs.renameSync(tmp, file);
   });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The in-memory gate below closes same-process races. This keyed directory is
+// the matching cross-process claim: a second board server must not get between
+// the durable handled check and the card/audit side effects for the same mail.
+async function withIntakeClaim(repoPath, key, fn) {
+  await withRepoLock(repoPath, () => ensureGitignored(repoPath, INTAKE_LOCK_IGNORE_LINE));
+  const root = path.join(repoPath, '.todomd', '.intake-locks');
+  fs.mkdirSync(root, { recursive: true });
+  const dir = path.join(root, crypto.createHash('sha256').update(key).digest('hex'));
+  const nonce = crypto.randomUUID();
+  const deadline = Date.now() + 6 * 60_000;
+
+  for (;;) {
+    try {
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'owner'), nonce);
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - fs.statSync(dir).mtimeMs > INTAKE_LOCK_STALE_MS) {
+          const dead = `${dir}.dead.${process.pid}.${Date.now()}`;
+          try { fs.renameSync(dir, dead); fs.rmSync(dead, { recursive: true, force: true }); } catch {}
+          continue;
+        }
+      } catch { /* another contender removed it */ }
+      if (Date.now() > deadline) throw new Error('timed out waiting for mailbox intake claim');
+      await sleep(50);
+    }
+  }
+
+  try { return await fn(); }
+  finally {
+    try {
+      if (fs.readFileSync(path.join(dir, 'owner'), 'utf8') === nonce) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch { /* released or stale-stolen */ }
+  }
 }
 
 export function mailboxIntakeKey(conf, mailbox, messageId, uid) {
@@ -333,7 +380,7 @@ export async function intakeMessage(project, parsed, options = {}) {
       ? { verdict: 'duplicate', created: false, handled: true, duplicate: true }
       : outcome;
   }
-  const run = intakeMessageOnce(project, parsed, options);
+  const run = withIntakeClaim(project.path, intakeKey, () => intakeMessageOnce(project, parsed, options));
   inflightIntake.set(gateKey, run);
   try { return await run; }
   finally { inflightIntake.delete(gateKey); }

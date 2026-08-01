@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { simpleParser } from 'mailparser';
 import { makeRepo, isolateHome, git } from './helpers.js';
 import { screenEmail, appendIntakeAudit } from '../src/screen.js';
@@ -29,6 +31,38 @@ const auditFile = (repo) => path.join(repo, '.todomd', 'intake-audit.jsonl');
 const auditLines = (repo) =>
   fs.readFileSync(auditFile(repo), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const cardFiles = (repo) => fs.readdirSync(path.join(repo, '.todomd', 'tasks'));
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+function childIntake(repo, gate, intakeKey) {
+  const script = `
+    import fs from 'node:fs';
+    import { intakeMessage } from './src/intake.js';
+    while (!fs.existsSync(process.argv[2])) await new Promise((resolve) => setTimeout(resolve, 5));
+    const parsed = {
+      subject: 'Newsletter',
+      from: { text: 'Marketing <news@example.com>', value: [{ address: 'news@example.com' }] },
+      text: 'Weekly offers. Unsubscribe from these emails.',
+      messageId: '<cross-process@example.com>',
+      headers: new Map([['list-unsubscribe', '<mailto:leave@example.com>']]),
+    };
+    const out = await intakeMessage({ path: process.argv[1], name: 'repo' }, parsed,
+      { label: 'main', intakeKey: process.argv[3] });
+    process.stdout.write(JSON.stringify(out));
+  `;
+  return spawn(process.execPath, ['--input-type=module', '-e', script, repo, gate, intakeKey], {
+    cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function childResult(child) {
+  return new Promise((resolve, reject) => {
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr || `child exited ${code}`)));
+  });
+}
 
 /* ── screenEmail: the classifier ── */
 
@@ -366,6 +400,36 @@ test('intakeMessage: overlapping calls claim one key and perform side effects on
   assert.equal(results.filter((r) => r.duplicate).length, 1);
   assert.equal(cardFiles(repo).length, 1);
   assert.equal(auditLines(repo).length, 1);
+});
+
+test('intakeMessage: overlapping processes claim one key and perform side effects once', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const gate = path.join(repo, 'start-intake');
+  const key = 'main:uid:cross-process';
+  const children = [childIntake(repo, gate, key), childIntake(repo, gate, key)];
+  const resultsPromise = Promise.all(children.map(childResult));
+  fs.writeFileSync(gate, 'go');
+  const results = await resultsPromise;
+
+  assert.equal(results.filter((r) => r.verdict === 'spam').length, 1);
+  assert.equal(results.filter((r) => r.duplicate).length, 1);
+  assert.equal(cardFiles(repo).length, 0);
+  assert.equal(auditLines(repo).length, 1);
+});
+
+test('intakeMessage: durable handled keys retain a bounded recent window', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd', 'intake-handled.json');
+  fs.writeFileSync(file, JSON.stringify(Array.from({ length: 5000 }, (_, i) => `old:${i}`)));
+
+  await intakeMessage({ path: repo, name: 'repo' }, work(), { label: 'main', intakeKey: 'new:key' });
+
+  const keys = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(keys.length, 5000);
+  assert.equal(keys.includes('old:0'), false);
+  assert.equal(keys.at(-1), 'new:key');
 });
 
 test('intakeMessage: an audit failure after card creation does not create a duplicate', async () => {
