@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Needs Human
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
