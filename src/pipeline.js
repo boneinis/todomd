@@ -580,6 +580,7 @@ export async function humanMove(project, id, to) {
   const live = children.get(key);
   const pend = pending.get(key);
   const tracked = runs.get(key);
+  const triageClaim = triaging.get(key);
 
   // Preserve the long-standing "approve as soon as Planned appears" behavior:
   // a direct human move waits for the last trigger-stage commit to settle, then
@@ -592,7 +593,7 @@ export async function humanMove(project, id, to) {
       return humanMove(project, id, to);
     }
   }
-  if ((tracked || pend) && to !== 'Review') {
+  if ((tracked || pend || triageClaim) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
@@ -610,6 +611,10 @@ export async function humanMove(project, id, to) {
       // writer and the chain can't stomp this move by continuing.
       pend.cancelled = true;
       pend.revertTo = 'Review';
+      return { ok: true, cancelled: true };
+    }
+    if (triageClaim) {
+      triageClaim.cancelled = true;
       return { ok: true, cancelled: true };
     }
     retryFindings.delete(key);
@@ -857,6 +862,11 @@ export function cancel(project, id) {
       run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
       return { ok: true };
     }
+    const triageClaim = triaging.get(key);
+    if (triageClaim) {
+      triageClaim.cancelled = true;
+      return { ok: true };
+    }
     // chain claimed but between spawns (pre-spawn, or post-verify/pre-merge) —
     // nothing to SIGTERM. Flag it so the chain reverts at its next checkpoint
     // instead of proceeding, and drop any queued re-entry so the abort sticks.
@@ -936,6 +946,7 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
     run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
     run.noRequeue = true;
   }
+  for (const claim of triaging.values()) claim.cancelled = true;
   // chains claimed but between spawns have no child to kill — flag them so they
   // park in Queue at their next checkpoint instead of spawning into a dying
   // process
@@ -946,7 +957,9 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
-    while ((children.size || runs.size) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    while ((children.size || runs.size || triaging.size) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
   };
   await waitForExit(graceMs);
   for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
@@ -1056,8 +1069,8 @@ async function runTriggerStage(project, id, stageName) {
     if (await finishCancellation()) return;
     releaseTracking();
   } finally {
-    await finishCancellation();
-    releaseTracking();
+    try { await finishCancellation(); }
+    finally { releaseTracking(); }
   }
 }
 
@@ -1630,36 +1643,51 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
 /* ── auto-triage: annotate incoming Review cards with insight + plan ── */
 
-const triaging = new Set(); // synchronous claim — closes the check-then-spawn gap
+const triaging = new Map(); // runKey → exact claim spanning pre-spawn through final writes
 
 export async function maybeTriage(project, id) {
-  const config = await execConfig(project.path);
-  const t = config.triage || {};
-  if (t.enabled === false) return;
-  if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
   const key = runKey(project.name, id);
   if (triaging.has(key)) return;                         // already claimed this tick
   const card = readCard(project.path, id);
   if (!card || card.data.status !== 'Review') return;
   if (card.data.triaged) return;                         // idempotent across restarts
   if (card.data.skill) return;                           // skill cards have their own flow
-  const vendor = cardVendor(config, card);
-  if (!SUPPORTED_VENDORS.has(vendor)) return;
   if (children.has(key)) return;
-  triaging.add(key); // claimed before any await — no two concurrent calls proceed
+  let resolveClaim;
+  const done = new Promise((resolve) => { resolveClaim = resolve; });
+  const claim = { project: project.name, card: id, cancelled: false, done, resolve: resolveClaim };
+  triaging.set(key, claim); // claimed before any await — no two concurrent calls proceed
 
   try {
-    await runTriage(project, id, config, t, vendor);
+    const config = await execConfig(project.path);
+    const t = config.triage || {};
+    if (t.enabled === false) return;
+    if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
+    const vendor = cardVendor(config, card);
+    if (!SUPPORTED_VENDORS.has(vendor)) return;
+    await runTriage(project, id, config, t, vendor, claim);
   } finally {
     triaging.delete(key);
+    claim.resolve();
   }
 }
 
-async function runTriage(project, id, config, t, vendor) {
+// The drawer can save routing immediately after creating a card, while its
+// automatic Triage claim is still pre-spawn. Let that direct human edit wait
+// for Triage and then revalidate; voice actions intentionally do not use this.
+export function waitForTriage(projectName, id) {
+  return triaging.get(runKey(projectName, id))?.done || Promise.resolve();
+}
+
+async function runTriage(project, id, config, t, vendor, claim) {
   const card = readCard(project.path, id);
   if (!card) return;
   // stamp so a restart-time sweep treats an interrupted triage as retryable
   await patchFrontmatter(project.path, id, { triaged: 'running' });
+  if (claim.cancelled) {
+    await patchFrontmatter(project.path, id, { triaged: '' });
+    return;
+  }
 
   let prompt;
   try {
@@ -1682,7 +1710,12 @@ async function runTriage(project, id, config, t, vendor) {
   //    themselves, and the inlined command's board-relative paths are rewritten
   //    to match the new cwd.
   const codexTriage = vendor === 'codex';
-  const { result, run } = await spawnTracked(project, id, 'Triage', 'Review', 0, {
+  if (claim.cancelled) {
+    await patchFrontmatter(project.path, id, { triaged: '' });
+    return;
+  }
+  const { result, run, finishTracking } = await spawnTracked(project, id, 'Triage', 'Review', 0, {
+    retainUntilFinalized: true,
     vendor,
     cwd: codexTriage ? path.join(project.path, '.todomd', 'tasks') : project.path,
     prompt: codexTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
@@ -1693,27 +1726,42 @@ async function runTriage(project, id, config, t, vendor) {
     logFile: runLogFile(project, id, 'Triage'),
   });
 
-  const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
-  if (run?.cancelled) {
+  let cancellationHandled = false;
+  const finishCancellation = async () => {
+    if (!(claim.cancelled || run?.cancelled) || cancellationHandled) return false;
+    cancellationHandled = true;
     await patchFrontmatter(project.path, id, { triaged: '' });
-  } else if (run?.timedOut) {
-    await recordRun(project, id, 'Triage', 0, result, 'run timeout');
-    await patchFrontmatter(project.path, id, { triaged: 'failed (run_timeout)' });
-  } else if (ok) {
-    await recordRun(project, id, 'Triage', 0, result, 'ok');
-    await patchFrontmatter(project.path, id, { triaged: new Date().toISOString().slice(0, 10) });
-  } else {
-    const failure = classifyFailure(result);
-    // a failed triage never blocks the card — it just stays unannotated
-    await patchFrontmatter(project.path, id, { triaged: `failed (${failure.kind})` });
-    if (failure.kind === 'quota' || failure.kind === 'cli_missing' || failure.kind === 'auth') {
-      setBanner(failure.kind, 'warn', `triage paused: ${failure.detail}`);
+    await commitCardChanges(project.path, id, `chore(todomd): ${id} triage cancelled`);
+    return true;
+  };
+
+  try {
+    if (await finishCancellation()) return;
+    const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
+    if (run?.timedOut) {
+      await recordRun(project, id, 'Triage', 0, result, 'run timeout');
+      await patchFrontmatter(project.path, id, { triaged: 'failed (run_timeout)' });
+    } else if (ok) {
+      await recordRun(project, id, 'Triage', 0, result, 'ok');
+      await patchFrontmatter(project.path, id, { triaged: new Date().toISOString().slice(0, 10) });
+    } else {
+      const failure = classifyFailure(result);
+      // a failed triage never blocks the card — it just stays unannotated
+      await patchFrontmatter(project.path, id, { triaged: `failed (${failure.kind})` });
+      if (failure.kind === 'quota' || failure.kind === 'cli_missing' || failure.kind === 'auth') {
+        setBanner(failure.kind, 'warn', `triage paused: ${failure.detail}`);
+      }
     }
+    if (await finishCancellation()) return;
+    // triage ends in Review with no moveCard — commit the annotations ourselves so
+    // the board doesn't accumulate uncommitted working-tree changes
+    await commitCardChanges(project.path, id, `chore(todomd): ${id} triaged`);
+    await finishCancellation();
+  } finally {
+    try { await finishCancellation(); }
+    finally { finishTracking(); }
+    sendState(project, id, 'idle');
   }
-  // triage ends in Review with no moveCard — commit the annotations ourselves so
-  // the board doesn't accumulate uncommitted working-tree changes
-  if (!run?.cancelled) await commitCardChanges(project.path, id, `chore(todomd): ${id} triaged`);
-  sendState(project, id, 'idle');
 }
 
 // Catch cards that arrive outside the API (git pull, email routine, editor).
@@ -1897,6 +1945,11 @@ export function getRunStates(projectName) {
     if (entry.project !== projectName) continue;
     if (!states[entry.card]) states[entry.card] = { state: 'running', stage: 'in progress' };
   }
+  for (const claim of triaging.values()) {
+    if (claim.project === projectName && !states[claim.card]) {
+      states[claim.card] = { state: 'running', stage: 'Triage' };
+    }
+  }
   return states;
 }
 
@@ -1904,7 +1957,7 @@ export function hasLiveRun(projectName, id) {
   const key = runKey(projectName, id);
   // runs also covers a trigger-stage child that exited while its final Git/card
   // writes are still settling. That window remains hands-off until finalization.
-  return runs.has(key) || pending.has(key);
+  return runs.has(key) || pending.has(key) || triaging.has(key);
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -1921,6 +1974,7 @@ export function projectHasLiveRun(projectName) {
   // contain `:`, so composite-key prefix matching is not safe here.
   for (const run of runs.values()) if (run.project === projectName) return true;
   for (const entry of pending.values()) if (entry.project === projectName) return true;
+  for (const claim of triaging.values()) if (claim.project === projectName) return true;
   return false;
 }
 
@@ -1932,6 +1986,7 @@ export function forgetProject(projectName) {
   for (const [k, entry] of retryFindings) if (entry.project === projectName) retryFindings.delete(k);
   for (const [k, entry] of recoveryBuilds) if (entry.project === projectName) recoveryBuilds.delete(k);
   for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
+  for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);
 }
 
 export function usage(projectName) {

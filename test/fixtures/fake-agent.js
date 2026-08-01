@@ -61,6 +61,12 @@ const resultEnvelope = (extra = {}) => ({
   total_cost_usd: 0.001, num_turns: 1, session_id: session, result: 'ok', ...extra,
 });
 
+async function waitBeforeExit() {
+  if (process.env.FAKE_BEFORE_EXIT_MARKER) fs.writeFileSync(process.env.FAKE_BEFORE_EXIT_MARKER, 'ready');
+  const exitDelay = Number(process.env.FAKE_EXIT_DELAY_MS) || 0;
+  if (exitDelay > 0) await new Promise((resolve) => setTimeout(resolve, exitDelay));
+}
+
 function findCard(id) {
   const dir = path.join(cwd, '.todomd/tasks');
   const f = fs.readdirSync(dir).find((x) => x.startsWith(`${id}-`) || x === `${id}.md`);
@@ -142,9 +148,7 @@ if (hangNow &&
   }
   // Let tests park the orchestrator precisely after the agent has finished its
   // work but before the child exits and the stage finalizer starts.
-  if (process.env.FAKE_BEFORE_EXIT_MARKER) fs.writeFileSync(process.env.FAKE_BEFORE_EXIT_MARKER, 'ready');
-  const exitDelay = Number(process.env.FAKE_EXIT_DELAY_MS) || 0;
-  if (exitDelay > 0) await new Promise((resolve) => setTimeout(resolve, exitDelay));
+  await waitBeforeExit();
   emitStream([{ type: 'system', subtype: 'init' }, { type: 'assistant', message: { content: [{ type: 'text', text: 'planned' }] } }, resultEnvelope()]);
   process.exit(0);
 } else if (stage === 'build') {
@@ -193,5 +197,6 @@ if (hangNow &&
   process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: structured })));
   process.exit(0);
 } else {
+  await waitBeforeExit();
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
 }

@@ -578,6 +578,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       } catch {
         return json(res, 400, { error: 'invalid JSON body' });
       }
+      await pipeline.waitForTriage(project.name, setMatch[1]);
       if (pipeline.hasLiveRun(project.name, setMatch[1])) {
         return json(res, 400, { error: 'run in progress — cancel it first' });
       }

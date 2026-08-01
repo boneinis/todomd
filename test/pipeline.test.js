@@ -340,6 +340,50 @@ test('triage commits the card so the working tree stays clean (with triage enabl
   assert.equal(dirty, '', `triage left uncommitted board changes:\n${dirty}`);
 });
 
+test('Triage stays live from its pre-spawn claim through final writes and blocks voice actions', async () => {
+  isolateHome();
+  const marker = path.join(tmp('triage-finalizing'), 'agent-done');
+  useFakeAgent({ before_exit_marker: marker, exit_delay_ms: 500 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo({ triage: true });
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  let release;
+  try {
+    const triage = pipeline.maybeTriage(p, 'task-0001');
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true, 'the synchronous pre-spawn claim is live');
+    assert.equal(pipeline.getRunStates(p.name)['task-0001'].stage, 'Triage');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+
+    let unlock;
+    const held = new Promise((resolve) => { unlock = resolve; });
+    const lockDone = withRepoLock(repo, () => held);
+    release = async () => { unlock(); await lockDone; };
+    await sleep(700);
+
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true, 'post-child finalization remains live');
+    assert.deepEqual(voice.buildVoiceSummary(p).activeRuns,
+      [{ card: 'task-0001', state: 'running', stage: 'Triage', external: false }]);
+    const archive = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'archive' });
+    assert.equal(archive.status, 400);
+    assert.match(archive.error, /live run/);
+    assert.deepEqual(pipeline.cancel(p, 'task-0001'), { ok: true });
+
+    await release();
+    release = null;
+    await triage;
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false);
+    assert.equal(status(repo, 'task-0001'), 'Review');
+    assert.equal(readCard(repo, 'task-0001').data.triaged || '', '');
+    const dirty = execFileSync('git', ['status', '--porcelain', '--', '.todomd'], { cwd: repo, encoding: 'utf8' }).trim();
+    assert.equal(dirty, '', `cancelled triage left uncommitted board changes:\n${dirty}`);
+  } finally {
+    if (release) await release();
+    clearFakeAgent();
+  }
+});
+
 test('chunking: a splitting plan fans out sequential child cards; approving the epic cascades them to Done', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good', chunks: 2 });
