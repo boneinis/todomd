@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbf54-1f4a-7012-9f30-3e39899ddffc
+session_id: 019fbf5b-cd99-7030-81b9-d8529d8cb55d
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -112,3 +112,5 @@ Actionable defect: stale-state binding does not include the preserved worktree�
   - attempts_exhausted: Reproducible trigger-stage race: humanMove(..., 'Plan') launches runTriggerStage() in the background, but runTriggerStage() awaits configuration before spawnTracked() registers the run. During that interval, getRunStates(), hasLiveRun(), and the run generation all report idle. I prepared and confirmed retriage during this window; both returned 200 and moved Plan → Review, but the already-scheduled
 - 2026-08-01 22:00Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - attempts_exhausted: Reachable retry-verification race: `retryVerification` moves the card to Verify and launches `verify()` without first registering a synchronous run claim or bumping its run generation (`src/pipeline.js:871-876`). Because `verify()` awaits configuration before `spawnTracked`, `getRunStates()` temporarily reports no run. Reproduced: immediately after Retry Verification returned `{ok:true}`, the summ
+- 2026-08-01 22:10Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: Adversarial review found a reachable cancellation bug in `runTriggerStage()` in `src/pipeline.js`. When a Plan is cancelled while `fanOutChunks()` is materializing children, `finishCancellation()` moves the resulting epic to Review but does not call the epic cleanup that normal `humanMove(..., 'Review')` performs. Reproduced with 12 chunks: cancellation returned `{ok:true,cancelled:true}` and the 
