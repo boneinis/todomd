@@ -505,6 +505,16 @@ test('email push API: applies the same screen as mailbox polling and reports the
     let board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
     assert.equal(board.cards.length, startCount, 'no card was created for the spam push');
 
+    // webhook retries remain idempotent while still reporting the screen result
+    r = await push(RAW_PUSH_NEWSLETTER);
+    assert.equal(r.status, 200);
+    out = await r.json();
+    assert.equal(out.verdict, 'spam', 'a retry preserves the original screen verdict');
+    assert.equal(out.duplicate, true);
+    assert.equal('id' in out, false);
+    board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
+    assert.equal(board.cards.length, startCount, 'retrying spam still creates no card');
+
     // unclear — HTML-only body — held in Needs Human, not dropped
     r = await push(RAW_PUSH_HTML_ONLY);
     assert.equal(r.status, 200);
@@ -524,6 +534,13 @@ test('email push API: applies the same screen as mailbox polling and reports the
     const worked = readCard(repo, out.id);
     assert.equal(worked.data.status, 'Review');
     assert.equal(worked.data.source, 'email');
+
+    const workId = out.id;
+    r = await push(RAW_PUSH_BUG_REPORT);
+    out = await r.json();
+    assert.equal(out.verdict, 'work', 'a work retry preserves the original screen verdict');
+    assert.equal(out.duplicate, true);
+    assert.equal(out.id, workId, 'the retry reports the original card instead of creating another');
 
     board = await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json();
     assert.equal(board.cards.length, startCount + 2, 'exactly the unclear and work pushes created cards');

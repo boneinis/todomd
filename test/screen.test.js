@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { simpleParser } from 'mailparser';
 import { makeRepo, isolateHome, git } from './helpers.js';
-import { screenEmail, appendIntakeAudit } from '../src/screen.js';
+import { screenEmail, appendIntakeAudit, readIntakeAudit } from '../src/screen.js';
 import { intakeMessage, parseInboundMessage, pollSource } from '../src/intake.js';
 import { readCard } from '../src/board.js';
 
@@ -243,6 +243,16 @@ test('appendIntakeAudit: appends decisions without dirtying a legacy board', asy
   assert.equal(git(repo, ['status', '--porcelain']), '', 'the legacy checkout stays clean');
   assert.match(git(repo, ['check-ignore', '-v', '.todomd/intake-audit.jsonl']), /info\/exclude/,
     'the operational log is protected by a local Git exclusion');
+});
+
+test('readIntakeAudit: sorts by timestamp before applying the newest-record limit', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  await appendIntakeAudit(repo, { timestamp: '2026-08-01T12:00:00.000Z', subject: 'newest' });
+  await appendIntakeAudit(repo, { timestamp: '2026-08-01T10:00:00.000Z', subject: 'oldest' });
+  await appendIntakeAudit(repo, { timestamp: '2026-08-01T11:00:00.000Z', subject: 'middle' });
+
+  assert.deepEqual(readIntakeAudit(repo, 2).map((record) => record.subject), ['newest', 'middle']);
 });
 
 test('appendIntakeAudit: trims to the newest 500 lines so it cannot grow unbounded', async () => {
@@ -587,6 +597,7 @@ test('intakeMessage: overlapping calls claim one key and perform side effects on
 
   assert.equal(results.filter((r) => r.created).length, 1);
   assert.equal(results.filter((r) => r.duplicate).length, 1);
+  assert.ok(results.every((r) => r.verdict === 'work'), 'both callers receive the original screen verdict');
   assert.equal(cardFiles(repo).length, 1);
   assert.equal(auditLines(repo).length, 1);
 });
@@ -601,7 +612,8 @@ test('intakeMessage: overlapping processes claim one key and perform side effect
   fs.writeFileSync(gate, 'go');
   const results = await resultsPromise;
 
-  assert.equal(results.filter((r) => r.verdict === 'spam').length, 1);
+  assert.equal(results.filter((r) => r.verdict === 'spam').length, 2,
+    'both processes receive the original screen verdict');
   assert.equal(results.filter((r) => r.duplicate).length, 1);
   assert.equal(cardFiles(repo).length, 0);
   assert.equal(auditLines(repo).length, 1);

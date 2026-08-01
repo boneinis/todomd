@@ -177,13 +177,17 @@ export function readIntakeAudit(repoPath, limit = 50) {
   try { lines = fs.readFileSync(path.join(repoPath, AUDIT_FILE), 'utf8').split('\n').filter(Boolean); }
   catch { return []; }
   const records = [];
-  for (let i = lines.length - 1; i >= 0 && records.length < limit; i--) {
+  for (let i = 0; i < lines.length; i++) {
     try {
       const { intakeKey, ...record } = JSON.parse(lines[i]);
-      records.push(record);
+      const parsed = Date.parse(record.timestamp);
+      records.push({ record, time: Number.isFinite(parsed) ? parsed : -Infinity, appended: i });
     } catch { /* skip a corrupt operational-log line */ }
   }
-  return records;
+  return records
+    .sort((a, b) => b.time - a.time || b.appended - a.appended)
+    .slice(0, Math.max(0, Math.floor(Number(limit) || 0)))
+    .map(({ record }) => record);
 }
 
 // One JSON line per screened message — timestamp, source label, from, subject,

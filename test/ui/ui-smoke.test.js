@@ -243,8 +243,10 @@ test('UI smoke: screened email list renders seeded records, and a held email car
     assert.equal(rows.length, 2);
     assert.match(rows[0], /Quick question about export/, 'newest record first');
     assert.match(rows[0], /unclear/);
+    assert.match(rows[0], /body is very short/, 'the held-message reason is rendered');
     assert.match(rows[1], /Summer sale/);
     assert.match(rows[1], /spam/);
+    assert.match(rows[1], /List-Unsubscribe header/, 'the spam reason is rendered');
     assert.equal(await page.eval(`document.getElementById('intake-audit-empty').hidden`), true,
       'the empty state is hidden once records are present');
 

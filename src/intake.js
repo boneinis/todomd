@@ -313,12 +313,10 @@ export function emailToCardFields(parsed) {
 async function intakeMessageOnce(project, parsed, {
   label = 'intake', assignee = null, maxAttachments = 5, intakeKey = '',
 } = {}) {
-  if (intakeWasHandled(project.path, intakeKey)) {
-    return { verdict: 'duplicate', created: false, handled: true, duplicate: true };
-  }
   // The audit line is also the recovery record for the narrow window where a
-  // card was committed but persisting the handled-key file failed. Treat that
-  // prior decision as handled so retrying cannot create a second card.
+  // card was committed but persisting the handled-key file failed, and it lets
+  // idempotent callers report the original screen verdict on a retry. Consult
+  // it before the handled-key shortcut so duplicate is metadata, not a verdict.
   const priorDecision = findIntakeAudit(project.path, intakeKey);
   if (priorDecision) {
     return {
@@ -326,6 +324,9 @@ async function intakeMessageOnce(project, parsed, {
       reason: priorDecision.reason || '',
       ...(priorDecision.card ? { id: priorDecision.card, recovered: true } : {}),
     };
+  }
+  if (intakeWasHandled(project.path, intakeKey)) {
+    return { verdict: 'duplicate', created: false, handled: true, duplicate: true };
   }
   const screened = screenEmail(parsed);
   const record = {
@@ -389,7 +390,7 @@ export async function intakeMessage(project, parsed, options = {}) {
   if (prior) {
     const outcome = await prior;
     return outcome.handled
-      ? { verdict: 'duplicate', created: false, handled: true, duplicate: true }
+      ? { ...outcome, created: false, handled: true, duplicate: true }
       : outcome;
   }
   const run = withIntakeClaim(project.path, intakeKey, () => intakeMessageOnce(project, parsed, options));
