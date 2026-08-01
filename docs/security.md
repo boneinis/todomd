@@ -25,6 +25,12 @@ The main listener is always loopback-only. Enabling LAN access (the ▦ button o
 that listener **and** terminates any WebSocket clients that connected through
 it. Use only on trusted networks.
 
+## Voice control
+
+Voice control's credential flow (ephemeral realtime-voice tokens, the
+`primary(req)`-gated `POST /api/voice/session`, and why the long-lived keys
+never reach the browser) is documented separately in `docs/voice.md`.
+
 ## Pipeline hardening (prompt-injection surface)
 
 Cards can arrive from outside the UI (git pull, email intake), so every stage
