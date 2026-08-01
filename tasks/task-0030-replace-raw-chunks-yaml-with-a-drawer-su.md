@@ -1,7 +1,7 @@
 ---
 id: task-0030
 title: Replace raw Chunks YAML with a modal Subtasks view
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0030
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 4.0298
-needs_human_reason:
+needs_human_reason: error
 recovery_stage:
 model:
 effort:
@@ -77,3 +77,6 @@ Replace raw Chunks YAML with a drawer Subtasks view
 - 2026-08-01 01:07Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
 - 2026-08-01 01:11Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
+- 2026-08-01 01:11Z · Build attempt 2 · 0 turns · $0.000 · failed: agent
+  - error: Error: thread/resume: thread/resume failed: no rollout found for thread id fa47ecab-401e-4b14-a488-109a1e8370de (code -32600)
+
