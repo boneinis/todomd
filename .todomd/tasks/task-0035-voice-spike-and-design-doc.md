@@ -1,7 +1,7 @@
 ---
 id: task-0035
 title: Voice spike and design doc
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -12,10 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0020)
-session_id:
+session_id: cee544e2-f58e-4ff9-8d24-976a97faf1dd
 worktree: todomd/task-0035
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 1.1054
 ---
 
 ## Description
@@ -39,3 +40,4 @@ Voice spike and design doc
 7. Risks: the wake-word engine and the realtime voice service both likely require an account and an API key, which is a human decision on cost and vendor. Do not sign up for anything in this chunk. If the pick needs a key, document the exact env var and the disabled-button fallback, and flag the signup as a human decision in the run log rather than blocking.
 
 ## Run Log
+- 2026-08-01 11:07Z · Build attempt 1 · 31 turns · $1.105 · ok
