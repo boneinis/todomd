@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0029
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 4.9389
-needs_human_reason:
+needs_human_reason: error
 recovery_stage:
 model:
 effort:
@@ -80,3 +80,6 @@ Nest planned and queued subtasks under an expandable epic card
 - 2026-08-01 00:22Z · Verify attempt 1 · 1 turns · $0.000 · failed: bad_verdict
 - 2026-08-01 00:28Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail
   - retrying with findings (attempt 2/3)
+- 2026-08-01 00:28Z · Build attempt 2 · 0 turns · $0.000 · failed: agent
+  - error: Error: thread/resume: thread/resume failed: no rollout found for thread id f89b6764-f4e0-41e1-9015-a0a77d2ae943 (code -32600)
+
