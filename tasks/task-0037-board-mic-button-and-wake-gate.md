@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,10 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
-session_id:
+session_id: 63d840af-a120-414c-862c-91bfd64a73b0
 worktree: todomd/task-0037
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 16.0735
 ---
 
 ## Description
@@ -52,3 +53,5 @@ local speech or provider configuration is unavailable.
    cleanup, server authorization, secret non-disclosure, and unavailable states.
 
 ## Run Log
+- 2026-08-01 22:42Z · Build attempt 1 · 101 turns · $11.289 · checkpoint 1: progress detected; continuing
+- 2026-08-01 22:47Z · Build attempt 1 · 26 turns · $4.785 · ok
