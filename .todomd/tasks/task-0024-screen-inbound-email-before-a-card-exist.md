@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbacb-2c57-7960-9738-c1dd68e2c6dc
+session_id: 019fbad5-6f30-74a0-8cf9-09b8a5d0eaf2
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -132,3 +132,7 @@ For more information, try '--help'.
   - attempts_exhausted: `npm test` passed all 216 core and 2 UI tests outside the restricted sandbox. Adversarial review found reachable defects:
 
 1. Exact-once handling is racy (`src/intake.js:247-295`). The handled check occurs outside the repository lock and the key is recorded only after auditing/card creation. Two overlapping pollers can both pass the check. Reproduction with concurrent calls using the same spam key
+- 2026-08-01 01:04Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: The configured `npm test` passed outside the restricted sandbox: 217 core tests and 2 UI tests. `git diff --check` also passed.
+
+Exact-once processing remains racy across processes. `src/intake.js:269` checks the durable handled file before acquiring any cross-process claim, while the `inflightIntake` map at line 324 is process-local. Two processes can both pass the check and append before either 
