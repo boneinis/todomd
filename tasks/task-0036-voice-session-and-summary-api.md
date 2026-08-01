@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbeac-c014-7390-929c-663561016c89
+session_id: 019fbeb9-4ca6-7b50-ae6d-0b06e257ecf0
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -98,3 +98,5 @@ Actionable defect: stale-state binding does not include the preserved worktree鈥
 1. `rejectVoiceAction` (src/voice.js:567) never revalidates the fingerprint or current eligibility. Reproduction: prepare retriage for a Build card, change it to Needs Human, then reject; it returns 200/rejected instead of rejecting the stale propos
 - 2026-08-01 19:03Z 路 Verify attempt 3 路 1 turns 路 $0.000 路 verdict: fail (unmet: 1)
   - attempts_exhausted: `src/voice.js:384-386` builds status counts with a normal `{}` and reads inherited prototype properties. A reachable card status such as `constructor` yields a string count (`"function Object() { [native code] }1"`), while `__proto__` disappears from serialized counts. This makes `/api/voice/summary` incorrect for valid hand-edited/custom statuses. Use a null-prototype object or explicit own-prope
+- 2026-08-01 19:16Z 路 Verify attempt 3 路 1 turns 路 $0.000 路 verdict: fail (unmet: 1)
+  - attempts_exhausted: Reachable bug at src/voice.js:61: `hasFreshBudgetLease` checks only `nowSec - timestamp <= 900`, so a future-dated lease has a negative age and is treated as fresh potentially for years. Reproduced in budget mode with a Plan card leased one year in the future: the summary falsely reported an active dispatcher run and voice retriage was refused with HTTP 400 despite no dispatcher. Require a nonnega
