@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbe97-ae26-7e93-973a-c035fe244653
+session_id: 019fbea2-76c6-7611-a9ce-8157dd7751ea
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -93,3 +93,6 @@ Actionable defect: stale-state binding does not include the preserved worktree�
   - attempts_exhausted: The official `npm test` gate passed with 321 core tests and 5 UI tests; `git diff --check main...HEAD` also passed. However, supported out-of-process runs are invisible to voice safety checks. `getRunStates()`/`hasLiveRun()` only inspect this server process’s maps (`src/pipeline.js:1803-1827`), while budget-mode Build/Verify work runs in the external dispatcher. Consequently `buildVoiceSummary()` 
 - 2026-08-01 18:37Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - attempts_exhausted: Reachable budget-mode safety bug: `effectiveRunStates` in `src/voice.js` recognizes external Build/Verify work only. Budget dispatcher Plan and triage runs are claimed through a fresh `lease` field, so they remain invisible. Reproduced with a fresh leased Plan card: the summary returned `activeRuns: []` and “Nothing building right now”; voice then prepared a reversible retriage and confirmation su
+- 2026-08-01 18:48Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: Configured `npm test` passed under normal runtime permissions: 322 core/API tests and 5 UI tests. However, adversarial review found reachable defects:
+1. `rejectVoiceAction` (src/voice.js:567) never revalidates the fingerprint or current eligibility. Reproduction: prepare retriage for a Build card, change it to Needs Human, then reject; it returns 200/rejected instead of rejecting the stale propos
