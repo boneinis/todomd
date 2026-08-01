@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { createCard, attachCard } from './board.js';
+import { createCard, attachCard, withRepoLock, ensureGitignored } from './board.js';
 import { screenEmail, appendIntakeAudit } from './screen.js';
 
 // Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json.
@@ -26,6 +26,9 @@ import { screenEmail, appendIntakeAudit } from './screen.js';
 //                    { project: "repo-b", toMatches: "you+repo-b@gmail.com" } ],
 //          default: "triage" } } }   // default optional: unmatched → this board
 const configFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake.json');
+const HANDLED_FILE = path.join('.todomd', 'intake-handled.json');
+const HANDLED_IGNORE_LINE = '.todomd/intake-handled.json';
+const HANDLED_MAX_KEYS = 5000;
 
 // Keep the MIME-body distinction intact for screening. Mailparser otherwise
 // synthesizes `text` from HTML, making a message with no text/plain part look
@@ -51,6 +54,33 @@ function htmlBodyText(html) {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+function intakeWasHandled(repoPath, key) {
+  if (!key) return false;
+  try {
+    const keys = JSON.parse(fs.readFileSync(path.join(repoPath, HANDLED_FILE), 'utf8'));
+    return Array.isArray(keys) && keys.includes(key);
+  } catch { return false; }
+}
+
+function rememberIntakeHandled(repoPath, key) {
+  if (!key) return Promise.resolve();
+  return withRepoLock(repoPath, async () => {
+    ensureGitignored(repoPath, HANDLED_IGNORE_LINE);
+    const file = path.join(repoPath, HANDLED_FILE);
+    let keys = [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(parsed)) keys = parsed.filter((x) => typeof x === 'string');
+    } catch { /* first write or recover from a partial/corrupt runtime file */ }
+    if (!keys.includes(key)) keys.push(key);
+    if (keys.length > HANDLED_MAX_KEYS) keys = keys.slice(-HANDLED_MAX_KEYS);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(keys) + '\n');
+    fs.renameSync(tmp, file);
+  });
 }
 
 function loadRaw() {
@@ -201,7 +231,12 @@ export function emailToCardFields(parsed) {
 //
 // Returns { verdict, created, handled, id?, reason }. `handled` means the
 // message reached a terminal decision, so the caller can stop reconsidering it.
-export async function intakeMessage(project, parsed, { label = 'intake', assignee = null, maxAttachments = 5 } = {}) {
+export async function intakeMessage(project, parsed, {
+  label = 'intake', assignee = null, maxAttachments = 5, intakeKey = '',
+} = {}) {
+  if (intakeWasHandled(project.path, intakeKey)) {
+    return { verdict: 'duplicate', created: false, handled: true, duplicate: true };
+  }
   const screened = screenEmail(parsed);
   const record = {
     timestamp: new Date().toISOString(),
@@ -219,6 +254,7 @@ export async function intakeMessage(project, parsed, { label = 'intake', assigne
   // otherwise a misclassified message is unrecoverable.
   if (screened.verdict === 'spam') {
     await appendIntakeAudit(project.path, record);
+    await rememberIntakeHandled(project.path, intakeKey);
     return { verdict: 'spam', created: false, handled: true, reason: screened.reason };
   }
 
@@ -243,8 +279,14 @@ export async function intakeMessage(project, parsed, { label = 'intake', assigne
     }
   }
   record.card = card.id;
-  await appendIntakeAudit(project.path, record);
-  return { verdict: screened.verdict, created: true, handled: true, id: card.id, reason: screened.reason };
+  let auditError = '';
+  try { await appendIntakeAudit(project.path, record); }
+  catch (err) { auditError = String(err?.message || err); }
+  await rememberIntakeHandled(project.path, intakeKey);
+  return {
+    verdict: screened.verdict, created: true, handled: true, id: card.id,
+    reason: screened.reason, ...(auditError ? { audit_error: auditError } : {}),
+  };
 }
 
 let onCard = () => {};   // set by start(): (project, id) => void  (e.g. trigger triage)
@@ -285,7 +327,9 @@ async function pollSource(source, getProject) {
       try {
         const parsed = await parseInboundMessage(msg.source);
         const mid = parsed.messageId;
-        if (mid && handled.has(mid)) {            // already made a card for this message this run
+        const intakeKey = `${label}:uid:${msg.uid}`;
+        const runKey = mid || intakeKey;
+        if (handled.has(runKey)) {                // already made a card for this message this run
           if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
           continue;
         }
@@ -297,10 +341,13 @@ async function pollSource(source, getProject) {
             : `no route matched (to: ${recipientAddresses(parsed).join(', ') || 'none'})`}`);
         } else {
           const assignee = assigneeOf ? assigneeOf(parsed) : null; // auto-assign incoming work
-          const outcome = await intakeMessage(project, parsed, { label, assignee, maxAttachments: conf.maxAttachments ?? 5 });
+          const outcome = await intakeMessage(project, parsed, {
+            label, assignee, maxAttachments: conf.maxAttachments ?? 5, intakeKey,
+          });
           // screened-out mail is "handled" too — without this, a markSeen:false
           // mailbox would re-screen and re-audit the same spam on every tick
-          if (mid && outcome.handled) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
+          if (outcome.handled) { handled.add(runKey); if (handled.size > 5000) handled.delete(handled.values().next().value); }
+          if (outcome.audit_error) log(`intake: "${label}" created ${outcome.id}, but audit append failed: ${outcome.audit_error}`);
           if (outcome.verdict === 'spam') {
             log(`intake: "${label}" screened out a message for ${project.name} — ${outcome.reason}`);
           } else if (outcome.created) {

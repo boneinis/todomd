@@ -15,7 +15,7 @@ test('emailToCardFields maps subject/from/body and tags source=email', () => {
 
 test('emailToCardFields handles empty subject / HTML-only / missing body', () => {
   assert.equal(emailToCardFields({}).title, '(no subject)');
-  assert.match(emailToCardFields({ html: '<b>x</b>' }).description, /HTML-only/);
+  assert.match(emailToCardFields({ html: '<b>readable HTML body</b>' }).description, /readable HTML body/);
   assert.match(emailToCardFields({ text: '' }).description, /empty body/);
 });
 

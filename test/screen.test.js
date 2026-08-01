@@ -330,6 +330,39 @@ test('intakeMessage: a real newsletter, parsed by mailparser, never reaches the 
   assert.match(line.reason, /List-Unsubscribe/, 'the audit line names the signal that decided it');
 });
 
+test('intakeMessage: a persistent mailbox key prevents repeat audits without Message-ID', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const parsed = await simpleParser(RAW_NEWSLETTER.replace('Message-ID: <newsletter-1@shop.example.com>\r\n', ''));
+  const options = { label: 'main', intakeKey: 'main:uid:42' };
+
+  const first = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
+  const second = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
+
+  assert.equal(first.verdict, 'spam');
+  assert.equal(second.duplicate, true);
+  assert.equal(auditLines(repo).length, 1, 'the stable mailbox UID is audited exactly once');
+  assert.equal(cardFiles(repo).length, 0);
+});
+
+test('intakeMessage: an audit failure after card creation does not create a duplicate', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const auditPath = path.join(repo, '.todomd', 'intake-audit.jsonl');
+  fs.mkdirSync(auditPath, { recursive: true }); // force appendIntakeAudit to raise EISDIR
+  const parsed = await simpleParser(RAW_BUG_REPORT);
+  const options = { label: 'main', intakeKey: 'main:uid:43' };
+
+  const first = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
+  const second = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
+
+  assert.equal(first.created, true);
+  assert.equal(first.handled, true);
+  assert.match(first.audit_error, /directory|EISDIR/i);
+  assert.equal(second.duplicate, true);
+  assert.equal(cardFiles(repo).length, 1, 'retrying the same UID does not create another card');
+});
+
 test('intakeMessage: a real bug report, parsed by mailparser, becomes a Review card', async () => {
   isolateHome();
   const repo = makeRepo();
