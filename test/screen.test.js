@@ -817,6 +817,49 @@ test('pollSource: default markSeen mode still processes an older message marked 
     'markSeen mailboxes query all unseen UIDs instead of hiding older unread mail behind a cursor');
 });
 
+test('pollSource: markSeen false retries a message after its project becomes available', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const raw = rawEmail([
+    'From: Jane Doe <jane@example.com>',
+    'To: intake@example.com',
+    'Subject: Export failure',
+    'Message-ID: <route-recovery@example.com>',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Please investigate the reproducible export failure and add a regression test.',
+    '',
+  ]);
+  let fetchCalls = 0;
+  const fakeClient = {
+    mailbox: { uidValidity: '1', uidNext: 2 },
+    on() { return this; },
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch() { fetchCalls++; yield { uid: 1, source: Buffer.from(raw) }; },
+    async logout() {},
+  };
+  const source = {
+    label: 'route-recovery',
+    conf: { host: 'imap.example.com', user: 'inbox', pass: 'secret', markSeen: false },
+    resolve: () => 'repo', assigneeOf: () => null,
+  };
+  let projectAvailable = false;
+  const triaged = [];
+  const options = {
+    createClient: () => fakeClient,
+    onCardCallback: (_project, id) => triaged.push(id),
+  };
+
+  await pollSource(source, () => projectAvailable ? { path: repo, name: 'repo' } : null, options);
+  projectAvailable = true;
+  await pollSource(source, () => projectAvailable ? { path: repo, name: 'repo' } : null, options);
+
+  assert.equal(fetchCalls, 2, 'an unresolved route is fetched again instead of hidden behind the cursor');
+  assert.equal(cardFiles(repo).length, 1);
+  assert.equal(triaged.length, 1);
+});
+
 test('pollSource: human bug reports about automated-mail features stay work and trigger triage', async () => {
   isolateHome();
   const repo = makeRepo();
@@ -827,6 +870,9 @@ test('pollSource: human bug reports about automated-mail features stay work and 
     ['Out-of-office settings fail to save', 'The out-of-office settings form loses the selected return date after saving.'],
     ['Leave settings fail to save', 'I am on leave settings page and the return date form returns a 500.'],
     ['Annual leave screen cannot save changes', 'I am on the annual leave screen and the Save button is disabled.'],
+    ['Sick leave request rejected', 'I am on sick leave, but the HR portal rejects my medical certificate with HTTP 500.'],
+    ['Parental leave balance is wrong', 'I am on parental leave, and the balance page shows zero approved days.'],
+    ['PTO request API fails', 'I am on PTO; the API returns 500 when I submit a valid request.'],
     ['OOO notification bug', 'OOO notifications are not delivered when the schedule begins.'],
     ['Vacation response strips Unicode', 'The vacation response editor removes accented characters from the saved template.'],
     ['Delivery failed alert has wrong link', 'The delivery failed alert links to the wrong message in the activity view.'],

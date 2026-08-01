@@ -465,6 +465,7 @@ export async function pollSource(source, getProject, {
         counted = true;
         const targetName = resolve(parsed);          // board → fixed; inbox → by recipient
         const project = targetName && getProject(targetName);
+        let terminalHandled = false;
         if (!project) {
           log(`intake: "${label}" skipped a message — ${targetName
             ? `project "${targetName}" not registered`
@@ -474,6 +475,7 @@ export async function pollSource(source, getProject, {
           const outcome = await intakeMessage(project, parsed, {
             label, assignee, maxAttachments: conf.maxAttachments ?? 5, intakeKey,
           });
+          terminalHandled = outcome.handled;
           // screened-out mail is "handled" too — without this, a markSeen:false
           // mailbox would re-screen and re-audit the same spam on every tick
           if (outcome.handled) { handled.add(runKey); if (handled.size > 5000) handled.delete(handled.values().next().value); }
@@ -491,7 +493,8 @@ export async function pollSource(source, getProject, {
           }
         }
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
-        if (useCursor && !cursorBlocked) rememberIntakeCursor(scope, msg.uid);
+        if (useCursor && terminalHandled && !cursorBlocked) rememberIntakeCursor(scope, msg.uid);
+        else if (useCursor && !terminalHandled) cursorBlocked = true;
       } catch (e) {
         if (!counted) {
           if (scanned >= maxPerPoll) {
