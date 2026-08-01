@@ -952,6 +952,36 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       '',
     ]),
     rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re: Export failure',
+      'Message-ID: <automatic-response-in-sentence@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Thank you for your email. This is an automatic response. I will reply after August 5.',
+      '',
+    ]),
+    rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re: Export failure',
+      'Message-ID: <ooo-until@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'OOO until Monday. I will respond when I return.',
+      '',
+    ]),
+    rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re: Export failure',
+      'Message-ID: <annual-leave@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'I am currently on annual leave and will reply next week.',
+      '',
+    ]),
+    rawEmail([
       'From: Shop <no-reply@shop.example.com>',
       'To: intake@example.com',
       'Subject: Monthly shop news',
@@ -979,8 +1009,11 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
   assert.equal(screenEmail(await simpleParser(messages[0])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[1])).verdict, 'spam');
   assert.equal(screenEmail(await simpleParser(messages[2])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[3])).verdict, 'spam');
-  assert.equal(screenEmail(await simpleParser(messages[4])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[3])).verdict, 'unclear');
+  assert.equal(screenEmail(await simpleParser(messages[4])).verdict, 'unclear');
+  assert.equal(screenEmail(await simpleParser(messages[5])).verdict, 'unclear');
+  assert.equal(screenEmail(await simpleParser(messages[6])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[7])).verdict, 'spam');
 
   const fakeClient = {
     mailbox: { uidValidity: '1', uidNext: messages.length + 1 },
@@ -1002,7 +1035,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
     onCardCallback: (_project, id) => triaged.push(id),
   });
 
-  assert.equal(cardFiles(repo).length, 2, 'only the held auto-responses create cards');
+  assert.equal(cardFiles(repo).length, 5, 'only the held auto-responses create cards');
   for (const file of cardFiles(repo)) {
     assert.equal(readCard(repo, file.match(/task-\d+/)[0]).data.status, 'Needs Human');
   }
