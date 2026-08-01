@@ -498,6 +498,35 @@ test('projectHasLiveRun includes a live Plan child outside the pending Build cha
   }
 });
 
+test('a scheduled Plan is claimed before the background spawn and refuses an immediate voice move', async () => {
+  isolateHome();
+  useFakeAgent({ hang: 'plan' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Plan')).ok, true);
+    // No polling: this is the exact return-from-humanMove handoff where the
+    // scheduled async stage used to be invisible until execConfig completed.
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'Plan' });
+    const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(retriage.status, 400);
+    assert.match(retriage.error, /live run/);
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'), { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+    assert.equal(status(repo, 'task-0001'), 'Review', 'the scheduled Plan cannot stomp the cancellation');
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('a Plan run remains live through finalization and cancellation wins the final move', async () => {
   isolateHome();
   const marker = path.join(tmp('plan-finalizing'), 'agent-done');

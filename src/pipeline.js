@@ -58,6 +58,10 @@ const finalizationWaiters = new WeakMap(); // retained trigger run → completio
 // `children` has no entry (queue shift → spawn, build done → verify spawn,
 // verify done → merge) so hasLiveRun/cancel/humanMove never see a false "idle".
 const pending = new Map();
+// Plan/custom-stage work claimed synchronously after the card move but before
+// async config loading and child registration. Without this claim, voice can
+// authorize a conflicting move in the background-handoff window.
+const triggerClaims = new Map();      // runKey → exact pre-spawn stage claim
 const queues = new Map();            // project name → [cardId]
 // Exact identity of the latest run/queue claim for a card. This advances in
 // memory before work starts, so cancel-and-requeue cannot recreate an earlier
@@ -527,7 +531,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     // Resume Build can continue that exact run in the preserved worktree.
     if (stage === 'Build') patchFrontmatter(project.path, id, { session_id: sessionId }).catch(() => {});
   };
-  const { retainUntilFinalized = false, ...stageOpts } = opts;
+  const { retainUntilFinalized = false, triggerClaim = null, ...stageOpts } = opts;
   const { child, done } = runStage({
     ...stageOpts,
     onEvent: (event) => {
@@ -543,6 +547,12 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     startedAt: new Date().toISOString(), prevStatus, attempt,
     ...(observedSession ? { sessionId: observedSession } : {}),
   };
+  if (triggerClaim) {
+    run.cancelled = !!triggerClaim.cancelled;
+    run.revertTo = triggerClaim.revertTo || prevStatus;
+    run.noRequeue = !!triggerClaim.noRequeue;
+    if (triggerClaims.get(key) === triggerClaim) triggerClaims.delete(key);
+  }
   let resolveFinalized;
   const finalized = new Promise((resolve) => { resolveFinalized = resolve; });
   finalizationWaiters.set(run, { finalized, resolve: resolveFinalized });
@@ -598,6 +608,7 @@ export async function humanMove(project, id, to) {
   const pend = pending.get(key);
   const tracked = runs.get(key);
   const triageClaim = triaging.get(key);
+  const triggerClaim = triggerClaims.get(key);
 
   // Preserve the long-standing "approve as soon as Planned appears" behavior:
   // a direct human move waits for the last trigger-stage commit to settle, then
@@ -610,7 +621,7 @@ export async function humanMove(project, id, to) {
       return humanMove(project, id, to);
     }
   }
-  if ((tracked || pend || triageClaim) && to !== 'Review') {
+  if ((tracked || pend || triageClaim || triggerClaim) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
@@ -632,6 +643,11 @@ export async function humanMove(project, id, to) {
     }
     if (triageClaim) {
       triageClaim.cancelled = true;
+      return { ok: true, cancelled: true };
+    }
+    if (triggerClaim) {
+      triggerClaim.cancelled = true;
+      triggerClaim.revertTo = 'Review';
       return { ok: true, cancelled: true };
     }
     retryFindings.delete(key);
@@ -709,7 +725,13 @@ export async function humanMove(project, id, to) {
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
     const moved = await moveCard(project.path, id, to, { reason: 'queued by human' });
     if (moved.ok && (config.mode || 'launcher') !== 'budget') {
-      withoutRepoLockContext(() => runTriggerStage(project, id, to).catch(() => {}));
+      const claim = {
+        project: project.name, card: id, stage: to,
+        cancelled: false, revertTo: 'Review', noRequeue: false,
+      };
+      triggerClaims.set(key, claim);
+      bumpRunGeneration(project.name, id);
+      withoutRepoLockContext(() => runTriggerStage(project, id, to, claim).catch(() => {}));
     }
     return moved;
   }
@@ -884,6 +906,12 @@ export function cancel(project, id) {
       triageClaim.cancelled = true;
       return { ok: true };
     }
+    const triggerClaim = triggerClaims.get(key);
+    if (triggerClaim) {
+      triggerClaim.cancelled = true;
+      triggerClaim.revertTo = 'Review';
+      return { ok: true };
+    }
     // chain claimed but between spawns (pre-spawn, or post-verify/pre-merge) —
     // nothing to SIGTERM. Flag it so the chain reverts at its next checkpoint
     // instead of proceeding, and drop any queued re-entry so the abort sticks.
@@ -964,6 +992,11 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
     run.noRequeue = true;
   }
   for (const claim of triaging.values()) claim.cancelled = true;
+  for (const claim of triggerClaims.values()) {
+    claim.cancelled = true;
+    claim.revertTo = 'Review';
+    claim.noRequeue = true;
+  }
   // chains claimed but between spawns have no child to kill — flag them so they
   // park in Queue at their next checkpoint instead of spawning into a dying
   // process
@@ -974,7 +1007,7 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
-    while ((children.size || runs.size || triaging.size) && Date.now() < deadline) {
+    while ((children.size || runs.size || triaging.size || triggerClaims.size) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
   };
@@ -985,8 +1018,18 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
 
 /* ── plan & custom trigger stages ── */
 
-async function runTriggerStage(project, id, stageName) {
+async function runTriggerStage(project, id, stageName, triggerClaim = null) {
+  const key = runKey(project.name, id);
+  const finishPreSpawnCancellation = async () => {
+    if (!triggerClaim?.cancelled) return false;
+    await orchMove(project, id, triggerClaim.revertTo || 'Review', 'cancelled');
+    sendState(project, id, 'idle');
+    return true;
+  };
+
+  try {
   const config = await execConfig(project.path);
+  if (await finishPreSpawnCancellation()) return;
   const card = readCard(project.path, id);
   const stage = stageConfig(config, stageName, card);
   const vendor = cardVendor(config, card, stageName);
@@ -1003,6 +1046,7 @@ async function runTriggerStage(project, id, stageName) {
 
   const { result, run, finishTracking } = await spawnTracked(project, id, stageName, 'Review', 0, {
     retainUntilFinalized: true,
+    triggerClaim,
     vendor,
     cwd: project.path,
     prompt,
@@ -1088,6 +1132,9 @@ async function runTriggerStage(project, id, stageName) {
   } finally {
     try { await finishCancellation(); }
     finally { releaseTracking(); }
+  }
+  } finally {
+    if (triggerClaim && triggerClaims.get(key) === triggerClaim) triggerClaims.delete(key);
   }
 }
 
@@ -1969,6 +2016,11 @@ export function getRunStates(projectName) {
       states[claim.card] = { state: 'running', stage: 'Triage' };
     }
   }
+  for (const claim of triggerClaims.values()) {
+    if (claim.project === projectName && !states[claim.card]) {
+      states[claim.card] = { state: 'running', stage: claim.stage };
+    }
+  }
   return states;
 }
 
@@ -1976,7 +2028,7 @@ export function hasLiveRun(projectName, id) {
   const key = runKey(projectName, id);
   // runs also covers a trigger-stage child that exited while its final Git/card
   // writes are still settling. That window remains hands-off until finalization.
-  return runs.has(key) || pending.has(key) || triaging.has(key);
+  return runs.has(key) || pending.has(key) || triaging.has(key) || triggerClaims.has(key);
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -1994,6 +2046,7 @@ export function projectHasLiveRun(projectName) {
   for (const run of runs.values()) if (run.project === projectName) return true;
   for (const entry of pending.values()) if (entry.project === projectName) return true;
   for (const claim of triaging.values()) if (claim.project === projectName) return true;
+  for (const claim of triggerClaims.values()) if (claim.project === projectName) return true;
   return false;
 }
 
@@ -2006,6 +2059,7 @@ export function forgetProject(projectName) {
   for (const [k, entry] of recoveryBuilds) if (entry.project === projectName) recoveryBuilds.delete(k);
   for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
   for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);
+  for (const [k, claim] of triggerClaims) if (claim.project === projectName) triggerClaims.delete(k);
   for (const [k, entry] of runGenerations) if (entry.project === projectName) runGenerations.delete(k);
 }
 
