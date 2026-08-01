@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbaef-ab7d-7803-a988-33facb7eba59
+session_id: 019fbaf7-0a27-7cc0-81d8-c70ea8c200d8
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -154,3 +154,7 @@ Reachable classification bug: `src/screen.js:97-123` misclassifies a realistic b
 Classifier defects remain in `src/screen.js`:
 
 1. Line 19 misses common view-in-browser footer variants such as “View email in browser,” “View message in browser,” and “View this email in a browser.” A parser-level reproduction combining `no-reply@shop.example.com
+- 2026-08-01 01:43Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: `npm test` passed all 227 core and 2 UI tests outside the restricted sandbox; `git diff --check` also passed. However:
+
+1. `src/screen.js:16` misses common vacation auto-replies. A parsed email with subject `Vacation response: Export failure` and body `I am currently on vacation and will return...` was reproduced as `work` with no signals, so it would enter Review and trigger triage. Expand the au
