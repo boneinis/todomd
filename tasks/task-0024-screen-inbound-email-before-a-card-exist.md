@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb54-6e79-7a50-9c61-308ceb7fdd0b
+session_id: 019fbb59-20c0-76b0-b4e8-f0723a581594
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -202,3 +202,5 @@ Reachable classifier defects remain:
   - attempts_exhausted: Official `npm test` passed all 236 core tests and 2 UI tests with normal process visibility; `git diff --check main...HEAD` also passed. However, `src/screen.js:16` only accepts a colon or end-of-subject after an auto-reply phrase. Production-parser probes of common subjects `Auto Reply - Ticket received` and `[Auto-Reply] Ticket received` returned `work` with no signals. An end-to-end `pollSource
 - 2026-08-01 03:22Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: `npm test` passed with normal process visibility: 236 core tests and 2 UI tests. However, `src/screen.js` misses the common out-of-office phrasing “I am on leave until August 5 and will respond when I return.” An end-to-end `pollSource` reproduction classified it as work with no signals, created a Review card, and invoked triage. Expand the first-person absence regex to recognize `on (annual )?lea
+- 2026-08-01 03:28Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed all 236 core tests and 2 UI tests with normal process visibility; `git diff --check main...HEAD` also passed. However, src/screen.js:16-17 misses common out-of-office forms. A parsed email with subject `Out of Office AutoReply: Export failure` and body `Thank you for your message. I will return on August 12 and reply then.` was classified as `work` with no signals. End-to-end, po
