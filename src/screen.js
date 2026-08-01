@@ -118,7 +118,7 @@ export function screenEmail(parsed) {
 
   const subjectCore = subject.replace(/^(?:(?:re|fw|fwd)\s*:\s*)+/i, '').trim();
   const noSubjectPlaceholder = /^[[(<]?\s*no\s+subject\s*[\])>]?$/i.test(subjectCore);
-  if (!subjectCore || noSubjectPlaceholder || !/[a-z0-9]/i.test(subjectCore)) unclear.push('no-subject');
+  if (!subjectCore || noSubjectPlaceholder || !/[\p{L}\p{N}]/u.test(subjectCore)) unclear.push('no-subject');
 
   if (autoSubmitted === 'auto-replied' || AUTO_REPLY_SUBJECT_RE.test(subject) || AUTO_REPLY_BODY_RE.test(bodyText)) {
     unclear.push('auto-reply');

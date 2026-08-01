@@ -827,6 +827,7 @@ test('pollSource: human bug reports about automated-mail features stay work and 
     ['Out-of-office settings fail to save', 'The out-of-office settings form loses the selected return date after saving.'],
     ['Vacation response strips Unicode', 'The vacation response editor removes accented characters from the saved template.'],
     ['Delivery failed alert has wrong link', 'The delivery failed alert links to the wrong message in the activity view.'],
+    ['Ошибка экспорта', 'Кнопка экспорта возвращает ошибку при сохранении отчёта.'],
   ];
   const messages = [];
   for (const [i, [subject, detail]] of cases.entries()) {
