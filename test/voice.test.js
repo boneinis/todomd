@@ -42,6 +42,24 @@ test('allowlist: unknown or disallowed actions are refused, and delete is never 
   assert.match(inherited.error, /unknown or disallowed/);
 });
 
+test('approve preparation shares every guarded board eligibility check', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  const chunks = '## Chunks\n\n```yaml\n- title: A\n  plan: do a\n  criteria: [a]\n- title: B\n  plan: do b\n  criteria: [b]\n```';
+  writeCard(repo, 'task-0001', { status: 'Planned', body: chunks });
+
+  const prepared = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'approve' });
+  assert.equal(prepared.status, 400);
+  assert.match(prepared.error, /never materialized/);
+  assert.equal(status(repo, 'task-0001'), 'Planned');
+
+  const boardResult = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(boardResult.ok, false);
+  assert.equal(boardResult.error, prepared.error);
+});
+
 test('read-only summary and card status are deterministic and surface Needs Human + active runs', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });

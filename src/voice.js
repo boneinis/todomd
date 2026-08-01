@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { loadBoard, loadConfig, readCard, withRepoLock } from './board.js';
 import {
   humanMove, cancel, resumeBuild, restartBuild, retryVerification, archiveCard,
-  recoveryActions, getRunStates, hasLiveRun,
+  recoveryActions, getRunStates, hasLiveRun, approvalEligibility,
 } from './pipeline.js';
 
 // Spoken summaries stay short even on a busy board — list at most this many
@@ -169,13 +169,9 @@ const ALLOWED_ACTIONS = {
     // all-Done tracker, or strands a childless tracker in Queue. None matches
     // this single-card, agent-starting action's contract, so voice refuses all
     // epic approvals and leaves them to the visible board UI.
-    eligible: (card, project, fx) => (card.data.epic
+    eligible: async (card, project, fx) => (card.data.epic
       ? (notEpicCascade(card, fx) || { ok: false, error: 'epic approvals are not available by voice' })
-      : (card.data.status !== 'Planned'
-        ? { ok: false, error: `${card.data.id} is not in Planned` }
-        : (fx.blockedDependencies.length
-          ? { ok: false, error: `blocked by: ${fx.blockedDependencies.join(', ')}` }
-          : { ok: true }))),
+      : (notWhileLive(card, fx) || approvalEligibility(project, card))),
     execute: (project, id) => humanMove(project, id, 'Queue'),
   },
   retry_planned: {

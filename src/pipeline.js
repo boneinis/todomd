@@ -137,6 +137,37 @@ function cardVendor(config, card, stageName) {
   return card?.data?.agent || stageAgent || config.default_agent || 'claude';
 }
 
+// The complete state-independent approval gate shared by the board UI and
+// voice prepare/confirm. Live-run handling stays immediately above the Queue
+// branch in humanMove (voice applies the same guard from its fresh effects).
+// Keeping the remaining checks here prevents a voice read-back from promising
+// an approval that humanMove already knows it will refuse.
+export async function approvalEligibility(project, card, config = loadConfig(project.path)) {
+  if (!card) return { ok: false, error: 'card not found' };
+  const id = card.data.id;
+  if (card.data.status !== 'Planned') {
+    return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
+  }
+  if (!(await isGitRepo(project.path))) return { ok: false, error: 'pipeline needs a git repo' };
+  const agent = cardVendor(config, card, 'Build');
+  if (!SUPPORTED_VENDORS.has(agent)) {
+    return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
+  }
+  // Epic approval follows its separate child-cascade path and does not build
+  // the epic's own plan or apply the ordinary card dependency gate.
+  if (card.data.epic) return { ok: true };
+  if (parseChunks(card.body).length >= 2) {
+    return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
+  }
+  const deps = Array.isArray(card.data.dependencies) ? card.data.dependencies : [];
+  // Include archived cards so a completed-then-archived dependency still counts.
+  const board = loadBoard(project.path, { includeArchived: true });
+  const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
+  return blocked.length
+    ? { ok: false, error: `blocked by: ${blocked.join(', ')}` }
+    : { ok: true };
+}
+
 function stageConfig(config, stageName, card) {
   const stage = (config.stages || {})[stageName] || {};
   const independentVerify = stageName === 'Verify' && !!stage.agent;
@@ -563,12 +594,8 @@ export async function humanMove(project, id, to) {
 
   // approval gate: Planned → Queue
   if (to === 'Queue') {
-    if (from !== 'Planned') return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
-    if (!(await isGitRepo(project.path))) return { ok: false, error: 'pipeline needs a git repo' };
-    const agent = cardVendor(config, card, 'Build');
-    if (!SUPPORTED_VENDORS.has(agent)) {
-      return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
-    }
+    const eligible = await approvalEligibility(project, card, config);
+    if (!eligible.ok) return eligible;
     if (card.data.epic) {
       // approving an epic starts the cascade — it never builds itself; it parks
       // in Queue as a tracker while its chunk children build in sequence
@@ -584,19 +611,6 @@ export async function humanMove(project, id, to) {
       }
       return moved;
     }
-    // a plan that was SPLIT into chunks but never fanned out into child cards has
-    // no epic flag. Approving it would build the whole epic as one monolith, so
-    // refuse with a clear path forward. A real launcher/budget epic that was
-    // properly fanned out carries epic:true and already returned above, so this
-    // only catches the unmaterialized case.
-    if (parseChunks(card.body).length >= 2) {
-      return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
-    }
-    const deps = card.data.dependencies || [];
-    // include archived cards so a completed-then-archived dependency still counts
-    const board = loadBoard(project.path, { includeArchived: true });
-    const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
-    if (blocked.length) return { ok: false, error: `blocked by: ${blocked.join(', ')}` };
     const moved = await moveCard(project.path, id, 'Queue', { reason: 'approved' });
     // budget mode: the /todomd-dispatch session picks the card up from here.
     // `unchanged` guards a concurrent double-approval: only the transition that
