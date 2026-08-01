@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbe83-d0c3-7161-855a-985776e2cacb
+session_id: 019fbe8c-8c30-71c2-bb34-201a3b1313a6
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -89,3 +89,5 @@ Actionable defect: stale-state binding does not include the preserved worktree�
   - attempts_exhausted: Archived cards remain eligible for operational voice actions. An adversarial probe archived a Planned card, prepared `approve` successfully (HTTP 200), then confirmed its challenge successfully; the card moved to Queue while retaining its archived flag and, in launcher mode, the hidden card is enqueued for a build. The read-back does not disclose that the card remains archived, and confirmation tr
 - 2026-08-01 18:14Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Reachable exact-read-back bug in src/voice.js:231-233: the `cancel` action always says “cancel the running build,” although cancellation is allowed for Plan, Verify, and custom-stage runs. Reproduced with a live Plan run: state was `{state:"running",stage:"Plan"}`, but preparation returned 200 with readback `cancel the running build for task-0001`. Generate the label from `fx.runState.stage` and a
+- 2026-08-01 18:25Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 3)
+  - attempts_exhausted: The official `npm test` gate passed with 321 core tests and 5 UI tests; `git diff --check main...HEAD` also passed. However, supported out-of-process runs are invisible to voice safety checks. `getRunStates()`/`hasLiveRun()` only inspect this server process’s maps (`src/pipeline.js:1803-1827`), while budget-mode Build/Verify work runs in the external dispatcher. Consequently `buildVoiceSummary()` 
