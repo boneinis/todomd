@@ -806,6 +806,18 @@ test('stale detection covers every input the policy was derived from, not just t
   assert.equal(r.status, 409);
   assert.match(r.error, /stale/);
   assert.equal(status(repo, 'task-0004'), 'Planned');
+
+  // (4) replacing one preserved branch with another must not let an earlier
+  // visible approval discard the replacement merely because both are truthy.
+  writeCard(repo, 'task-0006', { status: 'Build', extra: 'worktree: todomd/old-branch\n' });
+  prep = await voice.prepareVoiceAction(p, { cardId: 'task-0006', action: 'retriage' });
+  assert.equal(prep.confirmation.tier, 'visible');
+  await patchFrontmatter(repo, 'task-0006', { worktree: 'todomd/replacement-branch' });
+  r = await voice.confirmVoiceAction(p, prep.proposalId, { visibleApproval: true });
+  assert.equal(r.status, 409);
+  assert.match(r.error, /stale/);
+  assert.equal(status(repo, 'task-0006'), 'Build');
+  assert.equal(readCard(repo, 'task-0006').data.worktree, 'todomd/replacement-branch');
 });
 
 test('confirm revalidation and mutation are atomic with concurrent board writes', async () => {

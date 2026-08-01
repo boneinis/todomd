@@ -92,11 +92,20 @@ function computeEffects(project, card) {
 // appears, or a child that stops being Done) between prepare and confirm turns
 // the proposal stale instead of quietly changing what the confirmed phrase buys.
 function fingerprint(card, fx) {
+  // Bind the complete persisted card record, not merely the presence of fields
+  // that affect policy. In particular, replacing one preserved worktree/branch
+  // with another must invalidate an approval that could otherwise discard the
+  // replacement. This also covers recovery stage, reason, verification state,
+  // and future execution-relevant frontmatter without another partial list.
+  const cardDigest = crypto.createHash('sha256')
+    .update(typeof card.raw === 'string' ? card.raw : JSON.stringify({ data: card.data, body: card.body }))
+    .digest('hex');
   return [
+    `card:${cardDigest}`,
     card.data.status || '(none)',
     card.data.archived ? 'archived' : 'active',
     fx.runState ? `run:${fx.runState.state}:${fx.runState.stage}` : 'no-run',
-    fx.worktree ? 'worktree' : 'no-worktree',
+    `worktree:${String(card.data.worktree || '')}`,
     `children:${fx.cascadeChildren}`,
     `blocked:${fx.blockedDependencies.join(',')}`,
     fx.budget ? 'budget' : 'launcher',
