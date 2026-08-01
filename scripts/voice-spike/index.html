@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TODOMD local wake capability spike</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main>
+    <p class="eyebrow">TODOMD · non-production capability harness</p>
+    <h1>Local “Hey To-do” wake test</h1>
+    <p class="lede">This page requires on-device speech recognition. It has no board API access and its Content Security Policy blocks network connections.</p>
+
+    <section class="status-grid" aria-label="capability status">
+      <div><span>Capability</span><strong id="capability">checking…</strong></div>
+      <div><span>Engine state</span><strong id="state" data-state="inactive">inactive</strong></div>
+      <div><span>Latest phrase</span><strong id="interim">—</strong></div>
+    </section>
+
+    <div class="controls">
+      <button id="arm">Arm local wake</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="mark" data-pending="false" disabled>Mark next wake as intentional</button>
+      <button id="download" disabled>Download metrics</button>
+    </div>
+
+    <section class="metrics" aria-label="test metrics">
+      <div><strong id="attempts">0</strong><span>intentional attempts</span></div>
+      <div><strong id="detected">0</strong><span>intentional detections</span></div>
+      <div><strong id="false-wakes">0</strong><span>false wakes</span></div>
+      <div><strong id="recognition-ends">0</strong><span>recognition ends</span></div>
+    </section>
+
+    <section>
+      <h2>Run protocol</h2>
+      <ol>
+        <li>Select <b>Arm local wake</b> and approve the browser's model download and microphone prompt.</li>
+        <li>Before each deliberate attempt, select <b>Mark next wake as intentional</b>, then say “Hey To-do.”</li>
+        <li>Leave the page armed during ordinary conversation, media playback, silence, and Mac sleep/wake testing.</li>
+        <li>Stop and download the metrics JSON. It contains event types and diagnostics, but no transcript history or audio.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Bounded event log</h2>
+      <ul id="log" class="log" aria-live="polite"></ul>
+    </section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

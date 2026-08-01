@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "start": "node bin/todomd.js",
+    "voice:spike": "node scripts/voice-spike/server.mjs",
     "test": "node --test test/*.test.js && node --test test/ui/*.test.js",
     "test:unit": "node --test test/*.test.js",
     "test:ui": "node --test test/ui/*.test.js",
