@@ -33,6 +33,13 @@ voice-service key — `TODOMD_VOICE_KEY` — never reaches the browser; the
 Picovoice wake-word key does, by necessity, and is protected by the same
 primary-only gate instead) is documented separately in `docs/voice.md`.
 
+That gate behaves like `/api/lan`'s, including the part worth knowing here:
+the route sits **after** the generic non-GET write guard rather than being
+special-cased ahead of it, so a viewer token is rejected by the shared
+read-only guard and a mobile token is rejected by the route's own
+`primary(req)` check. Two different 403 bodies, one outcome — only the
+desktop session that started todomd can enable voice or obtain either key.
+
 ## Pipeline hardening (prompt-injection surface)
 
 Cards can arrive from outside the UI (git pull, email intake), so every stage
