@@ -10,12 +10,12 @@ import { withRepoLock, ensureGitignored } from './board.js';
 // real work: any strong match, or 2+ weak matches, is spam; a lone weak match
 // is held as unclear instead (see the verdict logic below).
 const ESP_HEADERS = [
-  'list-id', 'x-campaign-id', 'x-campaignid', 'x-mailgun-sid', 'x-sg-eid', 'x-sg-id',
+  'list-id', 'x-campaign', 'x-campaign-id', 'x-campaignid', 'x-mailgun-sid', 'x-sg-eid', 'x-sg-id',
   'x-ses-outgoing', 'x-mc-user', 'x-mandrill-user', 'x-mailchimp-id', 'x-klaviyo-message-id',
 ];
 const OOO_RE = /\b(out[- ]of[- ](?:the[- ])?office|automatic reply|auto[- ]?reply|away from (my |the )?(office|email|desk))\b/i;
 const BOUNCE_ADDR_RE = /\b(mailer-daemon|postmaster)\b/i;
-const BOUNCE_SUBJECT_RE = /\b(undeliverable|delivery status notification|returned to sender|delivery failure|mail delivery failed)\b/i;
+const BOUNCE_SUBJECT_RE = /\b(undeliverable|delivery status notification|returned to sender|delivery (?:has )?failed|delivery failure|mail delivery failed)\b/i;
 const FOOTER_RE = /unsubscribe|view(?: (?:this|it)(?: email| message)?)? in (?:your )?browser|manage your (email )?preferences/i;
 const MIN_BODY_LEN = 20; // shorter than this and there's rarely enough to act on
 
@@ -102,7 +102,7 @@ export function screenEmail(parsed) {
 
   if (ESP_HEADERS.some((h) => hasHeader(parsed, h))) spamStrong.push('esp-header');
 
-  if (/no-?reply@/i.test(fromAddr)) spamWeak.push('noreply-sender');
+  if (/no-?reply(?:\+[^@]+)?@/i.test(fromAddr)) spamWeak.push('noreply-sender');
 
   if (FOOTER_RE.test(bodyText)) spamWeak.push('unsubscribe-footer');
 
@@ -116,7 +116,10 @@ export function screenEmail(parsed) {
 
   if (autoSubmitted === 'auto-replied' || OOO_RE.test(subject) || OOO_RE.test(bodyText)) unclear.push('auto-reply');
 
-  if (BOUNCE_ADDR_RE.test(fromAddr) || BOUNCE_SUBJECT_RE.test(subject)) unclear.push('bounce');
+  const contentType = headers && typeof headers.get === 'function' ? headers.get('content-type') : null;
+  const deliveryReport = String(contentType?.value || contentType || '').toLowerCase() === 'multipart/report'
+    && String(contentType?.params?.['report-type'] || '').toLowerCase() === 'delivery-status';
+  if (BOUNCE_ADDR_RE.test(fromAddr) || BOUNCE_SUBJECT_RE.test(subject) || deliveryReport) unclear.push('bounce');
 
   // A delivery-status notice or explicit auto-reply is automated by design,
   // so Auto-Submitted commonly appears alongside it. Those explicit message

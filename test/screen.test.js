@@ -371,6 +371,75 @@ test('screenEmail: a parsed delivery-status bounce stays unclear despite Auto-Su
   assert.match(r.reason, /bounce|mailer-daemon/i);
 });
 
+test('screenEmail: Outlook bounce wording overrides generic Auto-Submitted automation', async () => {
+  const parsed = await parseInboundMessage(rawEmail([
+    'From: Microsoft Outlook <postmaster@example.com>',
+    'To: sender@example.com',
+    'Subject: Delivery has failed to these recipients or groups:',
+    'Auto-Submitted: auto-generated',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Your message could not be delivered to recipient@example.com.',
+    '',
+  ]));
+
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'unclear');
+  assert.ok(r.signals.includes('bounce'));
+});
+
+test('screenEmail: a delivery-status MIME report is held even with neutral sender and subject', async () => {
+  const parsed = await parseInboundMessage(rawEmail([
+    'From: Delivery Service <delivery@example.com>',
+    'To: sender@example.com',
+    'Subject: Message report',
+    'Content-Type: multipart/report; report-type=delivery-status; boundary="report"',
+    '',
+    '--report',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'The remote server did not accept the message.',
+    '--report',
+    'Content-Type: message/delivery-status',
+    '',
+    'Action: failed',
+    'Status: 5.1.1',
+    '--report--',
+    '',
+  ]));
+
+  const r = screenEmail(parsed);
+  assert.equal(r.verdict, 'unclear');
+  assert.ok(r.signals.includes('bounce'));
+});
+
+test('screenEmail: parsed bare X-Campaign and plus-tagged no-reply variants are recognized', async () => {
+  const campaign = await parseInboundMessage(rawEmail([
+    'From: Shop <news@shop.example.com>',
+    'To: intake@example.com',
+    'Subject: Weekly store news',
+    'X-Campaign: july-week-5',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Here are this week\'s store updates and featured products.',
+    '',
+  ]));
+  assert.equal(screenEmail(campaign).verdict, 'spam');
+  assert.ok(screenEmail(campaign).signals.includes('esp-header'));
+
+  const tagged = await parseInboundMessage(rawEmail([
+    'From: Shop <no-reply+receipts@shop.example.com>',
+    'To: intake@example.com',
+    'Subject: Your store update',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'This is a message long enough to avoid the short-body signal.',
+    '',
+  ]));
+  assert.equal(screenEmail(tagged).verdict, 'unclear');
+  assert.ok(screenEmail(tagged).signals.includes('noreply-sender'));
+});
+
 test('screenEmail: a parsed multipart message checks the HTML footer as well as plain text', async () => {
   const parsed = await parseInboundMessage(rawEmail([
     'From: Shop <no-reply@shop.example.com>',
