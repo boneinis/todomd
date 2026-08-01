@@ -16,7 +16,7 @@ const ESP_HEADERS = [
 const OOO_RE = /\b(out[- ]of[- ](?:the[- ])?office|automatic reply|auto[- ]?reply|vacation (?:response|reply)|(?:currently )?on vacation|away from (my |the )?(office|email|desk))\b/i;
 const BOUNCE_ADDR_RE = /\b(mailer-daemon|postmaster)\b/i;
 const BOUNCE_SUBJECT_RE = /\b(undeliverable|delivery status notification|returned to sender|delivery (?:has )?failed|delivery failure|mail delivery failed)\b/i;
-const FOOTER_RE = /unsubscribe|view(?: (?:this|the|your|an?|it))?(?: (?:email|message))? in (?:an? |your )?browser|manage your (email )?preferences/i;
+const FOOTER_RE = /(?:(?:click here to unsubscribe|unsubscribe from (?:this|these|our) emails?|(?:^|\n|\s{2,})unsubscribe)[\s.!]*$)|view(?: (?:this|the|your|an?|it))?(?: (?:email|message))? in (?:an? |your )?browser|manage your (email )?preferences/i;
 const MIN_BODY_LEN = 20; // shorter than this and there's rarely enough to act on
 
 const SIGNAL_LABELS = {

@@ -722,6 +722,47 @@ test('pollSource: a poison message does not starve later UIDs and remains recove
   assert.equal(triaged.length, 1, 'the recovered work card still enters normal triage');
 });
 
+test('pollSource: a human unsubscribe bug report stays work and triggers triage', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const raw = rawEmail([
+    'From: Jane Doe <jane@example.com>',
+    'To: intake@example.com',
+    'Subject: Unsubscribe endpoint returns 500',
+    'Message-ID: <unsubscribe-bug@example.com>',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'The unsubscribe endpoint returns a 500 after submitting the account form.',
+    'Please investigate the server error and add a regression test for this workflow.',
+    '',
+  ]);
+  const parsed = await simpleParser(raw);
+  assert.equal(screenEmail(parsed).verdict, 'work', 'a feature name is not a marketing footer');
+
+  const fakeClient = {
+    mailbox: { uidValidity: '1', uidNext: 2 },
+    on() { return this; },
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch() { yield { uid: 1, source: Buffer.from(raw) }; },
+    async logout() {},
+  };
+  const source = {
+    label: 'unsubscribe-regression',
+    conf: { host: 'imap.example.com', user: 'inbox', pass: 'secret', markSeen: false },
+    resolve: () => 'repo', assigneeOf: () => null,
+  };
+  const triaged = [];
+  await pollSource(source, () => ({ path: repo, name: 'repo' }), {
+    createClient: () => fakeClient,
+    onCardCallback: (_project, id) => triaged.push(id),
+  });
+
+  assert.equal(cardFiles(repo).length, 1);
+  assert.equal(triaged.length, 1, 'normal work still reaches the triage callback');
+  assert.equal(readCard(repo, triaged[0]).data.status, 'Review');
+});
+
 test('intakeMessage: a real bug report, parsed by mailparser, becomes a Review card', async () => {
   isolateHome();
   const repo = makeRepo();
