@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Verify
+status: Build
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
-session_id: 63d840af-a120-414c-862c-91bfd64a73b0
+session_id: 89fa42bc-1e4e-4c5d-8d1f-4bdafa4a8817
 worktree: todomd/task-0037
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 20.1825
+cost_usd: 23.0693
 needs_human_reason:
 recovery_stage:
 ---
@@ -66,3 +66,6 @@ local speech or provider configuration is unavailable.
 - 2026-08-01 23:18Z · Verify attempt 2 · malformed verdict, re-running once
 - 2026-08-01 23:18Z · Verify attempt 2 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
   - bad_verdict: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or
+- 2026-08-01 23:28Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 3)
+  - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
+- 2026-08-01 23:32Z · Escalate attempt 2 · 24 turns · $2.887 · diagnosis complete
