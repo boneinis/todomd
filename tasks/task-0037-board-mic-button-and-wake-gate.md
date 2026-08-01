@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Planned
+status: Queue
 type: module
 priority: medium
 labels: []
