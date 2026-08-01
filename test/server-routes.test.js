@@ -51,7 +51,9 @@ test('API auth gauntlet: token tiers, origin check, viewer is read-only', async 
     // viewer reads the board (access: viewer)
     let r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': viewer } });
     assert.equal(r.status, 200);
-    assert.equal((await r.json()).access, 'viewer');
+    const viewerBoard = await r.json();
+    assert.equal(viewerBoard.access, 'viewer');
+    assert.equal(viewerBoard.primary, false);
     // viewer cannot mutate → 403 read-only
     r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: J(viewer, base), body: '{"title":"x"}' });
     assert.equal(r.status, 403);
@@ -59,6 +61,7 @@ test('API auth gauntlet: token tiers, origin check, viewer is read-only', async 
     r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': full } });
     const fullBoard = await r.json();
     assert.equal(fullBoard.access, 'full');
+    assert.equal(fullBoard.primary, true);
     assert.ok(Array.isArray(fullBoard.skills) && fullBoard.skills.includes('todomd-plan'), 'board lists available skills');
     // full POST with a FOREIGN origin → 403 (CSRF/DNS-rebind defense)
     r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: J(full, 'http://evil.com'), body: '{"title":"x"}' });
@@ -70,6 +73,10 @@ test('API auth gauntlet: token tiers, origin check, viewer is read-only', async 
     // the mobile token also has full access
     r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: J(mobile, base), body: '{"title":"Second"}' });
     assert.equal(r.status, 200);
+    r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': mobile } });
+    const mobileBoard = await r.json();
+    assert.equal(mobileBoard.access, 'full');
+    assert.equal(mobileBoard.primary, false, 'mobile control is full access but cannot start desktop-only voice');
     // commands list requires full access → viewer 403
     assert.equal((await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': viewer } })).status, 403);
     // unknown project → 404

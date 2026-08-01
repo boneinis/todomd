@@ -406,6 +406,10 @@ export function startServer({ port = 7337, lan = false } = {}) {
         ...board,
         mode: board.config.mode || 'launcher',
         access: fullAccess ? 'full' : 'viewer',
+        // `access: full` includes the revocable mobile-control token. Voice
+        // remains desktop-only, so expose the narrower tier separately and
+        // let the client hide controls that its token cannot actually use.
+        primary: primary(req),
         runStates: pipeline.getRunStates(project.name),
         banners: pipeline.getBanners(),
         usage: pipeline.usage(project.name),

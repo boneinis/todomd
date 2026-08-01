@@ -25,6 +25,7 @@ async function readErrorMessage(res) {
 export function createRealtimeSession({
   scope = globalThis,
   fetchFn = scope.fetch?.bind(scope),
+  AbortControllerClass = scope.AbortController,
   RTCPeerConnectionClass = scope.RTCPeerConnection,
   getUserMediaFn = (constraints) => scope.navigator?.mediaDevices?.getUserMedia?.(constraints),
   // Where the assistant's remote audio is rendered. Defaults to a real
@@ -40,6 +41,7 @@ export function createRealtimeSession({
   let audioEl = null;
   let closed = false;
   let opened = false;
+  let offerAbortController = null;
 
   function stopStream() {
     for (const track of stream?.getTracks?.() || []) {
@@ -88,13 +90,20 @@ export function createRealtimeSession({
 
   async function postOffer(sdp) {
     if (typeof fetchFn !== 'function') throw new Error('fetch is unavailable');
-    const res = await fetchFn(`/api/voice/session?project=${encodeURIComponent(project)}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/sdp', 'x-todomd-token': token },
-      body: sdp,
-    });
-    if (!res.ok) throw new Error(await readErrorMessage(res));
-    return res.text();
+    const controller = typeof AbortControllerClass === 'function' ? new AbortControllerClass() : null;
+    offerAbortController = controller;
+    try {
+      const res = await fetchFn(`/api/voice/session?project=${encodeURIComponent(project)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/sdp', 'x-todomd-token': token },
+        body: sdp,
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+      if (!res.ok) throw new Error(await readErrorMessage(res));
+      return res.text();
+    } finally {
+      if (offerAbortController === controller) offerAbortController = null;
+    }
   }
 
   // Any failure mid-open (denied mic, no WebRTC, SDP exchange failure) cleans
@@ -148,6 +157,8 @@ export function createRealtimeSession({
   // drains whatever exists now.
   async function close() {
     closed = true;
+    try { offerAbortController?.abort?.(); } catch { /* already aborted */ }
+    offerAbortController = null;
     try { dataChannel?.close?.(); } catch { /* already closed */ }
     try { pc?.close?.(); } catch { /* already closed */ }
     stopStream();

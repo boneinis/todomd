@@ -91,11 +91,12 @@ if (btn && widget) {
   document.addEventListener('todomd:context', (event) => {
     const nextProject = event.detail?.project || '';
     const nextAccess = event.detail?.access || 'none';
-    const key = `${nextProject} ${nextAccess}`;
+    const nextPrimary = event.detail?.primary === true;
+    const key = `${nextProject} ${nextAccess} ${nextPrimary}`;
     const changed = lastContextKey !== null && key !== lastContextKey;
     lastContextKey = key;
     project = nextProject;
-    widget.hidden = nextAccess !== 'full';
+    widget.hidden = nextAccess !== 'full' || !nextPrimary;
     // A live session or an armed local recognizer must never outlive a
     // project switch, an access-tier downgrade, or the last project
     // disappearing — each of those changes `key`, but an ordinary board
@@ -108,10 +109,16 @@ if (btn && widget) {
   // normal arm control or falls straight to push-to-talk (AC: missing local
   // capability must still leave the board usable).
   inspectLocalSpeech({ scope: window, install: false }).then((capability) => {
-    if (!capability.supported) {
+    if (!capability.supported && !['downloadable', 'downloading'].includes(capability.status)) {
       if (btn) btn.hidden = true;
       if (ptt) ptt.hidden = false;
       if (diagEl) diagEl.textContent = 'local wake unavailable — press and hold to talk';
+    } else if (!capability.supported && diagEl) {
+      // Installation is intentionally deferred to the explicit Arm gesture;
+      // leaving the button visible is what makes that gesture reachable.
+      diagEl.textContent = capability.status === 'downloading'
+        ? 'local speech is downloading — click to finish arming'
+        : 'local speech download available — click to arm';
     }
   }).catch(() => { /* capability probe never blocks board boot */ });
 

@@ -133,6 +133,34 @@ function installVoiceFakes() {
   };
 }
 
+function installDownloadableWakeFake() {
+  window.__downloadableWake = { installed: false, installCalls: 0, recognitions: [] };
+  class DownloadableSpeechRecognition {
+    constructor() {
+      this.processLocally = false;
+      window.__downloadableWake.recognitions.push(this);
+    }
+    start() { this.onstart?.(); }
+    abort() {}
+  }
+  DownloadableSpeechRecognition.available = async () => (
+    window.__downloadableWake.installed ? 'available' : 'downloadable'
+  );
+  DownloadableSpeechRecognition.install = async () => {
+    window.__downloadableWake.installCalls += 1;
+    window.__downloadableWake.installed = true;
+    return true;
+  };
+  window.SpeechRecognition = DownloadableSpeechRecognition;
+}
+
+function installUnavailableWakeFake() {
+  // Chrome may expose a downloadable pack even in a fresh headless profile;
+  // force the separate, truly-unavailable branch this test is about.
+  window.SpeechRecognition = undefined;
+  window.webkitSpeechRecognition = undefined;
+}
+
 let page, srv, name, upstream;
 const SKIP = 'no Chrome/Chromium found (set TODOMD_CHROME_BIN to run this)';
 
@@ -160,6 +188,7 @@ after(async () => {
 
 test('UI voice: with no local wake capability, the board leads with push-to-talk and stays usable', async (t) => {
   if (!page) return t.skip(SKIP);
+  await page.presetScript(`(${installUnavailableWakeFake.toString()})();`);
   await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
   await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
 
@@ -170,6 +199,30 @@ test('UI voice: with no local wake capability, the board leads with push-to-talk
   assert.equal(await page.eval(`document.getElementById('voice-btn').hidden`), true);
   assert.match(await page.eval(`document.getElementById('voice-diag').textContent`), /press and hold/);
   assert.deepEqual(page.errors, [], 'a missing capability never throws or logs a console error');
+});
+
+test('UI voice: a downloadable local pack keeps Arm reachable and installs only after the click', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.presetScript(`(${installDownloadableWakeFake.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await until(async () => (await page.eval(`!document.getElementById('voice-widget').hidden`)) || null, { timeout: BUDGET.stage });
+
+  assert.equal(await page.eval(`document.getElementById('voice-btn').hidden`), false);
+  assert.equal(await page.eval(`window.__downloadableWake.installCalls`), 0, 'the read-only boot probe never installs');
+  assert.match(await page.eval(`document.getElementById('voice-diag').textContent`), /download available/);
+
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`window.__downloadableWake.installCalls`), 1);
+});
+
+test('UI voice: a mobile full-control token does not show unusable desktop-only voice controls', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const mobile = fs.readFileSync(path.join(process.env.TODOMD_HOME, '.todomd', 'token-mobile'), 'utf8').trim();
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${mobile}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  assert.equal(await page.eval(`document.getElementById('voice-widget').hidden`), true);
 });
 
 test('UI voice: arm, wake, active session, sign-off phrase, second wake, offline stops every track', async (t) => {

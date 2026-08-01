@@ -238,6 +238,39 @@ test('a microphone granted AFTER close() is still stopped — offline never leav
   await session.close(); // a repeated close is harmless
 });
 
+test('close() aborts an in-flight SDP request so it cannot create an orphan provider session', async () => {
+  const track = fakeTrack();
+  const RTC = fakeRtcClass();
+  let requestSignal;
+  let requestStarted;
+  const started = new Promise((resolve) => { requestStarted = resolve; });
+  const fetchFn = (_url, options) => new Promise((_resolve, reject) => {
+    requestSignal = options.signal;
+    requestStarted();
+    requestSignal.addEventListener('abort', () => {
+      const error = new Error('request aborted');
+      error.name = 'AbortError';
+      reject(error);
+    }, { once: true });
+  });
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([track]),
+    fetchFn,
+    token: 't', project: 'p',
+  });
+
+  const opening = session.open({});
+  opening.catch(() => { /* asserted below; keep it handled while close() runs */ });
+  await started;
+  await session.close();
+
+  assert.equal(requestSignal.aborted, true);
+  await assert.rejects(() => opening, /aborted/);
+  assert.equal(track.stopped, true);
+  assert.equal(RTC.instances.at(-1).closed, true);
+});
+
 test('microphone permission denial rejects open() without ever creating a peer connection', async () => {
   const RTC = fakeRtcClass();
   const session = createRealtimeSession({
