@@ -1,7 +1,7 @@
 ---
 id: task-0025
 title: Apply the screen to the push API and surface screened mail
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 3/3 of task-0022)
-session_id: 3406f65e-a3e4-426a-9390-88dda139151a
+session_id: 019fbba0-a6b4-7f41-9ff6-4caa11d612ec
 worktree: todomd/task-0025
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.0398
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -71,3 +71,5 @@ real assertion.
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 04:33Z · Escalate attempt 2 · 21 turns · $3.056 · diagnosis complete
 - 2026-08-01 04:41Z · Build attempt 3 · 58 turns · $3.496 · ok (escalation repair)
+- 2026-08-01 04:46Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full `npm test` gate passes: 267 unit/API tests and 5 browser tests. However, the new push endpoint corrupts valid non-UTF-8 MIME bytes. `readBody()` in src/server.js:34 concatenates request Buffers into a JavaScript string, and that string is passed to `parseInboundMessage()` at line 253. A binary MIME attachment containing bytes [0,127,128,255,65] was parsed as [0,127,239,191,189,239,191,189
