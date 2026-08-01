@@ -143,6 +143,62 @@ test('reject endpoint over HTTP: consumes the proposal, never executes it', asyn
   } finally { srv.close(); }
 });
 
+test('an epic with unfinished children is refused at preparation — voice cannot reach a bulk cascade', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Queue', extra: 'epic: true\n' });
+    writeCard(repo, 'task-0002', { status: 'Planned', extra: 'parent: task-0001\n' });
+
+    // both of these run cascadeEpicCleanup, which would archive task-0002 too
+    for (const action of ['retriage', 'archive']) {
+      const r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001', action }) });
+      assert.equal(r.status, 400, action);
+      const body = await r.json();
+      assert.match(body.error, /epic with 1 unfinished child card/);
+      assert.equal(body.proposalId, undefined, 'no proposal is handed back at all');
+    }
+    assert.equal(readCard(repo, 'task-0002').data.status, 'Planned');
+    assert.equal(readCard(repo, 'task-0002').data.archived, undefined);
+  } finally { srv.close(); }
+});
+
+test('the read-back over HTTP describes what this project mode actually does', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot(); // boot() is a budget-mode repo
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Planned' });
+    const r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001', action: 'approve' }) });
+    assert.equal(r.status, 200);
+    const prep = await r.json();
+    assert.equal(prep.readback, 'approve task-0001 and queue it for the dispatcher',
+      'budget mode has no launcher — promising "start the build" would be a false read-back');
+    assert.equal(prep.confirmation.tier, 'agent');
+  } finally { srv.close(); }
+});
+
+test('a preserved worktree raises a move to visible approval and is named in the read-back', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Needs Human', extra: 'needs_human_reason: bad_verdict\nworktree: todomd/task-0001\n' });
+
+    let r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001', action: 'retry_planned' }) });
+    assert.equal(r.status, 200);
+    const prep = await r.json();
+    assert.match(prep.readback, /discarding its preserved worktree/);
+    assert.equal(prep.confirmation.tier, 'visible');
+
+    // the reversible phrase cannot authorize it
+    r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'Yes To-do' }) });
+    assert.equal(r.status, 400);
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Needs Human');
+  } finally { srv.close(); }
+});
+
 test('removing a project invalidates its pending voice proposals, even if the freed name is reused', async () => {
   isolateHome();
   const { repo, name, base, srv, q } = await boot();

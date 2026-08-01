@@ -1780,6 +1780,17 @@ export function getRunStates(projectName) {
   for (const id of queues.get(projectName) || []) {
     states[id] = { state: 'queued', stage: 'Build' };
   }
+  // A chain claimed by processQueue but between spawns (shift→spawn, build→
+  // verify, verify→merge) has no `runs` entry yet still counts as live for
+  // hasLiveRun/cancel/humanMove. Report it too, or callers that ask "what is
+  // running?" see a false idle in exactly the windows the pipeline treats as
+  // hands-off. The pending entry carries no stage, so the label is generic.
+  const prefix = `${projectName}:`;
+  for (const key of pending.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    const id = key.slice(prefix.length);
+    if (!states[id]) states[id] = { state: 'running', stage: 'in progress' };
+  }
   return states;
 }
 

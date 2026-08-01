@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
-import { loadBoard, readCard } from './board.js';
+import { loadBoard, loadConfig, readCard } from './board.js';
 import {
   humanMove, cancel, resumeBuild, restartBuild, retryVerification, archiveCard,
-  recoveryActions, getRunStates,
+  recoveryActions, getRunStates, hasLiveRun,
 } from './pipeline.js';
 
 // Spoken summaries stay short even on a busy board — list at most this many
@@ -18,13 +18,53 @@ function normalizePhrase(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// A fingerprint of the card fields every action's eligibility can hinge on.
-// Confirm re-derives this from a fresh read and refuses to execute on a
-// mismatch — "the board changed since you asked" is a stale request, not a bug.
-function fingerprint(data) {
-  const status = data.status || '';
-  const archived = data.archived ? '1' : '0';
-  return status + ' ' + archived;
+// What an action would ACTUALLY do to this card, right now.
+//
+// The guarded operations behind the allowlist are state-polymorphic: the single
+// call `humanMove(…, 'Review')` is a harmless column move on an idle card, a run
+// cancellation on a live one, a worktree deletion on one that kept its build,
+// and a multi-card archive on an epic. So tier, eligibility, read-back and the
+// stale check are all derived from this probe rather than hardcoded per action
+// name — a name-keyed policy keeps promising "harmless and undoable" for
+// whichever variant the board happens to be in.
+function computeEffects(project, card) {
+  const id = card.data.id;
+  // the same predicate humanMove/archiveCard/cancel branch on: it covers a
+  // spawned child AND a chain claimed between spawns
+  const live = hasLiveRun(project.name, id);
+  // mirrors cascadeEpicCleanup's own filter (active, non-Done, non-epic children)
+  let cascadeChildren = 0;
+  if (card.data.epic) {
+    cascadeChildren = loadBoard(project.path).cards
+      .filter((c) => c.parent === id && c.status !== 'Done' && !c.epic).length;
+  }
+  let mode = 'launcher';
+  try { mode = loadConfig(project.path).mode || 'launcher'; } catch { /* unreadable config reads as the default */ }
+  return {
+    live,
+    // runs ∪ pending ∪ queues — exactly the three cases pipeline.cancel acts on
+    runState: getRunStates(project.name)[id] || null,
+    epic: !!card.data.epic,
+    cascadeChildren,
+    worktree: !!card.data.worktree,
+    budget: mode === 'budget',
+  };
+}
+
+// A fingerprint of everything the tier, eligibility and read-back were derived
+// from — not just the card's own columns. Confirm re-derives it from a fresh
+// read and refuses on a mismatch, so a run that goes live (or a worktree that
+// appears, or a child that stops being Done) between prepare and confirm turns
+// the proposal stale instead of quietly changing what the confirmed phrase buys.
+function fingerprint(card, fx) {
+  return [
+    card.data.status || '(none)',
+    card.data.archived ? 'archived' : 'active',
+    fx.live ? 'live' : 'idle',
+    fx.worktree ? 'worktree' : 'no-worktree',
+    `children:${fx.cascadeChildren}`,
+    fx.budget ? 'budget' : 'launcher',
+  ].join(' ');
 }
 
 // "Fresh" (changes every proposal) and "task-specific" (names the card), so a
@@ -38,73 +78,122 @@ function buildChallenge(action, cardId) {
   return `Confirm ${action.replace(/_/g, ' ')} ${cardId} ${word}`;
 }
 
+// Voice never cancels a run as a side effect of a move. humanMove's Review
+// branch kills a live child (or flags a claimed chain) — the operation
+// docs/voice.md puts under visible approval — so a move prepared against a live
+// card is refused outright rather than smuggled in behind a "Yes To-do".
+// Cancelling stays reachable only through the explicit `cancel` action.
+function notWhileLive(card, fx) {
+  return fx.live
+    ? { ok: false, error: `${card.data.id} has a live run — cancel it in the app first` }
+    : null;
+}
+
+// Voice is strictly single-card. humanMove→Review and archiveCard both call
+// cascadeEpicCleanup, which cancels and archives EVERY non-Done child; that is a
+// bulk action, and bulk actions are unavailable by voice at any tier.
+function notEpicCascade(card, fx) {
+  const n = fx.cascadeChildren;
+  if (!n) return null;
+  return {
+    ok: false,
+    error: `${card.data.id} is an epic with ${n} unfinished child card${n === 1 ? '' : 's'} that this would archive too — epic-wide actions are not available by voice`,
+  };
+}
+
+// Discarding a preserved worktree throws away build state that moving the card
+// back cannot recover, so a move that would do it leaves the reversible tier and
+// joins cancel/restart/archive under visible approval (docs/voice.md).
+const moveTier = (fx) => (fx.worktree ? 'visible' : 'reversible');
+const worktreeClause = (fx) => (fx.worktree ? ', discarding its preserved worktree' : '');
+
 // The allowlist: every entry maps 1:1 to an existing guarded board/pipeline
 // operation the human UI already exposes. There is deliberately no generic
 // "move" or "dispatch" action, no delete, and no bulk form — only these named,
 // single-card operations can ever be proposed.
 //
-// tier drives the confirmation policy (docs/voice.md's phrase table):
+// tier(effects) drives the confirmation policy (docs/voice.md's phrase table):
 //   reversible — harmless, undoable moves               → speak "Yes To-do"
 //   agent      — starts or resumes an agent run          → repeat a fresh challenge phrase
-//   visible    — cancel / restart-build / archive        → visible in-app approval only
+//   visible    — cancel / restart-build / archive, and   → visible in-app approval only
+//                any move that destroys preserved work
+// label(card, effects) must describe exactly what execute() will do on THIS
+// state — never a clause the execute path won't perform, and never silent about
+// one it will.
 const ALLOWED_ACTIONS = {
   retriage: {
-    tier: 'reversible',
-    label: (card) => `move ${card.data.id} back to Review`,
-    eligible: () => ({ ok: true }), // always allowed, per the human transition table
+    tier: moveTier,
+    label: (card, fx) => `move ${card.data.id} back to Review${worktreeClause(fx)}`,
+    eligible: (card, project, fx) => notWhileLive(card, fx) || notEpicCascade(card, fx) || { ok: true },
     execute: (project, id) => humanMove(project, id, 'Review'),
   },
   approve: {
-    tier: 'agent',
-    label: (card) => `approve ${card.data.id} and start the build`,
+    tier: () => 'agent',
+    // budget mode has no launcher: Planned→Queue only parks the card for the
+    // /todomd-dispatch session, so promising "start the build" would be a lie
+    label: (card, fx) => {
+      const what = fx.epic
+        ? (fx.budget ? 'queue its first chunk for the dispatcher' : 'start its first chunk building')
+        : (fx.budget ? 'queue it for the dispatcher' : 'start the build');
+      return `approve ${card.data.id} and ${what}`;
+    },
     eligible: (card) => (card.data.status === 'Planned'
       ? { ok: true } : { ok: false, error: `${card.data.id} is not in Planned` }),
     execute: (project, id) => humanMove(project, id, 'Queue'),
   },
   retry_planned: {
-    tier: 'reversible',
-    label: (card) => `send ${card.data.id} back to Planned for another look`,
-    eligible: (card) => (card.data.status === 'Needs Human'
+    tier: moveTier,
+    label: (card, fx) => `send ${card.data.id} back to Planned for another look${worktreeClause(fx)}`,
+    eligible: (card, project, fx) => notWhileLive(card, fx) || (card.data.status === 'Needs Human'
       ? { ok: true } : { ok: false, error: `${card.data.id} is not in Needs Human` }),
     execute: (project, id) => humanMove(project, id, 'Planned'),
   },
   resume_build: {
-    tier: 'agent',
-    label: (card) => `resume the build for ${card.data.id}`,
+    tier: () => 'agent',
+    label: (card) => `resume the build for ${card.data.id} in its preserved worktree`,
     eligible: async (card, project) => ((await recoveryActions(project, card.data.id)).resume_build
       ? { ok: true } : { ok: false, error: 'resume build is not available for this card' }),
     execute: (project, id) => resumeBuild(project, id),
   },
   retry_verification: {
-    tier: 'agent',
-    label: (card) => `retry verification for ${card.data.id}`,
+    tier: () => 'agent',
+    label: (card) => `retry verification for ${card.data.id} in its preserved worktree`,
     eligible: async (card, project) => ((await recoveryActions(project, card.data.id)).retry_verification
       ? { ok: true } : { ok: false, error: 'retry verification is not available for this card' }),
     execute: (project, id) => retryVerification(project, id),
   },
   restart_build: {
-    tier: 'visible',
+    tier: () => 'visible',
+    // restartBuild is only eligible when NO preserved worktree survives, so it
+    // never has one to discard — no worktree clause here on purpose
     label: (card) => `restart the build for ${card.data.id} from scratch`,
     eligible: async (card, project) => ((await recoveryActions(project, card.data.id)).restart_build
       ? { ok: true } : { ok: false, error: 'restart build is not available for this card' }),
     execute: (project, id) => restartBuild(project, id),
   },
   cancel: {
-    tier: 'visible',
-    label: (card) => `cancel the running build for ${card.data.id}`,
-    eligible: (card, project) => (getRunStates(project.name)[card.data.id]
+    tier: () => 'visible',
+    label: (card, fx) => (fx.runState?.state === 'queued'
+      ? `take ${card.data.id} out of the build queue`
+      : `cancel the running build for ${card.data.id}`),
+    // runState is runs ∪ pending ∪ queues — the exact three cases pipeline.cancel
+    // can act on, so eligibility and execution agree, including in the
+    // between-spawns windows where only `pending` holds the claim.
+    eligible: (card, project, fx) => (fx.runState
       ? { ok: true } : { ok: false, error: 'no live run to cancel' }),
     execute: (project, id) => cancel(project, id),
   },
   archive: {
-    tier: 'visible',
-    label: (card) => `archive ${card.data.id}`,
-    eligible: (card) => (card.data.archived
-      ? { ok: false, error: `${card.data.id} is already archived` } : { ok: true }),
+    tier: () => 'visible',
+    // archiveCard releases the card's resources first, which removes its worktree
+    label: (card, fx) => `archive ${card.data.id}${worktreeClause(fx)}`,
+    eligible: (card, project, fx) => (card.data.archived
+      ? { ok: false, error: `${card.data.id} is already archived` }
+      : notWhileLive(card, fx) || notEpicCascade(card, fx) || { ok: true }),
     execute: (project, id) => archiveCard(project, id, true),
   },
   unarchive: {
-    tier: 'reversible',
+    tier: () => 'reversible',
     label: (card) => `restore ${card.data.id} from the archive`,
     eligible: (card) => (card.data.archived
       ? { ok: true } : { ok: false, error: `${card.data.id} is not archived` }),
@@ -254,34 +343,42 @@ export async function prepareVoiceAction(project, fields = {}) {
     return { status: 409, ok: false, error: 'ambiguous: a pending proposal already exists for this card — confirm or reject it first' };
   }
 
+  // synchronous like readCard above (board and run state are both in-memory or
+  // sync reads), so the reservation below is still inserted before any await
+  const effects = computeEffects(project, card);
+  const tier = def.tier(effects);
+
   const now = Date.now();
   const ttlMs = defaultTtlMs();
   const proposalId = crypto.randomBytes(16).toString('hex');
   const proposal = {
-    id: proposalId, projectName: project.name, projectPath: project.path, cardId, action, tier: def.tier,
+    id: proposalId, projectName: project.name, projectPath: project.path, cardId, action, tier,
     createdAt: now, expiresAt: now + ttlMs,
   };
   proposals.set(proposalId, proposal); // reserved — no other prepare can claim this card until this settles
 
-  const elig = await def.eligible(card, project);
+  const elig = await def.eligible(card, project, effects);
   if (!elig.ok) {
     proposals.delete(proposalId); // nothing was proposed; release the reservation
     return { status: 400, ok: false, error: elig.error };
   }
 
-  proposal.expectedFingerprint = fingerprint(card.data);
-  proposal.challenge = def.tier === 'agent' ? buildChallenge(action, cardId) : null;
+  // fingerprinted from the SAME snapshot the tier and read-back were derived
+  // from: anything that moved during the eligibility await makes this stale at
+  // confirm time rather than silently re-classifying the action
+  proposal.expectedFingerprint = fingerprint(card, effects);
+  proposal.challenge = tier === 'agent' ? buildChallenge(action, cardId) : null;
 
   return {
     status: 200, ok: true, proposalId, cardId, action,
-    readback: def.label(card),
+    readback: def.label(card, effects),
     expiresAt: new Date(proposal.expiresAt).toISOString(),
     ttlMs,
     confirmation: {
-      tier: def.tier,
-      phrase: def.tier === 'reversible' ? 'Yes To-do' : null,
+      tier,
+      phrase: tier === 'reversible' ? 'Yes To-do' : null,
       challenge: proposal.challenge,
-      visibleApprovalRequired: def.tier === 'visible',
+      visibleApprovalRequired: tier === 'visible',
     },
   };
 }
@@ -311,7 +408,7 @@ export async function confirmVoiceAction(project, proposalId, body = {}) {
   if (!proposals.delete(proposalId)) return { status: 409, ok: false, error: 'proposal already used' };
 
   const card = readCard(project.path, p.cardId);
-  if (!card || fingerprint(card.data) !== p.expectedFingerprint) {
+  if (!card || fingerprint(card, computeEffects(project, card)) !== p.expectedFingerprint) {
     return { status: 409, ok: false, error: `stale: ${p.cardId} changed since this action was prepared` };
   }
 

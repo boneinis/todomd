@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, sleep, BUDGET } from './helpers.js';
-import { readCard } from '../src/board.js';
+import { readCard, patchFrontmatter, withRepoLock } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 import * as voice from '../src/voice.js';
 
@@ -416,6 +416,230 @@ test('proposals are bound to the resolved repo path, not the reusable display na
   r = await voice.confirmVoiceAction(pA, prep.proposalId, { confirmation: 'Yes To-do' });
   assert.equal(r.status, 200);
   assert.equal(status(repoA, 'task-0001'), 'Review');
+});
+
+test('a live run makes retriage ineligible: the reversible phrase can never reach a cancellation', async () => {
+  isolateHome();
+  const marker = path.join(tmp('voice-live-retriage'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
+    assert.ok(pipeline.hasLiveRun(p.name, 'task-0001'));
+
+    // humanMove(…, 'Review') on a live card is a run cancellation, not a move —
+    // it must never be offered as a "Yes To-do" reversible proposal
+    const r = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(r.status, 400);
+    assert.match(r.error, /live run — cancel it in the app first/);
+    assert.equal(r.proposalId, undefined, 'nothing was proposed at all');
+    assert.ok(pipeline.hasLiveRun(p.name, 'task-0001'), 'the refused prepare cancelled nothing');
+
+    // the same refusal for the other worktree-discarding move
+    const rp = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retry_planned' });
+    assert.equal(rp.status, 400);
+    assert.match(rp.error, /live run — cancel it in the app first/);
+
+    // cancel remains the ONLY route to stopping it, still under visible approval
+    const c = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'cancel' });
+    assert.equal(c.status, 200);
+    assert.equal(c.confirmation.tier, 'visible');
+    assert.equal(c.readback, 'cancel the running build for task-0001');
+    const done = await voice.confirmVoiceAction(p, c.proposalId, { visibleApproval: true });
+    assert.equal(done.status, 200);
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+  } finally {
+    clearFakeAgent();
+  }
+});
+
+// Park a claimed build chain in its between-spawns window: the chain's first
+// board write (the worktree add) queues behind this lock, so `pending` holds the
+// card while `children`/`runs` stay empty — the exact window where hasLiveRun is
+// true but a runs-only view reports an idle board.
+function holdRepoLock(repo) {
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const done = withRepoLock(repo, () => held);
+  return () => { release(); return done; };
+}
+
+test('a chain claimed between spawns counts as live everywhere: summary, cancel, and refused moves agree', async () => {
+  isolateHome();
+  const marker = path.join(tmp('voice-pending'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  let release = null;
+  try {
+    // processQueue claims the chain synchronously inside humanMove, so taking
+    // the repo lock now parks it before addWorktree — nothing is ever spawned
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    release = holdRepoLock(repo);
+
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.equal(fs.existsSync(marker), false, 'no agent child yet — this is the pending-only window');
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'in progress' });
+
+    const s = voice.buildVoiceSummary(p);
+    assert.equal(s.activeRuns.length, 1, 'a claimed chain is an active run');
+    assert.doesNotMatch(s.text, /Nothing building/, 'the summary must not report an idle board');
+    assert.match((await voice.buildCardStatus(p, 'task-0001')).text, /running in progress/);
+
+    // the false idle used to let a "Yes To-do" retriage cancel this chain
+    const r = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(r.status, 400);
+    assert.match(r.error, /live run/);
+
+    // …while cancel, which CAN act on a claimed chain, is correctly offered
+    const c = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'cancel' });
+    assert.equal(c.status, 200);
+    assert.equal(c.confirmation.tier, 'visible');
+    assert.equal(voice.rejectVoiceAction(p, c.proposalId).status, 200);
+  } finally {
+    // flag the parked chain (revertTo Review, so it is not re-driven), then let
+    // it reach its cancel checkpoint and settle
+    await pipeline.humanMove(p, 'task-0001', 'Review');
+    if (release) await release();
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+    clearFakeAgent();
+  }
+});
+
+test('epic-wide cascades are unavailable by voice: retriage and archive refuse an epic with unfinished children', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Queue', extra: 'epic: true\n' });
+  writeCard(repo, 'task-0002', { status: 'Planned', extra: 'parent: task-0001\n' });
+  writeCard(repo, 'task-0003', { status: 'Done', extra: 'parent: task-0001\n' });
+
+  // humanMove→Review and archiveCard both run cascadeEpicCleanup here, which
+  // would archive task-0002 as well — a bulk action, refused at preparation
+  for (const action of ['retriage', 'archive']) {
+    const r = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action });
+    assert.equal(r.status, 400, action);
+    assert.match(r.error, /epic with 1 unfinished child card/);
+    assert.match(r.error, /not available by voice/);
+  }
+  assert.equal(status(repo, 'task-0002'), 'Planned', 'the refused prepares archived nothing');
+
+  // once no child would be cascaded, the single-card action is available again
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0002-card.md'),
+    fs.readFileSync(path.join(repo, '.todomd/tasks/task-0002-card.md'), 'utf8').replace('status: Planned', 'status: Done'));
+  const ok = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.confirmation.tier, 'reversible');
+});
+
+test('read-backs are generated from the real effect: project mode and worktree discard are both disclosed', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const launcher = project(makeRepo());
+  const budget = budgetProject(makeRepo());
+  writeCard(launcher.path, 'task-0001', { status: 'Planned' });
+  writeCard(budget.path, 'task-0001', { status: 'Planned' });
+  writeCard(launcher.path, 'task-0002', { status: 'Planned', extra: 'epic: true\n' });
+  writeCard(budget.path, 'task-0002', { status: 'Planned', extra: 'epic: true\n' });
+
+  // budget mode has no launcher: Planned -> Queue only parks the card for the
+  // /todomd-dispatch session, so "start the build" would be a false promise
+  assert.equal((await voice.prepareVoiceAction(launcher, { cardId: 'task-0001', action: 'approve' })).readback,
+    'approve task-0001 and start the build');
+  assert.equal((await voice.prepareVoiceAction(budget, { cardId: 'task-0001', action: 'approve' })).readback,
+    'approve task-0001 and queue it for the dispatcher');
+  // approving an epic releases its first chunk rather than building the epic
+  assert.equal((await voice.prepareVoiceAction(launcher, { cardId: 'task-0002', action: 'approve' })).readback,
+    'approve task-0002 and start its first chunk building');
+  assert.equal((await voice.prepareVoiceAction(budget, { cardId: 'task-0002', action: 'approve' })).readback,
+    'approve task-0002 and queue its first chunk for the dispatcher');
+
+  // a move that deletes a preserved worktree says so, and leaves the reversible tier
+  const p = project(makeRepo());
+  writeCard(p.path, 'task-0001', { status: 'Needs Human', extra: 'needs_human_reason: bad_verdict\nworktree: todomd/task-0001\n' });
+  writeCard(p.path, 'task-0002', { status: 'Build', extra: 'worktree: todomd/task-0002\n' });
+  writeCard(p.path, 'task-0003', { status: 'Build' });
+
+  const rp = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retry_planned' });
+  assert.equal(rp.readback, 'send task-0001 back to Planned for another look, discarding its preserved worktree');
+  assert.equal(rp.confirmation.tier, 'visible');
+  assert.equal(rp.confirmation.phrase, null, 'no spoken phrase can authorize destroying preserved work');
+
+  const rt = await voice.prepareVoiceAction(p, { cardId: 'task-0002', action: 'retriage' });
+  assert.equal(rt.readback, 'move task-0002 back to Review, discarding its preserved worktree');
+  assert.equal(rt.confirmation.tier, 'visible');
+
+  // …and a card with nothing preserved keeps the plain reversible read-back
+  const plain = await voice.prepareVoiceAction(p, { cardId: 'task-0003', action: 'retriage' });
+  assert.equal(plain.readback, 'move task-0003 back to Review');
+  assert.equal(plain.confirmation.tier, 'reversible');
+});
+
+test('stale detection covers every input the policy was derived from, not just the column', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+
+  // (1) a worktree appearing turns a plain move into a destructive one
+  writeCard(repo, 'task-0001', { status: 'Build' });
+  let prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+  assert.equal(prep.confirmation.tier, 'reversible');
+  await patchFrontmatter(repo, 'task-0001', { worktree: 'todomd/task-0001' });
+  let r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
+  assert.equal(r.status, 409);
+  assert.match(r.error, /stale/);
+  assert.equal(status(repo, 'task-0001'), 'Build', 'nothing executed');
+
+  // (2) a child becoming unfinished turns a single-card move into a cascade
+  writeCard(repo, 'task-0002', { status: 'Queue', extra: 'epic: true\n' });
+  writeCard(repo, 'task-0003', { status: 'Done', extra: 'parent: task-0002\n' });
+  prep = await voice.prepareVoiceAction(p, { cardId: 'task-0002', action: 'retriage' });
+  assert.equal(prep.status, 200);
+  await patchFrontmatter(repo, 'task-0003', { status: 'Planned' });
+  r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
+  assert.equal(r.status, 409);
+  assert.match(r.error, /stale/);
+  assert.equal(status(repo, 'task-0003'), 'Planned', 'the child was never cascaded');
+});
+
+test('a run that goes live between prepare and confirm makes the proposal stale, not destructive', async () => {
+  isolateHome();
+  const marker = path.join(tmp('voice-race'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    // prepared while idle: a genuinely harmless "Yes To-do" move
+    const prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(prep.status, 200);
+    assert.equal(prep.confirmation.tier, 'reversible');
+
+    // …then the board starts a build under it
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
+
+    const r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
+    assert.equal(r.status, 409);
+    assert.match(r.error, /stale/);
+    assert.ok(pipeline.hasLiveRun(p.name, 'task-0001'), 'the stale confirm cancelled nothing');
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+    clearFakeAgent();
+  }
 });
 
 test('invalidateProject drops every pending proposal for a removed repository', async () => {
