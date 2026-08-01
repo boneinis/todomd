@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbe4b-e676-7843-819d-a35f94274cf6
+session_id: 019fbe62-1feb-76d1-8f84-8b36ce6745a5
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -78,3 +78,6 @@ an action but cannot execute or confirm it.
   - attempts_exhausted: Reachable eligibility/read-back bug: approve eligibility in src/voice.js:172-179 checks status, dependencies, and epic state, but omits guards enforced by humanMove in src/pipeline.js:564-604. Reproduction with a Planned card containing two unmaterialized `## Chunks`: preparation returns 200, an agent challenge, and a read-back promising approval/queueing; confirmation then consumes the proposal a
 - 2026-08-01 17:14Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 3)
   - attempts_exhausted: 1. Queued-card policy bypass: src/voice.js treats an in-memory queued build as live=false, so `retriage` is offered under reversible “Yes To-do” confirmation. src/pipeline.js humanMove(..., 'Review') handles spawned/pending runs but does not remove the card from `queues`. An adversarial two-card probe confirmed that the card moved to Review while remaining queued, then silently entered Build when 
+- 2026-08-01 17:42Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: 1. `src/pipeline.js:162` silently converts any scalar `dependencies:` value to an empty list. A reproduced Planned card with `dependencies: task-0002`, while task-0002 remained in Review, received a successful approve proposal. Normalize scalar dependencies instead of discarding them, and test both voice and human approval gates.
+2. `src/voice.js:446` and `src/voice.js:501` validate optional card/
