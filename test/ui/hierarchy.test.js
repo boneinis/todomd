@@ -119,6 +119,20 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
       'true');
     assert.equal(await page.eval(`document.querySelector('[data-id="task-0001"] .card-subtasks').hidden`), false);
 
+    // The same task id in another project starts expanded. Collapse state is
+    // project-local, but still survives returning to the original project.
+    await page.eval(`document.querySelector('[data-id="task-0001"] .epic-toggle').click();
+      window.__hierarchyProject = currentProject;
+      currentProject = 'another-project'; renderBoard()`);
+    assert.equal(
+      await page.eval(`document.querySelector('[data-id="task-0001"] .epic-toggle').getAttribute('aria-expanded')`),
+      'true', 'collapse state does not leak to another project with the same task id');
+    await page.eval(`currentProject = window.__hierarchyProject; renderBoard()`);
+    assert.equal(
+      await page.eval(`document.querySelector('[data-id="task-0001"] .epic-toggle').getAttribute('aria-expanded')`),
+      'false', 'returning to the original project restores its collapse state');
+    await page.eval(`document.querySelector('[data-id="task-0001"] .epic-toggle').click()`);
+
     // clicking a subtask row opens THAT child's drawer, not the parent epic's
     await page.eval(`document.querySelector('[data-id="task-0001"] .subtask-row[data-id="task-0002"]').click()`);
     await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });

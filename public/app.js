@@ -36,10 +36,11 @@ let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
 
-// epic ids whose subtask rows are collapsed — default is expanded, so absence
-// means expanded. The board is replaced wholesale on every poll, so this can't
-// live in the DOM: it must survive renderCard building a brand-new node.
+// project/card pairs whose subtask rows are collapsed — task ids repeat across
+// projects, so an id alone would leak UI state when the project selector moves.
+// The board is replaced wholesale on every poll, so this can't live in the DOM.
 const collapsedEpicIds = new Set();
+const epicCollapseKey = (id) => JSON.stringify([currentProject || '', id]);
 
 // model suggestions per vendor — pulled from the provider CLI (server reads
 // `<cli> --help` + config), cached per vendor. Still a datalist, so a custom
@@ -327,13 +328,14 @@ function renderCard(card, color, i, nestedIds) {
     if (kids.length) {
       epicBox.hidden = false;
       epicBox.querySelector('.epic-progress-fill').style.width = `${total ? (done / total) * 100 : 0}%`;
-      const collapsed = collapsedEpicIds.has(card.id);
+      const collapseKey = epicCollapseKey(card.id);
+      const collapsed = collapsedEpicIds.has(collapseKey);
       const toggle = epicBox.querySelector('.epic-toggle');
       toggle.setAttribute('aria-expanded', String(!collapsed));
       toggle.textContent = `${collapsed ? '▸' : '▾'} ${kids.length} subtask${kids.length === 1 ? '' : 's'}`;
       toggle.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (collapsed) collapsedEpicIds.delete(card.id); else collapsedEpicIds.add(card.id);
+        if (collapsed) collapsedEpicIds.delete(collapseKey); else collapsedEpicIds.add(collapseKey);
         renderBoard();
       });
       subtasksEl.hidden = collapsed;
