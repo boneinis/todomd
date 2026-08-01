@@ -23,6 +23,14 @@ NODE="${nodeBin}"
 BIN="${todomdBin}"
 ROOT="${root}"
 PIDFILE="$HOME/.todomd/server.pid"
+# LaunchServices can start a script-only .app under Rosetta. When Node is a
+# universal binary on Apple Silicon, force its native slice so child CLIs load
+# the matching optional packages (notably the Codex native executable).
+NODE_PREFIX=""
+if [ -x /usr/sbin/sysctl ] && [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] && \
+   [ -x /usr/bin/lipo ] && /usr/bin/lipo -archs "$NODE" 2>/dev/null | /usr/bin/grep -qw arm64; then
+  NODE_PREFIX="/usr/bin/arch -arm64"
+fi
 # a GUI launch (the .app) gets a minimal PATH, so the detached server can't find
 # agent CLIs installed in user-local dirs — add the common ones so claude/codex
 # (and the install-time PATH) resolve. ~/.local/bin = claude native installer;
@@ -32,7 +40,7 @@ mkdir -p "$HOME/.todomd"
 up() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
 start() {
   touch "$HOME/.todomd/server.log"; chmod 600 "$HOME/.todomd/server.log"
-  nohup "$NODE" "$BIN" serve --no-open --port $PORT >> "$HOME/.todomd/server.log" 2>&1 &
+  nohup $NODE_PREFIX "$NODE" "$BIN" serve --no-open --port $PORT >> "$HOME/.todomd/server.log" 2>&1 &
   for i in $(seq 1 20); do up && break; sleep 0.5; done
 }
 if up; then

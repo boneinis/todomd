@@ -14,6 +14,8 @@ test('macOS: creates a valid .app on the Desktop with resolved paths', () => {
   assert.match(exe, /\/usr\/bin\/node/);
   assert.match(exe, /\/opt\/todomd\/bin\/todomd\.js/);
   assert.match(exe, /serve --no-open --port/);
+  assert.match(exe, /hw\.optional\.arm64/);
+  assert.match(exe, /nohup \$NODE_PREFIX "\$NODE"/);
   assert.match(exe, /open "http:\/\/127\.0\.0\.1/); // opens the board
   assert.ok(fs.statSync(path.join(app, 'Contents/MacOS/todomd')).mode & 0o111, 'executable bit set');
   assert.match(fs.readFileSync(path.join(app, 'Contents/Info.plist'), 'utf8'), /CFBundleExecutable/);
