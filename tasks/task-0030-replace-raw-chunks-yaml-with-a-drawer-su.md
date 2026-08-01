@@ -1,7 +1,7 @@
 ---
 id: task-0030
 title: Replace raw Chunks YAML with a modal Subtasks view
-status: Queue
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -13,8 +13,9 @@ assignee:
 agent: claude
 triaged: n/a (chunk 3/3 of task-0026)
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0030
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+base_branch: main
 ---
 
 ## Description
