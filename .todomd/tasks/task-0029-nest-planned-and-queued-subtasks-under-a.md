@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0026)
-session_id: 9323f42d-aa59-4ddd-b027-3fd7fb21e762
+session_id: 019fbac3-5974-7e41-a04f-efd9b081c10c
 worktree: todomd/task-0029
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 6.2014
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -89,3 +89,7 @@ Nest planned and queued subtasks under an expandable epic card
   '\n' +
   'Previous verifier findings to address:\n' +
   'Adversarial review found a reachable mu...
+- 2026-08-01 00:44Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed: 218 unit tests and 3 browser UI tests, with the clean-console assertion passing. Adversarial review found two reachable bugs:
+
+1. `public/style.css:281` sets `.card-epic { display: flex; }`, which overrides the template's `hidden` attribute. A Chrome probe confirmed its computed display remains `flex`. Every ordinary non-epic card therefore renders an empty epic progress/tog
