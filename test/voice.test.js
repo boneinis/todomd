@@ -539,6 +539,30 @@ test('a live run makes retriage ineligible: the reversible phrase can never reac
   }
 });
 
+test('cancel read-back names the actual running stage', async () => {
+  isolateHome();
+  const marker = path.join(tmp('voice-plan-cancel'), 'started');
+  useFakeAgent({ hang: 'plan', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'Plan' });
+    const prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'cancel' });
+    assert.equal(prep.status, 200);
+    assert.equal(prep.readback, 'cancel the running Plan run for task-0001');
+    assert.equal(voice.rejectVoiceAction(p, prep.proposalId).status, 200);
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    clearFakeAgent();
+  }
+});
+
 // Park a claimed build chain in its between-spawns window: the chain's first
 // board write (the worktree add) queues behind this lock, so `pending` holds the
 // card while `children`/`runs` stay empty — the exact window where hasLiveRun is
@@ -584,6 +608,7 @@ test('a chain claimed between spawns counts as live everywhere: summary, cancel,
     const c = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'cancel' });
     assert.equal(c.status, 200);
     assert.equal(c.confirmation.tier, 'visible');
+    assert.equal(c.readback, 'cancel the active run for task-0001');
     assert.equal(voice.rejectVoiceAction(p, c.proposalId).status, 200);
   } finally {
     // flag the parked chain (revertTo Review, so it is not re-driven), then let
@@ -615,6 +640,11 @@ test('a queued Build cannot be retriaged under reversible voice confirmation', a
     assert.equal(retriage.status, 400);
     assert.match(retriage.error, /queued Build run/);
     assert.equal(status(repo, 'task-0002'), 'Queue');
+
+    const cancel = await voice.prepareVoiceAction(p, { cardId: 'task-0002', action: 'cancel' });
+    assert.equal(cancel.status, 200);
+    assert.equal(cancel.readback, 'take task-0002 out of the build queue');
+    assert.equal(voice.rejectVoiceAction(p, cancel.proposalId).status, 200);
   } finally {
     pipeline.cancel(p, 'task-0002');
     pipeline.cancel(p, 'task-0001');

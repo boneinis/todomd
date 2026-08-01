@@ -228,9 +228,13 @@ const ALLOWED_ACTIONS = {
   },
   cancel: {
     tier: () => 'visible',
-    label: (card, fx) => (fx.runState?.state === 'queued'
-      ? `take ${card.data.id} out of the build queue`
-      : `cancel the running build for ${card.data.id}`),
+    label: (card, fx) => {
+      const run = fx.runState;
+      if (run?.state === 'queued') return `take ${card.data.id} out of the ${run.stage.toLowerCase()} queue`;
+      if (run?.stage === 'Build') return `cancel the running build for ${card.data.id}`;
+      if (run?.stage === 'in progress') return `cancel the active run for ${card.data.id}`;
+      return `cancel the running ${run?.stage || 'agent'} run for ${card.data.id}`;
+    },
     // runState is runs ∪ pending ∪ queues — the exact three cases pipeline.cancel
     // can act on, so eligibility and execution agree, including in the
     // between-spawns windows where only `pending` holds the claim.
