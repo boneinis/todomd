@@ -1,7 +1,7 @@
 ---
 id: task-0020
 title: Add privacy-safe voice control to TODOMD
-status: Review
+status: Plan
 type: module
 priority: critical
 labels: [voice, accessibility, realtime]
@@ -14,6 +14,7 @@ session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: failed (agent)
+needs_human_reason:
 ---
 
 ## Description
