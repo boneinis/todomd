@@ -149,6 +149,20 @@ const AUDIT_FILE = path.join('.todomd', 'intake-audit.jsonl');
 const AUDIT_IGNORE_LINE = '.todomd/intake-audit.jsonl';
 const AUDIT_MAX_LINES = 500; // an operational log, not board history — cap so it can't grow unbounded
 
+export function findIntakeAudit(repoPath, intakeKey) {
+  if (!intakeKey) return null;
+  try {
+    const lines = fs.readFileSync(path.join(repoPath, AUDIT_FILE), 'utf8').split('\n').filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const record = JSON.parse(lines[i]);
+        if (record.intakeKey === intakeKey) return record;
+      } catch { /* ignore a corrupt operational-log line */ }
+    }
+  } catch { /* no audit yet */ }
+  return null;
+}
+
 // One JSON line per screened message — timestamp, source label, from, subject,
 // messageId, verdict, reason, and the card id when one was created. Every
 // verdict is logged, not just the screened-out ones: a `spam` line is the only

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { simpleParser } from 'mailparser';
 import { makeRepo, isolateHome, git } from './helpers.js';
 import { screenEmail, appendIntakeAudit } from '../src/screen.js';
-import { intakeMessage, parseInboundMessage } from '../src/intake.js';
+import { intakeMessage, parseInboundMessage, pollSource } from '../src/intake.js';
 import { readCard } from '../src/board.js';
 
 // A hand-built headers Map, for unit cases that only care about one signal.
@@ -646,11 +646,80 @@ test('intakeMessage: spam audit remains exactly once when handled-key persistenc
   const options = { label: 'main', intakeKey: 'main:uid:44' };
 
   await assert.rejects(intakeMessage({ path: repo, name: 'repo' }, parsed, options), /directory|EISDIR/i);
-  await assert.rejects(intakeMessage({ path: repo, name: 'repo' }, parsed, options), /directory|EISDIR/i);
+  const retry = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
 
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.verdict, 'spam');
   assert.equal(cardFiles(repo).length, 0);
   assert.equal(auditLines(repo).length, 1, 'retrying the same screened spam decision cannot duplicate its audit');
   assert.equal(auditLines(repo)[0].intakeKey, options.intakeKey);
+});
+
+test('intakeMessage: work and unclear cards recover without duplication after handled-key failure', async () => {
+  const cases = [
+    ['work', RAW_BUG_REPORT, 'Review'],
+    ['unclear', rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      'Subject: Re:',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'This body is long enough to be actionable but the subject has no meaning.',
+      '',
+    ]), 'Needs Human'],
+  ];
+
+  for (const [verdict, raw, expectedStatus] of cases) {
+    isolateHome();
+    const repo = makeRepo();
+    fs.mkdirSync(path.join(repo, '.todomd', 'intake-handled.json'), { recursive: true });
+    const parsed = await simpleParser(raw);
+    const options = { label: 'main', intakeKey: `main:uid:${verdict}` };
+
+    await assert.rejects(intakeMessage({ path: repo, name: 'repo' }, parsed, options), /directory|EISDIR/i);
+    const retry = await intakeMessage({ path: repo, name: 'repo' }, parsed, options);
+
+    assert.equal(retry.duplicate, true, verdict);
+    assert.equal(retry.recovered, true, verdict);
+    assert.equal(retry.verdict, verdict);
+    assert.equal(cardFiles(repo).length, 1, `${verdict} retry does not create another card`);
+    assert.equal(readCard(repo, retry.id).data.status, expectedStatus);
+    assert.equal(auditLines(repo).length, 1, `${verdict} retry does not duplicate its audit`);
+  }
+});
+
+test('pollSource: a poison message does not starve later UIDs and remains recoverable', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, '.todomd', 'intake-handled.json'), { recursive: true });
+  const messages = [
+    { uid: 1, source: Buffer.from(RAW_NEWSLETTER) },
+    { uid: 2, source: Buffer.from(RAW_BUG_REPORT) },
+  ];
+  const fakeClient = {
+    mailbox: { uidValidity: '1', uidNext: 3 },
+    on() { return this; },
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch() { yield* messages; },
+    async logout() {},
+  };
+  const source = {
+    label: 'main', conf: { host: 'imap.example.com', user: 'inbox', pass: 'secret', markSeen: false },
+    resolve: () => 'repo', assigneeOf: () => null,
+  };
+  const getProject = () => ({ path: repo, name: 'repo' });
+  const triaged = [];
+
+  await pollSource(source, getProject, { createClient: () => fakeClient, onCardCallback: (_project, id) => triaged.push(id) });
+  assert.equal(cardFiles(repo).length, 1, 'the later work message is processed despite the first UID failure');
+  assert.equal(auditLines(repo).length, 2);
+  assert.deepEqual(triaged, [], 'triage waits until the created card is recovered durably');
+
+  await pollSource(source, getProject, { createClient: () => fakeClient, onCardCallback: (_project, id) => triaged.push(id) });
+  assert.equal(cardFiles(repo).length, 1, 'the recovery scan uses audit decisions instead of duplicating cards');
+  assert.equal(auditLines(repo).length, 2);
+  assert.equal(triaged.length, 1, 'the recovered work card still enters normal triage');
 });
 
 test('intakeMessage: a real bug report, parsed by mailparser, becomes a Review card', async () => {

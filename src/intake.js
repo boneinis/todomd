@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { createCard, attachCard, withRepoLock, ensureGitExcluded } from './board.js';
-import { screenEmail, appendIntakeAudit } from './screen.js';
+import { screenEmail, appendIntakeAudit, findIntakeAudit } from './screen.js';
 
 // Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json.
 // Formats (boards keyed by project name; inboxes keyed by inbox name + routes):
@@ -316,6 +316,17 @@ async function intakeMessageOnce(project, parsed, {
   if (intakeWasHandled(project.path, intakeKey)) {
     return { verdict: 'duplicate', created: false, handled: true, duplicate: true };
   }
+  // The audit line is also the recovery record for the narrow window where a
+  // card was committed but persisting the handled-key file failed. Treat that
+  // prior decision as handled so retrying cannot create a second card.
+  const priorDecision = findIntakeAudit(project.path, intakeKey);
+  if (priorDecision) {
+    return {
+      verdict: priorDecision.verdict || 'duplicate', created: false, handled: true, duplicate: true,
+      reason: priorDecision.reason || '',
+      ...(priorDecision.card ? { id: priorDecision.card, recovered: true } : {}),
+    };
+  }
   const screened = screenEmail(parsed);
   const record = {
     timestamp: new Date().toISOString(),
@@ -394,14 +405,17 @@ let log = () => {};
 // failed \Seen write (or markSeen:false) can't re-create a card we already made
 const seenMessageIds = new Map(); // label → Set
 
-async function pollSource(source, getProject) {
+export async function pollSource(source, getProject, {
+  createClient = (options) => new ImapFlow(options),
+  onCardCallback = onCard,
+} = {}) {
   const { conf, resolve, assigneeOf, label } = source;
   if (!conf.host || !conf.user || !conf.pass) { log(`intake: "${label}" missing host/user/pass`); return; }
   if (!seenMessageIds.has(label)) seenMessageIds.set(label, new Set());
   const handled = seenMessageIds.get(label);
   const maxPerPoll = conf.maxPerPoll ?? 50; // bound disk/cost from a flood of unseen mail
 
-  const client = new ImapFlow({
+  const client = createClient({
     host: conf.host,
     port: conf.port || 993,
     secure: conf.secure !== false,
@@ -425,6 +439,7 @@ async function pollSource(source, getProject) {
       ? client.fetch({ seen: false, uid: `${firstUid}:*` }, { source: true, uid: true })
       : [];
     // only unseen messages; \Seen (default) is the primary idempotency key
+    let cursorBlocked = false;
     for await (const msg of pendingMessages) {
       if (scanned >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
       scanned++;
@@ -435,6 +450,7 @@ async function pollSource(source, getProject) {
         const runKey = mid || intakeKey;
         if (handled.has(runKey)) {                // already made a card for this message this run
           if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
+          if (!cursorBlocked) rememberIntakeCursor(scope, msg.uid);
           continue;
         }
         const targetName = resolve(parsed);          // board → fixed; inbox → by recipient
@@ -454,21 +470,25 @@ async function pollSource(source, getProject) {
           if (outcome.audit_error) log(`intake: "${label}" created ${outcome.id}, but audit append failed: ${outcome.audit_error}`);
           if (outcome.verdict === 'spam') {
             log(`intake: "${label}" screened out a message for ${project.name} — ${outcome.reason}`);
-          } else if (outcome.created) {
-            created++;
+          } else if (outcome.created || outcome.recovered) {
+            if (outcome.created) created++;
             if (outcome.verdict === 'unclear') {
-              log(`intake: "${label}" → ${project.name}: ${outcome.id} (Needs Human — ${outcome.reason})`);
+              log(`intake: "${label}" ${outcome.recovered ? 'recovered' : '→'} ${project.name}: ${outcome.id} (Needs Human — ${outcome.reason})`);
             } else {
-              onCard(project, outcome.id); // only real work is auto-triaged
-              log(`intake: "${label}" → ${project.name}: ${outcome.id}`);
+              onCardCallback(project, outcome.id); // only real work is auto-triaged
+              log(`intake: "${label}" ${outcome.recovered ? 'recovered' : '→'} ${project.name}: ${outcome.id}`);
             }
           }
         }
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
-        rememberIntakeCursor(scope, msg.uid);
+        if (!cursorBlocked) rememberIntakeCursor(scope, msg.uid);
       } catch (e) {
         log(`intake: "${label}" failed on a message: ${e.message}`);
-        break; // preserve a contiguous UID cursor; retry this message next poll
+        // Keep the cursor behind the first failure so it remains retryable, but
+        // continue this scan so one poison message cannot starve later UIDs.
+        // Successful later messages are marked Seen/deduped but cannot advance
+        // the cursor across this gap.
+        cursorBlocked = true;
       }
     }
   } finally {
