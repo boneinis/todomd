@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb13-a9f2-7060-acc8-44ff67b6b47a
+session_id: 019fbb17-dc2c-7b73-9baa-a8d59e75a418
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -170,3 +170,7 @@ Reachable classifier bug: `src/screen.js:19` matches `unsubscribe` anywhere in t
   - attempts_exhausted: Official `npm test` passed outside the process-restricted sandbox: 232 core and 2 UI tests. However, `src/screen.js:19` treats the phrases “manage your email preferences” and “view this email in browser” as footer signals anywhere in the body. Parser-level probes of ordinary human bug reports discussing those features returned `unclear`; an end-to-end poll created a Needs Human card and made zero 
 - 2026-08-01 02:11Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: `npm test` passed with 232 core tests and 2 UI tests; `git diff --check` also passed. However, src/screen.js:16-18 and 119-124 apply auto-reply and bounce phrase regexes too broadly. Plausible human work such as subject “Out-of-office settings fail to save” with a detailed bug report, “Vacation response strips Unicode,” or “Delivery failed alert has wrong link” is classified as `unclear`. pollSour
+- 2026-08-01 02:17Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: The official `npm test` passed with normal process visibility: 232 core tests and 2 UI tests. `git diff --check` also passed and the worktree remained clean.
+
+Reachable starvation bug in `src/intake.js:442-491`: with supported `markSeen:false`, one persistently failing early UID sets `cursorBlocked`. Successfully handled later messages remain unseen, and on every subsequent poll those same message
