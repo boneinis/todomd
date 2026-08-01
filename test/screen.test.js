@@ -722,6 +722,55 @@ test('pollSource: a poison message does not starve later UIDs and remains recove
   assert.equal(triaged.length, 1, 'the recovered work card still enters normal triage');
 });
 
+test('pollSource: handled unseen mail does not consume maxPerPoll behind a poison UID', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const messages = [{ uid: 1, source: Buffer.from('poison') }];
+  for (let uid = 2; uid <= 55; uid++) {
+    messages.push({ uid, source: Buffer.from(rawEmail([
+      'From: Jane Doe <jane@example.com>',
+      'To: intake@example.com',
+      `Subject: Work item ${uid}`,
+      `Message-ID: <work-${uid}@example.com>`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      `Please investigate reproducible work item ${uid}; it has enough detail to be actionable.`,
+      '',
+    ])) });
+  }
+  const fakeClient = {
+    mailbox: { uidValidity: '1', uidNext: 56 },
+    on() { return this; },
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch() { yield* messages; },
+    async logout() {},
+  };
+  const source = {
+    label: 'max-per-poll-poison',
+    conf: {
+      host: 'imap.example.com', user: 'inbox', pass: 'secret', markSeen: false, maxPerPoll: 50,
+    },
+    resolve: () => 'repo', assigneeOf: () => null,
+  };
+  const triaged = [];
+  const options = {
+    createClient: () => fakeClient,
+    onCardCallback: (_project, id) => triaged.push(id),
+    parseMessage: (raw) => {
+      if (raw.toString() === 'poison') throw new Error('permanent parse failure');
+      return parseInboundMessage(raw);
+    },
+  };
+
+  await pollSource(source, () => ({ path: repo, name: 'repo' }), options);
+  assert.equal(cardFiles(repo).length, 49, 'the first bounded pass handles UIDs 2 through 50');
+
+  await pollSource(source, () => ({ path: repo, name: 'repo' }), options);
+  assert.equal(cardFiles(repo).length, 54, 'the next pass skips handled UIDs and reaches 51 through 55');
+  assert.equal(triaged.length, 54);
+});
+
 test('pollSource: human bug reports about automated-mail features stay work and trigger triage', async () => {
   isolateHome();
   const repo = makeRepo();

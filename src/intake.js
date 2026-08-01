@@ -408,6 +408,7 @@ const seenMessageIds = new Map(); // label → Set
 export async function pollSource(source, getProject, {
   createClient = (options) => new ImapFlow(options),
   onCardCallback = onCard,
+  parseMessage = parseInboundMessage,
 } = {}) {
   const { conf, resolve, assigneeOf, label } = source;
   if (!conf.host || !conf.user || !conf.pass) { log(`intake: "${label}" missing host/user/pass`); return; }
@@ -441,10 +442,9 @@ export async function pollSource(source, getProject, {
     // only unseen messages; \Seen (default) is the primary idempotency key
     let cursorBlocked = false;
     for await (const msg of pendingMessages) {
-      if (scanned >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
-      scanned++;
+      let counted = false;
       try {
-        const parsed = await parseInboundMessage(msg.source);
+        const parsed = await parseMessage(msg.source);
         const mid = parsed.messageId;
         const intakeKey = mailboxIntakeKey(conf, client.mailbox, mid, msg.uid);
         const runKey = mid || intakeKey;
@@ -453,6 +453,12 @@ export async function pollSource(source, getProject, {
           if (!cursorBlocked) rememberIntakeCursor(scope, msg.uid);
           continue;
         }
+        if (scanned >= maxPerPoll) {
+          log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`);
+          break;
+        }
+        scanned++;
+        counted = true;
         const targetName = resolve(parsed);          // board → fixed; inbox → by recipient
         const project = targetName && getProject(targetName);
         if (!project) {
@@ -483,6 +489,13 @@ export async function pollSource(source, getProject, {
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
         if (!cursorBlocked) rememberIntakeCursor(scope, msg.uid);
       } catch (e) {
+        if (!counted) {
+          if (scanned >= maxPerPoll) {
+            log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`);
+            break;
+          }
+          scanned++;
+        }
         log(`intake: "${label}" failed on a message: ${e.message}`);
         // Keep the cursor behind the first failure so it remains retryable, but
         // continue this scan so one poison message cannot starve later UIDs.
