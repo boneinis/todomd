@@ -660,7 +660,7 @@ async function preservedWorktree(project, card) {
 
 function canRetryVerification(card) {
   const reason = card?.data?.needs_human_reason;
-  return ['bad_verdict', 'hook_cancelled'].includes(reason)
+  return ['bad_verdict', 'hook_cancelled', 'attempts_exhausted'].includes(reason)
     // A real fail followed by an infrastructure error in the repair Build can
     // be fixed manually in the preserved worktree, then re-verified in place.
     || (reason === 'error' && card?.data?.verification?.last_verdict === 'fail');
