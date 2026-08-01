@@ -49,7 +49,11 @@ function hostileBoard() {
     '---\nid: task-0003\ntitle: epic with scalar children\nstatus: Review\ntype: module\n' +
     'epic: true\nchildren: task-0004\n---\n\n## Description\n\nhand-edited\n');
   card('task-0004-scalar-deps.md',
-    '---\nid: task-0004\ntitle: chunk with scalar dependencies\nstatus: Review\ntype: module\n' +
+    // status: Build (a stage/execution column), not Review — task-0029 nests a
+    // child under its epic when its own column isn't an active execution
+    // column, and this hostile-shapes suite still wants task-0004 as a full
+    // card (see test/ui/hierarchy.test.js for the nesting behavior itself).
+    '---\nid: task-0004\ntitle: chunk with scalar dependencies\nstatus: Build\ntype: module\n' +
     'parent: task-0003\ndependencies: task-0002\n---\n\n## Description\n\nhand-edited\n');
   // not valid frontmatter at all — must be surfaced, not fatal
   card('task-0005-broken.md', '---\ntitle: "unterminated\nstatus: Review\n---\nbroken\n');

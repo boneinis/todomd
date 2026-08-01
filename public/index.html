@@ -103,7 +103,21 @@
       <span class="card-criteria"></span>
       <span class="card-assignee"></span>
     </footer>
+    <div class="card-epic" hidden>
+      <div class="epic-progress"><div class="epic-progress-fill"></div></div>
+      <button type="button" class="epic-toggle" aria-expanded="true"></button>
+    </div>
+    <ul class="card-subtasks" hidden></ul>
   </article>
+</template>
+
+<template id="subtask-row-tpl">
+  <li class="subtask-row">
+    <span class="subtask-title"></span>
+    <span class="subtask-status"></span>
+    <span class="subtask-dep"></span>
+    <span class="subtask-assignee"></span>
+  </li>
 </template>
 
 <div id="modal-backdrop" class="modal-backdrop" hidden>
