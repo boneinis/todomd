@@ -173,6 +173,37 @@ test('ordinary recognition end restarts, while a terminal local error does not',
   assert.equal(scheduled.length, 0);
 });
 
+test('a stale recognizer\'s delayed end event never clobbers or duplicates the live one', async () => {
+  const Recognition = fakeRecognitionClass();
+  const scheduled = [];
+  const engine = createWakeWordEngine({
+    scope: { SpeechRecognition: Recognition },
+    setTimeoutFn(fn, delay) { scheduled.push({ fn, delay }); return scheduled.length; },
+    clearTimeoutFn() {},
+  });
+  await engine.start(() => {});
+  const first = Recognition.instances.at(-1);
+
+  // A finalized wake pauses the engine and aborts `first`. Chrome delivers
+  // that instance's `end` event asynchronously — routinely after the session
+  // has already ended and resume() installed a replacement.
+  first.result('Hey To-do', true);
+  assert.equal(engine.diagnostics().state, 'paused');
+  assert.equal(engine.resume(), true);
+  const second = Recognition.instances.at(-1);
+  assert.notEqual(second, first, 'resume() installs a fresh recognizer');
+  const liveCount = Recognition.instances.length;
+
+  first.onend(); // the obsolete instance finally reports that it ended
+  while (scheduled.length) scheduled.shift().fn(); // drain any restart it wrongly scheduled
+  assert.equal(Recognition.instances.length, liveCount, 'a stale end must not start a third recognizer');
+  assert.equal(Recognition.instances.at(-1), second, 'the resumed recognizer is still the live one');
+
+  engine.stop();
+  assert.equal(second.aborted, true, 'stop() aborts the recognizer that is actually listening');
+  assert.equal(engine.diagnostics().state, 'inactive');
+});
+
 test('pause/resume/stop drive the diagnostics state without losing capability info', async () => {
   const Recognition = fakeRecognitionClass();
   const engine = createWakeWordEngine({ scope: { SpeechRecognition: Recognition } });

@@ -129,8 +129,10 @@ export function createVoiceController({
       earcons?.error?.();
       setState('error');
       // reported after the state settles: a UI that mirrors state text into
-      // the same status line must not have this overwritten a moment later
-      diag('local wake unavailable — use push-to-talk instead', { capability });
+      // the same status line must not have this overwritten a moment later.
+      // `fallback` is the machine-readable half of the same promise the text
+      // makes — the UI reveals push-to-talk on it, so the offer is real.
+      diag('local wake unavailable — use push-to-talk instead', { capability, fallback: true });
       return false;
     }
     const started = await wakeEngine.start(() => handleWake());
@@ -138,7 +140,7 @@ export function createVoiceController({
     if (!started) {
       earcons?.error?.();
       setState('error');
-      diag('local wake could not start — use push-to-talk instead', {});
+      diag('local wake could not start — use push-to-talk instead', { fallback: true });
       return false;
     }
     armedByWake = true;
@@ -156,7 +158,7 @@ export function createVoiceController({
     if (state !== 'armed') return false;
     earcons?.error?.();
     setState('error');
-    diag(`local wake stopped: ${boundedMessage(detail?.error || detail)} — use push-to-talk instead`, { detail });
+    diag(`local wake stopped: ${boundedMessage(detail?.error || detail)} — use push-to-talk instead`, { detail, fallback: true });
     return true;
   }
 
@@ -189,7 +191,11 @@ export function createVoiceController({
       pendingSession = null;
       if (myEpoch !== sessionEpoch) return; // superseded — the canceller already closed this session
       await settleSession({ earcon: 'error' });
-      diag(`voice session unavailable: ${boundedMessage(error)}`);
+      // covers both remaining AC5 classes — a denied microphone and a
+      // provider the server has no configuration for — so each one leaves a
+      // working way to talk to the board, not just an explanation of why the
+      // last attempt did not.
+      diag(`voice session unavailable: ${boundedMessage(error)}`, { fallback: true });
       return;
     }
     if (myEpoch !== sessionEpoch) { // offline/sign-off landed while the open() above was in flight

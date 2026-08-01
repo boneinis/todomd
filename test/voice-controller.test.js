@@ -151,6 +151,37 @@ test('capability failure leaves the board usable: error state, diagnostic, and e
   assert.equal(wakeEngine.calls.start, 0, 'start is never attempted without capability');
 });
 
+// AC5 asks for a push-to-talk fallback on ALL THREE failure classes, not just
+// the boot-time capability probe. The UI can only reveal the control if the
+// diagnostic says so in a machine-readable way, so every one of these paths
+// must carry `fallback: true` — a message string alone is not a fallback.
+test('every AC5 failure class flags its diagnostic as needing the push-to-talk fallback', async () => {
+  const capability = build({ wakeEngine: fakeWakeEngine({ supported: false, status: 'api-unavailable' }) });
+  await capability.controller.arm();
+  assert.equal(capability.diagnostics.at(-1).fallback, true, 'missing local capability');
+
+  const startFailure = build({ wakeEngine: fakeWakeEngine({ supported: true, started: false }) });
+  await startFailure.controller.arm();
+  assert.equal(startFailure.diagnostics.at(-1).fallback, true, 'local wake could not start');
+
+  const terminal = build();
+  await terminal.controller.arm();
+  terminal.controller.notifyWakeEngineError({ error: { code: 'not-allowed', message: 'microphone denied' } });
+  assert.equal(terminal.diagnostics.at(-1).fallback, true, 'recognizer died after arming');
+
+  const micDenied = build({ realtime: fakeFailingRealtimeFactory('microphone permission denied') });
+  await micDenied.controller.arm();
+  micDenied.wakeEngine.triggerWake();
+  await flush();
+  assert.equal(micDenied.diagnostics.at(-1).fallback, true, 'microphone denied after wake');
+
+  const noProvider = build({ realtime: fakeFailingRealtimeFactory('voice is not configured') });
+  await noProvider.controller.arm();
+  noProvider.wakeEngine.triggerWake();
+  await flush();
+  assert.equal(noProvider.diagnostics.at(-1).fallback, true, 'provider not configured');
+});
+
 test('wake engine start failure also lands in error with a diagnostic', async () => {
   const { controller, earcons } = build({ wakeEngine: fakeWakeEngine({ supported: true, started: false }) });
   assert.equal(await controller.arm(), false);

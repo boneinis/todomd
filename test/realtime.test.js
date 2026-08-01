@@ -15,6 +15,19 @@ function fakeFetchOk(body = ANSWER) {
   return fn;
 }
 
+// Reads what the module ACTUALLY put on the wire the way the provider will:
+// `POST /v1/realtime/calls` is a multipart form with an `sdp` field and a
+// `session` field. Anything else (query params, a raw application/sdp body)
+// fails here instead of quietly passing against a fixture that takes anything.
+function readUpstreamCall(call) {
+  const url = new URL(call.url);
+  assert.ok(call.opts.body instanceof FormData, 'the Realtime call body must be a multipart FormData');
+  const sdp = call.opts.body.get('sdp');
+  const rawSession = call.opts.body.get('session');
+  assert.equal(typeof rawSession, 'string', 'the session policy travels as a multipart `session` field');
+  return { url, sdp, session: JSON.parse(rawSession) };
+}
+
 test('buildSessionConfig exposes exactly the read + propose tools, never a confirm or mutate tool', () => {
   const session = buildSessionConfig();
   const names = session.tools.map((t) => t.name).sort();
@@ -25,6 +38,17 @@ test('buildSessionConfig exposes exactly the read + propose tools, never a confi
   assert.equal(session.model, 'gpt-realtime-2.1-mini');
   assert.equal(typeof session.instructions, 'string');
   assert.ok(session.instructions.length > 0);
+});
+
+test('buildSessionConfig uses the current session schema, not the beta-era one', () => {
+  const session = buildSessionConfig();
+  assert.equal(session.type, 'realtime');
+  // Transcription moved under `audio.input` when Realtime went GA; the old
+  // top-level key is silently ignored, so a session built with it would run
+  // with no input transcription at all — and the controller's sign-off /
+  // offline phrases are driven entirely by that transcript.
+  assert.equal(session.audio.input.transcription.model, 'whisper-1');
+  assert.equal('input_audio_transcription' in session, false);
 });
 
 test('buildSessionConfig honors a model override without touching the tool policy', () => {
@@ -58,27 +82,39 @@ test('malformed SDP is refused with 400 before any upstream call', async () => {
   assert.equal(fetchFn.calls.length, 0);
 });
 
-test('a successful exchange forwards Authorization/content-type and returns only the SDP answer', async () => {
+test('a successful exchange posts the documented multipart call request and returns only the SDP answer', async () => {
   const fetchFn = fakeFetchOk(ANSWER);
   const result = await createRealtimeSession(OFFER, { fetchFn, apiKey: 'sk-secret-value' });
   assert.equal(result.status, 200);
   assert.equal(result.ok, true);
   assert.equal(result.sdp, ANSWER);
   assert.equal(fetchFn.calls.length, 1);
-  const { opts, url } = fetchFn.calls[0];
-  assert.equal(opts.headers.authorization, 'Bearer sk-secret-value');
-  assert.equal(opts.headers['content-type'], 'application/sdp');
-  assert.equal(opts.body, OFFER);
+
+  const { url, sdp, session } = readUpstreamCall(fetchFn.calls[0]);
+  // The call endpoint takes NO query parameters: `model` and `session` are
+  // multipart fields. The beta-era query-param form is rejected upstream, so
+  // asserting the absence of a query string is the regression guard.
+  assert.equal(url.search, '', 'the Realtime call endpoint takes no query parameters');
+  assert.equal(url.pathname, '/v1/realtime/calls');
+  assert.equal(sdp, OFFER);
+  assert.deepEqual(session, buildSessionConfig());
+  assert.equal(session.audio.input.transcription.model, 'whisper-1');
+  assert.equal('input_audio_transcription' in session, false);
+
+  // Only authorization is set by hand — a manual content-type would clobber
+  // the multipart boundary fetch generates, and `openai-beta` is retired.
+  assert.deepEqual(Object.keys(fetchFn.calls[0].opts.headers).map((k) => k.toLowerCase()), ['authorization']);
+  assert.equal(fetchFn.calls[0].opts.headers.authorization, 'Bearer sk-secret-value');
+  assert.doesNotMatch(String(url), /sk-secret-value/, 'the API key never travels in the URL');
   assert.doesNotMatch(JSON.stringify(result), /sk-secret-value/, 'the API key never appears in the returned object');
-  assert.match(String(url), /model=gpt-realtime-2\.1-mini/);
 });
 
 test('the outgoing session policy carries only the three allowed tools, never a confirm tool', async () => {
   const fetchFn = fakeFetchOk(ANSWER);
   await createRealtimeSession(OFFER, { fetchFn, apiKey: 'sk-test' });
-  const url = new URL(fetchFn.calls[0].url);
-  const session = JSON.parse(url.searchParams.get('session'));
+  const { session } = readUpstreamCall(fetchFn.calls[0]);
   assert.deepEqual(session.tools.map((t) => t.name).sort(), ['propose_board_action', 'read_board_report', 'read_card']);
+  assert.equal(session.tool_choice, 'auto');
 });
 
 test('a non-2xx upstream response becomes a bounded 503 without leaking the upstream body', async () => {

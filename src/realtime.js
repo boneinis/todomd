@@ -63,7 +63,12 @@ export function buildSessionConfig({ model = process.env.TODOMD_VOICE_MODEL || D
     type: 'realtime',
     model,
     instructions: INSTRUCTIONS,
-    input_audio_transcription: { model: DEFAULT_TRANSCRIBE_MODEL },
+    // Input transcription lives under `audio.input` in the current session
+    // schema. The retired top-level `input_audio_transcription` key is
+    // silently ignored, which would leave the session with no input
+    // transcript at all — and the browser's sign-off / offline phrases are
+    // driven entirely by that transcript.
+    audio: { input: { transcription: { model: DEFAULT_TRANSCRIBE_MODEL } } },
     tools: TOOLS,
     tool_choice: 'auto',
   };
@@ -94,8 +99,11 @@ export async function createRealtimeSession(sdpOffer, {
   } catch {
     return { status: 503, ok: false, error: 'voice is not configured' };
   }
-  url.searchParams.set('model', session.model);
-  url.searchParams.set('session', JSON.stringify(session));
+  // The call endpoint takes no query parameters: the SDP offer and the
+  // server-owned session policy are the two fields of a multipart body.
+  const form = new FormData();
+  form.set('sdp', sdpOffer);
+  form.set('session', JSON.stringify(session));
 
   const controller = new AbortController();
   const onAbort = () => controller.abort();
@@ -105,12 +113,10 @@ export async function createRealtimeSession(sdpOffer, {
   try {
     const res = await fetchFn(url, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        'content-type': 'application/sdp',
-        'openai-beta': 'realtime=v1',
-      },
-      body: sdpOffer,
+      // authorization only: setting content-type by hand would clobber the
+      // multipart boundary fetch generates from the FormData body.
+      headers: { authorization: `Bearer ${apiKey}` },
+      body: form,
       signal: controller.signal,
     });
     if (!res.ok) return { status: 503, ok: false, error: 'voice service unavailable' };

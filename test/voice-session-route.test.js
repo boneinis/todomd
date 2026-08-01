@@ -29,16 +29,30 @@ async function boot() {
   return { repo, name, base, srv, q: `?project=${encodeURIComponent(name)}` };
 }
 
-// A minimal fixture standing in for OpenAI's /v1/realtime/calls: records the
-// request it received and replies with a fixed SDP answer, so the browser
+// A fixture standing in for OpenAI's /v1/realtime/calls: it decodes the
+// request the same way the provider does — a multipart body with an `sdp`
+// field and a `session` field — and replies with a fixed SDP answer, so the
 // round trip never touches the real network or a real key.
 function fixtureUpstream({ answer = 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\n', status = 200, delayMs = 0 } = {}) {
   const requests = [];
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
-      requests.push({ headers: req.headers, url: req.url, body: Buffer.concat(chunks).toString('utf8') });
+    req.on('end', async () => {
+      const raw = Buffer.concat(chunks);
+      let form = null;
+      try {
+        form = await new Response(raw, { headers: { 'content-type': String(req.headers['content-type'] || '') } }).formData();
+      } catch { /* not a multipart body at all */ }
+      let session = null;
+      try { session = JSON.parse(form?.get('session')); } catch { /* absent or not JSON */ }
+      requests.push({
+        headers: req.headers,
+        url: req.url,
+        body: raw.toString('utf8'),
+        sdp: form?.get('sdp') ?? null,
+        session,
+      });
       const send = () => {
         if (status !== 200) { res.writeHead(status, { 'content-type': 'text/plain' }); return res.end('upstream error detail sk-upstream-secret'); }
         res.writeHead(200, { 'content-type': 'application/sdp' });
@@ -133,8 +147,18 @@ test('a full round trip against a fixture upstream returns only the SDP answer a
       assert.doesNotMatch(body, /sk-test-secret-value/);
 
       assert.equal(upstream.requests.length, 1);
-      assert.equal(upstream.requests[0].headers.authorization, 'Bearer sk-test-secret-value');
-      assert.equal(upstream.requests[0].body, OFFER);
+      const call = upstream.requests[0];
+      assert.equal(call.headers.authorization, 'Bearer sk-test-secret-value');
+      // the documented call request: no query parameters, and the offer plus
+      // the server-owned session policy as multipart fields
+      assert.equal(call.url, '/v1/realtime/calls');
+      assert.match(String(call.headers['content-type']), /^multipart\/form-data;\s*boundary=/);
+      assert.equal(call.sdp, OFFER);
+      assert.equal(call.session.type, 'realtime');
+      assert.equal(call.session.audio.input.transcription.model, 'whisper-1');
+      assert.equal('input_audio_transcription' in call.session, false);
+      // the browser's own offer never carries the key, and neither does the URL
+      assert.doesNotMatch(call.url, /sk-test-secret-value/);
     });
   } finally { await upstream.close(); srv.close(); }
 });

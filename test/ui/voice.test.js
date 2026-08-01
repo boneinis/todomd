@@ -25,20 +25,43 @@ function freePort() {
   });
 }
 
-// A minimal stand-in for OpenAI's /v1/realtime/calls: replies with a fixed
-// SDP answer so the browser's real fetch through the real server never
-// touches the network or a real key.
+// A STRICT stand-in for OpenAI's /v1/realtime/calls. It accepts only the
+// documented request — no query parameters, a multipart body with an `sdp`
+// field and a `session` field in the current schema — and replies 400
+// otherwise. A fixture that accepts anything would let the beta-era
+// query-param/raw-SDP shape pass here while a real provider rejects it.
 function fixtureUpstream() {
+  const requests = [];
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
-    req.on('end', () => {
+    req.on('end', async () => {
+      const contentType = String(req.headers['content-type'] || '');
+      let form = null;
+      try {
+        form = await new Response(Buffer.concat(chunks), { headers: { 'content-type': contentType } }).formData();
+      } catch { /* not a multipart body at all */ }
+      const sdp = form?.get('sdp');
+      let session = null;
+      try { session = JSON.parse(form?.get('session')); } catch { /* absent or not JSON */ }
+      requests.push({ url: req.url, contentType, sdp, session });
+
+      const valid = !req.url.includes('?')
+        && typeof sdp === 'string' && sdp.startsWith('v=0')
+        && session?.type === 'realtime'
+        && typeof session?.model === 'string'
+        && typeof session?.audio?.input?.transcription?.model === 'string';
+      if (!valid) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { type: 'invalid_request_error' } }));
+      }
       res.writeHead(200, { 'content-type': 'application/sdp' });
       res.end('v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\n');
     });
   });
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve({
+      requests,
       url: `http://127.0.0.1:${server.address().port}/v1/realtime/calls`,
       close: () => new Promise((r) => server.close(r)),
     }));
@@ -164,6 +187,14 @@ test('UI voice: arm, wake, active session, sign-off phrase, second wake, offline
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
   assert.equal(await page.eval(`window.__voiceHooks.pcs.length`), 1);
 
+  // the request that actually reached the provider-shaped upstream, through
+  // the real server — the end of the "primary-only SDP endpoint" path
+  const upstreamCall = upstream.requests.at(-1);
+  assert.equal(upstreamCall.url, '/v1/realtime/calls', 'no query parameters reach the call endpoint');
+  assert.match(upstreamCall.contentType, /^multipart\/form-data;\s*boundary=/);
+  assert.equal('input_audio_transcription' in upstreamCall.session, false);
+  assert.equal(upstreamCall.session.audio.input.transcription.model, 'whisper-1');
+
   await page.eval(`window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', {
     data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'That is all, To-do' }),
   })`);
@@ -183,11 +214,14 @@ test('UI voice: arm, wake, active session, sign-off phrase, second wake, offline
   assert.deepEqual(page.errors, []);
 });
 
-test('UI voice: microphone denial after wake returns to armed with a diagnostic; the board stays usable', async (t) => {
+test('UI voice: microphone denial after wake reveals push-to-talk with a diagnostic; the board stays usable', async (t) => {
   if (!page) return t.skip(SKIP);
   await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
   await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
   await until(async () => (await page.eval(`!document.getElementById('voice-btn').hidden`)) || null, { timeout: BUDGET.stage });
+  // the fallback starts hidden here: local wake IS available in this page, so
+  // this test proves the failure itself reveals it, not the boot-time probe.
+  assert.equal(await page.eval(`document.getElementById('voice-ptt').hidden`), true);
 
   await page.eval(`window.__voiceHooks.getUserMediaMode = 'deny'`);
   await page.eval(`document.getElementById('voice-btn').click()`);
@@ -196,6 +230,9 @@ test('UI voice: microphone denial after wake returns to armed with a diagnostic;
 
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed'
     && /denied/i.test(await page.eval(`document.getElementById('voice-diag').textContent`)) || null, { timeout: BUDGET.quick });
+  await until(async () => (await page.eval(`!document.getElementById('voice-ptt').hidden`)) || null, { timeout: BUDGET.quick });
+  assert.notEqual(await page.eval(`getComputedStyle(document.getElementById('voice-ptt')).display`), 'none',
+    'a denied microphone must leave a usable way to talk to the board, not just a message');
 
   // the board itself stays fully usable — open a card
   await page.eval(`document.querySelector('[data-id="task-0001"]').click()`);
@@ -203,7 +240,7 @@ test('UI voice: microphone denial after wake returns to armed with a diagnostic;
   assert.deepEqual(page.errors, []);
 });
 
-test('UI voice: missing provider configuration after wake returns to armed with a diagnostic; the board stays usable', async (t) => {
+test('UI voice: missing provider configuration after wake reveals push-to-talk; the board stays usable', async (t) => {
   if (!page) return t.skip(SKIP);
   const prevKey = process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_API_KEY;
@@ -211,6 +248,7 @@ test('UI voice: missing provider configuration after wake returns to armed with 
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
     await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
     await until(async () => (await page.eval(`!document.getElementById('voice-btn').hidden`)) || null, { timeout: BUDGET.stage });
+    assert.equal(await page.eval(`document.getElementById('voice-ptt').hidden`), true);
 
     await page.eval(`window.__voiceHooks.getUserMediaMode = 'ok'`);
     await page.eval(`document.getElementById('voice-btn').click()`);
@@ -219,7 +257,12 @@ test('UI voice: missing provider configuration after wake returns to armed with 
 
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed'
       && /not configured/i.test(await page.eval(`document.getElementById('voice-diag').textContent`)) || null, { timeout: BUDGET.quick });
+    await until(async () => (await page.eval(`!document.getElementById('voice-ptt').hidden`)) || null, { timeout: BUDGET.quick });
+    assert.notEqual(await page.eval(`getComputedStyle(document.getElementById('voice-ptt')).display`), 'none');
 
+    // the board itself stays fully usable — open a card
+    await page.eval(`document.querySelector('[data-id="task-0001"]').click()`);
+    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
     assert.deepEqual(page.errors, []);
   } finally {
     process.env.OPENAI_API_KEY = prevKey;

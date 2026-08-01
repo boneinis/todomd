@@ -213,6 +213,31 @@ test('a failed open cleans up the acquired microphone track and the peer connect
   assert.equal(RTC.instances.at(-1).closed, true);
 });
 
+test('a microphone granted AFTER close() is still stopped — offline never leaves a live track', async () => {
+  const track = fakeTrack();
+  const RTC = fakeRtcClass();
+  let grantMicrophone;
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    // the real thing: getUserMedia stays pending while the permission prompt
+    // is on screen, which is exactly when "Go offline" / a push-to-talk
+    // release is most likely to land.
+    getUserMediaFn: () => new Promise((resolve) => { grantMicrophone = resolve; }),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+
+  const opening = session.open({});
+  opening.catch(() => { /* asserted below; keep it handled while close() runs */ });
+  await session.close();                    // offline lands first…
+  grantMicrophone(fakeStream([track]));     // …then the user grants the microphone
+  await assert.rejects(() => opening, /closed before it opened/);
+
+  assert.equal(track.stopped, true, 'a track acquired after close() must still be stopped');
+  assert.equal(RTC.instances.length, 0, 'no peer connection is built for an already-closed session');
+  await session.close(); // a repeated close is harmless
+});
+
 test('microphone permission denial rejects open() without ever creating a peer connection', async () => {
   const RTC = fakeRtcClass();
   const session = createRealtimeSession({

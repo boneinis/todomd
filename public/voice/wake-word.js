@@ -182,11 +182,22 @@ export function createWakeWordEngine({
       return;
     }
 
+    // SpeechRecognition delivers `end` (and a trailing `error`) asynchronously
+    // after abort(), so an obsolete recognizer's events routinely arrive once
+    // pause/resume, stop(), or terminal() has already installed — or cleared —
+    // a different one. Every handler below is fenced to the instance it was
+    // attached to: a stale event must never null out, abort, or schedule a
+    // restart for the recognizer that is actually listening.
+    const instance = recognition;
+    const isCurrent = () => recognition === instance;
+
     recognition.onstart = () => {
+      if (!isCurrent()) return;
       startFailureCount = 0;
       emitStatus('started');
     };
     recognition.onresult = (event) => {
+      if (!isCurrent()) return;
       for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
         const result = event.results[index];
         // Only the recognizer's own top-ranked (index 0) transcript may open
@@ -199,12 +210,13 @@ export function createWakeWordEngine({
         wakeCount += 1;
         state = 'paused';
         emitStatus('wake', { wakeCount });
-        try { recognition.abort(); } catch { /* already stopped */ }
+        try { instance.abort(); } catch { /* already stopped */ }
         wakeHandler({ phrase: 'hey to-do', wakeCount });
         return;
       }
     };
     recognition.onerror = (event) => {
+      if (!isCurrent()) return;
       const code = String(event?.error || 'recognition-error');
       if (code === 'aborted' && state !== 'armed') return;
       lastError = boundedError(event);
@@ -212,6 +224,7 @@ export function createWakeWordEngine({
       if (TERMINAL_ERRORS.has(code)) terminal(event);
     };
     recognition.onend = () => {
+      if (!isCurrent()) return;
       recognition = null;
       emitStatus('ended');
       if (state === 'armed') scheduleStart();

@@ -108,7 +108,11 @@ export function createRealtimeSession({
       if (typeof getUserMediaFn !== 'function') throw new Error('microphone capture is unavailable');
 
       stream = await getUserMediaFn({ audio: true });
-      if (closed) throw new Error('session closed before it opened');
+      // A permission prompt can outlive the gesture that opened it: offline,
+      // a push-to-talk release, or an idle timeout may already have closed
+      // this session. Drop the track here rather than relying on the catch
+      // below, so the microphone dies with the grant that produced it.
+      if (closed) { stopStream(); throw new Error('session closed before it opened'); }
 
       pc = new RTCPeerConnectionClass();
       for (const track of stream.getAudioTracks ? stream.getAudioTracks() : []) {
@@ -136,8 +140,13 @@ export function createRealtimeSession({
     }
   }
 
+  // Deliberately has NO `if (closed) return` fast path. A close can land while
+  // open() is still awaiting getUserMedia or the SDP exchange, so resources
+  // keep arriving after the first close — an early return would strand them
+  // (a live microphone track being the one that matters). Every step below is
+  // null-safe and try-wrapped, so calling this repeatedly is free and always
+  // drains whatever exists now.
   async function close() {
-    if (closed) return;
     closed = true;
     try { dataChannel?.close?.(); } catch { /* already closed */ }
     try { pc?.close?.(); } catch { /* already closed */ }

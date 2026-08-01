@@ -132,6 +132,23 @@ The route:
    server-side standard key; and
 5. returns only the SDP answer.
 
+The upstream call is the documented multipart request — no query parameters,
+and no manual `content-type` (fetch owns the multipart boundary):
+
+```http
+POST https://api.openai.com/v1/realtime/calls
+Authorization: Bearer <server-side standard key>
+Content-Type: multipart/form-data; boundary=...
+
+sdp=<browser SDP offer>
+session={"type":"realtime","model":…,"audio":{"input":{"transcription":{…}}},"tools":[…]}
+```
+
+Transcription belongs under `audio.input.transcription`. The retired top-level
+`input_audio_transcription` key is ignored rather than rejected, which would
+leave the session with no input transcript — and the browser's sign-off and
+offline phrases are driven entirely by that transcript.
+
 Success:
 
 ```http
