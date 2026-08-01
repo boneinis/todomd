@@ -19,8 +19,10 @@ worktree_dir: .todomd/worktrees
 worktree_link: [node_modules]
 branch_prefix: todomd/
 # Board-wide defaults — the bottom of the card → column → board override chain.
-# A card's own agent/model wins; else the stage column's (stages.<col>.agent|
-# model); else these. default_model is the fallback where a stage sets no model.
+# A card's own agent/model normally wins; else the stage column's
+# (stages.<col>.agent|model); else these. An explicitly routed Verify column is
+# authoritative so its independent verifier cannot be replaced by the Build
+# agent selected on a card. default_model is the fallback elsewhere.
 default_agent: claude
 # default_model: sonnet
 # default_effort: high

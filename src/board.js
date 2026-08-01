@@ -46,7 +46,8 @@ export function loadConfig(repoPath) {
   }
 }
 
-// Per-column agent/model/effort/workflow override — the "column" tier of card → column → board.
+// Per-column agent/model/effort/workflow override. Most stages use the
+// card → column → board tier; an explicitly routed Verify column is authoritative.
 // A comment-preserving, block-format line patch of .todomd/config.yml's
 // `stages.<col>` map: sets the agent/model line, or removes it when the value is
 // empty (so the column falls back to the board default). js-yaml.dump would

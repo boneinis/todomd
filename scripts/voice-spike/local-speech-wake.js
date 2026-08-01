@@ -1,0 +1,268 @@
+const DEFAULT_RESTART_DELAYS = Object.freeze([250, 500, 1000, 2000]);
+const TERMINAL_ERRORS = new Set([
+  'audio-capture',
+  'language-not-supported',
+  'network',
+  'not-allowed',
+  'phrases-not-supported',
+  'service-not-allowed',
+]);
+
+export function normalizeWakePhrase(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+export function isWakePhrase(value) {
+  const normalized = normalizeWakePhrase(value);
+  return normalized === 'hey to do' || normalized === 'hey todo';
+}
+
+function recognitionClass(scope) {
+  return scope?.SpeechRecognition || scope?.webkitSpeechRecognition || null;
+}
+
+function boundedError(error) {
+  if (!error) return null;
+  const code = String(error.error || error.code || error.name || 'recognition_error').slice(0, 80);
+  const message = String(error.message || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  return { code, message };
+}
+
+async function availability(Recognition, options) {
+  try {
+    return { status: await Recognition.available({ ...options, quality: 'command' }), quality: 'command' };
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    return { status: await Recognition.available(options), quality: 'browser-default' };
+  }
+}
+
+export async function inspectLocalSpeech({ scope = globalThis, lang = 'en-US', install = false } = {}) {
+  const Recognition = recognitionClass(scope);
+  const browser = scope?.navigator?.userAgent || 'unknown';
+  if (!Recognition) {
+    return { supported: false, status: 'api-unavailable', lang, browser, quality: null };
+  }
+
+  let probe;
+  try {
+    probe = new Recognition();
+  } catch (error) {
+    return { supported: false, status: 'constructor-failed', lang, browser, quality: null, error: boundedError(error) };
+  }
+  if (!('processLocally' in probe)) {
+    return { supported: false, status: 'local-only-unavailable', lang, browser, quality: null };
+  }
+  if (typeof Recognition.available !== 'function') {
+    return { supported: false, status: 'availability-api-unavailable', lang, browser, quality: null };
+  }
+
+  const options = { langs: [lang], processLocally: true };
+  try {
+    let result = await availability(Recognition, options);
+    if (install && (result.status === 'downloadable' || result.status === 'downloading')) {
+      if (typeof Recognition.install !== 'function') {
+        return { supported: false, status: 'install-api-unavailable', lang, browser, quality: result.quality };
+      }
+      const installOptions = result.quality === 'command' ? { ...options, quality: 'command' } : options;
+      if (!await Recognition.install(installOptions)) {
+        return { supported: false, status: 'install-failed', lang, browser, quality: result.quality };
+      }
+      result = await availability(Recognition, options);
+    }
+    return {
+      supported: result.status === 'available',
+      status: result.status,
+      lang,
+      browser,
+      quality: result.quality,
+    };
+  } catch (error) {
+    return {
+      supported: false,
+      status: 'availability-failed',
+      lang,
+      browser,
+      quality: null,
+      error: boundedError(error),
+    };
+  }
+}
+
+export function createLocalSpeechWakeEngine({
+  scope = globalThis,
+  lang = 'en-US',
+  restartDelays = DEFAULT_RESTART_DELAYS,
+  setTimeoutFn = globalThis.setTimeout?.bind(globalThis),
+  clearTimeoutFn = globalThis.clearTimeout?.bind(globalThis),
+  onStatus = () => {},
+  onResult = () => {},
+} = {}) {
+  const Recognition = recognitionClass(scope);
+  let recognition = null;
+  let availabilityResult = null;
+  let state = 'inactive';
+  let wakeCount = 0;
+  let restartCount = 0;
+  let startFailureCount = 0;
+  let restartTimer = null;
+  let lastError = null;
+  let wakeHandler = () => {};
+
+  const emitStatus = (event, extra = {}) => onStatus({ event, state, ...extra });
+
+  function cancelRestart() {
+    if (restartTimer !== null && clearTimeoutFn) clearTimeoutFn(restartTimer);
+    restartTimer = null;
+  }
+
+  function terminal(error, event = 'error') {
+    cancelRestart();
+    state = 'error';
+    lastError = boundedError(error);
+    const active = recognition;
+    recognition = null;
+    try { active?.abort(); } catch { /* already stopped */ }
+    emitStatus(event, { error: lastError });
+  }
+
+  function scheduleStart() {
+    if (state !== 'armed') return;
+    if (startFailureCount >= restartDelays.length) {
+      terminal({ code: 'repeated-start-failure', message: 'Local recognition could not restart.' }, 'restart-exhausted');
+      return;
+    }
+    const delay = restartDelays[Math.min(startFailureCount, restartDelays.length - 1)] ?? 0;
+    restartCount += 1;
+    emitStatus('restart-scheduled', { delay, restartCount });
+    restartTimer = setTimeoutFn(() => {
+      restartTimer = null;
+      startRecognition();
+    }, delay);
+  }
+
+  function startRecognition() {
+    if (state !== 'armed') return;
+    try {
+      recognition = new Recognition();
+      recognition.lang = lang;
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 3;
+      recognition.processLocally = true;
+    } catch (error) {
+      recognition = null;
+      startFailureCount += 1;
+      lastError = boundedError(error);
+      emitStatus('start-failed', { error: lastError, startFailureCount });
+      scheduleStart();
+      return;
+    }
+
+    recognition.onstart = () => {
+      startFailureCount = 0;
+      emitStatus('started');
+    };
+    recognition.onresult = (event) => {
+      for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        for (let alternative = 0; alternative < result.length; alternative += 1) {
+          const transcript = String(result[alternative]?.transcript || '');
+          onResult({ transcript, final: Boolean(result.isFinal) });
+          if (!result.isFinal || !isWakePhrase(transcript) || state !== 'armed') continue;
+          wakeCount += 1;
+          state = 'paused';
+          emitStatus('wake', { wakeCount });
+          try { recognition.abort(); } catch { /* already stopped */ }
+          wakeHandler({ phrase: 'hey to-do', wakeCount });
+          return;
+        }
+      }
+    };
+    recognition.onerror = (event) => {
+      const code = String(event?.error || 'recognition-error');
+      if (code === 'aborted' && state !== 'armed') return;
+      lastError = boundedError(event);
+      emitStatus('recognition-error', { error: lastError });
+      if (TERMINAL_ERRORS.has(code)) terminal(event);
+    };
+    recognition.onend = () => {
+      recognition = null;
+      emitStatus('ended');
+      if (state === 'armed') scheduleStart();
+    };
+
+    try {
+      recognition.start();
+    } catch (error) {
+      recognition = null;
+      startFailureCount += 1;
+      lastError = boundedError(error);
+      emitStatus('start-failed', { error: lastError, startFailureCount });
+      scheduleStart();
+    }
+  }
+
+  return {
+    async init({ install = true } = {}) {
+      availabilityResult = await inspectLocalSpeech({ scope, lang, install });
+      emitStatus('capability', { capability: availabilityResult });
+      return availabilityResult;
+    },
+
+    async start(onWake = () => {}) {
+      cancelRestart();
+      wakeHandler = onWake;
+      if (!availabilityResult?.supported) availabilityResult = await this.init({ install: true });
+      if (!availabilityResult.supported) {
+        terminal({ code: availabilityResult.status, message: 'Strictly local speech recognition is unavailable.' });
+        return false;
+      }
+      state = 'armed';
+      startFailureCount = 0;
+      emitStatus('arming');
+      startRecognition();
+      return true;
+    },
+
+    pause() {
+      cancelRestart();
+      if (state === 'armed') state = 'paused';
+      try { recognition?.abort(); } catch { /* already stopped */ }
+      emitStatus('paused');
+    },
+
+    resume() {
+      if (!availabilityResult?.supported || state === 'inactive') return false;
+      cancelRestart();
+      state = 'armed';
+      emitStatus('resuming');
+      startRecognition();
+      return true;
+    },
+
+    stop() {
+      cancelRestart();
+      state = 'inactive';
+      try { recognition?.abort(); } catch { /* already stopped */ }
+      recognition = null;
+      emitStatus('stopped');
+    },
+
+    diagnostics() {
+      return {
+        state,
+        availability: availabilityResult,
+        wakeCount,
+        restartCount,
+        startFailureCount,
+        lastError,
+      };
+    },
+  };
+}
