@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: d2357bfd-05cb-4b45-9688-eba20b724e44
+session_id: 8af5d7f5-a946-4687-9505-41d9cbf46275
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 16.5654
+cost_usd: 21.2105
 ---
 
 ## Description
@@ -57,3 +57,4 @@ an action but cannot execute or confirm it.
 - 2026-08-01 15:13Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 3)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 15:14Z · Escalate attempt 2 · 12 turns · $1.670 · diagnosis complete
+- 2026-08-01 15:28Z · Build attempt 3 · 50 turns · $4.645 · ok (escalation repair)
