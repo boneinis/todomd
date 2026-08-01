@@ -1,7 +1,7 @@
 ---
 id: task-0026
 title: Improve epic and subtask card hierarchy
-status: Queue
+status: Done
 type: improvement
 priority: high
 labels: [board-ui, epics, subtasks]
