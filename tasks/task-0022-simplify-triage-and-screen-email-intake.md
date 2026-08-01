@@ -1,7 +1,7 @@
 ---
 id: task-0022
 title: Simplify triage and screen email intake
-status: Queue
+status: Done
 type: improvement
 priority: critical
 labels: [triage, email, reliability]
