@@ -60,29 +60,46 @@ function htmlBodyText(html) {
     .trim();
 }
 
-function intakeWasHandled(repoPath, key) {
-  if (!key) return false;
+// Handled entries carry the screen decision, not just the key. The audit log
+// trims at 500 lines while this file keeps 5000 keys, so for a message whose
+// audit line has rotated away the key is the ONLY surviving record of what we
+// decided — without the verdict on it, an idempotent retry in that window could
+// only answer "duplicate", which is not one of the screen's verdicts.
+// Legacy files hold bare key strings; those read back as key-only entries.
+function readIntakeHandled(repoPath) {
   try {
-    const keys = JSON.parse(fs.readFileSync(path.join(repoPath, HANDLED_FILE), 'utf8'));
-    return Array.isArray(keys) && keys.includes(key);
-  } catch { return false; }
+    const parsed = JSON.parse(fs.readFileSync(path.join(repoPath, HANDLED_FILE), 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((e) => (typeof e === 'string' ? { key: e } : (e && typeof e === 'object' && typeof e.key === 'string' ? e : null)))
+      .filter(Boolean);
+  } catch { return []; }
 }
 
-function rememberIntakeHandled(repoPath, key) {
+// The stored decision for `key`, or null when the message was never handled.
+function intakeHandledMeta(repoPath, key) {
+  if (!key) return null;
+  const entries = readIntakeHandled(repoPath);
+  for (let i = entries.length - 1; i >= 0; i--) if (entries[i].key === key) return entries[i];
+  return null;
+}
+
+function rememberIntakeHandled(repoPath, key, meta = {}) {
   if (!key) return Promise.resolve();
   return withRepoLock(repoPath, async () => {
     ensureGitExcluded(repoPath, HANDLED_IGNORE_LINE);
     const file = path.join(repoPath, HANDLED_FILE);
-    let keys = [];
-    try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (Array.isArray(parsed)) keys = parsed.filter((x) => typeof x === 'string');
-    } catch { /* first write or recover from a partial/corrupt runtime file */ }
-    if (!keys.includes(key)) keys.push(key);
-    if (keys.length > HANDLED_MAX_KEYS) keys = keys.slice(-HANDLED_MAX_KEYS);
+    let entries = readIntakeHandled(repoPath).filter((e) => e.key !== key);
+    entries.push({
+      key,
+      ...(meta.verdict ? { verdict: meta.verdict } : {}),
+      ...(meta.reason ? { reason: meta.reason } : {}),
+      ...(meta.card ? { card: meta.card } : {}),
+    });
+    if (entries.length > HANDLED_MAX_KEYS) entries = entries.slice(-HANDLED_MAX_KEYS);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(keys) + '\n');
+    fs.writeFileSync(tmp, JSON.stringify(entries) + '\n');
     fs.renameSync(tmp, file);
   });
 }
@@ -313,20 +330,23 @@ export function emailToCardFields(parsed) {
 async function intakeMessageOnce(project, parsed, {
   label = 'intake', assignee = null, maxAttachments = 5, intakeKey = '',
 } = {}) {
-  // The audit line is also the recovery record for the narrow window where a
-  // card was committed but persisting the handled-key file failed, and it lets
-  // idempotent callers report the original screen verdict on a retry. Consult
-  // it before the handled-key shortcut so duplicate is metadata, not a verdict.
-  const priorDecision = findIntakeAudit(project.path, intakeKey);
+  // Look the message up in both durable stores before deciding anything, so a
+  // retry reports the ORIGINAL screen verdict and `duplicate` stays metadata
+  // rather than becoming a fourth verdict. Order matters:
+  //   1. the audit line — the richest record, and the recovery path for the
+  //      narrow window where a card was committed but the handled-key write failed;
+  //   2. the handled entry — still there after the audit log trimmed past 500
+  //      lines, and it carries the verdict for exactly that case;
+  //   3. a legacy key-only entry — nothing was stored but "seen", so 'duplicate'
+  //      is genuinely all we know.
+  const priorDecision = findIntakeAudit(project.path, intakeKey)
+    || intakeHandledMeta(project.path, intakeKey);
   if (priorDecision) {
     return {
       verdict: priorDecision.verdict || 'duplicate', created: false, handled: true, duplicate: true,
       reason: priorDecision.reason || '',
       ...(priorDecision.card ? { id: priorDecision.card, recovered: true } : {}),
     };
-  }
-  if (intakeWasHandled(project.path, intakeKey)) {
-    return { verdict: 'duplicate', created: false, handled: true, duplicate: true };
   }
   const screened = screenEmail(parsed);
   const record = {
@@ -346,7 +366,7 @@ async function intakeMessageOnce(project, parsed, {
   // otherwise a misclassified message is unrecoverable.
   if (screened.verdict === 'spam') {
     await appendIntakeAudit(project.path, record);
-    await rememberIntakeHandled(project.path, intakeKey);
+    await rememberIntakeHandled(project.path, intakeKey, record);
     return { verdict: 'spam', created: false, handled: true, reason: screened.reason };
   }
 
@@ -374,7 +394,7 @@ async function intakeMessageOnce(project, parsed, {
   let auditError = '';
   try { await appendIntakeAudit(project.path, record); }
   catch (err) { auditError = String(err?.message || err); }
-  await rememberIntakeHandled(project.path, intakeKey);
+  await rememberIntakeHandled(project.path, intakeKey, record);
   return {
     verdict: screened.verdict, created: true, handled: true, id: card.id,
     reason: screened.reason, ...(auditError ? { audit_error: auditError } : {}),

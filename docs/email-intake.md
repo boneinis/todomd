@@ -121,6 +121,15 @@ So a genuine bug report relayed from `no-reply@` alerts is *held*, not dropped; 
 - It is written **before** the message is marked `\Seen`, so a misclassified email is always recoverable: the `messageId` finds the original still sitting in the mailbox.
 - `card` carries the id when one was created, which makes the file a complete "which email became which card" trace.
 - It is an operational log, not board history: `todomd init` gitignores it (and so does the first write on a board that predates this), and it self-trims to the newest 500 lines.
+- The **Screened email** list in the intake settings panel (and `GET /api/projects/<board>/intake-audit` behind it) shows only the `spam` and `unclear` lines, newest first — accepted mail is already visible as a card, and listing it would crowd the held messages out of a bounded view.
+
+**Pushing mail in without IMAP.** If a webhook or automation already has the raw message, `POST /api/projects/<board>/email` with the RFC 5322 source (full token, same as the intake settings) runs the identical screen and reports what it decided:
+
+```json
+{"ok":true,"verdict":"spam","reason":"Looks like marketing/automated mail (has a List-Unsubscribe header)","duplicate":false}
+```
+
+A `work` or `unclear` push also returns the `id` of the card it made. Retries are idempotent on `Message-ID`: they create nothing new, set `duplicate: true`, and still report the original verdict and card id.
 
 > **Security note:** email is untrusted input. Card titles are sanitized and bodies are escaped on render, so a crafted email can't corrupt a card or inject script. It *can* contain prompt-injection aimed at the triage agent — which runs read-only-ish (Edit scoped to `.todomd/tasks/`), but treat auto-triaged email cards with the same skepticism as any inbound request. Screening is a relevance filter, not a security boundary: it decides whether a message is worth a card, and a message that passes it is exactly as untrusted as one that skipped it.
 

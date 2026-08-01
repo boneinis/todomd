@@ -558,21 +558,90 @@ test('email push API: applies the same screen as mailbox polling and reports the
     r = await push('');
     assert.equal(r.status, 400);
 
-    // the audit endpoint returns the seeded records newest first
+    // the audit endpoint returns the screened-out records newest first — the
+    // accepted bug report is a card on the board, not screened email
     r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': srv.token } });
     assert.equal(r.status, 200);
     const { records } = await r.json();
-    assert.ok(records.length >= 3);
-    assert.equal(records[0].subject, 'Export button 500s on filtered reports', 'most recent push is first');
-    assert.equal(records[0].verdict, 'work');
-    assert.equal(records[1].subject, 'New website update');
-    assert.equal(records[1].verdict, 'unclear');
-    assert.equal(records[2].subject, 'Summer sale is on');
-    assert.equal(records[2].verdict, 'spam');
+    assert.equal(records.length, 2);
+    assert.equal(records[0].subject, 'New website update', 'most recent screened-out push is first');
+    assert.equal(records[0].verdict, 'unclear');
+    assert.equal(records[1].subject, 'Summer sale is on');
+    assert.equal(records[1].verdict, 'spam');
+    assert.equal(records.some((rec) => rec.verdict === 'work'), false, 'accepted mail is not listed as screened');
     assert.equal('intakeKey' in records[0], false, 'the internal dedup key is not exposed to the client');
 
     // a viewer token cannot read the audit log either
     r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': viewer } });
     assert.equal(r.status, 403);
+  } finally { srv.close(); }
+});
+
+// The audit file logs every verdict, but this endpoint is the Screened email
+// view. A board taking real work all day must not push its held mail out of the
+// bounded response.
+test('intake-audit endpoint: a burst of newer accepted mail cannot hide screened-out messages', async () => {
+  isolateHome();
+  const { repo, name, base, srv } = await boot();
+  try {
+    fs.mkdirSync(path.join(repo, '.todomd'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.todomd', 'intake-audit.jsonl'), [
+      JSON.stringify({ timestamp: '2026-08-01T08:00:00.000Z', source: 'push', from: 'Shop <news@shop.example.com>', subject: 'Summer sale is on', verdict: 'spam', reason: 'has a List-Unsubscribe header', card: '' }),
+      JSON.stringify({ timestamp: '2026-08-01T08:30:00.000Z', source: 'push', from: 'Web Form <forms@example.com>', subject: 'New website update', verdict: 'unclear', reason: 'HTML-only body with no text part', card: '' }),
+      // 60 accepted messages, all NEWER than both screened-out records and more
+      // numerous than the endpoint's default limit of 50
+      ...Array.from({ length: 60 }, (_, i) => JSON.stringify({
+        timestamp: `2026-08-01T09:${String(i).padStart(2, '0')}:00.000Z`,
+        source: 'push', from: 'Jane Doe <jane@example.com>', subject: `Bug report ${i}`,
+        verdict: 'work', reason: 'No spam or unclear signals matched', card: `task-${1000 + i}`,
+      })),
+    ].join('\n') + '\n');
+
+    const r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}/intake-audit`, { headers: { 'x-todomd-token': srv.token } });
+    assert.equal(r.status, 200);
+    const { records } = await r.json();
+    assert.deepEqual(records.map((rec) => rec.subject), ['New website update', 'Summer sale is on'],
+      'both screened-out messages survive the default limit, newest first');
+    assert.equal(records.some((rec) => rec.verdict === 'work'), false);
+  } finally { srv.close(); }
+});
+
+// Handled keys retain 5000 entries while the audit log trims at 500, so a
+// pushed message can outlive its own audit line. A webhook retry in that window
+// still has to answer with the screen verdict, not "duplicate".
+test('email push API: a retry reports the screen verdict after its audit line rotates out', async () => {
+  isolateHome();
+  const { repo, name, base, srv, q } = await boot();
+  const full = { 'x-todomd-token': srv.token, origin: base, 'content-type': 'message/rfc822' };
+  const push = (raw) => fetch(`${base}/api/projects/${encodeURIComponent(name)}/email`, { method: 'POST', headers: full, body: raw });
+  const auditPath = path.join(repo, '.todomd', 'intake-audit.jsonl');
+  const cardCount = async () =>
+    (await (await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } })).json()).cards.length;
+  // drop every audit line, leaving the handled key as the sole surviving record
+  const rotateAuditAway = () => fs.writeFileSync(auditPath, '');
+  try {
+    const startCount = await cardCount();
+
+    let out = await (await push(RAW_PUSH_NEWSLETTER)).json();
+    assert.equal(out.verdict, 'spam');
+    rotateAuditAway();
+
+    out = await (await push(RAW_PUSH_NEWSLETTER)).json();
+    assert.equal(out.verdict, 'spam', 'the spam verdict survives audit rotation');
+    assert.equal(out.duplicate, true);
+    assert.equal('id' in out, false, 'a spam retry still reports no card id');
+    assert.match(out.reason, /List-Unsubscribe/);
+    assert.equal(await cardCount(), startCount, 'the retry created no card');
+
+    out = await (await push(RAW_PUSH_BUG_REPORT)).json();
+    assert.equal(out.verdict, 'work');
+    const workId = out.id;
+    rotateAuditAway();
+
+    out = await (await push(RAW_PUSH_BUG_REPORT)).json();
+    assert.equal(out.verdict, 'work', 'the work verdict survives audit rotation');
+    assert.equal(out.duplicate, true);
+    assert.equal(out.id, workId, 'the retry still reports the original card');
+    assert.equal(await cardCount(), startCount + 1, 'the retry created no second card');
   } finally { srv.close(); }
 });

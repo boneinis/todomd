@@ -169,9 +169,16 @@ export function findIntakeAudit(repoPath, intakeKey) {
   return null;
 }
 
-// The most recent audit records, newest first, bounded to `limit` — backs the
-// intake-audit API and the UI's Screened email list. `intakeKey` is an internal
-// dedup identifier (it can embed the mailbox account), so it's dropped here.
+// The most recent SCREENED-OUT records, newest first, bounded to `limit` —
+// backs the intake-audit API and the UI's Screened email list. `intakeKey` is an
+// internal dedup identifier (it can embed the mailbox account), so it's dropped
+// here.
+//
+// `work` lines are filtered out before the sort/slice, not after: the file logs
+// every verdict (see appendIntakeAudit), so a busy board's accepted mail would
+// otherwise fill the whole bounded window and evict the older spam/unclear
+// entries this view exists to show. Filtering here keeps the file's complete
+// "which email became which card" trace intact for findIntakeAudit recovery.
 export function readIntakeAudit(repoPath, limit = 50) {
   let lines;
   try { lines = fs.readFileSync(path.join(repoPath, AUDIT_FILE), 'utf8').split('\n').filter(Boolean); }
@@ -180,6 +187,7 @@ export function readIntakeAudit(repoPath, limit = 50) {
   for (let i = 0; i < lines.length; i++) {
     try {
       const { intakeKey, ...record } = JSON.parse(lines[i]);
+      if (record.verdict === 'work') continue;
       const parsed = Date.parse(record.timestamp);
       records.push({ record, time: Number.isFinite(parsed) ? parsed : -Infinity, appended: i });
     } catch { /* skip a corrupt operational-log line */ }
