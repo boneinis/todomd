@@ -362,8 +362,10 @@ export function initProject(repoPath, { nodeBin, todomdBin } = {}) {
   const gi = path.join(repoPath, '.gitignore');
   let cur = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
   // .todomd/local/ holds the private half of each column prompt — the committed
-  // .claude/commands/*.md travel with the repo, this never does
-  for (const line of ['.todomd/worktrees/', '.todomd/runs/', '.todomd/.lock/', '.todomd/.lock.dead.*', '.todomd/local/']) {
+  // .claude/commands/*.md travel with the repo, this never does.
+  // .todomd/intake-audit.jsonl is an operational log (every screened email),
+  // not board history, so it stays local like runs/ and local/.
+  for (const line of ['.todomd/worktrees/', '.todomd/runs/', '.todomd/.lock/', '.todomd/.lock.dead.*', '.todomd/.intake-locks/', '.todomd/local/', '.todomd/intake-audit.jsonl', '.todomd/intake-handled.json']) {
     if (!cur.includes(line)) {
       cur += (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n';
       created.push(`.gitignore (+${line})`);

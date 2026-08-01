@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { createCard, attachCard } from './board.js';
+import { createCard, attachCard, withRepoLock, ensureGitExcluded } from './board.js';
+import { screenEmail, appendIntakeAudit, findIntakeAudit } from './screen.js';
 
 // Credentials live OUTSIDE any repo (never committed): ~/.todomd/intake.json.
 // Formats (boards keyed by project name; inboxes keyed by inbox name + routes):
@@ -25,6 +27,140 @@ import { createCard, attachCard } from './board.js';
 //                    { project: "repo-b", toMatches: "you+repo-b@gmail.com" } ],
 //          default: "triage" } } }   // default optional: unmatched → this board
 const configFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake.json');
+const HANDLED_FILE = path.join('.todomd', 'intake-handled.json');
+const HANDLED_IGNORE_LINE = '.todomd/intake-handled.json';
+const HANDLED_MAX_KEYS = 5000;
+const INTAKE_LOCK_IGNORE_LINE = '.todomd/.intake-locks/';
+const INTAKE_LOCK_STALE_MS = 5 * 60_000;
+const cursorFile = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'intake-cursors.json');
+
+// Keep the MIME-body distinction intact for screening. Mailparser otherwise
+// synthesizes `text` from HTML, making a message with no text/plain part look
+// like ordinary text mail before screenEmail can classify it.
+export function parseInboundMessage(source) {
+  return simpleParser(source, { skipHtmlToText: true });
+}
+
+function htmlBodyText(html) {
+  return String(html || '')
+    .replace(/<\s*(?:br\s*\/?|\/?p|\/?div|\/?li|\/?h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function intakeWasHandled(repoPath, key) {
+  if (!key) return false;
+  try {
+    const keys = JSON.parse(fs.readFileSync(path.join(repoPath, HANDLED_FILE), 'utf8'));
+    return Array.isArray(keys) && keys.includes(key);
+  } catch { return false; }
+}
+
+function rememberIntakeHandled(repoPath, key) {
+  if (!key) return Promise.resolve();
+  return withRepoLock(repoPath, async () => {
+    ensureGitExcluded(repoPath, HANDLED_IGNORE_LINE);
+    const file = path.join(repoPath, HANDLED_FILE);
+    let keys = [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(parsed)) keys = parsed.filter((x) => typeof x === 'string');
+    } catch { /* first write or recover from a partial/corrupt runtime file */ }
+    if (!keys.includes(key)) keys.push(key);
+    if (keys.length > HANDLED_MAX_KEYS) keys = keys.slice(-HANDLED_MAX_KEYS);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(keys) + '\n');
+    fs.renameSync(tmp, file);
+  });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The in-memory gate below closes same-process races. This keyed directory is
+// the matching cross-process claim: a second board server must not get between
+// the durable handled check and the card/audit side effects for the same mail.
+async function withIntakeClaim(repoPath, key, fn) {
+  await withRepoLock(repoPath, () => ensureGitExcluded(repoPath, INTAKE_LOCK_IGNORE_LINE));
+  const root = path.join(repoPath, '.todomd', '.intake-locks');
+  fs.mkdirSync(root, { recursive: true });
+  const dir = path.join(root, crypto.createHash('sha256').update(key).digest('hex'));
+  const nonce = crypto.randomUUID();
+  const deadline = Date.now() + 6 * 60_000;
+
+  for (;;) {
+    try {
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'owner'), nonce);
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - fs.statSync(dir).mtimeMs > INTAKE_LOCK_STALE_MS) {
+          const dead = `${dir}.dead.${process.pid}.${Date.now()}`;
+          try { fs.renameSync(dir, dead); fs.rmSync(dead, { recursive: true, force: true }); } catch {}
+          continue;
+        }
+      } catch { /* another contender removed it */ }
+      if (Date.now() > deadline) throw new Error('timed out waiting for mailbox intake claim');
+      await sleep(50);
+    }
+  }
+
+  try { return await fn(); }
+  finally {
+    try {
+      if (fs.readFileSync(path.join(dir, 'owner'), 'utf8') === nonce) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch { /* released or stale-stolen */ }
+  }
+}
+
+export function mailboxIntakeKey(conf, mailbox, messageId, uid) {
+  const identity = [
+    conf?.host || '', conf?.port || 993, conf?.user || '', conf?.folder || 'INBOX',
+    String(mailbox?.uidValidity || ''),
+  ];
+  return JSON.stringify(messageId
+    ? [...identity, 'message-id', messageId]
+    : [...identity, 'uid', String(uid)]);
+}
+
+function mailboxScope(conf, mailbox) {
+  return JSON.stringify([
+    conf?.host || '', conf?.port || 993, conf?.user || '', conf?.folder || 'INBOX',
+    String(mailbox?.uidValidity || ''),
+  ]);
+}
+
+function intakeCursor(scope) {
+  try { return Number(JSON.parse(fs.readFileSync(cursorFile(), 'utf8'))?.[scope]) || 0; }
+  catch { return 0; }
+}
+
+function rememberIntakeCursor(scope, uid) {
+  const file = cursorFile();
+  let state = {};
+  try { state = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch {}
+  state[scope] = Math.max(Number(state[scope]) || 0, Number(uid) || 0);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
 
 function loadRaw() {
   try {
@@ -156,6 +292,7 @@ export function emailToCardFields(parsed) {
     .replace(/\s+/g, ' ').trim();
   const from = parsed.from?.text || 'unknown sender';
   const body = String(parsed.text || '').trim()
+    || htmlBodyText(parsed.html)
     || (parsed.html ? '(HTML-only email — open the original to see formatting)' : '(empty body)');
   return {
     title: subject.slice(0, 140) || '(no subject)',
@@ -167,6 +304,100 @@ export function emailToCardFields(parsed) {
   };
 }
 
+// One parsed message → board state, screening included. Exported (and free of
+// any IMAP object) so the whole decision path is testable without a mail
+// server: pollSource only adds fetch/\Seen/dedup bookkeeping around it.
+//
+// Returns { verdict, created, handled, id?, reason }. `handled` means the
+// message reached a terminal decision, so the caller can stop reconsidering it.
+async function intakeMessageOnce(project, parsed, {
+  label = 'intake', assignee = null, maxAttachments = 5, intakeKey = '',
+} = {}) {
+  if (intakeWasHandled(project.path, intakeKey)) {
+    return { verdict: 'duplicate', created: false, handled: true, duplicate: true };
+  }
+  // The audit line is also the recovery record for the narrow window where a
+  // card was committed but persisting the handled-key file failed. Treat that
+  // prior decision as handled so retrying cannot create a second card.
+  const priorDecision = findIntakeAudit(project.path, intakeKey);
+  if (priorDecision) {
+    return {
+      verdict: priorDecision.verdict || 'duplicate', created: false, handled: true, duplicate: true,
+      reason: priorDecision.reason || '',
+      ...(priorDecision.card ? { id: priorDecision.card, recovered: true } : {}),
+    };
+  }
+  const screened = screenEmail(parsed);
+  const record = {
+    timestamp: new Date().toISOString(),
+    source: label,
+    from: parsed?.from?.text || '',
+    subject: parsed?.subject || '',
+    messageId: parsed?.messageId || '',
+    verdict: screened.verdict,
+    reason: screened.reason,
+    card: '',
+    ...(intakeKey ? { intakeKey } : {}),
+  };
+
+  // Screened-out mail never reaches the board, so the audit line is its ONLY
+  // trace — write it before returning (the caller marks \Seen after we do),
+  // otherwise a misclassified message is unrecoverable.
+  if (screened.verdict === 'spam') {
+    await appendIntakeAudit(project.path, record);
+    await rememberIntakeHandled(project.path, intakeKey);
+    return { verdict: 'spam', created: false, handled: true, reason: screened.reason };
+  }
+
+  const fields = emailToCardFields(parsed);
+  if (screened.verdict === 'unclear') {
+    // held for a human, not dropped: an ambiguous message still becomes a card,
+    // just not one an agent picks up. Nothing else is needed to keep triage off
+    // it — both maybeTriage and triageSweep already gate on status === 'Review'.
+    // Deliberately NOT pre-setting `triaged`: dragging the card to Review is how
+    // a human says "this is real", and that move clears needs_human_reason and
+    // hands the card to auto-triage exactly like any other new card would be.
+    fields.status = 'Needs Human';
+    fields.needs_human_reason = screened.reason;
+  }
+
+  const card = await createCard(project.path, { ...fields, assignee });
+  if (!card.ok) return { verdict: screened.verdict, created: false, handled: false, error: card.error };
+
+  for (const att of (parsed?.attachments || []).slice(0, maxAttachments)) {
+    if (att?.content && att?.filename) {
+      try { await attachCard(project.path, card.id, att.filename, att.content); } catch {}
+    }
+  }
+  record.card = card.id;
+  let auditError = '';
+  try { await appendIntakeAudit(project.path, record); }
+  catch (err) { auditError = String(err?.message || err); }
+  await rememberIntakeHandled(project.path, intakeKey);
+  return {
+    verdict: screened.verdict, created: true, handled: true, id: card.id,
+    reason: screened.reason, ...(auditError ? { audit_error: auditError } : {}),
+  };
+}
+
+const inflightIntake = new Map();
+export async function intakeMessage(project, parsed, options = {}) {
+  const intakeKey = options.intakeKey || '';
+  if (!intakeKey) return intakeMessageOnce(project, parsed, options);
+  const gateKey = `${project.path}\n${intakeKey}`;
+  const prior = inflightIntake.get(gateKey);
+  if (prior) {
+    const outcome = await prior;
+    return outcome.handled
+      ? { verdict: 'duplicate', created: false, handled: true, duplicate: true }
+      : outcome;
+  }
+  const run = withIntakeClaim(project.path, intakeKey, () => intakeMessageOnce(project, parsed, options));
+  inflightIntake.set(gateKey, run);
+  try { return await run; }
+  finally { inflightIntake.delete(gateKey); }
+}
+
 let onCard = () => {};   // set by start(): (project, id) => void  (e.g. trigger triage)
 let log = () => {};
 
@@ -174,14 +405,18 @@ let log = () => {};
 // failed \Seen write (or markSeen:false) can't re-create a card we already made
 const seenMessageIds = new Map(); // label → Set
 
-async function pollSource(source, getProject) {
+export async function pollSource(source, getProject, {
+  createClient = (options) => new ImapFlow(options),
+  onCardCallback = onCard,
+  parseMessage = parseInboundMessage,
+} = {}) {
   const { conf, resolve, assigneeOf, label } = source;
   if (!conf.host || !conf.user || !conf.pass) { log(`intake: "${label}" missing host/user/pass`); return; }
   if (!seenMessageIds.has(label)) seenMessageIds.set(label, new Set());
   const handled = seenMessageIds.get(label);
   const maxPerPoll = conf.maxPerPoll ?? 50; // bound disk/cost from a flood of unseen mail
 
-  const client = new ImapFlow({
+  const client = createClient({
     host: conf.host,
     port: conf.port || 993,
     secure: conf.secure !== false,
@@ -194,45 +429,86 @@ async function pollSource(source, getProject) {
   client.on('error', (e) => log(`intake: "${label}" connection error: ${e.message}`));
   let lock;
   let created = 0;
-  let processed = 0;
+  let scanned = 0;
   try {
     await client.connect();
     lock = await client.getMailboxLock(conf.folder || 'INBOX');
+    const scope = mailboxScope(conf, client.mailbox);
+    // A cursor is necessary only when messages intentionally remain unseen.
+    // With normal markSeen behavior, always query all unseen mail so a user
+    // marking an older message unread makes it eligible again.
+    const useCursor = conf.markSeen === false;
+    const firstUid = useCursor ? intakeCursor(scope) + 1 : 1;
+    const uidNext = Number(client.mailbox?.uidNext) || firstUid;
+    const pendingMessages = firstUid < uidNext
+      ? client.fetch({ seen: false, uid: `${firstUid}:*` }, { source: true, uid: true })
+      : [];
     // only unseen messages; \Seen (default) is the primary idempotency key
-    for await (const msg of client.fetch({ seen: false }, { source: true, uid: true })) {
-      if (processed >= maxPerPoll) { log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`); break; }
-      processed++;
+    let cursorBlocked = false;
+    for await (const msg of pendingMessages) {
+      let counted = false;
       try {
-        const parsed = await simpleParser(msg.source);
+        const parsed = await parseMessage(msg.source);
         const mid = parsed.messageId;
-        if (mid && handled.has(mid)) {            // already made a card for this message this run
+        const intakeKey = mailboxIntakeKey(conf, client.mailbox, mid, msg.uid);
+        const runKey = mid || intakeKey;
+        if (handled.has(runKey)) {                // already made a card for this message this run
           if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
+          if (useCursor && !cursorBlocked) rememberIntakeCursor(scope, msg.uid);
           continue;
         }
+        if (scanned >= maxPerPoll) {
+          log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`);
+          break;
+        }
+        scanned++;
+        counted = true;
         const targetName = resolve(parsed);          // board → fixed; inbox → by recipient
         const project = targetName && getProject(targetName);
+        let terminalHandled = false;
         if (!project) {
           log(`intake: "${label}" skipped a message — ${targetName
             ? `project "${targetName}" not registered`
             : `no route matched (to: ${recipientAddresses(parsed).join(', ') || 'none'})`}`);
         } else {
           const assignee = assigneeOf ? assigneeOf(parsed) : null; // auto-assign incoming work
-          const card = await createCard(project.path, { ...emailToCardFields(parsed), assignee });
-          if (card.ok) {
-            created++;
-            if (mid) { handled.add(mid); if (handled.size > 5000) handled.delete(handled.values().next().value); }
-            for (const att of (parsed.attachments || []).slice(0, conf.maxAttachments ?? 5)) {
-              if (att?.content && att?.filename) {
-                try { await attachCard(project.path, card.id, att.filename, att.content); } catch {}
-              }
+          const outcome = await intakeMessage(project, parsed, {
+            label, assignee, maxAttachments: conf.maxAttachments ?? 5, intakeKey,
+          });
+          terminalHandled = outcome.handled;
+          // screened-out mail is "handled" too — without this, a markSeen:false
+          // mailbox would re-screen and re-audit the same spam on every tick
+          if (outcome.handled) { handled.add(runKey); if (handled.size > 5000) handled.delete(handled.values().next().value); }
+          if (outcome.audit_error) log(`intake: "${label}" created ${outcome.id}, but audit append failed: ${outcome.audit_error}`);
+          if (outcome.verdict === 'spam') {
+            log(`intake: "${label}" screened out a message for ${project.name} — ${outcome.reason}`);
+          } else if (outcome.created || outcome.recovered) {
+            if (outcome.created) created++;
+            if (outcome.verdict === 'unclear') {
+              log(`intake: "${label}" ${outcome.recovered ? 'recovered' : '→'} ${project.name}: ${outcome.id} (Needs Human — ${outcome.reason})`);
+            } else {
+              onCardCallback(project, outcome.id); // only real work is auto-triaged
+              log(`intake: "${label}" ${outcome.recovered ? 'recovered' : '→'} ${project.name}: ${outcome.id}`);
             }
-            onCard(project, card.id);
-            log(`intake: "${label}" → ${project.name}: ${card.id}`);
           }
         }
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
+        if (useCursor && terminalHandled && !cursorBlocked) rememberIntakeCursor(scope, msg.uid);
+        else if (useCursor && !terminalHandled) cursorBlocked = true;
       } catch (e) {
+        if (!counted) {
+          if (scanned >= maxPerPoll) {
+            log(`intake: "${label}" hit maxPerPoll (${maxPerPoll}); remaining mail next tick`);
+            break;
+          }
+          scanned++;
+        }
         log(`intake: "${label}" failed on a message: ${e.message}`);
+        // Keep the cursor behind the first failure so it remains retryable, but
+        // continue this scan so one poison message cannot starve later UIDs.
+        // Successful later messages are marked Seen/deduped but cannot advance
+        // the cursor across this gap.
+        cursorBlocked = true;
       }
     }
   } finally {

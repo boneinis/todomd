@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
@@ -485,11 +486,12 @@ export function createCard(repoPath, fields) {
     const deps = asArray(fields.dependencies).map((d) => String(d).replace(/[^\w-]/g, '')).filter(Boolean);
     const parent = fields.parent ? String(fields.parent).replace(/[^\w-]/g, '') : '';
     const triaged = fields.triaged ? String(fields.triaged).replace(/[\r\n:]/g, ' ').trim() : '';
+    const needsHumanReason = fields.needs_human_reason ? fmScalar(fields.needs_human_reason, '') : '';
     const plan = fields.plan ? String(fields.plan).trim().replace(/^(#{1,6}) /gm, (_, h) => '\\' + h + ' ') : '';
     const content = `---
 id: ${id}
 title: ${fmScalar(title, 'untitled')}
-status: ${status}
+status: ${status}${needsHumanReason ? `\nneeds_human_reason: ${needsHumanReason}` : ''}
 type: ${fmScalar(fields.type, 'improvement')}
 priority: ${fmScalar(fields.priority, 'medium')}
 labels: [${labels.join(', ')}]
@@ -607,16 +609,35 @@ export function readLocalPrompt(repoPath, name) {
   catch { return ''; } // absent → no local layer
 }
 
-// Belt and braces: make sure .gitignore covers this dir BEFORE writing into it.
-// `todomd init` adds the line, but a board created by an older version wouldn't
-// have it — and the whole point of this file is that it never gets committed.
-function ensureLocalIgnored(repoPath) {
+// Belt and braces: make sure .gitignore covers a path BEFORE writing into it.
+// `todomd init` adds these lines up front, but a board created by an older
+// version (or a line added after init) wouldn't have it yet — and the whole
+// point of these paths is that they never get committed.
+export function ensureGitignored(repoPath, line) {
   const gi = path.join(repoPath, '.gitignore');
   let cur = '';
   try { cur = fs.readFileSync(gi, 'utf8'); } catch { /* no .gitignore yet */ }
-  if (cur.split(/\r?\n/).some((l) => l.trim() === LOCAL_IGNORE_LINE)) return false;
-  writeFileAtomic(gi, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + LOCAL_IGNORE_LINE + '\n');
+  if (cur.split(/\r?\n/).some((l) => l.trim() === line)) return false;
+  writeFileAtomic(gi, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n');
   return true;
+}
+
+// Runtime files discovered by an upgraded board should not dirty a legacy
+// checkout just to teach Git about them. New boards receive the same patterns
+// in their committed .gitignore during init; older boards get a local-only
+// exclusion here when the runtime path is first used.
+export function ensureGitExcluded(repoPath, line) {
+  try {
+    const resolved = execFileSync('git', ['-C', repoPath, 'rev-parse', '--git-path', 'info/exclude'],
+      { encoding: 'utf8' }).trim();
+    const file = path.isAbsolute(resolved) ? resolved : path.join(repoPath, resolved);
+    let cur = '';
+    try { cur = fs.readFileSync(file, 'utf8'); } catch { /* first local exclusion */ }
+    if (cur.split(/\r?\n/).some((l) => l.trim() === line)) return false;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, (cur && !cur.endsWith('\n') ? '\n' : '') + line + '\n');
+    return true;
+  } catch { return false; }
 }
 
 // Never commits: no commitPaths call here, unlike writeCommandFile.
@@ -624,7 +645,7 @@ export function writeLocalPrompt(repoPath, name, text) {
   const file = localPromptPath(repoPath, name);
   if (!file) return Promise.resolve({ ok: false, error: 'invalid command name' });
   return withRepoLock(repoPath, async () => {
-    const ignoreAdded = ensureLocalIgnored(repoPath);
+    const ignoreAdded = ensureGitignored(repoPath, LOCAL_IGNORE_LINE);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const body = String(text ?? '').trim();
     if (!body) {
