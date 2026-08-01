@@ -153,6 +153,12 @@ export async function openPage() {
     async goto(url) {
       await cdp.send('Page.navigate', { url }, sessionId);
     },
+    // resizes the (headless, windowless) viewport so responsive @media rules
+    // apply — headless Chrome otherwise renders at a fixed default size
+    async setViewport(width, height) {
+      await cdp.send('Emulation.setDeviceMetricsOverride',
+        { width, height, deviceScaleFactor: 1, mobile: width < 480 }, sessionId);
+    },
     // returns the value of `expression` evaluated in the page
     async eval(expression) {
       const r = await cdp.send('Runtime.evaluate',

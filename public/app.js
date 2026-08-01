@@ -415,6 +415,39 @@ function depChip(id, state) {
   return `<span class="dep-chip ${done ? 'dep-done' : 'dep-blocked'}">${done ? '' : '🔒 '}${esc(id)} <span class="rel-status">${esc(status)}</span></span>`;
 }
 
+// Splits the raw "## Chunks" section (planner's fenced yaml breakdown, plus any
+// trailing prose) out of a card body — mirrors src/board.js parseChunks's
+// fenced-aware "## " heading split exactly, so the drawer's idea of "the
+// Chunks section" and the parser's idea never disagree.
+function splitChunksSection(body) {
+  const raw = body || '';
+  let fenced = false;
+  const sections = [{ prefix: '', text: '' }];
+  for (const ln of raw.split('\n')) {
+    if (/^\s*(```|~~~)/.test(ln)) fenced = !fenced;
+    if (!fenced && /^## /.test(ln)) sections.push({ prefix: '## ', text: ln.slice(3) + '\n' });
+    else sections[sections.length - 1].text += ln + '\n';
+  }
+  const idx = sections.findIndex((s) => s.prefix && /^Chunks\s*(\r?\n|$)/.test(s.text));
+  if (idx === -1) return { body: raw, planner: '' };
+  const planner = sections[idx].text.replace(/^Chunks\r?\n?/, '').trim();
+  const body2 = sections.filter((_, i) => i !== idx).map((s) => s.prefix + s.text).join('');
+  return { body: body2, planner };
+}
+
+/* ── drawer tabs: Details / Subtasks (epics only) ── */
+let drawerTab = 'details';
+function setDrawerTab(tab) {
+  drawerTab = tab;
+  $('#drawer-details').hidden = tab !== 'details';
+  $('#drawer-subtasks').hidden = tab !== 'subtasks';
+  document.querySelectorAll('.drawer-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+}
+$('#drawer-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.drawer-tab');
+  if (btn) setDrawerTab(btn.dataset.tab);
+});
+
 /* ── drawer ── */
 async function openDrawer(id) {
   drawerCard = id;
@@ -434,6 +467,23 @@ async function openDrawer(id) {
     // no way to read it, answer its question, or delete it)
     ['labels', asList(card.data.labels).join(', ') || null],
   ].filter(([, v]) => v).map(([k, v]) => `<span class="meta-chip">${esc(k)} <b>${esc(String(v))}</b></span>`).join('');
+  // Subtasks view (epics only) replaces the raw "## Chunks" planner YAML in the
+  // main details flow — the fenced block is still reachable in a collapsed,
+  // closed-by-default Planner record for auditability.
+  const isEpic = !!card.data.epic;
+  $('#drawer-tabs').hidden = !isEpic;
+  setDrawerTab('details'); // reset so a click-through from a subtask row never lands on a tab the child doesn't have
+  const { body: bodyForDisplay, planner } = isEpic ? splitChunksSection(card.body) : { body: card.body, planner: '' };
+  $('#drawer-planner').hidden = !isEpic || !planner;
+  $('#drawer-planner').open = false; // always closed by default, even reopening a different epic
+  $('#drawer-planner-body').textContent = planner;
+  const subtasksList = $('#drawer-subtasks-list');
+  subtasksList.innerHTML = '';
+  if (isEpic) {
+    const kids = TodomdHierarchy.childrenOf(boardData.cards, card.data.id);
+    if (kids.length) kids.forEach((kid) => subtasksList.appendChild(renderSubtaskRow(kid)));
+    else subtasksList.innerHTML = '<li class="subtask-empty">no subtasks yet</li>';
+  }
   // relationship section: epic → children, chunk → parent + deps
   const relEl = $('#drawer-rel');
   if (card.data.epic) {
@@ -467,7 +517,7 @@ async function openDrawer(id) {
     $('#criteria-fill').classList.toggle('full', critDone === critTotal);
     $('#criteria-label').textContent = `${critDone}/${critTotal} criteria`;
   }
-  $('#drawer-body').innerHTML = mdToHtml(card.body);
+  $('#drawer-body').innerHTML = mdToHtml(bodyForDisplay);
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
   $('#route-agent').value = card.data.agent || 'claude';
   setModelOptions($('#route-agent').value); // suggestions match the card's vendor

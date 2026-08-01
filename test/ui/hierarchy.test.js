@@ -31,6 +31,12 @@ function hierarchyBoard() {
   const cfg = path.join(repo, '.todomd/config.yml');
   fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
   writeCard(repo, 'task-0001', { status: 'Queue', title: 'Sequential chunking epic', extra: 'epic: true\nchildren: [task-0002, task-0003, task-0004]\n' });
+  // give the epic a raw "## Chunks" planner section (the same shape src/board.js
+  // parseChunks reads) so the drawer's Subtasks/Planner split has something to split
+  const epicFile = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(epicFile, fs.readFileSync(epicFile, 'utf8').replace('## Run Log\n',
+    '## Chunks\n\n```yaml\n- title: Alpha subtask\n  plan: do the alpha work\n  criteria: ["alpha done"]\n```\n\n' +
+    'Risks:\n- none noted\n\n## Run Log\n'));
   writeCard(repo, 'task-0002', { status: 'Queue', title: 'Alpha subtask', deps: ['task-0003'], extra: 'parent: task-0001\nassignee: Ada Lovelace\n' });
   writeCard(repo, 'task-0003', { status: 'Planned', title: 'Beta subtask', extra: 'parent: task-0001\n' });
   writeCard(repo, 'task-0004', { status: 'Build', title: 'Gamma execution subtask', extra: 'parent: task-0001\n' });
@@ -162,6 +168,71 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
       'a parent-only filter match does not expose nonmatching child rows');
     await page.eval(`document.getElementById('filter').value = '';
       document.getElementById('filter').dispatchEvent(new Event('input'))`);
+
+    // ── drawer Subtasks/Planner view (task-0030) ──
+    // opening the epic's own drawer strips the raw "## Chunks" yaml out of the
+    // main details flow and hides it behind a closed-by-default Planner record
+    await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
+    assert.doesNotMatch(
+      await page.eval(`document.getElementById('drawer-body').textContent`),
+      /Alpha subtask/, 'the raw Chunks yaml is stripped out of the main details flow');
+    assert.equal(await page.eval(`document.getElementById('drawer-tabs').hidden`), false,
+      'an epic card shows the Details/Subtasks tabs');
+    assert.equal(await page.eval(`document.getElementById('drawer-planner').hidden`), false,
+      'an epic with a Chunks section shows the Planner record');
+    assert.equal(await page.eval(`document.getElementById('drawer-planner').open`), false,
+      'the Planner record is closed by default');
+    await page.eval(`document.getElementById('drawer-planner').open = true`);
+    assert.match(
+      await page.eval(`document.getElementById('drawer-planner-body').textContent`),
+      /Alpha subtask/, 'the raw planner yaml is still reachable once opened');
+
+    // Subtasks tab lists ALL of the epic's children (not just the nested ones —
+    // the Build child belongs here too) with dependency state; a row click opens
+    // that child
+    assert.equal(await page.eval(`document.getElementById('drawer-details').hidden`), false);
+    assert.equal(await page.eval(`document.getElementById('drawer-subtasks').hidden`), true);
+    await page.eval(`document.querySelector('.drawer-tab[data-tab="subtasks"]').click()`);
+    assert.equal(await page.eval(`document.getElementById('drawer-details').hidden`), true);
+    assert.equal(await page.eval(`document.getElementById('drawer-subtasks').hidden`), false);
+    const drawerRowIds = await page.eval(
+      `[...document.querySelectorAll('#drawer-subtasks-list .subtask-row')].map((r) => r.dataset.id).sort()`);
+    assert.deepEqual(drawerRowIds, ['task-0002', 'task-0003', 'task-0004'],
+      'the drawer Subtasks tab lists every child, including the Build (execution-column) one');
+    assert.match(
+      await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"] .subtask-dep').textContent`),
+      /waiting on task-0003/);
+    await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0004"]').click()`);
+    await until(async () =>
+      (await page.eval(`document.getElementById('drawer-id').textContent === 'task-0004'`)) || null, { timeout: BUDGET.quick });
+    assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /Gamma execution subtask/);
+    // the click-through lands on Details, and the child (not itself an epic) shows
+    // neither the Subtasks tab nor the Planner record
+    assert.equal(await page.eval(`document.getElementById('drawer-tabs').hidden`), true,
+      'a non-epic card shows neither the Subtasks tab nor the planner record');
+    assert.equal(await page.eval(`document.getElementById('drawer-planner').hidden`), true);
+    assert.equal(await page.eval(`document.getElementById('drawer-details').hidden`), false,
+      'the drawer resets to Details so a click-through never lands on a tab this card doesn\'t have');
+    await page.eval(`document.getElementById('drawer-close').click()`);
+
+    // responsive rail: sticky alongside the details at a wide viewport, stacks
+    // under it (static position, full width) at a narrow one
+    await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+    await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
+    await page.setViewport(1200, 900);
+    assert.equal(
+      await page.eval(`getComputedStyle(document.querySelector('.drawer-rail')).position`),
+      'sticky', 'the rail is sticky alongside the details at a wide viewport');
+    await page.setViewport(400, 800);
+    assert.equal(
+      await page.eval(`getComputedStyle(document.querySelector('.drawer-cols')).flexDirection`),
+      'column', 'the details/rail columns stack at a narrow viewport');
+    assert.equal(
+      await page.eval(`getComputedStyle(document.querySelector('.drawer-rail')).position`),
+      'static', 'the rail stacks under the details instead of sticking to a collapsed column at a narrow viewport');
+    await page.setViewport(1200, 900);
+    await page.eval(`document.getElementById('drawer-close').click()`);
 
     // Hostile hand-edited metadata: a parent link to a normal card must not
     // make the child disappear merely because the referenced card exists.
