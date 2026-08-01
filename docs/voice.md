@@ -179,15 +179,40 @@ It never receives a confirm function or a direct board-mutation function.
 | Reversible workflow change | Prepare and read back the exact action. | **Yes To-do** |
 | Start or resume an agent | Prepare and read back the exact action. | Fresh task-specific challenge phrase |
 | Cancel, Restart Build, or archive | Prepare and display the exact action. | Visible approval in the first release |
+| A move that would discard a preserved worktree | Prepare and display the exact action, naming the discard. | Visible approval |
+| Retriage or send-back-to-Planned while a run is live | Refused at preparation; nothing is proposed. | Not offered |
+| Any operation on an epic with unfinished children | Refused at preparation; nothing is proposed. | Not offered |
 | **No To-do** or unrelated reply | Reject the pending proposal. | None |
 | **That is all, To-do** | End active conversation and return to local wake listening. | None |
 | **Go offline, To-do** | Stop all microphone capture. | None |
+
+The tier is a property of the *effect on the current board*, not of the action
+name. The same guarded call is several different operations depending on state —
+moving a card to Review is a plain column move when the card is idle, a run
+cancellation when it is live, a worktree deletion when it kept its build, and a
+multi-card archive when it is an epic — so TODOMD probes that state at
+preparation time and derives the tier, the eligibility answer, and the read-back
+from it together. Two consequences are load-bearing:
+
+- **Moves never cancel or cascade.** Retriage and send-back-to-Planned are
+  refused outright while a run is live (including a chain claimed between
+  spawns), and any epic with unfinished children is refused for both retriage and
+  archive. Cancelling is reachable only through the explicit Cancel action and
+  its own visible approval; epic-wide cleanup is not reachable by voice at all.
+- **Read-backs state the whole effect.** Approve says "start the build" in
+  launcher mode and "queue it for the dispatcher" in budget mode, because that is
+  what Planned → Queue actually does in each. A move that discards a preserved
+  worktree says so, and is raised to visible approval for the same reason.
 
 TODOMD, not the model, owns proposal storage, read-back, confirmation matching,
 expiry, revalidation, and dispatch. A proposal changes nothing. A confirmation
 is single-use, short-lived, exact-token-bound, project-bound, request-bound,
 and action-bound. The controller ignores assistant output and generic speech
-that does not match the expected response.
+that does not match the expected response. Revalidation covers everything the
+policy was derived from — column, archived flag, live-run state, worktree
+presence, unfinished-child count, and project mode — so a run that starts
+between preparation and confirmation makes the proposal stale rather than
+changing what the spoken phrase buys.
 
 Voice may invoke only existing guarded board and recovery actions. It cannot
 gain arbitrary Bash, filesystem, Git-write, source-edit, browser-automation,

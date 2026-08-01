@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
-import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, parseChunks, setArchived, readLocalPrompt } from './board.js';
+import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
@@ -52,17 +52,44 @@ const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human'])
 
 let broadcast = () => {};
 const children = new Map();          // runKey → ChildProcess
+const finalizationWaiters = new WeakMap(); // retained trigger run → completion signal for direct human moves
 // runKey → { cancelled, revertTo, cascadeArchive, noRequeue } — a build chain
 // claimed by processQueue but not yet fully settled. Covers the windows where
 // `children` has no entry (queue shift → spawn, build done → verify spawn,
 // verify done → merge) so hasLiveRun/cancel/humanMove never see a false "idle".
 const pending = new Map();
+// Plan/custom-stage work claimed synchronously after the card move but before
+// async config loading and child registration. Without this claim, voice can
+// authorize a conflicting move in the background-handoff window.
+const triggerClaims = new Map();      // runKey → exact pre-spawn stage claim
 const queues = new Map();            // project name → [cardId]
+// Exact identity of the latest run/queue claim for a card. This advances in
+// memory before work starts, so cancel-and-requeue cannot recreate an earlier
+// identity even when Git is temporarily unable to commit the card transitions.
+// Voice proposals use it only for stale detection; it grants no capability.
+const runGenerations = new Map();     // runKey → { project, card, generation }
+let nextRunGeneration = 0;
 const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
-const retryFindings = new Map();      // runKey → verifier findings to carry into a resumed build
-const recoveryBuilds = new Map();     // runKey → guarded orphaned-Build continuation state
+const retryFindings = new Map();      // runKey → { project, card, findings }
+const recoveryBuilds = new Map();     // runKey → guarded continuation state with exact project/card ownership
+
+function saveRetryFindings(project, id, findings) {
+  const key = runKey(project.name, id);
+  if (findings) retryFindings.set(key, { project: project.name, card: id, findings });
+  else retryFindings.delete(key);
+}
+
+function bumpRunGeneration(projectName, id) {
+  const generation = ++nextRunGeneration;
+  runGenerations.set(runKey(projectName, id), { project: projectName, card: id, generation });
+  return generation;
+}
+
+export function getRunGeneration(projectName, id) {
+  return runGenerations.get(runKey(projectName, id))?.generation || 0;
+}
 
 // On a usage limit the card is parked back in Queue with its attempt rolled
 // back; resume (or boot) re-enqueues it through the normal queue, so accounting
@@ -78,8 +105,7 @@ async function parkForQuota(project, id, attempt, maxAttempts, findings) {
   await patchFrontmatter(project.path, id, {
     verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict },
   });
-  if (findings) retryFindings.set(runKey(project.name, id), findings);
-  else retryFindings.delete(runKey(project.name, id));
+  saveRetryFindings(project, id, findings);
   await orchMove(project, id, 'Queue', 'usage limit; will resume');
   pauseForQuota(project);
   sendState(project, id, 'idle');
@@ -135,6 +161,40 @@ function cardVendor(config, card, stageName) {
   const stageAgent = stageName && (config.stages || {})[stageName]?.agent;
   if (stageName === 'Verify' && stageAgent) return stageAgent;
   return card?.data?.agent || stageAgent || config.default_agent || 'claude';
+}
+
+// The complete state-independent approval gate shared by the board UI and
+// voice prepare/confirm. Live-run handling stays immediately above the Queue
+// branch in humanMove (voice applies the same guard from its fresh effects).
+// Keeping the remaining checks here prevents a voice read-back from promising
+// an approval that humanMove already knows it will refuse.
+export async function approvalEligibility(project, card, config = loadConfig(project.path)) {
+  if (!card) return { ok: false, error: 'card not found' };
+  const id = card.data.id;
+  if (card.data.status !== 'Planned') {
+    return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
+  }
+  if (!(await isGitRepo(project.path))) return { ok: false, error: 'pipeline needs a git repo' };
+  const agent = cardVendor(config, card, 'Build');
+  if (!SUPPORTED_VENDORS.has(agent)) {
+    return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
+  }
+  // Epic approval follows its separate child-cascade path and does not build
+  // the epic's own plan or apply the ordinary card dependency gate.
+  if (card.data.epic) return { ok: true };
+  if (parseChunks(card.body).length >= 2) {
+    return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
+  }
+  // Include archived cards so a completed-then-archived dependency still counts.
+  // loadBoard normalizes a hand-edited scalar `dependencies: task-0002` to the
+  // same one-item list as YAML array syntax. Using the raw readCard value here
+  // used to silently drop that dependency and approve blocked work.
+  const board = loadBoard(project.path, { includeArchived: true });
+  const deps = board.cards.find((c) => c.id === id)?.dependencies || [];
+  const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
+  return blocked.length
+    ? { ok: false, error: `blocked by: ${blocked.join(', ')}` }
+    : { ok: true };
 }
 
 function stageConfig(config, stageName, card) {
@@ -428,7 +488,7 @@ export async function answerCard(project, id, answer) {
   const text = String(answer || '').trim();
   if (!text) return { ok: false, error: 'answer is required' };
   const question = card.data.question || '';
-  retryFindings.set(runKey(project.name, id),
+  saveRetryFindings(project, id,
     `A human answered your earlier question — use this decision to proceed.\nQuestion: ${question}\nAnswer: ${text}`);
   await patchFrontmatter(project.path, id, { question: '', needs_human_reason: '' });
   await appendRunLog(project.path, id, `- ${now()} · human answered: ${text.slice(0, 200)}`);
@@ -450,8 +510,13 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   const key = runKey(project.name, id);
   if (children.has(key)) {
     // never overwrite a live run's tracking entry — that would orphan it
-    return Promise.resolve({ result: { envelope: null, exitCode: -1, stderr: 'already running' }, run: null });
+    return Promise.resolve({
+      result: { envelope: null, exitCode: -1, stderr: 'already running' },
+      run: null,
+      finishTracking: () => {},
+    });
   }
+  bumpRunGeneration(project.name, id);
   let run;
   let observedSession = null;
   const saveSession = (sessionId) => {
@@ -466,8 +531,9 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     // Resume Build can continue that exact run in the preserved worktree.
     if (stage === 'Build') patchFrontmatter(project.path, id, { session_id: sessionId }).catch(() => {});
   };
+  const { retainUntilFinalized = false, triggerClaim = null, ...stageOpts } = opts;
   const { child, done } = runStage({
-    ...opts,
+    ...stageOpts,
     onEvent: (event) => {
       saveSession(event.session_id || event.thread_id || event?.thread?.id);
       if (event.type === 'assistant' || event.type === 'rate_limit_event' ||
@@ -481,6 +547,15 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     startedAt: new Date().toISOString(), prevStatus, attempt,
     ...(observedSession ? { sessionId: observedSession } : {}),
   };
+  if (triggerClaim) {
+    run.cancelled = !!triggerClaim.cancelled;
+    run.revertTo = triggerClaim.revertTo || prevStatus;
+    run.noRequeue = !!triggerClaim.noRequeue;
+    if (triggerClaims.get(key) === triggerClaim) triggerClaims.delete(key);
+  }
+  let resolveFinalized;
+  const finalized = new Promise((resolve) => { resolveFinalized = resolve; });
+  finalizationWaiters.set(run, { finalized, resolve: resolveFinalized });
   runs.set(key, run);
   children.set(key, child);
   persistRuns();
@@ -507,10 +582,17 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   return done.then((result) => {
     clearTimeout(stageTimer);
     const run = runs.get(key);
-    runs.delete(key);
     children.delete(key);
-    persistRuns();
-    return { result, run };
+    const finishTracking = () => {
+      // Do not delete a newer run if a late finalizer somehow overlaps it.
+      if (runs.get(key) === run) runs.delete(key);
+      finalizationWaiters.get(run)?.resolve();
+      finalizationWaiters.delete(run);
+      persistRuns();
+    };
+    if (!retainUntilFinalized) finishTracking();
+    else persistRuns();
+    return { result, run, finishTracking };
   });
 }
 
@@ -524,18 +606,31 @@ export async function humanMove(project, id, to) {
   const key = runKey(project.name, id);
   const live = children.get(key);
   const pend = pending.get(key);
+  const tracked = runs.get(key);
+  const triageClaim = triaging.get(key);
+  const triggerClaim = triggerClaims.get(key);
 
-  if ((live || pend) && to !== 'Review') {
+  // Preserve the long-standing "approve as soon as Planned appears" behavior:
+  // a direct human move waits for the last trigger-stage commit to settle, then
+  // revalidates from the new state. Voice preparation remains non-blocking and
+  // sees hasLiveRun=true throughout this window, so it cannot race finalization.
+  if (tracked && !live && to !== 'Review') {
+    const waiter = finalizationWaiters.get(tracked);
+    if (waiter) {
+      await waiter.finalized;
+      return humanMove(project, id, to);
+    }
+  }
+  if ((tracked || pend || triageClaim || triggerClaim) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
   // always allowed: retriage to Review (cancels a live run)
   if (to === 'Review') {
-    if (live) {
-      const run = runs.get(key);
-      run.cancelled = true;
-      run.revertTo = 'Review';
-      killWithEscalation(live);
+    if (tracked) {
+      tracked.cancelled = true;
+      tracked.revertTo = 'Review';
+      if (live) killWithEscalation(live);
       return { ok: true, cancelled: true };
     }
     if (pend) {
@@ -544,6 +639,15 @@ export async function humanMove(project, id, to) {
       // writer and the chain can't stomp this move by continuing.
       pend.cancelled = true;
       pend.revertTo = 'Review';
+      return { ok: true, cancelled: true };
+    }
+    if (triageClaim) {
+      triageClaim.cancelled = true;
+      return { ok: true, cancelled: true };
+    }
+    if (triggerClaim) {
+      triggerClaim.cancelled = true;
+      triggerClaim.revertTo = 'Review';
       return { ok: true, cancelled: true };
     }
     retryFindings.delete(key);
@@ -563,12 +667,8 @@ export async function humanMove(project, id, to) {
 
   // approval gate: Planned → Queue
   if (to === 'Queue') {
-    if (from !== 'Planned') return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
-    if (!(await isGitRepo(project.path))) return { ok: false, error: 'pipeline needs a git repo' };
-    const agent = cardVendor(config, card, 'Build');
-    if (!SUPPORTED_VENDORS.has(agent)) {
-      return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
-    }
+    const eligible = await approvalEligibility(project, card, config);
+    if (!eligible.ok) return eligible;
     if (card.data.epic) {
       // approving an epic starts the cascade — it never builds itself; it parks
       // in Queue as a tracker while its chunk children build in sequence
@@ -584,19 +684,6 @@ export async function humanMove(project, id, to) {
       }
       return moved;
     }
-    // a plan that was SPLIT into chunks but never fanned out into child cards has
-    // no epic flag. Approving it would build the whole epic as one monolith, so
-    // refuse with a clear path forward. A real launcher/budget epic that was
-    // properly fanned out carries epic:true and already returned above, so this
-    // only catches the unmaterialized case.
-    if (parseChunks(card.body).length >= 2) {
-      return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
-    }
-    const deps = card.data.dependencies || [];
-    // include archived cards so a completed-then-archived dependency still counts
-    const board = loadBoard(project.path, { includeArchived: true });
-    const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
-    if (blocked.length) return { ok: false, error: `blocked by: ${blocked.join(', ')}` };
     const moved = await moveCard(project.path, id, 'Queue', { reason: 'approved' });
     // budget mode: the /todomd-dispatch session picks the card up from here.
     // `unchanged` guards a concurrent double-approval: only the transition that
@@ -638,7 +725,13 @@ export async function humanMove(project, id, to) {
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
     const moved = await moveCard(project.path, id, to, { reason: 'queued by human' });
     if (moved.ok && (config.mode || 'launcher') !== 'budget') {
-      runTriggerStage(project, id, to).catch(() => {});
+      const claim = {
+        project: project.name, card: id, stage: to,
+        cancelled: false, revertTo: 'Review', noRequeue: false,
+      };
+      triggerClaims.set(key, claim);
+      bumpRunGeneration(project.name, id);
+      withoutRepoLockContext(() => runTriggerStage(project, id, to, claim).catch(() => {}));
     }
     return moved;
   }
@@ -711,6 +804,8 @@ export async function resumeBuild(project, id) {
   const moved = await orchMove(project, id, 'Build', 'resuming orphaned run in preserved worktree');
   if (!moved.ok) return moved;
   recoveryBuilds.set(key, {
+    project: project.name,
+    card: id,
     attempt,
     maxAttempts,
     branch: kept.branch,
@@ -774,9 +869,22 @@ export async function retryVerification(project, id) {
   const attempt = Math.max(1, Number(verification.attempts) || 1);
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
   await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
-  await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
-  verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '')
-    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)));
+  const moved = await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
+  if (!moved.ok) return moved;
+  const key = runKey(project.name, id);
+  const claim = {
+    project: project.name, card: id, stage: 'Verify',
+    cancelled: false, revertTo: 'Queue', noRequeue: false,
+    worktreeAbs, branch: card.data.worktree, attempt, maxAttempts,
+    lastVerdict: verification.last_verdict || '',
+  };
+  triggerClaims.set(key, claim);
+  bumpRunGeneration(project.name, id);
+  withoutRepoLockContext(() => {
+    verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim)
+      .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)))
+      .finally(() => { if (triggerClaims.get(key) === claim) triggerClaims.delete(key); });
+  });
   return { ok: true };
 }
 
@@ -795,6 +903,26 @@ export function cancel(project, id) {
   const key = runKey(project.name, id);
   const live = children.get(key);
   if (!live) {
+    // The agent child has exited but a Plan/custom-stage finalizer can still be
+    // committing its result. Keep cancellation meaningful in that window; the
+    // finalizer checks this flag before it drops tracking.
+    const run = runs.get(key);
+    if (run) {
+      run.cancelled = true;
+      run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
+      return { ok: true };
+    }
+    const triageClaim = triaging.get(key);
+    if (triageClaim) {
+      triageClaim.cancelled = true;
+      return { ok: true };
+    }
+    const triggerClaim = triggerClaims.get(key);
+    if (triggerClaim) {
+      triggerClaim.cancelled = true;
+      triggerClaim.revertTo = triggerClaim.stage === 'Verify' ? 'Queue' : 'Review';
+      return { ok: true };
+    }
     // chain claimed but between spawns (pre-spawn, or post-verify/pre-merge) —
     // nothing to SIGTERM. Flag it so the chain reverts at its next checkpoint
     // instead of proceeding, and drop any queued re-entry so the abort sticks.
@@ -833,6 +961,19 @@ export function cancel(project, id) {
   return { ok: true };
 }
 
+// Archive/unarchive with the same guards the HTTP route (and voice actions)
+// need: taking a card off the board while it — or, for an epic, one of its
+// children — is building would leak a live run, so archiving requires the same
+// live-run/building-child checks DELETE uses, plus the epic cascade.
+export async function archiveCard(project, id, on) {
+  if (on && hasLiveRun(project.name, id)) return { ok: false, error: 'run in progress — cancel it first' };
+  const card = readCard(project.path, id);
+  if (on && card?.data?.epic && hasLiveBuildingChild(project, id)) return { ok: false, error: 'a child card is building — cancel it first' };
+  if (on) await releaseCardResources(project, id); // taking it off the board frees its build resources
+  if (on && card?.data?.epic) await cascadeEpicCleanup(project, id);
+  return setArchived(project.path, id, !!on);
+}
+
 // Server shutdown: SIGTERM every tracked agent child, then SIGKILL any still
 // alive after a short grace — an exiting server must never orphan a running
 // (billing) agent CLI. Each child goes through the normal cancel path (run
@@ -852,6 +993,21 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
     }
     try { child.kill('SIGTERM'); } catch { /* already gone */ }
   }
+  // A trigger-stage child may already be gone while its final card/Git writes
+  // remain tracked. Cancel that finalizer too, and wait for it below, so a board
+  // shutdown cannot interrupt the very window voice now protects.
+  for (const [key, run] of runs) {
+    if (children.has(key)) continue;
+    run.cancelled = true;
+    run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
+    run.noRequeue = true;
+  }
+  for (const claim of triaging.values()) claim.cancelled = true;
+  for (const claim of triggerClaims.values()) {
+    claim.cancelled = true;
+    claim.revertTo = claim.stage === 'Verify' ? 'Queue' : 'Review';
+    claim.noRequeue = true;
+  }
   // chains claimed but between spawns have no child to kill — flag them so they
   // park in Queue at their next checkpoint instead of spawning into a dying
   // process
@@ -862,7 +1018,9 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
-    while (children.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    while ((children.size || runs.size || triaging.size || triggerClaims.size) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
   };
   await waitForExit(graceMs);
   for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
@@ -871,8 +1029,18 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
 
 /* ── plan & custom trigger stages ── */
 
-async function runTriggerStage(project, id, stageName) {
+async function runTriggerStage(project, id, stageName, triggerClaim = null) {
+  const key = runKey(project.name, id);
+  const finishPreSpawnCancellation = async () => {
+    if (!triggerClaim?.cancelled) return false;
+    await orchMove(project, id, triggerClaim.revertTo || 'Review', 'cancelled');
+    sendState(project, id, 'idle');
+    return true;
+  };
+
+  try {
   const config = await execConfig(project.path);
+  if (await finishPreSpawnCancellation()) return;
   const card = readCard(project.path, id);
   const stage = stageConfig(config, stageName, card);
   const vendor = cardVendor(config, card, stageName);
@@ -887,7 +1055,9 @@ async function runTriggerStage(project, id, stageName) {
     return toNeedsHuman(project, id, stageName, 'skill_not_found', String(e.message || e));
   }
 
-  const { result, run } = await spawnTracked(project, id, stageName, 'Review', 0, {
+  const { result, run, finishTracking } = await spawnTracked(project, id, stageName, 'Review', 0, {
+    retainUntilFinalized: true,
+    triggerClaim,
     vendor,
     cwd: project.path,
     prompt,
@@ -898,58 +1068,93 @@ async function runTriggerStage(project, id, stageName) {
     logFile: runLogFile(project, id, stageName),
   });
 
-  if (run?.cancelled) {
+  let cancellationHandled = false;
+  let trackingFinished = false;
+  const releaseTracking = () => {
+    if (trackingFinished) return;
+    trackingFinished = true;
+    finishTracking();
+  };
+  const finishCancellation = async () => {
+    if (!run?.cancelled || cancellationHandled) return false;
+    cancellationHandled = true;
+    const revertTo = run.revertTo || 'Review';
     await recordRun(project, id, stageName, 0, result, 'cancelled');
-    await orchMove(project, id, run.revertTo, 'cancelled');
-    sendState(project, id, 'idle');
-    return;
-  }
-  if (run?.timedOut) {
-    await recordRun(project, id, stageName, 0, result, 'run timeout');
-    return toNeedsHuman(project, id, stageName, 'run_timeout',
-      `${stageName} exceeded the ${run.timeoutMin}m stage timeout`);
-  }
-  const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
-  if (ok) {
-    await recordRun(project, id, stageName, 0, result, skill ? `ok (/${skill})` : 'ok');
-    if (stageName === 'Plan') {
-      // skill cards return to Review (human reads the findings and decides);
-      // staying in Plan would read as an orphaned run after a restart
-      if (skill) {
-        await orchMove(project, id, 'Review', `findings ready (/${skill})`);
-      } else {
-        // the plan agent may have split the work into a `## Chunks` breakdown —
-        // fan it out into sequential child cards; otherwise it's a normal plan
-        const chunks = parseChunks(readCard(project.path, id)?.body || '');
-        if (chunks.length >= 2) {
-          await fanOutChunks(project, id, chunks);
-        } else {
-          if (chunks.length === 1) {
-            await withRepoLock(project.path, async () => {
-              const card = readCard(project.path, id);
-              if (card) {
-                const plan = (chunks[0].plan || '').trimEnd();
-                const header = '## Implementation Plan\n';
-                const idx = card.raw.indexOf(header);
-                if (idx !== -1) {
-                  const afterHeader = idx + header.length;
-                  const nextSection = card.raw.indexOf('\n## ', afterHeader);
-                  const end = nextSection >= 0 ? nextSection + 1 : card.raw.length;
-                  const updated = card.raw.slice(0, afterHeader) + `\n${plan}\n\n` + card.raw.slice(end);
-                  fs.writeFileSync(path.join(project.path, '.todomd', 'tasks', card.file), updated);
-                }
-              }
-            });
-            await appendRunLog(project.path, id, '  - note: single-chunk plan folded into Implementation Plan');
-          }
-          await orchMove(project, id, 'Planned', 'plan complete');
-        }
-      }
+    await orchMove(project, id, revertTo, 'cancelled');
+    // A Plan can be cancelled while fanOutChunks is between child commits.
+    // Re-read after finalization settles and restore the same invariant as a
+    // normal epic retriage: no non-Done child from the cancelled plan remains
+    // active on the board.
+    if (revertTo === 'Review' && readCard(project.path, id)?.data?.epic) {
+      await cascadeEpicCleanup(project, id);
     }
     sendState(project, id, 'idle');
-    return;
+    return true;
+  };
+
+  try {
+    if (await finishCancellation()) return;
+    if (run?.timedOut) {
+      await recordRun(project, id, stageName, 0, result, 'run timeout');
+      await toNeedsHuman(project, id, stageName, 'run_timeout',
+        `${stageName} exceeded the ${run.timeoutMin}m stage timeout`);
+      return;
+    }
+    const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
+    if (ok) {
+      await recordRun(project, id, stageName, 0, result, skill ? `ok (/${skill})` : 'ok');
+      if (await finishCancellation()) return;
+      if (stageName === 'Plan') {
+        // skill cards return to Review (human reads the findings and decides);
+        // staying in Plan would read as an orphaned run after a restart
+        if (skill) {
+          await orchMove(project, id, 'Review', `findings ready (/${skill})`);
+        } else {
+          // the plan agent may have split the work into a `## Chunks` breakdown —
+          // fan it out into sequential child cards; otherwise it's a normal plan
+          const chunks = parseChunks(readCard(project.path, id)?.body || '');
+          if (chunks.length >= 2) {
+            await fanOutChunks(project, id, chunks);
+          } else {
+            if (chunks.length === 1) {
+              await withRepoLock(project.path, async () => {
+                const card = readCard(project.path, id);
+                if (card) {
+                  const plan = (chunks[0].plan || '').trimEnd();
+                  const header = '## Implementation Plan\n';
+                  const idx = card.raw.indexOf(header);
+                  if (idx !== -1) {
+                    const afterHeader = idx + header.length;
+                    const nextSection = card.raw.indexOf('\n## ', afterHeader);
+                    const end = nextSection >= 0 ? nextSection + 1 : card.raw.length;
+                    const updated = card.raw.slice(0, afterHeader) + `\n${plan}\n\n` + card.raw.slice(end);
+                    fs.writeFileSync(path.join(project.path, '.todomd', 'tasks', card.file), updated);
+                  }
+                }
+              });
+              await appendRunLog(project.path, id, '  - note: single-chunk plan folded into Implementation Plan');
+            }
+            await orchMove(project, id, 'Planned', 'plan complete');
+          }
+        }
+      }
+      // A cancel can arrive while the result or final card move is committing.
+      // Re-check after those awaits so the explicit cancellation wins.
+      if (await finishCancellation()) return;
+      releaseTracking();
+      sendState(project, id, 'idle');
+      return;
+    }
+    await handleRunFailure(project, id, stageName, result, run?.prevStatus || 'Review');
+    if (await finishCancellation()) return;
+    releaseTracking();
+  } finally {
+    try { await finishCancellation(); }
+    finally { releaseTracking(); }
   }
-  await handleRunFailure(project, id, stageName, result, run?.prevStatus || 'Review');
+  } finally {
+    if (triggerClaim && triggerClaims.get(key) === triggerClaim) triggerClaims.delete(key);
+  }
 }
 
 async function handleRunFailure(project, id, stageName, result, revertTo) {
@@ -1004,9 +1209,13 @@ function enqueueBuild(project, id) {
   const q = queues.get(project.name);
   // dedupe: a concurrent double-approval or re-approval must not queue twice
   if (q.includes(id) || children.has(runKey(project.name, id))) return;
+  bumpRunGeneration(project.name, id);
   q.push(id);
   sendState(project, id, 'queued', 'Build');
-  processQueue(project);
+  // Voice confirmation can enqueue while holding the repository transaction.
+  // The build chain outlives that call, so it must not inherit reentrant lock
+  // ownership from the confirmer.
+  withoutRepoLockContext(() => processQueue(project));
 }
 
 function processQueue(project) {
@@ -1021,7 +1230,13 @@ function processQueue(project) {
     // settles (the finally below — success: after merge + the Done move;
     // failure: after toNeedsHuman/revert completes)
     const key = runKey(project.name, id);
-    const entry = { cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false };
+    // Keep structured ownership on the value. Project names may contain `:`,
+    // so consumers must not recover identity by splitting/prefix-matching the
+    // composite map key.
+    const entry = {
+      project: project.name, card: id,
+      cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
+    };
     const recovery = recoveryBuilds.get(key) || null;
     recoveryBuilds.delete(key);
     pending.set(key, entry);
@@ -1097,12 +1312,15 @@ async function buildChain(project, id, retry = null, recovery = null) {
   // quota — defer it to resume. processQueue already gates first builds, so
   // this only fires on the direct verify→retry path.
   if (quotaPaused.has(project.name)) {
-    if (retry?.findings) retryFindings.set(key, retry.findings);
+    if (retry?.findings) saveRetryFindings(project, id, retry.findings);
     await orchMove(project, id, 'Queue', 'paused; will resume');
     return sendState(project, id, 'idle');
   }
   // carry findings from a verify-fail build that was then quota-parked
-  if (!retry && retryFindings.has(key)) { retry = { findings: retryFindings.get(key) }; retryFindings.delete(key); }
+  if (!retry && retryFindings.has(key)) {
+    retry = { findings: retryFindings.get(key).findings };
+    retryFindings.delete(key);
+  }
   const ver = card.data.verification || {};
   const attempt = recovery?.attempt || (Number(ver.attempts) || 0) + 1;
   const maxAttempts = recovery?.maxAttempts || Number(ver.max_attempts) || config.max_attempts || 3;
@@ -1326,11 +1544,29 @@ async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, e
   return { ok: true, findings: `${findings}\n\nFable diagnosis:\n${diagnosis.diagnosis}\n\nRequired repair strategy:\n${diagnosis.repair_strategy}` };
 }
 
-async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
+async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings, triggerClaim = null) {
   const config = await execConfig(project.path);
   const card = readCard(project.path, id);
   const stage = stageConfig(config, 'Verify', card);
   const vendor = cardVendor(config, card, 'Verify');
+
+  if (triggerClaim?.cancelled) {
+    await releaseCoordination(project, id);
+    await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
+    await patchFrontmatter(project.path, id, {
+      worktree: '', base_branch: '',
+      verification: {
+        attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts,
+        last_verdict: triggerClaim.lastVerdict || '',
+      },
+    });
+    await orchMove(project, id, triggerClaim.revertTo || 'Queue', 'cancelled');
+    sendState(project, id, 'idle');
+    if (triggerClaim.revertTo === 'Queue' && !triggerClaim.noRequeue && (config.mode || 'launcher') !== 'budget') {
+      enqueueBuild(project, id);
+    }
+    return;
+  }
 
   // same between-spawns cancel window as buildChain (build done, verify not
   // yet spawned) — honor it before spawning
@@ -1341,6 +1577,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   }
 
   const { result, run } = await spawnTracked(project, id, 'Verify', 'Build', attempt, {
+    triggerClaim,
     vendor,
     cwd: worktreeAbs,
     prompt: stagePrompt(project, vendor, stage, id),
@@ -1509,36 +1746,52 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
 /* ── auto-triage: annotate incoming Review cards with insight + plan ── */
 
-const triaging = new Set(); // synchronous claim — closes the check-then-spawn gap
+const triaging = new Map(); // runKey → exact claim spanning pre-spawn through final writes
 
 export async function maybeTriage(project, id) {
-  const config = await execConfig(project.path);
-  const t = config.triage || {};
-  if (t.enabled === false) return;
-  if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
   const key = runKey(project.name, id);
   if (triaging.has(key)) return;                         // already claimed this tick
   const card = readCard(project.path, id);
   if (!card || card.data.status !== 'Review') return;
   if (card.data.triaged) return;                         // idempotent across restarts
   if (card.data.skill) return;                           // skill cards have their own flow
-  const vendor = cardVendor(config, card);
-  if (!SUPPORTED_VENDORS.has(vendor)) return;
   if (children.has(key)) return;
-  triaging.add(key); // claimed before any await — no two concurrent calls proceed
+  let resolveClaim;
+  const done = new Promise((resolve) => { resolveClaim = resolve; });
+  const claim = { project: project.name, card: id, cancelled: false, done, resolve: resolveClaim };
+  triaging.set(key, claim); // claimed before any await — no two concurrent calls proceed
+  bumpRunGeneration(project.name, id);
 
   try {
-    await runTriage(project, id, config, t, vendor);
+    const config = await execConfig(project.path);
+    const t = config.triage || {};
+    if (t.enabled === false) return;
+    if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
+    const vendor = cardVendor(config, card);
+    if (!SUPPORTED_VENDORS.has(vendor)) return;
+    await runTriage(project, id, config, t, vendor, claim);
   } finally {
     triaging.delete(key);
+    claim.resolve();
   }
 }
 
-async function runTriage(project, id, config, t, vendor) {
+// The drawer can save routing immediately after creating a card, while its
+// automatic Triage claim is still pre-spawn. Let that direct human edit wait
+// for Triage and then revalidate; voice actions intentionally do not use this.
+export function waitForTriage(projectName, id) {
+  return triaging.get(runKey(projectName, id))?.done || Promise.resolve();
+}
+
+async function runTriage(project, id, config, t, vendor, claim) {
   const card = readCard(project.path, id);
   if (!card) return;
   // stamp so a restart-time sweep treats an interrupted triage as retryable
   await patchFrontmatter(project.path, id, { triaged: 'running' });
+  if (claim.cancelled) {
+    await patchFrontmatter(project.path, id, { triaged: '' });
+    return;
+  }
 
   let prompt;
   try {
@@ -1561,7 +1814,12 @@ async function runTriage(project, id, config, t, vendor) {
   //    themselves, and the inlined command's board-relative paths are rewritten
   //    to match the new cwd.
   const codexTriage = vendor === 'codex';
-  const { result, run } = await spawnTracked(project, id, 'Triage', 'Review', 0, {
+  if (claim.cancelled) {
+    await patchFrontmatter(project.path, id, { triaged: '' });
+    return;
+  }
+  const { result, run, finishTracking } = await spawnTracked(project, id, 'Triage', 'Review', 0, {
+    retainUntilFinalized: true,
     vendor,
     cwd: codexTriage ? path.join(project.path, '.todomd', 'tasks') : project.path,
     prompt: codexTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
@@ -1572,27 +1830,42 @@ async function runTriage(project, id, config, t, vendor) {
     logFile: runLogFile(project, id, 'Triage'),
   });
 
-  const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
-  if (run?.cancelled) {
+  let cancellationHandled = false;
+  const finishCancellation = async () => {
+    if (!(claim.cancelled || run?.cancelled) || cancellationHandled) return false;
+    cancellationHandled = true;
     await patchFrontmatter(project.path, id, { triaged: '' });
-  } else if (run?.timedOut) {
-    await recordRun(project, id, 'Triage', 0, result, 'run timeout');
-    await patchFrontmatter(project.path, id, { triaged: 'failed (run_timeout)' });
-  } else if (ok) {
-    await recordRun(project, id, 'Triage', 0, result, 'ok');
-    await patchFrontmatter(project.path, id, { triaged: new Date().toISOString().slice(0, 10) });
-  } else {
-    const failure = classifyFailure(result);
-    // a failed triage never blocks the card — it just stays unannotated
-    await patchFrontmatter(project.path, id, { triaged: `failed (${failure.kind})` });
-    if (failure.kind === 'quota' || failure.kind === 'cli_missing' || failure.kind === 'auth') {
-      setBanner(failure.kind, 'warn', `triage paused: ${failure.detail}`);
+    await commitCardChanges(project.path, id, `chore(todomd): ${id} triage cancelled`);
+    return true;
+  };
+
+  try {
+    if (await finishCancellation()) return;
+    const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
+    if (run?.timedOut) {
+      await recordRun(project, id, 'Triage', 0, result, 'run timeout');
+      await patchFrontmatter(project.path, id, { triaged: 'failed (run_timeout)' });
+    } else if (ok) {
+      await recordRun(project, id, 'Triage', 0, result, 'ok');
+      await patchFrontmatter(project.path, id, { triaged: new Date().toISOString().slice(0, 10) });
+    } else {
+      const failure = classifyFailure(result);
+      // a failed triage never blocks the card — it just stays unannotated
+      await patchFrontmatter(project.path, id, { triaged: `failed (${failure.kind})` });
+      if (failure.kind === 'quota' || failure.kind === 'cli_missing' || failure.kind === 'auth') {
+        setBanner(failure.kind, 'warn', `triage paused: ${failure.detail}`);
+      }
     }
+    if (await finishCancellation()) return;
+    // triage ends in Review with no moveCard — commit the annotations ourselves so
+    // the board doesn't accumulate uncommitted working-tree changes
+    await commitCardChanges(project.path, id, `chore(todomd): ${id} triaged`);
+    await finishCancellation();
+  } finally {
+    try { await finishCancellation(); }
+    finally { finishTracking(); }
+    sendState(project, id, 'idle');
   }
-  // triage ends in Review with no moveCard — commit the annotations ourselves so
-  // the board doesn't accumulate uncommitted working-tree changes
-  if (!run?.cancelled) await commitCardChanges(project.path, id, `chore(todomd): ${id} triaged`);
-  sendState(project, id, 'idle');
 }
 
 // Catch cards that arrive outside the API (git pull, email routine, editor).
@@ -1767,14 +2040,33 @@ export function getRunStates(projectName) {
   for (const id of queues.get(projectName) || []) {
     states[id] = { state: 'queued', stage: 'Build' };
   }
+  // A chain claimed by processQueue but between spawns (shift→spawn, build→
+  // verify, verify→merge) has no `runs` entry yet still counts as live for
+  // hasLiveRun/cancel/humanMove. Report it too, or callers that ask "what is
+  // running?" see a false idle in exactly the windows the pipeline treats as
+  // hands-off. The pending entry carries no stage, so the label is generic.
+  for (const entry of pending.values()) {
+    if (entry.project !== projectName) continue;
+    if (!states[entry.card]) states[entry.card] = { state: 'running', stage: 'in progress' };
+  }
+  for (const claim of triaging.values()) {
+    if (claim.project === projectName && !states[claim.card]) {
+      states[claim.card] = { state: 'running', stage: 'Triage' };
+    }
+  }
+  for (const claim of triggerClaims.values()) {
+    if (claim.project === projectName && !states[claim.card]) {
+      states[claim.card] = { state: 'running', stage: claim.stage };
+    }
+  }
   return states;
 }
 
 export function hasLiveRun(projectName, id) {
   const key = runKey(projectName, id);
-  // children covers spawned runs; pending covers a claimed chain between
-  // spawns (shift→spawn, build→verify, verify→merge) — both mean "hands off"
-  return children.has(key) || pending.has(key);
+  // runs also covers a trigger-stage child that exited while its final Git/card
+  // writes are still settling. That window remains hands-off until finalization.
+  return runs.has(key) || pending.has(key) || triaging.has(key) || triggerClaims.has(key);
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -1786,9 +2078,13 @@ export function hasLiveBuildingChild(project, epicId) {
 
 // Any live agent run for this project (used to refuse removing a busy project).
 export function projectHasLiveRun(projectName) {
-  const prefix = `${projectName}:`;
-  for (const key of children.keys()) if (key.startsWith(prefix)) return true;
-  for (const key of pending.keys()) if (key.startsWith(prefix)) return true;
+  // Plan/custom-trigger children are tracked in `runs` but do not belong to a
+  // pending Build chain. Check both structured values; project names may
+  // contain `:`, so composite-key prefix matching is not safe here.
+  for (const run of runs.values()) if (run.project === projectName) return true;
+  for (const entry of pending.values()) if (entry.project === projectName) return true;
+  for (const claim of triaging.values()) if (claim.project === projectName) return true;
+  for (const claim of triggerClaims.values()) if (claim.project === projectName) return true;
   return false;
 }
 
@@ -1797,10 +2093,12 @@ export function forgetProject(projectName) {
   queues.delete(projectName);
   active.delete(projectName);
   quotaPaused.delete(projectName);
-  const prefix = `${projectName}:`;
-  for (const k of retryFindings.keys()) if (k.startsWith(prefix)) retryFindings.delete(k);
-  for (const k of recoveryBuilds.keys()) if (k.startsWith(prefix)) recoveryBuilds.delete(k);
-  for (const k of pending.keys()) if (k.startsWith(prefix)) pending.delete(k);
+  for (const [k, entry] of retryFindings) if (entry.project === projectName) retryFindings.delete(k);
+  for (const [k, entry] of recoveryBuilds) if (entry.project === projectName) recoveryBuilds.delete(k);
+  for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
+  for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);
+  for (const [k, claim] of triggerClaims) if (claim.project === projectName) triggerClaims.delete(k);
+  for (const [k, entry] of runGenerations) if (entry.project === projectName) runGenerations.delete(k);
 }
 
 export function usage(projectName) {

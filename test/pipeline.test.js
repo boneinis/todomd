@@ -5,9 +5,10 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
-import { readCard, setStageRouting, patchFrontmatter } from '../src/board.js';
+import { readCard, loadBoard, setStageRouting, patchFrontmatter, withRepoLock } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
+import * as voice from '../src/voice.js';
 
 const noop = () => {};
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
@@ -36,7 +37,7 @@ test('happy path: Review → Plan → Planned → Queue → Build → Verify →
 
   // approve → the full automatic chain
   r = await pipeline.humanMove(p, 'task-0001', 'Queue');
-  assert.equal(r.ok, true);
+  assert.equal(r.ok, true, r.error);
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
 
   // the build's code was merged to main, the worktree was pruned
@@ -283,6 +284,22 @@ test('dependency gate: approval blocked until deps are Done', async () => {
   assert.match(blocked.error, /blocked/);
 });
 
+test('dependency gate preserves a hand-edited scalar dependency', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0002', { status: 'Review' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  const file = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('dependencies: []', 'dependencies: task-0002'));
+
+  const blocked = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /blocked by: task-0002/);
+  assert.equal(status(repo, 'task-0001'), 'Planned');
+});
+
 test('quota: build hits a usage limit → card parks in Queue + project paused; resume completes it', async () => {
   isolateHome();
   const repo = makeRepo();
@@ -321,6 +338,50 @@ test('triage commits the card so the working tree stays clean (with triage enabl
   const { execFileSync } = await import('node:child_process');
   const dirty = execFileSync('git', ['status', '--porcelain', '--', '.todomd'], { cwd: repo, encoding: 'utf8' }).trim();
   assert.equal(dirty, '', `triage left uncommitted board changes:\n${dirty}`);
+});
+
+test('Triage stays live from its pre-spawn claim through final writes and blocks voice actions', async () => {
+  isolateHome();
+  const marker = path.join(tmp('triage-finalizing'), 'agent-done');
+  useFakeAgent({ before_exit_marker: marker, exit_delay_ms: 500 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo({ triage: true });
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  let release;
+  try {
+    const triage = pipeline.maybeTriage(p, 'task-0001');
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true, 'the synchronous pre-spawn claim is live');
+    assert.equal(pipeline.getRunStates(p.name)['task-0001'].stage, 'Triage');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+
+    let unlock;
+    const held = new Promise((resolve) => { unlock = resolve; });
+    const lockDone = withRepoLock(repo, () => held);
+    release = async () => { unlock(); await lockDone; };
+    await sleep(700);
+
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true, 'post-child finalization remains live');
+    assert.deepEqual(voice.buildVoiceSummary(p).activeRuns,
+      [{ card: 'task-0001', state: 'running', stage: 'Triage', external: false }]);
+    const archive = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'archive' });
+    assert.equal(archive.status, 400);
+    assert.match(archive.error, /live run/);
+    assert.deepEqual(pipeline.cancel(p, 'task-0001'), { ok: true });
+
+    await release();
+    release = null;
+    await triage;
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false);
+    assert.equal(status(repo, 'task-0001'), 'Review');
+    assert.equal(readCard(repo, 'task-0001').data.triaged || '', '');
+    const dirty = execFileSync('git', ['status', '--porcelain', '--', '.todomd'], { cwd: repo, encoding: 'utf8' }).trim();
+    assert.equal(dirty, '', `cancelled triage left uncommitted board changes:\n${dirty}`);
+  } finally {
+    if (release) await release();
+    clearFakeAgent();
+  }
 });
 
 test('chunking: a splitting plan fans out sequential child cards; approving the epic cascades them to Done', async () => {
@@ -414,6 +475,168 @@ test('forgetProject + projectHasLiveRun', async () => {
   pipeline.init({ broadcast: noop });
   assert.equal(pipeline.projectHasLiveRun('nope'), false);
   pipeline.forgetProject('nope'); // no-op, must not throw
+});
+
+test('projectHasLiveRun includes a live Plan child outside the pending Build chain', async () => {
+  isolateHome();
+  const marker = path.join(tmp('plan-live-project'), 'started');
+  useFakeAgent({ hang: 'plan', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+    assert.equal(pipeline.getRunStates(p.name)['task-0001'].stage, 'Plan');
+    assert.equal(pipeline.projectHasLiveRun(p.name), true);
+  } finally {
+    await pipeline.humanMove(p, 'task-0001', 'Review');
+    await until(() => status(repo, 'task-0001') === 'Review', { timeout: BUDGET.stage });
+    clearFakeAgent();
+  }
+});
+
+test('a scheduled Plan is claimed before the background spawn and refuses an immediate voice move', async () => {
+  isolateHome();
+  useFakeAgent({ hang: 'plan' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Plan')).ok, true);
+    // No polling: this is the exact return-from-humanMove handoff where the
+    // scheduled async stage used to be invisible until execConfig completed.
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'Plan' });
+    const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(retriage.status, 400);
+    assert.match(retriage.error, /live run/);
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'), { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+    assert.equal(status(repo, 'task-0001'), 'Review', 'the scheduled Plan cannot stomp the cancellation');
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('a Plan run remains live through finalization and cancellation wins the final move', async () => {
+  isolateHome();
+  const marker = path.join(tmp('plan-finalizing'), 'agent-done');
+  useFakeAgent({ before_exit_marker: marker, exit_delay_ms: 500 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  let release;
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+
+    // Hold the first finalizer write. The child exits during this hold, leaving
+    // exactly the post-child/pre-final-move window that used to look idle.
+    let unlock;
+    const held = new Promise((resolve) => { unlock = resolve; });
+    const lockDone = withRepoLock(repo, () => held);
+    release = async () => { unlock(); await lockDone; };
+    await sleep(700);
+
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.equal(pipeline.getRunStates(p.name)['task-0001'].stage, 'Plan');
+    assert.deepEqual(voice.buildVoiceSummary(p).activeRuns,
+      [{ card: 'task-0001', state: 'running', stage: 'Plan', external: false }]);
+    const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(retriage.status, 400);
+    assert.match(retriage.error, /live run/);
+    const cancelled = await pipeline.humanMove(p, 'task-0001', 'Review');
+    assert.deepEqual(cancelled, { ok: true, cancelled: true });
+
+    await release();
+    release = null;
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+    await sleep(150);
+    assert.equal(status(repo, 'task-0001'), 'Review', 'the stage finalizer cannot overwrite the cancellation');
+  } finally {
+    if (release) await release();
+    clearFakeAgent();
+  }
+});
+
+test('cancelling Plan during chunk fan-out archives every generated non-Done child', async () => {
+  isolateHome();
+  useFakeAgent({ chunks: 12 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { title: 'large split' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => pipeline.hasLiveRun(p.name, 'task-0001') &&
+      readCard(repo, 'task-0001')?.data?.status === 'Plan', { timeout: BUDGET.stage });
+    await until(() => {
+      const board = loadBoard(repo, { includeArchived: true });
+      return board.cards.some((card) => card.parent === 'task-0001');
+    }, { timeout: BUDGET.stage, step: 2 });
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'), { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+
+    const children = loadBoard(repo, { includeArchived: true }).cards
+      .filter((card) => card.parent === 'task-0001');
+    assert.equal(children.length, 12, 'fan-out completed before cancellation cleanup');
+    assert.ok(children.every((card) => card.status === 'Done' || card.archived),
+      'every non-Done child created by the cancelled Plan is archived');
+    assert.equal(loadBoard(repo).cards.some((card) => card.parent === 'task-0001'), false,
+      'cancelled Plan children are no longer active on the board');
+  } finally {
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('forgetProject uses exact ownership and preserves a nested project\'s queued findings', async () => {
+  isolateHome();
+  const hangMarker = path.join(tmp('nested-project'), 'first-build');
+  const argvLog = path.join(tmp('nested-project-argv'), 'argv.jsonl');
+  useFakeAgent({ verdict: 'pass', build: 'good', hang: 'build', hang_marker: hangMarker, argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = { name: 'alpha:beta', path: repo };
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', {
+    status: 'Needs Human',
+    extra: 'needs_human_reason: needs_answer\nquestion: Which option?\n',
+  });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(hangMarker), { timeout: BUDGET.stage });
+    await pipeline.answerCard(p, 'task-0002', 'Keep the blue option');
+    assert.equal(status(repo, 'task-0002'), 'Queue', 'the second build is parked behind the live first build');
+
+    pipeline.forgetProject('alpha');
+    await pipeline.humanMove(p, 'task-0001', 'Review');
+    await until(() => status(repo, 'task-0002') === 'Done', { timeout: BUDGET.chain });
+
+    const invocations = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+    const resumedPrompt = invocations.map((args) => args.join(' '))
+      .find((line) => line.includes('task-0002') && line.includes('Keep the blue option'));
+    assert.ok(resumedPrompt, 'removing alpha must not delete alpha:beta retry findings');
+  } finally {
+    if (pipeline.hasLiveRun(p.name, 'task-0001')) pipeline.cancel(p, 'task-0001');
+    clearFakeAgent();
+  }
 });
 
 test('coordination: a card claims ACTIVE.md while building and releases it on Done', async () => {
@@ -1146,6 +1369,47 @@ test('Restart Build re-drives a legacy orphan only when its preserved assets are
     assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')),
       'successful Build → Verify → Done cleanup is unchanged');
   } finally {
+    clearFakeAgent();
+  }
+});
+
+test('Retry Verification is claimed before its background spawn and refuses an immediate voice move', async () => {
+  isolateHome();
+  useFakeAgent({ hang: 'verify' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  const base = git(repo, ['branch', '--show-current']);
+  const branch = 'todomd/task-0001';
+  const worktree = path.join(repo, '.todomd/worktrees/task-0001');
+  writeCard(repo, 'task-0001', {
+    status: 'Needs Human',
+    extra: `needs_human_reason: bad_verdict\nsession_id: fake-session\nworktree: ${branch}\nbase_branch: ${base}\n`,
+  });
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'seed preserved verification']);
+  fs.mkdirSync(path.dirname(worktree), { recursive: true });
+  git(repo, ['worktree', 'add', '-q', worktree, '-b', branch]);
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    // No polling: the retry has returned but verify() may still be awaiting
+    // config. Its synchronous claim must already be visible and protective.
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'Verify' });
+    assert.deepEqual(voice.buildVoiceSummary(p).activeRuns,
+      [{ card: 'task-0001', state: 'running', stage: 'Verify', external: false }]);
+    const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+    assert.equal(retriage.status, 400);
+    assert.match(retriage.error, /live run/);
+    assert.ok(fs.existsSync(worktree), 'the refused voice move preserved the verification worktree');
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'), { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await pipeline.killAllChildren({ graceMs: 1000 });
     clearFakeAgent();
   }
 });

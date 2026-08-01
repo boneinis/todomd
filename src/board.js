@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
@@ -316,6 +317,7 @@ function setStatusInFrontmatter(raw, newStatus) {
 // One write at a time per repo: a human drag and (in phase 2) an agent-run
 // transition must never interleave read-modify-write on the same files.
 const repoLocks = new Map();
+const heldRepoLocks = new AsyncLocalStorage();
 // exported so coordination's ACTIVE.md read-modify-write-commit serializes with
 // board writes/commits on the same repo (no git-index race, no lost update).
 // Two layers: an in-process promise chain (cheap, serializes this process's
@@ -323,11 +325,38 @@ const repoLocks = new Map();
 // processes — a second server, or a budget-mode dispatch session committing via
 // its own shell git). The dispatch command grabs the same on-disk lock.
 export function withRepoLock(repoPath, fn) {
-  const guarded = () => withFileLock(repoPath, fn);
-  const prev = repoLocks.get(repoPath) || Promise.resolve();
+  const key = path.resolve(repoPath);
+  const held = heldRepoLocks.getStore();
+  // A voice confirmation holds this lock across revalidation and its guarded
+  // operation. Board helpers called by that operation acquire the same lock;
+  // treat those nested calls as part of the existing transaction instead of
+  // queueing behind ourselves forever.
+  const inherited = held?.get(key);
+  if (inherited?.active) return Promise.resolve().then(fn);
+
+  const guarded = () => withFileLock(key, () => {
+    const nextHeld = new Map(held || []);
+    const token = { active: true };
+    nextHeld.set(key, token);
+    return heldRepoLocks.run(nextHeld, async () => {
+      try { return await fn(); }
+      // AsyncLocalStorage is inherited by detached promises. Revoke this token
+      // before releasing the real lock so a late continuation cannot mistake
+      // its stale context for lock ownership and bypass a future holder.
+      finally { token.active = false; }
+    });
+  });
+  const prev = repoLocks.get(key) || Promise.resolve();
   const next = prev.then(guarded, guarded);
-  repoLocks.set(repoPath, next.then(() => {}, () => {}));
+  repoLocks.set(key, next.then(() => {}, () => {}));
   return next;
+}
+
+// A pipeline operation may intentionally launch work that outlives its caller.
+// Start that detached chain with no inherited ownership: every later board/git
+// write must acquire the real repository lock in its own right.
+export function withoutRepoLockContext(fn) {
+  return heldRepoLocks.run(new Map(), fn);
 }
 
 export function moveCard(repoPath, id, newStatus, { reason } = {}) {
