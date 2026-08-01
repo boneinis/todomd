@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbf43-ba24-7671-9927-3b311bdd9e1d
+session_id: 019fbf4c-05c2-70f1-8def-f5b15ffcc9cf
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -108,3 +108,5 @@ Actionable defect: stale-state binding does not include the preserved worktree�
   - attempts_exhausted: Adversarial testing found an ABA stale-proposal bug. I prepared a visible `cancel` proposal for task-0002 while it was queued, canceled that queue entry through the normal guarded operation, re-approved the card to create a new queue entry, then confirmed the old proposal. Confirmation returned 200 and canceled the replacement queue entry. The fingerprint only records card content and the coarse `
 - 2026-08-01 21:43Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Reproduced an ABA stale-proposal bug. When Git cannot record board commits—for example, during a merge/rebase—`moveCard` still mutates the card and returns `ok: true` with a warning. After a queued run was canceled and replaced, Queue→Planned→Queue restored identical card bytes while `cardRevision()` remained unchanged because neither transition committed. The old cancel proposal therefore confirm
+- 2026-08-01 21:52Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Reproducible trigger-stage race: humanMove(..., 'Plan') launches runTriggerStage() in the background, but runTriggerStage() awaits configuration before spawnTracked() registers the run. During that interval, getRunStates(), hasLiveRun(), and the run generation all report idle. I prepared and confirmed retriage during this window; both returned 200 and moved Plan → Review, but the already-scheduled
