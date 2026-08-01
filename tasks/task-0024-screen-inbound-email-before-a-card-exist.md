@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb59-20c0-76b0-b4e8-f0723a581594
+session_id: 019fbb5f-4e28-7fa0-b681-9767a658ecd9
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -204,3 +204,5 @@ Reachable classifier defects remain:
   - attempts_exhausted: `npm test` passed with normal process visibility: 236 core tests and 2 UI tests. However, `src/screen.js` misses the common out-of-office phrasing “I am on leave until August 5 and will respond when I return.” An end-to-end `pollSource` reproduction classified it as work with no signals, created a Review card, and invoked triage. Expand the first-person absence regex to recognize `on (annual )?lea
 - 2026-08-01 03:28Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: `npm test` passed all 236 core tests and 2 UI tests with normal process visibility; `git diff --check main...HEAD` also passed. However, src/screen.js:16-17 misses common out-of-office forms. A parsed email with subject `Out of Office AutoReply: Export failure` and body `Thank you for your message. I will return on August 12 and reply then.` was classified as `work` with no signals. End-to-end, po
+- 2026-08-01 03:34Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed all 236 core tests and 2 UI tests with normal runtime permissions; `git diff --check main...HEAD` also passed. However, the classifier misses common out-of-office messages that the task explicitly requires to be `unclear`. Parser-level probes with subject `Re: Export failure` and bodies such as `I am on maternity leave until August 12...`, `Currently out of the office until Augus
