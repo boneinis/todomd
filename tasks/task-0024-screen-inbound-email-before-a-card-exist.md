@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb00-3c6d-7b12-8914-e5348b67078a
+session_id: 019fbb07-2f65-7fa2-9600-22ffc6a9105b
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -162,3 +162,7 @@ Classifier defects remain in `src/screen.js`:
   - attempts_exhausted: `npm test` passed outside the listener-restricted sandbox: 229 core tests and 2 UI tests. `git diff --check` passed and the worktree remained clean.
 
 Adversarial review found a reachable duplicate-card defect in `src/intake.js:353-365`: work/unclear cards are created and committed before `rememberIntakeHandled` persists the intake key. If that persistence fails, the call rejects with no durable ha
+- 2026-08-01 01:59Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed outside the listener-restricted sandbox: 231 core tests and 2 UI tests. `git diff --check` also passed.
+
+Reachable classifier bug: `src/screen.js:19` matches `unsubscribe` anywhere in the message body, although the intended signal is unsubscribe footer text. An end-to-end reproduction using a detailed human bug report titled “Unsubscribe endpoint returns 500” produced an `unclear
