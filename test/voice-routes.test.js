@@ -142,3 +142,27 @@ test('reject endpoint over HTTP: consumes the proposal, never executes it', asyn
     assert.equal(r.status, 404);
   } finally { srv.close(); }
 });
+
+test('removing a project invalidates its pending voice proposals, even if the freed name is reused', async () => {
+  isolateHome();
+  const { repo, name, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Build' });
+    let r = await fetch(`${base}/api/voice/actions${q}`, { method: 'POST', headers: h, body: JSON.stringify({ cardId: 'task-0001', action: 'retriage' }) });
+    assert.equal(r.status, 200);
+    const prep = await r.json();
+
+    r = await fetch(`${base}/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE', headers: h });
+    assert.equal(r.status, 200);
+
+    // re-registering the SAME repository gets the same (freed) name back
+    r = await fetch(`${base}/api/projects`, { method: 'POST', headers: h, body: JSON.stringify({ path: repo }) });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).name, name);
+
+    r = await fetch(`${base}/api/voice/actions/${prep.proposalId}/confirm${q}`, { method: 'POST', headers: h, body: JSON.stringify({ confirmation: 'Yes To-do' }) });
+    assert.equal(r.status, 404, 'the proposal from before removal must not survive re-registration');
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Build');
+  } finally { srv.close(); }
+});

@@ -60,6 +60,42 @@ test('read-only summary and card status are deterministic and surface Needs Huma
   assert.equal(await voice.buildCardStatus(p, 'task-9999'), null);
 });
 
+test('summary excludes process-global banners and carries no wall-clock timestamp', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo({ triage: true });
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Review' });
+  // a malformed card triggers a process-global banner (shared across every open
+  // project, not scoped to this one) — the same fixture pipeline.test.js uses
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0009-broken.md'), '---\nbad: [unclosed\n---\n');
+  pipeline.triageSweep(p);
+  const banners = pipeline.getBanners();
+  assert.ok(banners.length > 0, 'sanity: a banner exists');
+
+  const s = voice.buildVoiceSummary(p);
+  assert.equal('generatedAt' in s, false, 'no wall-clock timestamp — the response stays fully deterministic');
+  for (const b of banners) {
+    assert.doesNotMatch(s.text, new RegExp(b.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      'a process-global banner must never leak into one project\'s spoken summary');
+  }
+});
+
+test('summary text stays concise on a busy board: it names a handful, then a count', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  for (let i = 1; i <= 8; i++) {
+    writeCard(repo, `task-000${i}`, { status: 'Needs Human', extra: 'needs_human_reason: bad_verdict\n' });
+  }
+
+  const s = voice.buildVoiceSummary(p);
+  assert.equal(s.needsHuman.length, 8, 'the structured list stays complete');
+  assert.match(s.text, /^8 cards on the board\. Nothing building right now\. 8 need you: .*, and 3 more\.$/);
+  assert.equal((s.text.match(/task-\d+/g) || []).length, 5, 'only the first five are named in speech');
+});
+
 test('prepare returns an opaque proposal, exact read-back, expiry, and confirmation policy — without touching the board', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });
@@ -321,4 +357,82 @@ test('cancel (visible tier) revalidates the live run at confirm time and execute
   } finally {
     clearFakeAgent();
   }
+});
+
+test('prepare is race-free: two concurrent prepares for the same card never both win', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  // restart_build's eligibility check (recoveryActions) does real async work
+  // (reads/validates a possible preserved worktree) — the exact shape of the
+  // race the fix closes: two prepares racing through that await.
+  writeCard(repo, 'task-0001', {
+    status: 'Needs Human',
+    extra: 'needs_human_reason: orphaned_run\nsession_id: stale-session\nworktree: todomd/task-0001\nbase_branch: main\n',
+  });
+  assert.equal((await pipeline.recoveryActions(p, 'task-0001')).restart_build, true);
+
+  const [a, b] = await Promise.all([
+    voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'restart_build' }),
+    voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'restart_build' }),
+  ]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 409], 'exactly one prepare wins; the other is refused as ambiguous');
+  const winner = a.status === 200 ? a : b;
+  const loser = a.status === 200 ? b : a;
+  assert.match(loser.error, /ambiguous/);
+
+  // only the winner's proposal is outstanding — a third prepare still collides with it
+  const third = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'restart_build' });
+  assert.equal(third.status, 409);
+
+  // rejecting the winner frees the card for a fresh prepare again
+  const rej = voice.rejectVoiceAction(p, winner.proposalId);
+  assert.equal(rej.status, 200);
+  const fresh = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'restart_build' });
+  assert.equal(fresh.status, 200);
+});
+
+test('proposals are bound to the resolved repo path, not the reusable display name', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repoA = makeRepo();
+  const repoB = makeRepo();
+  writeCard(repoA, 'task-0001', { status: 'Build' });
+  writeCard(repoB, 'task-0001', { status: 'Build' });
+
+  const pA = { name: 'shared-name', path: repoA };
+  const prep = await voice.prepareVoiceAction(pA, { cardId: 'task-0001', action: 'retriage' });
+  assert.equal(prep.status, 200);
+
+  // a different repository registered under the SAME display name (e.g. the
+  // original project was removed and an unrelated repo claimed the freed name)
+  const pB = { name: 'shared-name', path: repoB };
+  let r = await voice.confirmVoiceAction(pB, prep.proposalId, { confirmation: 'Yes To-do' });
+  assert.equal(r.status, 404, 'a proposal prepared against repo A must not execute against repo B under the same name');
+  assert.equal(status(repoB, 'task-0001'), 'Build', 'repo B is untouched');
+
+  // the ORIGINAL repository can still confirm its own proposal
+  r = await voice.confirmVoiceAction(pA, prep.proposalId, { confirmation: 'Yes To-do' });
+  assert.equal(r.status, 200);
+  assert.equal(status(repoA, 'task-0001'), 'Review');
+});
+
+test('invalidateProject drops every pending proposal for a removed repository', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Build' });
+
+  const prep = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
+  assert.equal(prep.status, 200);
+
+  voice.invalidateProject(repo);
+
+  let r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do' });
+  assert.equal(r.status, 404);
+  r = voice.rejectVoiceAction(p, prep.proposalId);
+  assert.equal(r.status, 404);
+  assert.equal(status(repo, 'task-0001'), 'Build');
 });

@@ -14,7 +14,7 @@ import { listModels } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 import { createMetadataScheduler } from './github-sync.js';
-import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction } from './voice.js';
+import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction, invalidateProject as invalidateVoiceProject } from './voice.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -210,8 +210,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (pipeline.projectHasLiveRun(name)) {
         return json(res, 400, { error: 'a card is running in this project — cancel it first' });
       }
+      const removedPath = findProject(name)?.path;
       removeProject(name);            // unregister; board files untouched
       pipeline.forgetProject(name);   // drop in-memory queue/quota state for the name
+      // a freed name can be claimed by an unrelated repo later — any pending
+      // voice proposal for this path must not carry over to whatever reuses it
+      if (removedPath) invalidateVoiceProject(removedPath);
       return json(res, 200, { ok: true });
     }
     // IMAP email-intake settings for a project. Full token only (host/user are
