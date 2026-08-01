@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb26-19ad-7d43-96af-29a806097b9a
+session_id: 019fbb2d-34ef-7c72-a369-955c71aa3b87
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -178,3 +178,7 @@ Reachable starvation bug in `src/intake.js:442-491`: with supported `markSeen:fa
   - attempts_exhausted: `npm test` passed with normal process/listener access: 233 core tests and 2 UI tests. However, `src/screen.js:20,108` only recognizes an unsubscribe phrase when it is effectively the final text in the message. A production-parser probe of a common plain-text newsletter from `no-reply@shop.example.com` ending with `Unsubscribe: https://shop.example.com/...` followed by the sender's postal address r
 - 2026-08-01 02:34Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Official verification passed with required runtime permissions: 234 core tests and 2 UI tests. However, parser-to-poller adversarial testing found reachable classifier misses in src/screen.js:16-20. A conventional `Subject: Auto Response: Ticket received` with `This is an automated response...` matches neither auto-reply regex. A trailing `click the unsubscribe link below` footer also matches no f
+- 2026-08-01 02:39Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: The official `npm test` passed all 235 core and 2 UI tests with normal process visibility, and `git diff --check` passed. However, classifier defects remain:
+
+1. `src/screen.js:16-17` misses the common subject `Automated response: Ticket received` when the body says `We have received your request...`. It returns `work` with no signals. An end-to-end poll reproduced a Review card and a triage callb
