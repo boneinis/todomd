@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: cffec873-ddfd-463c-8c5c-0b275caa55b4
+session_id: 019fbaa7-15ad-7111-a9a8-d1537a7d717f
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -117,3 +117,5 @@ For more information, try '--help'.
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 00:04Z · Escalate attempt 2 · 26 turns · $2.527 · diagnosis complete
 - 2026-08-01 00:08Z · Build attempt 3 · 29 turns · $1.483 · ok (escalation repair)
+- 2026-08-01 00:14Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed: 211 unit/integration tests and 2 UI tests. However, a reachable parser-integration bug remains: pollSource calls mailparser with its defaults, which synthesizes `parsed.text` from an HTML-only message. Consequently, src/screen.js's `!text && html` condition is false and a realistic HTML-only email with no other signal is classified as work, placed in Review, and triaged. The tes
