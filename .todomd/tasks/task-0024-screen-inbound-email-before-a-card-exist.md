@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb41-c45b-70b0-ab87-f1e61ece1e33
+session_id: 019fbb46-9e34-7820-9345-549e7d70904e
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -190,3 +190,9 @@ Reachable starvation bug in `src/intake.js:442-491`: with supported `markSeen:fa
   - attempts_exhausted: Official `npm test` passed: 236 core tests and 2 UI tests. However, `src/screen.js:17` recognizes auto-reply body text only at the start of a line. A parsed message with body `Thank you for your email. This is an automatic response. I will reply after August 5.` was classified as work with no signals. End-to-end intake created a Review card with no hold reason; pollSource would consequently trigge
 - 2026-08-01 03:02Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - attempts_exhausted: Official verification passed: 236 core tests and 2 UI tests; git diff --check passed. However, src/screen.js:17 has reachable auto-reply misclassifications. A parsed message saying “I will be out of the office until August 12” was classified as work, creating a Review card and triggering triage. Conversely, a detailed human report beginning “OOO notifications are not delivered…” was classified as 
+- 2026-08-01 03:07Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed with normal process visibility: 236 core tests and 2 UI tests. `git diff --check` passed and the worktree remained clean.
+
+Reachable classifier defects remain:
+
+1. `src/screen.js:16` misses the common subject `Automatic response: Ticket received` (it recognizes “automatic reply” and “automated response,” but not “automatic response”). A production-parser probe returned `work` wit
