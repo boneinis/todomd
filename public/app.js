@@ -457,7 +457,7 @@ const drawerBackground = [document.querySelector('.topbar'), $('#banners'), boar
 
 function drawerFocusable() {
   return [...drawerEl.querySelectorAll('button, [href], input, select, textarea, details > summary, [tabindex]')]
-    .filter((el) => !el.disabled && el.tabIndex !== -1 && !el.closest('[hidden]'));
+    .filter((el) => !el.disabled && el.tabIndex !== -1 && !el.closest('[hidden]') && el.getClientRects().length);
 }
 
 function showDrawer() {

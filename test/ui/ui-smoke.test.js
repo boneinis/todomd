@@ -161,6 +161,24 @@ test('UI smoke: a viewer is not told its session expired when it opens a card', 
     // todomd", which nagged every viewer on the default QR link.
     await page.eval(`document.querySelector('[data-id="task-0001"]').click()`);
     await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
+    await until(async () => (await page.eval(
+      `document.activeElement === document.getElementById('drawer-close')`)) || null,
+    { timeout: BUDGET.quick });
+
+    // Viewer mode hides the entire action rail with CSS (rather than hidden
+    // attributes), so the focus trap must skip those invisible controls.
+    await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab', shiftKey: true, bubbles: true, cancelable: true,
+    }))`);
+    assert.equal(await page.eval(
+      `document.activeElement.getClientRects().length > 0 && !document.activeElement.closest('.drawer-rail')`),
+    true, 'Shift+Tab wraps to the last rendered modal control, not a CSS-hidden viewer action');
+    await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab', bubbles: true, cancelable: true,
+    }))`);
+    assert.equal(await page.eval(`document.activeElement === document.getElementById('drawer-close')`), true,
+      'Tab from the last rendered control wraps forward to close');
+
     const toast = await page.eval(
       `document.getElementById('toast').hidden ? '' : document.getElementById('toast').textContent`);
     assert.doesNotMatch(toast, /session expired/, 'a permitted-but-limited viewer is never told to restart todomd');
