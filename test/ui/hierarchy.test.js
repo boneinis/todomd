@@ -310,3 +310,85 @@ test('epic hierarchy: nesting, promotion to a full card, toggling, and row click
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
   }
 });
+
+// Opening a card is async: the subtask-row click fires the card fetch and the
+// rest of openDrawer runs whenever the response lands. If you press Escape in
+// between, the late response must be dropped — otherwise it re-shows the modal
+// with drawerCard already cleared, and every action button (answer, move,
+// archive, delete, cancel, retry-verify, resume/restart-build) silently no-ops.
+// The gating here is promise-based rather than sleep-based on purpose: this
+// suite has to survive a load-starved box without inventing timeout failures.
+test('drawer: a card fetch that lands after Escape is discarded, not re-shown', async (t) => {
+  if (!page) return t.skip(SKIP);
+
+  // fresh page — the flow above leaves boardData patched with synthetic cards
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await page.setViewport(1200, 900);
+
+  // open the epic's modal and switch to its Subtasks tab
+  await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+  await until(async () => (await page.eval(
+    `!document.getElementById('drawer').hidden && document.getElementById('drawer-id').textContent === 'task-0001'`,
+  )) || null, { timeout: BUDGET.quick });
+  await page.eval(`document.querySelector('.drawer-tab[data-tab="subtasks"]').click()`);
+
+  // hold the NEXT task-0002 card fetch open (its /runlog sibling and the board
+  // poll pass straight through); __heldDone resolves only once the body landed,
+  // so the release below needs no sleep to know the response was delivered
+  await page.eval(`(() => {
+    window.__origFetch = window.fetch;
+    window.__held = false;
+    const gate = new Promise((resolve) => { window.__release = resolve; });
+    window.fetch = (input, init) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      if (!window.__held && url.includes('/api/cards/task-0002?')) {
+        window.__held = true;
+        window.__heldDone = gate
+          .then(() => window.__origFetch(input, init))
+          .then((res) => res.clone().json().then(() => res));
+        return window.__heldDone;
+      }
+      return window.__origFetch(input, init);
+    };
+  })()`);
+
+  await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"]').click()`);
+  await until(async () => (await page.eval(`window.__held === true`)) || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`drawerCard`), 'task-0002', 'the pending open has claimed the drawer');
+
+  // Escape while the child is still loading closes the modal
+  await page.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  assert.equal(await page.eval(`document.getElementById('drawer').hidden`), true);
+  assert.equal(await page.eval(`drawerCard === null`), true, 'closing clears the open card');
+
+  // …and releasing the response must leave it closed, not resurrect it
+  await page.eval(`(async () => {
+    window.__release();
+    await window.__heldDone;
+    for (let i = 0; i < 5; i++) await new Promise((r) => requestAnimationFrame(r));
+  })()`);
+  assert.equal(await page.eval(`document.getElementById('drawer').hidden`), true,
+    'the cancelled open\'s late response does not re-show the modal');
+  assert.equal(await page.eval(`document.getElementById('drawer-backdrop').hidden`), true);
+  assert.equal(await page.eval(`document.getElementById('board').inert`), false,
+    'a cancelled open does not re-inert the board behind an invisible modal');
+  assert.equal(await page.eval(`drawerCard === null`), true);
+  await page.eval(`window.fetch = window.__origFetch`);
+
+  // the staleness token must not over-cancel: the same subtask still opens
+  await page.eval(`document.querySelector('.card[data-id="task-0001"]').click()`);
+  await until(async () => (await page.eval(
+    `!document.getElementById('drawer').hidden && document.getElementById('drawer-id').textContent === 'task-0001'`,
+  )) || null, { timeout: BUDGET.quick });
+  await page.eval(`document.querySelector('.drawer-tab[data-tab="subtasks"]').click()`);
+  await page.eval(`document.querySelector('#drawer-subtasks-list .subtask-row[data-id="task-0002"]').click()`);
+  await until(async () =>
+    (await page.eval(`document.getElementById('drawer-id').textContent === 'task-0002'`)) || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`document.getElementById('drawer').hidden`), false);
+  assert.equal(await page.eval(`drawerCard`), 'task-0002', 'the reopened card is live, not an inoperative modal');
+  assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /Alpha subtask/);
+  await page.eval(`document.getElementById('drawer-close').click()`);
+
+  assert.deepEqual(page.errors, [], 'no uncaught exception or console error in the cancelled-open flow');
+});

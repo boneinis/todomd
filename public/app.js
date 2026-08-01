@@ -446,6 +446,11 @@ function splitChunksSection(body) {
 /* ── drawer tabs: Details / Subtasks (epics only) ── */
 let drawerTab = 'details';
 let drawerReturnFocus = null;
+// Generation token for openDrawer's in-flight card fetch. Opening or closing the
+// modal invalidates any open still awaiting its response, so a reply that lands
+// after an Escape (or after you moved on to another card) can't re-show the
+// modal or overwrite fresher content — same idea as backfillRunLog's guard.
+let drawerOpenSeq = 0;
 const drawerEl = $('#drawer');
 const drawerBackdropEl = $('#drawer-backdrop');
 const drawerBackground = [document.querySelector('.topbar'), $('#banners'), boardEl].filter(Boolean);
@@ -467,6 +472,7 @@ function closeDrawer() {
   drawerEl.hidden = true;
   drawerBackdropEl.hidden = true;
   drawerBackground.forEach((el) => { el.inert = false; });
+  drawerOpenSeq++; // a pending open must not re-show the modal after this close
   drawerCard = null;
   const target = drawerReturnFocus;
   drawerReturnFocus = null;
@@ -486,12 +492,18 @@ $('#drawer-tabs').addEventListener('click', (e) => {
 
 /* ── drawer ── */
 async function openDrawer(id) {
+  const seq = ++drawerOpenSeq;
   drawerCard = id;
   $('#run-log').textContent = '';
   $('#drawer-run').hidden = true;
   $('#drawer-cancel').hidden = !runStates[id];
   backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
   const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
+  // Bail before touching the DOM if the modal was closed (Escape/backdrop/close)
+  // or another card was opened while this fetch was in flight — otherwise
+  // showDrawer() below would re-open the modal with drawerCard already cleared,
+  // leaving every action button (answer, move, archive, delete…) a silent no-op.
+  if (seq !== drawerOpenSeq || drawerCard !== id) return;
   $('#drawer-id').textContent = card.data.id;
   $('#drawer-title').textContent = card.data.title;
   $('#drawer-meta').innerHTML = [
