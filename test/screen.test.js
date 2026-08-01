@@ -868,6 +868,62 @@ test('pollSource: a trailing unsubscribe URL and postal block are screened as a 
   assert.deepEqual(triaged, []);
 });
 
+test('pollSource: conventional auto-response and unsubscribe-link variants do not enter triage', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const messages = [
+    rawEmail([
+      'From: Support <support@example.com>',
+      'To: intake@example.com',
+      'Subject: Auto Response: Ticket received',
+      'Message-ID: <auto-response@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'This is an automated response confirming that your message was received.',
+      '',
+    ]),
+    rawEmail([
+      'From: Shop <no-reply@shop.example.com>',
+      'To: intake@example.com',
+      'Subject: This week at the shop',
+      'Message-ID: <unsubscribe-link@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'See the newest products and offers selected for your account.',
+      '',
+      'Click the unsubscribe link below.',
+      '',
+    ]),
+  ];
+  assert.equal(screenEmail(await simpleParser(messages[0])).verdict, 'unclear');
+  assert.equal(screenEmail(await simpleParser(messages[1])).verdict, 'spam');
+
+  const fakeClient = {
+    mailbox: { uidValidity: '1', uidNext: 3 },
+    on() { return this; },
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch() {
+      for (const [i, raw] of messages.entries()) yield { uid: i + 1, source: Buffer.from(raw) };
+    },
+    async logout() {},
+  };
+  const triaged = [];
+  await pollSource({
+    label: 'explicit-automation-regression',
+    conf: { host: 'imap.example.com', user: 'inbox', pass: 'secret', markSeen: false },
+    resolve: () => 'repo', assigneeOf: () => null,
+  }, () => ({ path: repo, name: 'repo' }), {
+    createClient: () => fakeClient,
+    onCardCallback: (_project, id) => triaged.push(id),
+  });
+
+  assert.equal(cardFiles(repo).length, 1, 'only the held auto-response creates a card');
+  assert.equal(readCard(repo, cardFiles(repo)[0].match(/task-\d+/)[0]).data.status, 'Needs Human');
+  assert.equal(auditLines(repo).length, 2);
+  assert.deepEqual(triaged, []);
+});
+
 test('intakeMessage: a real bug report, parsed by mailparser, becomes a Review card', async () => {
   isolateHome();
   const repo = makeRepo();

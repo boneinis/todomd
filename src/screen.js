@@ -13,11 +13,11 @@ const ESP_HEADERS = [
   'list-id', 'x-campaign', 'x-campaign-id', 'x-campaignid', 'x-mailgun-sid', 'x-sg-eid', 'x-sg-id',
   'x-ses-outgoing', 'x-mc-user', 'x-mandrill-user', 'x-mailchimp-id', 'x-klaviyo-message-id',
 ];
-const AUTO_REPLY_SUBJECT_RE = /^(?:automatic reply|auto[- ]?reply|out[- ]of[- ](?:the[- ])?office)(?:\s*:|\s*$)/i;
-const AUTO_REPLY_BODY_RE = /(?:^|\n)\s*(?:this is (?:an? )?automatic reply\b|i(?: am|'m) (?:currently )?(?:out[- ]of[- ](?:the[- ])?office|on vacation|away from (?:my |the )?(?:office|email|desk))\b)/i;
+const AUTO_REPLY_SUBJECT_RE = /^(?:automatic reply|auto[- ]?(?:reply|response)|out[- ]of[- ](?:the[- ])?office)(?:\s*:|\s*$)/i;
+const AUTO_REPLY_BODY_RE = /(?:^|\n)\s*(?:this is (?:an? )?(?:automatic reply|automated response)\b|i(?: am|'m) (?:currently )?(?:out[- ]of[- ](?:the[- ])?office|on vacation|away from (?:my |the )?(?:office|email|desk))\b)/i;
 const BOUNCE_ADDR_RE = /\b(mailer-daemon|postmaster)\b/i;
 const BOUNCE_SUBJECT_RE = /^(?:undeliverable|delivery status notification|returned to sender|delivery (?:has )?failed(?:\s+to\b[^:]*)?|delivery failure|mail delivery failed)(?:\s*:|\s*$|\s*\()/i;
-const FOOTER_RE = /(?:^|\n|\s{2,}|[.!]\s+)(?:click here to unsubscribe|unsubscribe(?: from (?:this|these|our) emails?)?|view(?: (?:this|the|your|an?|it))?(?: (?:email|message))? in (?:an? |your )?browser|manage your (?:email )?preferences)(?:\s*:\s*(?:https?:\/\/|www\.)\S+)?[.!]?(?=\s*(?:\n|$))/i;
+const FOOTER_RE = /(?:^|\n|\s{2,}|[.!]\s+)(?:click (?:here to|the )?unsubscribe(?: link below)?|unsubscribe(?: from (?:this|these|our) emails?)?|view(?: (?:this|the|your|an?|it))?(?: (?:email|message))? in (?:an? |your )?browser|manage your (?:email )?preferences)(?:\s*:\s*(?:https?:\/\/|www\.)\S+)?[.!]?(?=\s*(?:\n|$))/i;
 const FOOTER_TRAILING_CHARS = 1200;
 const MIN_BODY_LEN = 20; // shorter than this and there's rarely enough to act on
 
