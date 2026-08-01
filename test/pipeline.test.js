@@ -283,6 +283,22 @@ test('dependency gate: approval blocked until deps are Done', async () => {
   assert.match(blocked.error, /blocked/);
 });
 
+test('dependency gate preserves a hand-edited scalar dependency', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0002', { status: 'Review' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  const file = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('dependencies: []', 'dependencies: task-0002'));
+
+  const blocked = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /blocked by: task-0002/);
+  assert.equal(status(repo, 'task-0001'), 'Planned');
+});
+
 test('quota: build hits a usage limit → card parks in Queue + project paused; resume completes it', async () => {
   isolateHome();
   const repo = makeRepo();

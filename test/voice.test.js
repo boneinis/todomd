@@ -266,11 +266,39 @@ test('ambiguous: a second pending proposal for the same card is refused, and a m
   r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do', action: 'archive' });
   assert.equal(r.status, 409);
   assert.match(r.error, /ambiguous/);
+  r = await voice.confirmVoiceAction(p, prep.proposalId, {
+    confirmation: 'Yes To-do', cardId: 0, action: '',
+  });
+  assert.equal(r.status, 409, 'explicit falsy bindings are mismatches, not omitted fields');
+  assert.match(r.error, /ambiguous/);
+
+  r = voice.rejectVoiceAction(p, other.proposalId, { cardId: 0, action: '' });
+  assert.equal(r.status, 409, 'reject applies the same exact property-presence binding');
+  assert.match(r.error, /ambiguous/);
+  assert.equal(voice.rejectVoiceAction(p, other.proposalId, {
+    cardId: 'task-0002', action: 'retriage',
+  }).status, 200);
 
   // the correctly-bound confirm still works
   r = await voice.confirmVoiceAction(p, prep.proposalId, { confirmation: 'Yes To-do', cardId: 'task-0001', action: 'retriage' });
   assert.equal(r.status, 200);
   assert.equal(status(repo, 'task-0001'), 'Review');
+});
+
+test('voice approval preserves a hand-edited scalar dependency', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = budgetProject(repo);
+  writeCard(repo, 'task-0002', { status: 'Review' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  const file = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('dependencies: []', 'dependencies: task-0002'));
+
+  const prepared = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'approve' });
+  assert.equal(prepared.status, 400);
+  assert.match(prepared.error, /blocked by: task-0002/);
+  assert.equal(status(repo, 'task-0001'), 'Planned');
 });
 
 test('confirmation tiers: reversible needs the spoken phrase, agent needs the fresh challenge, visible needs in-app approval only', async () => {

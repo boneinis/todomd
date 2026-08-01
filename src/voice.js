@@ -65,7 +65,10 @@ function computeEffects(project, card) {
   const cascadeChildren = card.data.epic
     ? board.cards.filter((c) => c.parent === id && c.status !== 'Done' && !c.epic && !c.archived).length
     : 0;
-  const dependencies = Array.isArray(card.data.dependencies) ? card.data.dependencies : [];
+  // The board view normalizes scalar list fields from hand-edited YAML. Derive
+  // the fingerprint/read-back from that same canonical dependency list so a
+  // scalar dependency is neither ignored nor allowed to bypass approval.
+  const dependencies = board.cards.find((c) => c.id === id)?.dependencies || [];
   const blockedDependencies = dependencies
     .filter((dep) => board.cards.find((c) => c.id === dep)?.status !== 'Done')
     .sort();
@@ -443,7 +446,8 @@ export async function confirmVoiceAction(project, proposalId, body = {}) {
   }
   const p = found.proposal;
   if (p.projectPath !== project.path) return { status: 404, ok: false, error: 'no such pending proposal' };
-  if ((body.cardId && body.cardId !== p.cardId) || (body.action && body.action !== p.action)) {
+  if ((Object.hasOwn(body, 'cardId') && body.cardId !== p.cardId)
+    || (Object.hasOwn(body, 'action') && body.action !== p.action)) {
     return { status: 409, ok: false, error: 'ambiguous: does not match the pending proposal' };
   }
   const normalizedArguments = argumentless(body);
@@ -498,7 +502,8 @@ export function rejectVoiceAction(project, proposalId, body = {}) {
   }
   const p = found.proposal;
   if (p.projectPath !== project.path) return { status: 404, ok: false, error: 'no such pending proposal' };
-  if ((body.cardId && body.cardId !== p.cardId) || (body.action && body.action !== p.action)) {
+  if ((Object.hasOwn(body, 'cardId') && body.cardId !== p.cardId)
+    || (Object.hasOwn(body, 'action') && body.action !== p.action)) {
     return { status: 409, ok: false, error: 'ambiguous: does not match the pending proposal' };
   }
   const normalizedArguments = argumentless(body);

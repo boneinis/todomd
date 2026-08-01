@@ -159,9 +159,12 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
   if (parseChunks(card.body).length >= 2) {
     return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
   }
-  const deps = Array.isArray(card.data.dependencies) ? card.data.dependencies : [];
   // Include archived cards so a completed-then-archived dependency still counts.
+  // loadBoard normalizes a hand-edited scalar `dependencies: task-0002` to the
+  // same one-item list as YAML array syntax. Using the raw readCard value here
+  // used to silently drop that dependency and approve blocked work.
   const board = loadBoard(project.path, { includeArchived: true });
+  const deps = board.cards.find((c) => c.id === id)?.dependencies || [];
   const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
   return blocked.length
     ? { ok: false, error: `blocked by: ${blocked.join(', ')}` }
