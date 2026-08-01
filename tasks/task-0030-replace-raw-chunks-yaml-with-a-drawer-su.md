@@ -1,7 +1,7 @@
 ---
 id: task-0030
 title: Replace raw Chunks YAML with a modal Subtasks view
-status: Needs Human
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0030
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 4.0298
-needs_human_reason: error
+needs_human_reason:
 recovery_stage:
 model:
 effort:
