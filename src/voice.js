@@ -92,7 +92,7 @@ function fingerprint(card, fx) {
   return [
     card.data.status || '(none)',
     card.data.archived ? 'archived' : 'active',
-    fx.live ? 'live' : 'idle',
+    fx.runState ? `run:${fx.runState.state}:${fx.runState.stage}` : 'no-run',
     fx.worktree ? 'worktree' : 'no-worktree',
     `children:${fx.cascadeChildren}`,
     `blocked:${fx.blockedDependencies.join(',')}`,
@@ -102,24 +102,24 @@ function fingerprint(card, fx) {
 
 // "Fresh" (changes every proposal) and "task-specific" (names the card), so a
 // stray "yes" overheard on the microphone can never satisfy it by accident.
-const CHALLENGE_WORDS = [
-  'amber', 'cedar', 'delta', 'ember', 'harbor', 'indigo', 'juniper', 'lumen',
-  'meridian', 'onyx', 'quartz', 'summit', 'tundra', 'violet', 'willow', 'zephyr',
-];
-function buildChallenge(action, cardId) {
-  const word = CHALLENGE_WORDS[crypto.randomInt(CHALLENGE_WORDS.length)];
-  return `Confirm ${action.replace(/_/g, ' ')} ${cardId} ${word}`;
+function buildChallenge(action, cardId, proposalId) {
+  // Bind 64 bits from the proposal's cryptographic nonce into the phrase. The
+  // old one-word vocabulary repeated quickly enough that an earlier spoken
+  // challenge could authorize a later proposal for the same card/action.
+  const nonce = proposalId.slice(0, 16);
+  return `Confirm ${action.replace(/_/g, ' ')} ${cardId} ${nonce}`;
 }
 
-// Voice never cancels a run as a side effect of a move. humanMove's Review
-// branch kills a live child (or flags a claimed chain) — the operation
-// docs/voice.md puts under visible approval — so a move prepared against a live
-// card is refused outright rather than smuggled in behind a "Yes To-do".
+// Voice never cancels or dequeues a run as a side effect of a move. humanMove's
+// Review branch kills a live child but leaves a queued Build claimed for later,
+// so every voice move that could reach a claimed card is refused outright rather
+// than smuggled in behind a "Yes To-do".
 // Cancelling stays reachable only through the explicit `cancel` action.
 function notWhileLive(card, fx) {
-  return fx.live
-    ? { ok: false, error: `${card.data.id} has a live run — cancel it in the app first` }
-    : null;
+  if (!fx.runState) return null;
+  return fx.runState.state === 'queued'
+    ? { ok: false, error: `${card.data.id} has a queued ${fx.runState.stage} run — cancel it in the app first` }
+    : { ok: false, error: `${card.data.id} has a live run — cancel it in the app first` };
 }
 
 // Voice is strictly single-card. Moving/archiving an epic can cascade cleanup,
@@ -413,7 +413,7 @@ export async function prepareVoiceAction(project, fields = {}) {
   // from: anything that moved during the eligibility await makes this stale at
   // confirm time rather than silently re-classifying the action
   proposal.expectedFingerprint = fingerprint(card, effects);
-  proposal.challenge = tier === 'agent' ? buildChallenge(action, cardId) : null;
+  proposal.challenge = tier === 'agent' ? buildChallenge(action, cardId, proposalId) : null;
 
   return {
     status: 200, ok: true, proposalId, cardId, action, arguments: proposal.arguments,

@@ -308,6 +308,24 @@ test('confirmation tiers: reversible needs the spoken phrase, agent needs the fr
   assert.ok(readCard(repo, 'task-0002').data.archived, 'visible approval alone executes it');
 });
 
+test('agent challenges bind cryptographic proposal entropy and never reuse the small word pool', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = budgetProject(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  const challenges = new Set();
+
+  for (let i = 0; i < 24; i++) {
+    const prepared = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'approve' });
+    assert.equal(prepared.status, 200);
+    assert.ok(prepared.confirmation.challenge.endsWith(prepared.proposalId.slice(0, 16)));
+    challenges.add(prepared.confirmation.challenge);
+    assert.equal(voice.rejectVoiceAction(p, prepared.proposalId).status, 200);
+  }
+  assert.equal(challenges.size, 24);
+});
+
 test('unarchive is a harmless reversible move (Yes To-do), and archive/unarchive eligibility rejects the wrong state', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });
@@ -538,6 +556,34 @@ test('a chain claimed between spawns counts as live everywhere: summary, cancel,
     // it reach its cancel checkpoint and settle
     await pipeline.humanMove(p, 'task-0001', 'Review');
     if (release) await release();
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+    clearFakeAgent();
+  }
+});
+
+test('a queued Build cannot be retriaged under reversible voice confirmation', async () => {
+  isolateHome();
+  const marker = path.join(tmp('voice-queued'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0002'], { state: 'queued', stage: 'Build' });
+
+    const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0002', action: 'retriage' });
+    assert.equal(retriage.status, 400);
+    assert.match(retriage.error, /queued Build run/);
+    assert.equal(status(repo, 'task-0002'), 'Queue');
+  } finally {
+    pipeline.cancel(p, 'task-0002');
+    pipeline.cancel(p, 'task-0001');
     await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
     clearFakeAgent();
   }
