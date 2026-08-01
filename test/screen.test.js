@@ -274,6 +274,8 @@ test('production parsing preserves an HTML-only body so screening can hold it', 
   const card = readCard(repo, out.id);
   assert.equal(card.data.status, 'Needs Human');
   assert.match(card.data.needs_human_reason, /HTML-only/i);
+  assert.match(card.body, /enough visible content to look actionable/i,
+    'the held card keeps readable HTML body text for the human reviewer');
 });
 
 test('mailparser folds List-* headers out of the headers Map — screening must still see them', async () => {

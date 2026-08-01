@@ -34,6 +34,25 @@ export function parseInboundMessage(source) {
   return simpleParser(source, { skipHtmlToText: true });
 }
 
+function htmlBodyText(html) {
+  return String(html || '')
+    .replace(/<\s*(?:br\s*\/?|\/?p|\/?div|\/?li|\/?h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
 function loadRaw() {
   try {
     const raw = JSON.parse(fs.readFileSync(configFile(), 'utf8'));
@@ -164,6 +183,7 @@ export function emailToCardFields(parsed) {
     .replace(/\s+/g, ' ').trim();
   const from = parsed.from?.text || 'unknown sender';
   const body = String(parsed.text || '').trim()
+    || htmlBodyText(parsed.html)
     || (parsed.html ? '(HTML-only email — open the original to see formatting)' : '(empty body)');
   return {
     title: subject.slice(0, 140) || '(no subject)',
