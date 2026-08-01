@@ -1,7 +1,7 @@
 ---
 id: task-0036
 title: Voice session and summary API
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0020)
-session_id: 019fbdfc-ff8e-7eb2-878d-19037d23eb38
+session_id: 019fbe03-8204-7d23-8f3d-a7ecfa6ab895
 worktree: todomd/task-0036
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 21.2105
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -66,3 +66,7 @@ an action but cannot execute or confirm it.
 1. Cross-project active-run leakage: `src/pipeline.js:1787-1791` associates pending runs using `key.startsWith(projectName + ':')`. With projects named `alpha` and `alpha:beta`, a pendi
 - 2026-08-01 15:45Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Bulk actions remain reachable through voice approval. In src/voice.js, the `approve` eligibility check only requires `status === 'Planned'`; it does not reject an epic with unfinished children. Confirming that proposal calls `humanMove(..., 'Queue')`, whose epic branch invokes `advanceChildren` and releases child cards. An adversarial reproduction prepared the action with HTTP-equivalent status 20
+- 2026-08-01 15:55Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: Configured `npm test` passed with normal process/listener permissions: 308 core/API and 5 UI tests. However:
+
+1. `src/pipeline.js:1816-1820` now checks only `pending` in `projectHasLiveRun()`, assuming every child is part of a pending build chain. Plan/custom trigger runs created at `src/pipeline.js:887-912` have a live `runs`/`children` entry but no `pending` entry. Reproduced: a hanging Plan run
