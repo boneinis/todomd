@@ -104,6 +104,9 @@ async function loadBoard() {
   document.body.classList.toggle('viewer', viewer);
   setSkillOptions();
   renderBoard();
+  // voice/main.js is a separate ES module (see index.html) with no access to
+  // this classic script's top-level scope — this is the only bridge it needs.
+  document.dispatchEvent(new CustomEvent('todomd:context', { detail: { project: currentProject, access: boardData.access } }));
 }
 
 function renderBanners(list) {
