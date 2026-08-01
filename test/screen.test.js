@@ -772,6 +772,51 @@ test('pollSource: handled unseen mail does not consume maxPerPoll behind a poiso
   assert.equal(triaged.length, 54);
 });
 
+test('pollSource: default markSeen mode still processes an older message marked unread', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const message = (uid) => ({ uid, source: Buffer.from(rawEmail([
+    'From: Jane Doe <jane@example.com>',
+    'To: intake@example.com',
+    `Subject: Work item ${uid}`,
+    `Message-ID: <unread-${uid}@example.com>`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    `Please investigate work item ${uid}; this body has enough actionable detail.`,
+    '',
+  ])) });
+  let batch = [message(1), message(3)];
+  const selectors = [];
+  const fakeClient = {
+    mailbox: { uidValidity: '1', uidNext: 4 },
+    on() { return this; },
+    async connect() {},
+    async getMailboxLock() { return { release() {} }; },
+    async *fetch(selector) { selectors.push(selector); yield* batch; },
+    async messageFlagsAdd() {},
+    async logout() {},
+  };
+  const triaged = [];
+  const source = {
+    label: 'mark-unread-regression',
+    conf: { host: 'imap.example.com', user: 'inbox', pass: 'secret' },
+    resolve: () => 'repo', assigneeOf: () => null,
+  };
+  const options = {
+    createClient: () => fakeClient,
+    onCardCallback: (_project, id) => triaged.push(id),
+  };
+
+  await pollSource(source, () => ({ path: repo, name: 'repo' }), options);
+  batch = [message(2)]; // UID 2 was previously Seen and has now been marked unread
+  await pollSource(source, () => ({ path: repo, name: 'repo' }), options);
+
+  assert.equal(cardFiles(repo).length, 3);
+  assert.equal(triaged.length, 3);
+  assert.deepEqual(selectors.map((selector) => selector.uid), ['1:*', '1:*'],
+    'markSeen mailboxes query all unseen UIDs instead of hiding older unread mail behind a cursor');
+});
+
 test('pollSource: human bug reports about automated-mail features stay work and trigger triage', async () => {
   isolateHome();
   const repo = makeRepo();

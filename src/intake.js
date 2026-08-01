@@ -434,7 +434,11 @@ export async function pollSource(source, getProject, {
     await client.connect();
     lock = await client.getMailboxLock(conf.folder || 'INBOX');
     const scope = mailboxScope(conf, client.mailbox);
-    const firstUid = intakeCursor(scope) + 1;
+    // A cursor is necessary only when messages intentionally remain unseen.
+    // With normal markSeen behavior, always query all unseen mail so a user
+    // marking an older message unread makes it eligible again.
+    const useCursor = conf.markSeen === false;
+    const firstUid = useCursor ? intakeCursor(scope) + 1 : 1;
     const uidNext = Number(client.mailbox?.uidNext) || firstUid;
     const pendingMessages = firstUid < uidNext
       ? client.fetch({ seen: false, uid: `${firstUid}:*` }, { source: true, uid: true })
@@ -450,7 +454,7 @@ export async function pollSource(source, getProject, {
         const runKey = mid || intakeKey;
         if (handled.has(runKey)) {                // already made a card for this message this run
           if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
-          if (!cursorBlocked) rememberIntakeCursor(scope, msg.uid);
+          if (useCursor && !cursorBlocked) rememberIntakeCursor(scope, msg.uid);
           continue;
         }
         if (scanned >= maxPerPoll) {
@@ -487,7 +491,7 @@ export async function pollSource(source, getProject, {
           }
         }
         if (conf.markSeen !== false) await client.messageFlagsAdd(msg.uid, ['\\Seen'], { uid: true });
-        if (!cursorBlocked) rememberIntakeCursor(scope, msg.uid);
+        if (useCursor && !cursorBlocked) rememberIntakeCursor(scope, msg.uid);
       } catch (e) {
         if (!counted) {
           if (scanned >= maxPerPoll) {
