@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbac3-3af2-7151-941f-a7ec1e3a3863
+session_id: 019fbacb-2c57-7960-9738-c1dd68e2c6dc
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -128,3 +128,7 @@ For more information, try '--help'.
   - attempts_exhausted: The unsandboxed `npm test` passed all 214 core and 2 UI tests, but adversarial review found reachable defects:
 
 1. `src/screen.js:19` does not recognize the common bare footer phrase “View in browser.” A plain-text marketing message containing that exact phrase, with a human-looking sender, was reproduced as `work` with no signals, so it enters Review and triggers triage. Expand `FOOTER_RE` and ad
+- 2026-08-01 00:57Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed all 216 core and 2 UI tests outside the restricted sandbox. Adversarial review found reachable defects:
+
+1. Exact-once handling is racy (`src/intake.js:247-295`). The handled check occurs outside the repository lock and the key is recorded only after auditing/card creation. Two overlapping pollers can both pass the check. Reproduction with concurrent calls using the same spam key
