@@ -168,6 +168,25 @@ test('summary text stays concise on a busy board: it names a handful, then a cou
   assert.equal((s.text.match(/task-\d+/g) || []).length, 5, 'only the first five are named in speech');
 });
 
+test('summary counts prototype-named custom statuses as ordinary columns', () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'constructor' });
+  writeCard(repo, 'task-0002', { status: '__proto__' });
+
+  const counts = voice.buildVoiceSummary(p).counts;
+  assert.equal(counts.constructor, 1);
+  assert.equal(counts.__proto__, 1);
+  assert.equal(Object.hasOwn(counts, 'constructor'), true);
+  assert.equal(Object.hasOwn(counts, '__proto__'), true);
+  const serialized = JSON.parse(JSON.stringify(counts));
+  assert.equal(serialized.constructor, 1);
+  assert.equal(serialized.__proto__, 1);
+  assert.equal(Object.hasOwn(serialized, '__proto__'), true);
+});
+
 test('prepare returns an opaque proposal, exact read-back, expiry, and confirmation policy — without touching the board', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });

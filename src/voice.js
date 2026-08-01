@@ -381,9 +381,16 @@ function describeList(list, render) {
 export function buildVoiceSummary(project) {
   const board = loadBoard(project.path);
   const runStates = effectiveRunStates(project, board);
-  const counts = {};
-  for (const col of board.config.columns) counts[col] = 0;
-  for (const c of board.cards) counts[c.status] = (counts[c.status] || 0) + 1;
+  // A board may define any custom column name, including Object prototype
+  // names. Count in a Map, then materialize own data properties so statuses
+  // such as `constructor` and `__proto__` cannot read or mutate the prototype.
+  const countEntries = new Map();
+  for (const col of board.config.columns) countEntries.set(safeText(col), 0);
+  for (const c of board.cards) {
+    const status = safeText(c.status);
+    countEntries.set(status, (countEntries.get(status) ?? 0) + 1);
+  }
+  const counts = Object.fromEntries(countEntries);
 
   const activeRuns = Object.entries(runStates)
     .map(([card, s]) => ({ card, state: s.state, stage: boundedText(s.stage), external: !!s.external }))
