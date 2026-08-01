@@ -953,6 +953,16 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
       '',
     ]),
     rawEmail([
+      'From: Support <support@example.com>',
+      'To: intake@example.com',
+      'Subject: Automatic response: Ticket received',
+      'Message-ID: <automatic-response@example.com>',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'We have received your request and a support agent will reply soon.',
+      '',
+    ]),
+    rawEmail([
       'From: Jane Doe <jane@example.com>',
       'To: intake@example.com',
       'Subject: Re: Export failure',
@@ -1024,8 +1034,9 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
   assert.equal(screenEmail(await simpleParser(messages[4])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[5])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[6])).verdict, 'unclear');
-  assert.equal(screenEmail(await simpleParser(messages[7])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[7])).verdict, 'unclear');
   assert.equal(screenEmail(await simpleParser(messages[8])).verdict, 'spam');
+  assert.equal(screenEmail(await simpleParser(messages[9])).verdict, 'spam');
 
   const fakeClient = {
     mailbox: { uidValidity: '1', uidNext: messages.length + 1 },
@@ -1047,7 +1058,7 @@ test('pollSource: conventional auto-response and unsubscribe-link variants do no
     onCardCallback: (_project, id) => triaged.push(id),
   });
 
-  assert.equal(cardFiles(repo).length, 6, 'only the held auto-responses create cards');
+  assert.equal(cardFiles(repo).length, 7, 'only the held auto-responses create cards');
   for (const file of cardFiles(repo)) {
     assert.equal(readCard(repo, file.match(/task-\d+/)[0]).data.status, 'Needs Human');
   }
