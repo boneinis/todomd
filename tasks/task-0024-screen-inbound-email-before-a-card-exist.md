@@ -1,7 +1,7 @@
 ---
 id: task-0024
 title: Screen inbound email before a card exists
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee:
 agent: codex
 triaged: n/a (chunk 2/3 of task-0022)
-session_id: 019fbb17-dc2c-7b73-9baa-a8d59e75a418
+session_id: 019fbb1e-a893-7ef3-a78f-887ed5dafe26
 worktree: todomd/task-0024
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 16.2375
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 model:
 effort:
@@ -174,3 +174,5 @@ Reachable classifier bug: `src/screen.js:19` matches `unsubscribe` anywhere in t
   - attempts_exhausted: The official `npm test` passed with normal process visibility: 232 core tests and 2 UI tests. `git diff --check` also passed and the worktree remained clean.
 
 Reachable starvation bug in `src/intake.js:442-491`: with supported `markSeen:false`, one persistently failing early UID sets `cursorBlocked`. Successfully handled later messages remain unseen, and on every subsequent poll those same message
+- 2026-08-01 02:26Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed with normal process/listener access: 233 core tests and 2 UI tests. However, `src/screen.js:20,108` only recognizes an unsubscribe phrase when it is effectively the final text in the message. A production-parser probe of a common plain-text newsletter from `no-reply@shop.example.com` ending with `Unsubscribe: https://shop.example.com/...` followed by the sender's postal address r
