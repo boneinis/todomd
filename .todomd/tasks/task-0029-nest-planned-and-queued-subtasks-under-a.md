@@ -1,7 +1,7 @@
 ---
 id: task-0029
 title: Nest planned and queued subtasks under an expandable epic card
-status: Queue
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -13,8 +13,9 @@ assignee:
 agent: claude
 triaged: n/a (chunk 2/3 of task-0026)
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0029
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+base_branch: main
 ---
 
 ## Description
