@@ -1160,6 +1160,12 @@ test('Codex Verify infrastructure failures retain diagnostics and Retry Verifica
     assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true,
       'a manually repaired worktree remains directly verifiable after repair infrastructure failed');
     await patchFrontmatter(repo, 'task-0001', {
+      needs_human_reason: 'retry_failed',
+      verification: { attempts: 2, max_attempts: 3, last_verdict: 'fail' },
+    });
+    assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true,
+      'a manually repaired worktree remains verifiable after escalation infrastructure failed');
+    await patchFrontmatter(repo, 'task-0001', {
       needs_human_reason: 'attempts_exhausted',
       verification: { attempts: 3, max_attempts: 3, last_verdict: 'fail' },
     });

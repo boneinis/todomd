@@ -663,7 +663,7 @@ function canRetryVerification(card) {
   return ['bad_verdict', 'hook_cancelled', 'attempts_exhausted'].includes(reason)
     // A real fail followed by an infrastructure error in the repair Build can
     // be fixed manually in the preserved worktree, then re-verified in place.
-    || (reason === 'error' && card?.data?.verification?.last_verdict === 'fail');
+    || (['error', 'retry_failed'].includes(reason) && card?.data?.verification?.last_verdict === 'fail');
 }
 
 export async function recoveryActions(project, id) {
