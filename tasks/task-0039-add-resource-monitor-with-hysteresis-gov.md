@@ -1,7 +1,7 @@
 ---
 id: task-0039
 title: Add resource monitor with hysteresis governor
-status: Verify
+status: Done
 type: module
 priority: medium
 labels: []
@@ -12,10 +12,10 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0021)
-session_id: 019fc43b-ead6-7951-b792-03f5eb5f6bfb
-worktree: todomd/task-0039
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-base_branch: main
+session_id: 019fc440-c8b9-7810-9b4e-67d11474ca94
+worktree:
+verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
+base_branch:
 cost_usd: 11.7717
 needs_human_reason:
 recovery_stage:
@@ -93,3 +93,4 @@ null disk metric instead of crashing the server at startup.
   - attempts_exhausted: Adversarial review found a reachable critical-threshold bug in src/resources.js. resourcesConfig() validates only resume < defer, allowing a partial override such as cpu.defer: 2 to merge with the default critical: 1.5. evaluateMetric() then returns early when 1.6 does not breach defer, so that sample incorrectly produces {deferring:false, critical:false, reasons:[]} despite breaching critical. Va
 - 2026-08-02 20:50Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: Adversarial review found a reachable config-normalization defect despite all tests passing (495 unit and 29 UI). `normalizeConfig()` is no longer idempotent: `resourcesConfig()` reads snake_case YAML fields but emits camelCase fields. Normalizing its output again resets custom disk thresholds, recovery count, and sample interval to defaults. Reproduction: custom disk 7/9 GB, recovery 6, interval 4
+- 2026-08-02 20:58Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
