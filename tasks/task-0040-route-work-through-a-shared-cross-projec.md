@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
