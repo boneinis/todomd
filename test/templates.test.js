@@ -2,8 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import yaml from 'js-yaml';
 import { tmp, git, makeRepo } from './helpers.js';
 import { detectWorktreeLinks, initProject, cmdDispatch, CMD_BUILD } from '../src/templates.js';
+import { resourcesConfig, DEFAULT_RESOURCES_CONFIG } from '../src/resources.js';
 
 test('CMD_BUILD rule 5 prohibits git add -A and committing under .todomd/', () => {
   assert.match(CMD_BUILD, /git add -A/, 'rule mentions git add -A');
@@ -67,6 +69,18 @@ test('initProject gitignores stolen-lock leftovers (.todomd/.lock.dead.*)', () =
   initProject(repo);
   const gi = fs.readFileSync(path.join(repo, '.gitignore'), 'utf8');
   assert.match(gi, /^\.todomd\/\.lock\.dead\.\*$/m);
+});
+
+test('shipped config.yml documents the resource monitor and matches resources.js defaults', () => {
+  const repo = tmp('resources-config');
+  git(repo, ['init', '-q']);
+  initProject(repo);
+  const cfg = fs.readFileSync(path.join(repo, '.todomd/config.yml'), 'utf8');
+  assert.match(cfg, /^resources:$/m);
+  const parsed = yaml.load(cfg);
+  assert.ok(parsed.resources, 'config.yml parses a resources block');
+  assert.deepEqual(resourcesConfig(parsed), DEFAULT_RESOURCES_CONFIG,
+    'the shipped resources: values equal the documented defaults resourcesConfig() falls back to');
 });
 
 test('dispatch LOCK loop steals an ownerless lock by the lock dir mtime', () => {

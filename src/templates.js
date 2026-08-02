@@ -44,6 +44,31 @@ build_continuation:
   enabled: true
   max_no_progress_slices: 2
 
+# Resource monitor: before starting new heavy work (a build/verify agent run),
+# the scheduler samples host CPU/memory/disk and defers if any metric has
+# breached its defer threshold. A deferred metric only resumes once it has
+# held below resume for recovery_samples consecutive samples — that gap plus
+# the streak requirement is the hysteresis, so a metric hovering at the line
+# can't flap the scheduler start/stop every sample. critical is reserved for
+# a later CI-cancellation policy. A metric the platform can't report (e.g. no
+# fs.statfsSync) comes back null and a null metric never triggers a deferral.
+# Boards with no resources key at all get these same defaults.
+resources:
+  enabled: true
+  cpu:
+    defer: 0.85
+    resume: 0.65
+    critical: 1.5
+  memory:
+    defer: 0.85
+    resume: 0.70
+    critical: 0.95
+  disk:
+    min_free_gb: 2
+    resume_free_gb: 5
+  recovery_samples: 3
+  sample_interval_seconds: 30
+
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
 # in-flight work (which card/files each worker is building), so several people
 # on this repo don't overlap. Off by default.
