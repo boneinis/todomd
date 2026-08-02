@@ -291,6 +291,22 @@ test('UI voice: push-to-talk supports keyboard press-and-hold with complete clea
   assert.equal(await page.eval(`window.__voiceHooks.tracks.at(-1).stopped`), true);
 });
 
+test('UI voice: focus loss ends pointer push-to-talk and stops its microphone track', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.eval(`document.getElementById('voice-ptt').hidden = false`);
+  const before = await page.eval(`window.__voiceHooks.tracks.length`);
+  await page.eval(`document.getElementById('voice-ptt').dispatchEvent(new PointerEvent('pointerdown', {
+    pointerId: 7, pointerType: 'mouse', button: 0, bubbles: true, cancelable: true,
+  }))`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+
+  await page.eval(`window.dispatchEvent(new Event('blur'))`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'inactive' || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`window.__voiceHooks.tracks.length`), before + 1);
+  assert.equal(await page.eval(`window.__voiceHooks.tracks.at(-1).stopped`), true,
+    'losing browser focus must not leave the remote microphone active');
+});
+
 test('UI voice: microphone denial after wake reveals push-to-talk with a diagnostic; the board stays usable', async (t) => {
   if (!page) return t.skip(SKIP);
   await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);

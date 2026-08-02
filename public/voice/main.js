@@ -75,34 +75,51 @@ if (btn && widget) {
   });
 
   if (ptt) {
-    const start = (event) => { event.preventDefault(); controller.pushToTalkStart(); };
-    const end = (event) => { event.preventDefault(); controller.pushToTalkEnd(); };
+    let pointerId = null;
     let keyboardHeld = false;
-    ptt.addEventListener('mousedown', start);
-    ptt.addEventListener('touchstart', start);
-    ptt.addEventListener('mouseup', end);
-    ptt.addEventListener('mouseleave', end);
-    ptt.addEventListener('touchend', end);
-    ptt.addEventListener('touchcancel', end);
+    const held = () => pointerId !== null || keyboardHeld;
+    const release = () => {
+      if (!held()) return;
+      pointerId = null;
+      keyboardHeld = false;
+      controller.pushToTalkEnd();
+    };
+    ptt.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      if (pointerId !== null) return;
+      const wasHeld = held();
+      pointerId = event.pointerId;
+      try { ptt.setPointerCapture(event.pointerId); } catch { /* synthetic/unsupported capture */ }
+      if (!wasHeld) controller.pushToTalkStart();
+    });
+    const releasePointer = (event) => {
+      if (pointerId === null || event.pointerId !== pointerId) return;
+      if (event.cancelable) event.preventDefault();
+      pointerId = null;
+      if (!keyboardHeld) controller.pushToTalkEnd();
+    };
+    window.addEventListener('pointerup', releasePointer);
+    window.addEventListener('pointercancel', releasePointer);
     ptt.addEventListener('keydown', (event) => {
       if (![' ', 'Enter'].includes(event.key)) return;
       event.preventDefault();
       if (keyboardHeld || event.repeat) return;
+      const wasHeld = held();
       keyboardHeld = true;
-      controller.pushToTalkStart();
+      if (!wasHeld) controller.pushToTalkStart();
     });
     ptt.addEventListener('keyup', (event) => {
       if (![' ', 'Enter'].includes(event.key)) return;
       event.preventDefault();
       if (!keyboardHeld) return;
       keyboardHeld = false;
-      controller.pushToTalkEnd();
+      if (pointerId === null) controller.pushToTalkEnd();
     });
-    ptt.addEventListener('blur', () => {
-      if (!keyboardHeld) return;
-      keyboardHeld = false;
-      controller.pushToTalkEnd();
-    });
+    // Releasing outside the browser may deliver neither pointerup nor
+    // pointerleave. Focus loss is therefore a privacy boundary: always stop
+    // the remote microphone regardless of which input mode began the hold.
+    ptt.addEventListener('blur', release);
+    window.addEventListener('blur', release);
   }
 
   // `null` until the first context arrives, so the very first dispatch never
