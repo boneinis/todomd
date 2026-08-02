@@ -30,12 +30,12 @@ export function resourcesConfig(config) {
       defer: Number.isFinite(cpu.defer) ? cpu.defer : DEFAULT_RESOURCES_CONFIG.cpu.defer,
       resume: Number.isFinite(cpu.resume) ? cpu.resume : DEFAULT_RESOURCES_CONFIG.cpu.resume,
       critical: Number.isFinite(cpu.critical) ? cpu.critical : DEFAULT_RESOURCES_CONFIG.cpu.critical,
-    }, (b) => b.resume < b.defer, DEFAULT_RESOURCES_CONFIG.cpu),
+    }, (b) => b.resume < b.defer && b.defer < b.critical, DEFAULT_RESOURCES_CONFIG.cpu),
     memory: validHysteresis({
       defer: Number.isFinite(memory.defer) ? memory.defer : DEFAULT_RESOURCES_CONFIG.memory.defer,
       resume: Number.isFinite(memory.resume) ? memory.resume : DEFAULT_RESOURCES_CONFIG.memory.resume,
       critical: Number.isFinite(memory.critical) ? memory.critical : DEFAULT_RESOURCES_CONFIG.memory.critical,
-    }, (b) => b.resume < b.defer, DEFAULT_RESOURCES_CONFIG.memory),
+    }, (b) => b.resume < b.defer && b.defer < b.critical, DEFAULT_RESOURCES_CONFIG.memory),
     disk: validHysteresis({
       minFreeGb: Number.isFinite(disk.min_free_gb) ? disk.min_free_gb : DEFAULT_RESOURCES_CONFIG.disk.minFreeGb,
       resumeFreeGb: Number.isFinite(disk.resume_free_gb) ? disk.resume_free_gb : DEFAULT_RESOURCES_CONFIG.disk.resumeFreeGb,
@@ -47,12 +47,14 @@ export function resourcesConfig(config) {
   };
 }
 
-// Hysteresis only exists when the resume threshold sits on the *safe* side of
-// the defer threshold: for cpu/memory (higher is worse) resume < defer, and for
-// disk (less free space is worse) resume_free_gb > min_free_gb. An inverted or
-// zero-width pair defeats the governor entirely — with cpu defer 0.8 / resume 0.9 a steady
+// Hysteresis only exists when every threshold is ordered by severity: for
+// cpu/memory (higher is worse) resume < defer < critical, and for disk (less
+// free space is worse) resume_free_gb > min_free_gb. An inverted or zero-width
+// band defeats the governor entirely — with cpu defer 0.8 / resume 0.9 a steady
 // 0.85 load both breaches defer (0.85 > 0.8) and counts as a recovery sample
 // (0.85 < 0.9), so the governor flaps defer -> clear -> defer forever.
+// Likewise, critical <= defer makes a critical sample reachable before the
+// governor's defer gate, so the early non-breach return would hide it.
 //
 // Fall back rather than throw: this runs inside normalizeConfig() on every board
 // load, so a bad hand-edited config.yml must not take the board down — same

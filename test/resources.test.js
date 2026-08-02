@@ -84,6 +84,30 @@ test('resourcesConfig: an inverted memory band falls back to the documented memo
     'a valid cpu band alongside an invalid memory one is kept');
 });
 
+test('resourcesConfig: partial overrides cannot move defer beyond the default critical threshold', () => {
+  const cfg = resourcesConfig({ resources: {
+    cpu: { defer: 2 },
+    memory: { defer: 0.99 },
+  } });
+  assert.deepEqual(cfg.cpu, DEFAULT_RESOURCES_CONFIG.cpu,
+    'cpu resume < defer < critical must still hold after merging a partial override');
+  assert.deepEqual(cfg.memory, DEFAULT_RESOURCES_CONFIG.memory,
+    'memory resume < defer < critical must still hold after merging a partial override');
+
+  const gov = createGovernor({ thresholds: cfg, sample: queueSampler([{
+    ...BASE_SNAPSHOT,
+    cpuLoad: 1.6,
+    memoryPressure: 0.96,
+  }]) });
+  const state = gov.check();
+  assert.equal(state.deferring, true);
+  assert.equal(state.critical, true, 'normalization must not make critical pressure unreachable');
+  assert.deepEqual(state.reasons, [
+    { metric: 'cpu', value: 1.6, threshold: 1.5, level: 'critical' },
+    { metric: 'memory', value: 0.96, threshold: 0.95, level: 'critical' },
+  ]);
+});
+
 test('resourcesConfig: a disk band whose resume_free_gb is below min_free_gb falls back to the disk defaults', () => {
   // disk is inverted (less free space is worse), so resume_free_gb must be the
   // LARGER number; 1 GB free would clear a deferral raised at 5 GB free
