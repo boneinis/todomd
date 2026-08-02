@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,9 +12,9 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 1/2 of task-0027)
-session_id: e3deedd6-d0a9-4110-b8de-a592c458ba44
+session_id: 019fc2ef-02ba-7943-a95a-92a19917ab96
 worktree: todomd/task-0031
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 2.691
 ---
@@ -82,3 +82,5 @@ Bulk archive API and eligibility rules
 
 ## Run Log
 - 2026-08-02 14:44Z · Build attempt 1 · 62 turns · $2.691 · ok
+- 2026-08-02 14:48Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 3)
+  - retrying with findings (attempt 2/3)
