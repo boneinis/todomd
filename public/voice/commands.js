@@ -55,6 +55,7 @@ function suppressionUpdate(createResponse) {
 // onClose race left to catch), so the proposal gets released instead of
 // hanging forever.
 const READBACK_TIMEOUT_MS = 8_000;
+const READBACK_METADATA_KEY = 'todomd_readback_id';
 
 export function createCommandRouter({
   controller,
@@ -66,29 +67,28 @@ export function createCommandRouter({
   readbackTimeoutMs = READBACK_TIMEOUT_MS,
 } = {}) {
   let pendingReadback = null; // the readback turn currently being waited on, if any
+  let activeMutation = null; // one proposal lifecycle at a time, including its async prepare
+
+  function releaseMutation(owner) {
+    if (activeMutation === owner) activeMutation = null;
+  }
 
   // Resolves with { completed } once the readback turn has finished SPEAKING,
   // or { timedOut } / { failed } if it cannot be shown to have done so.
   //
   // Armed synchronously, immediately before the caller sends its
-  // `response.create`, so the `response.created` naming the readback's id
-  // can never be missed. That id is the whole point: the function-call
-  // response that produced this tool call emits its own `response.done`
-  // moments later, and — because preparing a proposal involves an async POST
-  // — that event can land after this wait is armed. Treating any
-  // `response.done` as the readback's would open the confirmation window
-  // before the readback had even started, over the assistant's own speech.
-  // The originating response's `response.created` is long past by then (it
-  // precedes the `response.output_item.done` carrying the tool call), and
-  // automatic responses are already suppressed, so the first
-  // `response.created` seen from here is unambiguously the readback's.
+  // `response.create`. The request carries a unique metadata value and only a
+  // `response.created` echoing that exact value may bind the provider's
+  // response id. Event order is not an identity boundary: an unrelated manual
+  // or queued response can be created in the same interval.
   //
   // Completion is the readback's `output_audio_buffer.stopped`, not its
   // `response.done`: the latter means generation finished, while on WebRTC
   // the output audio is still draining afterwards.
-  function waitForReadback() {
+  function waitForReadback(readbackId) {
     return new Promise((resolve) => {
       const wait = {
+        readbackId,
         responseId: null,
         settled: false,
         settle(outcome) {
@@ -111,7 +111,9 @@ export function createCommandRouter({
     const wait = pendingReadback;
     if (!wait || !event) return;
     if (event.type === 'response.created') {
-      if (wait.responseId === null && typeof event.responseId === 'string') wait.responseId = event.responseId;
+      if (wait.responseId === null
+        && event.readbackId === wait.readbackId
+        && typeof event.responseId === 'string') wait.responseId = event.responseId;
       return;
     }
     if (wait.responseId === null || event.responseId !== wait.responseId) return;
@@ -181,20 +183,24 @@ export function createCommandRouter({
   // match confirms, anything else — a rejection, a stale reply, an unrelated
   // sentence — rejects. The server independently re-checks the exact phrase
   // at confirm time; this decides only which of the two endpoints to call.
-  async function settle(proposal, text) {
+  async function settle(proposal, text, mutation) {
     controller.send(suppressionUpdate(true));
-    const tier = proposal.confirmation.tier;
-    const expected = tier === 'reversible' ? 'yes to do' : normalizePhrase(proposal.confirmation.challenge);
-    const matches = normalizePhrase(text) === expected;
-    if (!matches) {
-      await reject(proposal.proposalId);
-      speak('Cancelled — nothing was changed.');
-      return;
+    try {
+      const tier = proposal.confirmation.tier;
+      const expected = tier === 'reversible' ? 'yes to do' : normalizePhrase(proposal.confirmation.challenge);
+      const matches = normalizePhrase(text) === expected;
+      if (!matches) {
+        await reject(proposal.proposalId);
+        speak('Cancelled — nothing was changed.');
+        return;
+      }
+      const outcome = await confirm(proposal.proposalId, text);
+      speak(outcome.ok
+        ? `Done — ${proposal.readback}.`
+        : `That could not be completed: ${outcome.body?.error || 'unknown error'}.`);
+    } finally {
+      releaseMutation(mutation);
     }
-    const outcome = await confirm(proposal.proposalId, text);
-    speak(outcome.ok
-      ? `Done — ${proposal.readback}.`
-      : `That could not be completed: ${outcome.body?.error || 'unknown error'}.`);
   }
 
   async function handleProposeBoardAction(call_) {
@@ -204,22 +210,43 @@ export function createCommandRouter({
       controller.send(requestResponse());
       return;
     }
+    if (activeMutation) {
+      // A second tool call can arrive in the same provider response while the
+      // first proposal POST is still in flight. Return its tool output, but do
+      // not create another model response: the accepted proposal's correlated
+      // read-back will consume all tool outputs after the prepare settles.
+      controller.send(functionCallOutput(call_.callId, {
+        ok: false,
+        error: 'another board action is already awaiting confirmation',
+      }));
+      return;
+    }
+    const mutation = { callId: call_.callId };
+    activeMutation = mutation;
     const body = { cardId, action };
     if (actionArguments !== undefined) body.arguments = actionArguments;
     const result = await call('actions', { method: 'POST', body });
     if (!result.ok) {
+      releaseMutation(mutation);
       controller.send(functionCallOutput(call_.callId, { ok: false, error: result.body?.error || 'unable to prepare this action' }));
       controller.send(requestResponse());
       return;
     }
     const proposal = result.body;
+    if (typeof proposal?.proposalId !== 'string' || typeof proposal.confirmation?.tier !== 'string') {
+      releaseMutation(mutation);
+      controller.send(functionCallOutput(call_.callId, { ok: false, error: 'the board returned an invalid action proposal' }));
+      controller.send(requestResponse());
+      return;
+    }
     if (proposal.confirmation?.tier === 'visible') {
       // Cancel, Restart Build, and archive are never voice-confirmable — the
       // existing card-drawer buttons are the only approval path for them.
       // Reject the reservation immediately instead of leaving it pending for
       // its TTL, so a later voice request for the same card isn't blocked by
       // a proposal nothing will ever confirm.
-      reject(proposal.proposalId);
+      await reject(proposal.proposalId);
+      releaseMutation(mutation);
       controller.send(functionCallOutput(call_.callId, {
         ok: true, readback: proposal.readback, requiresVisibleApproval: true,
       }));
@@ -237,8 +264,8 @@ export function createCommandRouter({
     controller.send(functionCallOutput(call_.callId, {
       ok: true, readback: proposal.readback, confirmation: proposal.confirmation,
     }));
-    const readback = waitForReadback();
-    controller.send(requestResponse());
+    const readback = waitForReadback(proposal.proposalId);
+    controller.send(requestResponse({ metadata: { [READBACK_METADATA_KEY]: proposal.proposalId } }));
     const outcome = await readback;
 
     if (!outcome.completed) {
@@ -249,6 +276,7 @@ export function createCommandRouter({
       // assistant's own audio, so release the reservation instead.
       controller.send(suppressionUpdate(true));
       await reject(proposal.proposalId);
+      releaseMutation(mutation);
       speak('Cancelled — nothing was changed.');
       return;
     }
@@ -258,11 +286,15 @@ export function createCommandRouter({
     controller.send({ type: 'input_audio_buffer.clear' });
     const entered = controller.enterConfirming({
       challenge: proposal.confirmation.challenge,
-      onResolve: (text) => settle(proposal, text),
-      onTimeout: () => {
+      onResolve: (text) => settle(proposal, text, mutation),
+      onTimeout: async () => {
         controller.send(suppressionUpdate(true));
-        reject(proposal.proposalId);
-        speak('Cancelled — you did not confirm in time.');
+        try {
+          await reject(proposal.proposalId);
+          speak('Cancelled — you did not confirm in time.');
+        } finally {
+          releaseMutation(mutation);
+        }
       },
     });
     if (!entered) {
@@ -272,7 +304,8 @@ export function createCommandRouter({
       // expire on its own. The tool call already got its result above; there
       // is no live session left to speak anything further into.
       controller.send(suppressionUpdate(true));
-      reject(proposal.proposalId);
+      await reject(proposal.proposalId);
+      releaseMutation(mutation);
     }
   }
 

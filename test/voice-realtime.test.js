@@ -394,14 +394,14 @@ test('the response lifecycle surfaces through onResponseEvent with the ids the r
   channel.emit('message', { data: JSON.stringify({ type: 'response.output_audio.delta', delta: 'ignore me' }) });
   assert.deepEqual(events, [], 'partial output events are not part of the lifecycle the router waits on');
 
-  channel.emit('message', { data: JSON.stringify({ type: 'response.created', response: { id: 'resp_1' } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.created', response: { id: 'resp_1', metadata: { todomd_readback_id: 'proposal_1' } } }) });
   channel.emit('message', { data: JSON.stringify({ type: 'response.done', response: { id: 'resp_1', status: 'completed' } }) });
   // The WebRTC finished-PLAYING event, which carries the id under a different
   // key than the response events do — the router only opens a confirmation
   // window on this one, so it must arrive correlated, not bare.
   channel.emit('message', { data: JSON.stringify({ type: 'output_audio_buffer.stopped', response_id: 'resp_1' }) });
   assert.deepEqual(events, [
-    { type: 'response.created', responseId: 'resp_1' },
+    { type: 'response.created', responseId: 'resp_1', readbackId: 'proposal_1' },
     { type: 'response.done', responseId: 'resp_1', status: 'completed' },
     { type: 'output_audio_buffer.stopped', responseId: 'resp_1' },
   ]);

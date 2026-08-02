@@ -114,7 +114,10 @@ export function createRealtimeSession({
     // it, so `output_audio_buffer.stopped` (same response, under
     // `response_id`) is the only event that means "finished speaking".
     if (event.type === 'response.created' && typeof event.response?.id === 'string') {
-      onResponseEvent({ type: 'response.created', responseId: event.response.id });
+      const readbackId = typeof event.response.metadata?.todomd_readback_id === 'string'
+        ? event.response.metadata.todomd_readback_id
+        : null;
+      onResponseEvent({ type: 'response.created', responseId: event.response.id, readbackId });
       return;
     }
     if (event.type === 'response.done' && typeof event.response?.id === 'string') {

@@ -67,8 +67,14 @@ function emitTranscript(text) {
 //
 // Only the read-back's stopped event may open the confirmation window.
 async function playReadback(page, tag) {
+  const readbackId = await until(async () => (await page.eval(`(() => {
+    const sent = window.__voiceHooks.pcs.at(-1).dataChannel.sent;
+    const request = sent.map((entry) => JSON.parse(entry)).reverse()
+      .find((event) => event.type === 'response.create' && event.response?.metadata?.todomd_readback_id);
+    return request?.response.metadata.todomd_readback_id || null;
+  })()`)) || null, { timeout: BUDGET.quick });
   await page.eval(emitEvent({ type: 'response.done', response: { id: `resp-tool-${tag}`, status: 'completed' } }));
-  await page.eval(emitEvent({ type: 'response.created', response: { id: `resp-readback-${tag}` } }));
+  await page.eval(emitEvent({ type: 'response.created', response: { id: `resp-readback-${tag}`, metadata: { todomd_readback_id: readbackId } } }));
   await page.eval(emitEvent({ type: 'response.done', response: { id: `resp-readback-${tag}`, status: 'completed' } }));
   await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: `resp-readback-${tag}` }));
 }
@@ -459,11 +465,20 @@ test('UI voice: the tool call\'s own response finishing cannot open the confirma
   // Once the tool result is visible the router has armed its read-back wait,
   // so everything below reproduces the real post-arming event ordering.
   await until(async () => (await page.eval(readToolOutput('call-race'))) || null, { timeout: BUDGET.quick });
+  const readbackId = await until(async () => (await page.eval(`(() => {
+    const sent = window.__voiceHooks.pcs.at(-1).dataChannel.sent;
+    const request = sent.map((entry) => JSON.parse(entry)).reverse()
+      .find((event) => event.type === 'response.create' && event.response?.metadata?.todomd_readback_id);
+    return request?.response.metadata.todomd_readback_id || null;
+  })()`)) || null, { timeout: BUDGET.quick });
 
   // The function-call response finishes — generation AND playback — with its
   // own id. Neither event belongs to the read-back.
   await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-tool-race', status: 'completed' } }));
   await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: 'resp-tool-race' }));
+  await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-unrelated-race', metadata: { todomd_readback_id: 'unrelated' } } }));
+  await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-unrelated-race', status: 'completed' } }));
+  await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: 'resp-unrelated-race' }));
 
   // The assistant is still speaking the read-back, which says the challenge
   // phrase aloud: a transcript landing now is its own echo, not the human's
@@ -477,7 +492,7 @@ test('UI voice: the tool call\'s own response finishing cannot open the confirma
 
   // The read-back's own generation completing is still not enough on WebRTC —
   // only its drained output audio is.
-  await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-readback-race' } }));
+  await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-readback-race', metadata: { todomd_readback_id: readbackId } } }));
   await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-readback-race', status: 'completed' } }));
   await new Promise((r) => setTimeout(r, 200));
   assert.equal(await page.eval(`window.__voiceStates.includes('confirming')`), false,
@@ -507,12 +522,18 @@ test('UI voice: a read-back that never finishes playing releases the proposal in
 
   await page.eval(emitToolCall('call-lost', 'propose_board_action', { cardId: 'task-0016', action: 'retry_planned' }));
   await until(async () => (await page.eval(readToolOutput('call-lost'))) || null, { timeout: BUDGET.quick });
+  const readbackId = await until(async () => (await page.eval(`(() => {
+    const sent = window.__voiceHooks.pcs.at(-1).dataChannel.sent;
+    const request = sent.map((entry) => JSON.parse(entry)).reverse()
+      .find((event) => event.type === 'response.create' && event.response?.metadata?.todomd_readback_id);
+    return request?.response.metadata.todomd_readback_id || null;
+  })()`)) || null, { timeout: BUDGET.quick });
   const rejectsBefore = await page.eval(`window.__voiceHooks.actionRequests.filter((u) => u.includes('/reject')).length`);
 
   // The read-back is created and generated, but its finished-playing event
   // never arrives — the data channel died mid-turn.
   await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-tool-lost', status: 'completed' } }));
-  await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-readback-lost' } }));
+  await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-readback-lost', metadata: { todomd_readback_id: readbackId } } }));
   await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-readback-lost', status: 'completed' } }));
 
   // The router's bounded wait elapses and releases the reservation rather than

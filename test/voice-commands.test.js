@@ -28,9 +28,9 @@ function emitOriginatingDone(router, id = 'resp_tool') {
 // is created, finishes generating, and finally finishes playing. Only that
 // last event means the human has heard the readback; on WebRTC the output
 // audio is still draining when `response.done` arrives.
-function playReadback(router, { id = 'resp_readback', status = 'completed', stopped = true } = {}) {
+function playReadback(router, { id = 'resp_readback', readbackId = 'p2', status = 'completed', stopped = true } = {}) {
   emitOriginatingDone(router);
-  router.handleResponseEvent({ type: 'response.created', responseId: id });
+  router.handleResponseEvent({ type: 'response.created', responseId: id, readbackId });
   router.handleResponseEvent({ type: 'response.done', responseId: id, status });
   if (stopped) router.handleResponseEvent({ type: 'output_audio_buffer.stopped', responseId: id });
 }
@@ -192,6 +192,8 @@ test('a reversible-tier proposal suppresses auto-response, clears buffered audio
   assert.equal(suppress.session.audio.input.turn_detection.interrupt_response, false);
   assert.equal(controller.enterConfirmingCalls.length, 1);
   assert.deepEqual(functionOutput(controller.sent, 'c1'), { ok: true, readback: proposalBody.readback, confirmation: proposalBody.confirmation });
+  const readbackRequest = controller.sent.find((event) => event.type === 'response.create' && event.response.metadata);
+  assert.deepEqual(readbackRequest.response.metadata, { todomd_readback_id: 'p2' });
 });
 
 test('the confirmation window opens only after the readback response finishes — not when the proposal is merely prepared', async () => {
@@ -230,7 +232,7 @@ test('the confirmation window opens only after the readback response finishes �
     'the same exact phrase confirms once actually heard after the readback finished');
 });
 
-test('another response finishing — including the one that carried the tool call — never opens the confirmation window', async () => {
+test('an unrelated response.created — including the response that carried the tool call — never claims the readback wait', async () => {
   const controller = fakeController();
   const proposalBody = { proposalId: 'p2', readback: 'move task-0020 back to Review', confirmation: { tier: 'reversible', phrase: 'Yes To-do', challenge: null } };
   const fetchFn = fakeFetch([{ status: 200, body: proposalBody }]);
@@ -242,6 +244,9 @@ test('another response finishing — including the one that carried the tool cal
   // the real ordering — and its own audio drains too. Neither is the readback.
   emitOriginatingDone(router);
   router.handleResponseEvent({ type: 'output_audio_buffer.stopped', responseId: 'resp_tool' });
+  router.handleResponseEvent({ type: 'response.created', responseId: 'resp_unrelated', readbackId: 'some-other-purpose' });
+  router.handleResponseEvent({ type: 'response.done', responseId: 'resp_unrelated', status: 'completed' });
+  router.handleResponseEvent({ type: 'output_audio_buffer.stopped', responseId: 'resp_unrelated' });
   await flush();
   assert.equal(controller.enterConfirmingCalls.length, 0,
     'a different response finishing must never be mistaken for the readback');
@@ -250,7 +255,7 @@ test('another response finishing — including the one that carried the tool cal
   // The readback's own generation finishing is still not enough: on WebRTC its
   // audio keeps draining after `response.done`, and the challenge phrase is
   // spoken aloud — a window opened here could be self-confirmed by the echo.
-  router.handleResponseEvent({ type: 'response.created', responseId: 'resp_readback' });
+  router.handleResponseEvent({ type: 'response.created', responseId: 'resp_readback', readbackId: 'p2' });
   router.handleResponseEvent({ type: 'response.done', responseId: 'resp_readback', status: 'completed' });
   await flush();
   assert.equal(controller.enterConfirmingCalls.length, 0, 'generation complete is not finished speaking');
@@ -258,6 +263,38 @@ test('another response finishing — including the one that carried the tool cal
   router.handleResponseEvent({ type: 'output_audio_buffer.stopped', responseId: 'resp_readback' });
   await pending;
   assert.equal(controller.enterConfirmingCalls.length, 1, 'the readback finishing playback is what opens the window');
+});
+
+test('simultaneous mutation tool calls prepare only one proposal and reject the other locally', async () => {
+  const controller = fakeController();
+  const proposalBody = { proposalId: 'p-first', readback: 'move task-0020 back to Review', confirmation: { tier: 'reversible', phrase: 'Yes To-do', challenge: null } };
+  const calls = [];
+  let finishPrepare;
+  const fetchFn = async (url, opts = {}) => {
+    calls.push({ url, body: opts.body ? JSON.parse(opts.body) : undefined });
+    if (url.endsWith('/actions?project=demo')) {
+      await new Promise((resolve) => { finishPrepare = resolve; });
+      return { ok: true, status: 200, json: async () => proposalBody };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
+  const first = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
+  await flush();
+  await router.handleToolCall({ callId: 'c2', name: 'propose_board_action', arguments: { cardId: 'task-0021', action: 'retriage' } });
+
+  assert.equal(calls.filter((call) => call.url.endsWith('/actions?project=demo')).length, 1,
+    'the concurrent call never reserves a second server proposal');
+  assert.deepEqual(functionOutput(controller.sent, 'c2'), {
+    ok: false,
+    error: 'another board action is already awaiting confirmation',
+  });
+
+  finishPrepare();
+  await flush();
+  playReadback(router, { readbackId: 'p-first' });
+  await first;
+  assert.equal(controller.enterConfirmingCalls.length, 1, 'only the accepted proposal reaches confirmation');
 });
 
 test('a readback that never finishes playing releases the proposal instead of opening a confirmation window', async () => {
@@ -365,7 +402,7 @@ test('a bare "yes" does not confirm an agent-tier action — only its exact chal
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'approve' } });
   await flush();
-  playReadback(router);
+  playReadback(router, { readbackId: 'p3' });
   await pending;
 
   controller.resolve('yes');
@@ -386,7 +423,7 @@ test('the exact challenge phrase confirms an agent-tier action', async () => {
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'approve' } });
   await flush();
-  playReadback(router);
+  playReadback(router, { readbackId: 'p3' });
   await pending;
 
   controller.resolve('confirm APPROVE task-0020 amber7');
