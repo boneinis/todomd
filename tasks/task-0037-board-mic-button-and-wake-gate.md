@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Verify
+status: Done
 type: module
 priority: medium
 labels: []
@@ -12,10 +12,10 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
-session_id: 019fbfde-a3a0-7372-82ee-7bd96867533d
-worktree: todomd/task-0037
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-base_branch: main
+session_id: 019fbfe6-8091-7ab1-8638-d1157f3fc351
+worktree:
+verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
+base_branch:
 cost_usd: 28.5062
 needs_human_reason:
 recovery_stage:
@@ -86,3 +86,4 @@ local speech or provider configuration is unavailable.
   - attempts_exhausted: Reachable cross-project privacy bug: `public/app.js:1208-1212` removes a project, then `loadProjects()` can silently change `currentProject` to another registered project without first publishing the revoked voice context. An armed recognizer or live Realtime session therefore remains active and bound to the removed project until the replacement board request finishes; if that request fails, captu
 - 2026-08-02 00:34Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: Reachable push-to-talk cleanup bug in public/voice/main.js:78-105: mouse PTT ends only on mouseup/mouseleave, and blur cleanup is restricted to keyboardHeld. If the user presses PTT, switches windows while the pointer remains over the button, then releases outside Chrome, the browser receives neither mouseup nor mouseleave and ignores focus loss. A headless-Chrome reproduction observed {state:"act
+- 2026-08-02 00:40Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
