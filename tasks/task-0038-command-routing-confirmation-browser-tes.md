@@ -1,7 +1,7 @@
 ---
 id: task-0038
 title: Command routing confirmation browser tests
-status: Planned
+status: Queue
 type: module
 priority: medium
 labels: []
