@@ -1,7 +1,7 @@
 // Browser coverage for the board mic control (docs/voice.md). Node tests
 // cannot see a real render or drive real DOM events, so this file exercises
-// what only a browser can: the capability-unavailable path in an ACTUAL
-// browser with no downloaded on-device speech model (no fakes at all), then
+// what only a browser can: the capability-unavailable and downloadable-pack
+// paths in an actual browser, then
 // the full wake → active → sign-off → offline lifecycle with injected
 // WebRTC/SpeechRecognition/getUserMedia fakes and a real HTTP round trip
 // through the server to a fixture OpenAI-shaped upstream. No real microphone,
@@ -265,6 +265,30 @@ test('UI voice: arm, wake, active session, sign-off phrase, second wake, offline
   assert.equal(totalTracks, 2, 'one microphone track per opened session');
   assert.equal(stoppedTracks, totalTracks, 'every acquired microphone track was stopped by offline');
   assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: the board replays context when the voice module announces readiness', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.eval(`document.getElementById('voice-widget').hidden = true`);
+  await page.eval(`document.dispatchEvent(new CustomEvent('todomd:voice-ready'))`);
+  assert.equal(await page.eval(`document.getElementById('voice-widget').hidden`), false,
+    'a late voice module receives the latest primary board context');
+});
+
+test('UI voice: push-to-talk supports keyboard press-and-hold with complete cleanup', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.eval(`document.getElementById('voice-ptt').hidden = false`);
+  const before = await page.eval(`window.__voiceHooks.tracks.length`);
+  await page.eval(`document.getElementById('voice-ptt').dispatchEvent(new KeyboardEvent('keydown', {
+    key: ' ', bubbles: true, cancelable: true,
+  }))`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+  await page.eval(`document.getElementById('voice-ptt').dispatchEvent(new KeyboardEvent('keyup', {
+    key: ' ', bubbles: true, cancelable: true,
+  }))`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'inactive' || null, { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`window.__voiceHooks.tracks.length`), before + 1);
+  assert.equal(await page.eval(`window.__voiceHooks.tracks.at(-1).stopped`), true);
 });
 
 test('UI voice: microphone denial after wake reveals push-to-talk with a diagnostic; the board stays usable', async (t) => {

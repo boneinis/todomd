@@ -112,7 +112,10 @@ export function createVoiceController({
   }
 
   async function arm() {
-    if (state !== 'inactive' && state !== 'error') return false;
+    // A push-to-talk session stays visually inactive/error while open() is in
+    // flight. Do not let Arm start local recognition in that window: local
+    // wake and remote microphone capture must never overlap.
+    if (pendingSession || (state !== 'inactive' && state !== 'error')) return false;
     const myGeneration = ++armGeneration;
     setState('arming');
     let capability;

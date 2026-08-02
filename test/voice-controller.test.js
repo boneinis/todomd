@@ -478,6 +478,23 @@ test('releasing push-to-talk before open() resolves lands on inactive, not activ
   assert.equal(await startPromise, true);
 });
 
+test('arm is refused while push-to-talk is still opening so local and remote listening cannot overlap', async () => {
+  const realtime = fakeRealtimeFactory({ manual: true });
+  const { controller, wakeEngine } = build({ realtime });
+
+  const startPromise = controller.pushToTalkStart();
+  await flush();
+  assert.equal(controller.state, 'inactive', 'push-to-talk has not finished opening yet');
+  assert.equal(await controller.arm(), false);
+  assert.equal(wakeEngine.calls.init, 0, 'local wake initialization never begins beside remote capture');
+  assert.equal(wakeEngine.calls.start, 0);
+
+  realtime.sessions[0].resolveOpen();
+  await startPromise;
+  assert.equal(controller.state, 'active');
+  await controller.pushToTalkEnd();
+});
+
 test('goOffline mid-open also cancels a still-opening push-to-talk session, stopping every acquired track', async () => {
   const realtime = fakeRealtimeFactory({ manual: true });
   const { controller, wakeEngine } = build({ realtime });

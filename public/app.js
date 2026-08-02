@@ -36,6 +36,19 @@ let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
 
+// The classic board script can finish its async load before the voice module
+// graph has registered a context listener. Retain the latest safe UI context
+// and replay it when voice announces readiness so that one lost event cannot
+// leave the initially-hidden control hidden forever.
+let latestVoiceContext = null;
+function publishVoiceContext(detail) {
+  latestVoiceContext = detail;
+  document.dispatchEvent(new CustomEvent('todomd:context', { detail }));
+}
+document.addEventListener('todomd:voice-ready', () => {
+  if (latestVoiceContext) publishVoiceContext(latestVoiceContext);
+});
+
 // project/card pairs whose subtask rows are collapsed — task ids repeat across
 // projects, so an id alone would leak UI state when the project selector moves.
 // The board is replaced wholesale on every poll, so this can't live in the DOM.
@@ -94,7 +107,7 @@ async function loadBoard() {
     // no board to point voice at (e.g. the last project was just removed) —
     // tell voice/main.js so an armed/active session doesn't keep running
     // against a project that no longer has a board behind it
-    document.dispatchEvent(new CustomEvent('todomd:context', { detail: { project: '', access: 'none', primary: false } }));
+    publishVoiceContext({ project: '', access: 'none', primary: false });
     return;
   }
   boardData = await api(`board?project=${encodeURIComponent(currentProject)}${showArchived ? '&archived=1' : ''}`);
@@ -110,9 +123,7 @@ async function loadBoard() {
   renderBoard();
   // voice/main.js is a separate ES module (see index.html) with no access to
   // this classic script's top-level scope — this is the only bridge it needs.
-  document.dispatchEvent(new CustomEvent('todomd:context', {
-    detail: { project: currentProject, access: boardData.access, primary: boardData.primary === true },
-  }));
+  publishVoiceContext({ project: currentProject, access: boardData.access, primary: boardData.primary === true });
 }
 
 function renderBanners(list) {

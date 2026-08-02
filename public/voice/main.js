@@ -77,21 +77,41 @@ if (btn && widget) {
   if (ptt) {
     const start = (event) => { event.preventDefault(); controller.pushToTalkStart(); };
     const end = (event) => { event.preventDefault(); controller.pushToTalkEnd(); };
+    let keyboardHeld = false;
     ptt.addEventListener('mousedown', start);
     ptt.addEventListener('touchstart', start);
     ptt.addEventListener('mouseup', end);
     ptt.addEventListener('mouseleave', end);
     ptt.addEventListener('touchend', end);
     ptt.addEventListener('touchcancel', end);
+    ptt.addEventListener('keydown', (event) => {
+      if (![' ', 'Enter'].includes(event.key)) return;
+      event.preventDefault();
+      if (keyboardHeld || event.repeat) return;
+      keyboardHeld = true;
+      controller.pushToTalkStart();
+    });
+    ptt.addEventListener('keyup', (event) => {
+      if (![' ', 'Enter'].includes(event.key)) return;
+      event.preventDefault();
+      if (!keyboardHeld) return;
+      keyboardHeld = false;
+      controller.pushToTalkEnd();
+    });
+    ptt.addEventListener('blur', () => {
+      if (!keyboardHeld) return;
+      keyboardHeld = false;
+      controller.pushToTalkEnd();
+    });
   }
 
   // `null` until the first context arrives, so the very first dispatch never
   // itself counts as a "change" (nothing is armed yet to disarm).
   let lastContextKey = null;
-  document.addEventListener('todomd:context', (event) => {
-    const nextProject = event.detail?.project || '';
-    const nextAccess = event.detail?.access || 'none';
-    const nextPrimary = event.detail?.primary === true;
+  function applyContext(detail = {}) {
+    const nextProject = detail.project || '';
+    const nextAccess = detail.access || 'none';
+    const nextPrimary = detail.primary === true;
     const key = `${nextProject} ${nextAccess} ${nextPrimary}`;
     const changed = lastContextKey !== null && key !== lastContextKey;
     lastContextKey = key;
@@ -102,7 +122,11 @@ if (btn && widget) {
     // disappearing — each of those changes `key`, but an ordinary board
     // poll re-dispatching the SAME project/access must not disarm voice.
     if (changed) controller.goOffline();
-  });
+  }
+  document.addEventListener('todomd:context', (event) => applyContext(event.detail));
+  // app.js runs first, but its board fetch can settle before this module graph
+  // loads. Ask it to replay the latest context after our listener exists.
+  document.dispatchEvent(new CustomEvent('todomd:voice-ready'));
 
   // Read-only capability probe on load: no microphone permission requested,
   // no language pack installed. Decides whether the board leads with the
