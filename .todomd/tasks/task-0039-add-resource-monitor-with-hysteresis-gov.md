@@ -1,7 +1,7 @@
 ---
 id: task-0039
 title: Add resource monitor with hysteresis governor
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0021)
-session_id: 58a3f59a-f5ba-4b19-b1a1-f5de7c4375e3
+session_id: e5a3e2f4-3613-4b34-89d1-e370126d3d8e
 worktree: todomd/task-0039
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 8.8063
+cost_usd: 11.7717
 needs_human_reason:
 recovery_stage:
 ---
@@ -78,3 +78,4 @@ null disk metric instead of crashing the server at startup.
 - 2026-08-02 16:45Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-02 16:50Z · Escalate attempt 2 · 22 turns · $2.996 · diagnosis complete
+- 2026-08-02 17:09Z · Build attempt 3 · 51 turns · $2.965 · ok (escalation repair)
