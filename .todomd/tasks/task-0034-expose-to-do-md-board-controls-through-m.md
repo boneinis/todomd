@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Planned
+status: Queue
 type: feature
 priority: high
 labels: [mcp, agents, integration]
