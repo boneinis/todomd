@@ -1,7 +1,7 @@
 ---
 id: task-0039
 title: Add resource monitor with hysteresis governor
-status: Queue
+status: Planned
 type: module
 priority: medium
 labels: []
