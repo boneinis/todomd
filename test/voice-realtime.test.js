@@ -380,7 +380,7 @@ test('output items that are not function calls, and calls missing an id/name, ar
   assert.deepEqual(calls, []);
 });
 
-test('a response.done event surfaces through onResponseDone — the command router waits on it before opening confirmation', async () => {
+test('the response lifecycle surfaces through onResponseEvent with the ids the router correlates on', async () => {
   const RTC = fakeRtcClass();
   const session = createRealtimeSession({
     RTCPeerConnectionClass: RTC,
@@ -388,13 +388,40 @@ test('a response.done event surfaces through onResponseDone — the command rout
     fetchFn: fakeFetchOk(),
     token: 't', project: 'p',
   });
-  let calls = 0;
-  await session.open({ onResponseDone: () => { calls += 1; } });
+  const events = [];
+  await session.open({ onResponseEvent: (e) => events.push(e) });
   const channel = RTC.instances.at(-1).dataChannels.at(-1);
   channel.emit('message', { data: JSON.stringify({ type: 'response.output_audio.delta', delta: 'ignore me' }) });
-  assert.equal(calls, 0, 'only the full response.done event counts as complete, not partial output events');
+  assert.deepEqual(events, [], 'partial output events are not part of the lifecycle the router waits on');
+
+  channel.emit('message', { data: JSON.stringify({ type: 'response.created', response: { id: 'resp_1' } }) });
   channel.emit('message', { data: JSON.stringify({ type: 'response.done', response: { id: 'resp_1', status: 'completed' } }) });
-  assert.equal(calls, 1);
+  // The WebRTC finished-PLAYING event, which carries the id under a different
+  // key than the response events do — the router only opens a confirmation
+  // window on this one, so it must arrive correlated, not bare.
+  channel.emit('message', { data: JSON.stringify({ type: 'output_audio_buffer.stopped', response_id: 'resp_1' }) });
+  assert.deepEqual(events, [
+    { type: 'response.created', responseId: 'resp_1' },
+    { type: 'response.done', responseId: 'resp_1', status: 'completed' },
+    { type: 'output_audio_buffer.stopped', responseId: 'resp_1' },
+  ]);
+});
+
+test('response lifecycle events with no id are dropped rather than forwarded uncorrelated', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const events = [];
+  await session.open({ onResponseEvent: (e) => events.push(e) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'response.created', response: {} }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.done', response: { status: 'completed' } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'output_audio_buffer.stopped' }) });
+  assert.deepEqual(events, [], 'an event the router could not attribute must never look like a completed readback');
 });
 
 test('send() writes JSON to the open data channel and is a silent no-op with no channel', async () => {

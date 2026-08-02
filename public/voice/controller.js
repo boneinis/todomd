@@ -57,7 +57,7 @@ export function createVoiceController({
   onState = () => {},
   onDiagnostic = () => {},
   onToolCall = () => {},
-  onResponseDone = () => {},
+  onResponseEvent = () => {},
 } = {}) {
   let state = 'inactive';
   let realtime = null;
@@ -203,7 +203,7 @@ export function createVoiceController({
       await session.open({
         onTranscript: (t) => { if (realtime === session) handleTranscript(t); },
         onToolCall: (call) => { if (realtime === session) onToolCall(call); },
-        onResponseDone: () => { if (realtime === session) onResponseDone(); },
+        onResponseEvent: (event) => { if (realtime === session) onResponseEvent(event); },
         onClose: (reason) => { if (realtime === session) handleRealtimeClosed(reason); },
       });
     } catch (error) {

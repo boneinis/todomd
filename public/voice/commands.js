@@ -9,13 +9,15 @@
 // Command recognition): disable automatic model responses/interruption BEFORE
 // the model's readback turn plays, let it speak the immutable server
 // read-back with `tool_choice: 'none'` so it cannot call another tool on top
-// of its own turn, and WAIT for that turn's own `response.done` to arrive.
+// of its own turn, and WAIT until that specific turn has finished speaking.
 // Only then clear buffered input audio and open the confirmation window —
 // opening it any earlier would let a transcript that lands mid-readback (an
-// echo, a leftover finalized fragment) resolve the confirmation before the
-// human ever heard what they'd be confirming, and would burn part of the
-// fixed confirmation timeout on read-back latency instead of the human's
-// actual reply. Restoring auto-response happens the moment the window
+// echo of the challenge phrase the assistant is speaking aloud, a leftover
+// finalized fragment) resolve the confirmation before the human ever heard
+// what they'd be confirming, and would burn part of the fixed confirmation
+// timeout on read-back latency instead of the human's actual reply. If that
+// turn cannot be shown to have finished, the proposal is released rather than
+// confirmed against. Restoring auto-response happens the moment the window
 // closes, whichever way it closes.
 
 function normalizePhrase(value) {
@@ -47,11 +49,11 @@ function suppressionUpdate(createResponse) {
   };
 }
 
-// A `response.done` for the readback should arrive almost immediately over an
-// open data channel; this only guards against one that's lost entirely (the
-// session died mid-readback with no onClose race left to catch), so the
-// confirmation window still opens — or the proposal still gets released —
-// instead of hanging forever.
+// A read-back is a single short sentence, so its lifecycle events should all
+// arrive within a second or two over an open data channel. This only guards
+// against a set that never completes (the session died mid-readback with no
+// onClose race left to catch), so the proposal gets released instead of
+// hanging forever.
 const READBACK_TIMEOUT_MS = 8_000;
 
 export function createCommandRouter({
@@ -63,30 +65,63 @@ export function createCommandRouter({
   clearTimeoutFn = (...args) => clearTimeout(...args),
   readbackTimeoutMs = READBACK_TIMEOUT_MS,
 } = {}) {
-  let pendingReadbackDone = null; // resolver for the readback response currently in flight, if any
+  let pendingReadback = null; // the readback turn currently being waited on, if any
 
-  // Resolves once the readback response's own `response.done` arrives (or the
-  // bounded timeout elapses). Armed synchronously so a caller can safely send
-  // `response.create` on the very next line — there is no window in which a
-  // same-tick `response.done` could arrive before this is listening.
-  function waitForReadbackDone() {
+  // Resolves with { completed } once the readback turn has finished SPEAKING,
+  // or { timedOut } / { failed } if it cannot be shown to have done so.
+  //
+  // Armed synchronously, immediately before the caller sends its
+  // `response.create`, so the `response.created` naming the readback's id
+  // can never be missed. That id is the whole point: the function-call
+  // response that produced this tool call emits its own `response.done`
+  // moments later, and — because preparing a proposal involves an async POST
+  // — that event can land after this wait is armed. Treating any
+  // `response.done` as the readback's would open the confirmation window
+  // before the readback had even started, over the assistant's own speech.
+  // The originating response's `response.created` is long past by then (it
+  // precedes the `response.output_item.done` carrying the tool call), and
+  // automatic responses are already suppressed, so the first
+  // `response.created` seen from here is unambiguously the readback's.
+  //
+  // Completion is the readback's `output_audio_buffer.stopped`, not its
+  // `response.done`: the latter means generation finished, while on WebRTC
+  // the output audio is still draining afterwards.
+  function waitForReadback() {
     return new Promise((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        if (pendingReadbackDone === finish) pendingReadbackDone = null;
-        clearTimeoutFn(timer);
-        resolve();
+      const wait = {
+        responseId: null,
+        settled: false,
+        settle(outcome) {
+          if (wait.settled) return;
+          wait.settled = true;
+          if (pendingReadback === wait) pendingReadback = null;
+          clearTimeoutFn(wait.timer);
+          resolve(outcome);
+        },
       };
-      pendingReadbackDone = finish;
-      const timer = setTimeoutFn(finish, readbackTimeoutMs);
+      wait.timer = setTimeoutFn(() => wait.settle({ timedOut: true }), readbackTimeoutMs);
+      pendingReadback = wait;
     });
   }
 
-  // Realtime session event, forwarded by the controller — see main.js.
-  function handleResponseDone() {
-    pendingReadbackDone?.();
+  // Realtime response lifecycle, forwarded by the controller — see main.js.
+  // Everything that does not belong to the readback currently being waited on
+  // is ignored, including every event while no wait is armed.
+  function handleResponseEvent(event) {
+    const wait = pendingReadback;
+    if (!wait || !event) return;
+    if (event.type === 'response.created') {
+      if (wait.responseId === null && typeof event.responseId === 'string') wait.responseId = event.responseId;
+      return;
+    }
+    if (wait.responseId === null || event.responseId !== wait.responseId) return;
+    if (event.type === 'response.done') {
+      // A response that failed, was cancelled, or came back incomplete will
+      // never finish playing — give up now rather than at the timeout.
+      if (event.status && event.status !== 'completed') wait.settle({ failed: true, status: event.status });
+      return;
+    }
+    if (event.type === 'output_audio_buffer.stopped') wait.settle({ completed: true });
   }
 
   async function call(path, { method = 'GET', body } = {}) {
@@ -196,14 +231,27 @@ export function createCommandRouter({
     // turn plays, so no stray audio during that turn can trigger a second
     // automatic response or tool call. Arm the readback wait synchronously,
     // immediately before triggering the one response this tool result is
-    // allowed to produce, so no `response.done` for it can be missed.
+    // allowed to produce, so none of that response's lifecycle events — the
+    // `response.created` that names it least of all — can be missed.
     controller.send(suppressionUpdate(false));
     controller.send(functionCallOutput(call_.callId, {
       ok: true, readback: proposal.readback, confirmation: proposal.confirmation,
     }));
-    const readbackDone = waitForReadbackDone();
+    const readback = waitForReadback();
     controller.send(requestResponse());
-    await readbackDone;
+    const outcome = await readback;
+
+    if (!outcome.completed) {
+      // The readback is not known to have finished speaking — its lifecycle
+      // events were lost, or the turn failed/was cancelled. Opening a
+      // confirmation window now would ask the human to confirm something they
+      // may never have heard, and would leave that window open to the
+      // assistant's own audio, so release the reservation instead.
+      controller.send(suppressionUpdate(true));
+      await reject(proposal.proposalId);
+      speak('Cancelled — nothing was changed.');
+      return;
+    }
 
     // Only now — after the readback has actually finished playing — drop
     // whatever audio buffered during it and open the confirmation window.
@@ -242,5 +290,5 @@ export function createCommandRouter({
     controller.send(requestResponse());
   }
 
-  return { handleToolCall, handleResponseDone };
+  return { handleToolCall, handleResponseEvent };
 }

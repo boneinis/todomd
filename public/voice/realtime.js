@@ -75,7 +75,7 @@ export function createRealtimeSession({
     audioEl = null;
   }
 
-  function handleServerEvent(raw, { onTranscript, onToolCall, onResponseDone }) {
+  function handleServerEvent(raw, { onTranscript, onToolCall, onResponseEvent }) {
     let event;
     try { event = JSON.parse(raw); } catch { return; }
     if (!event || typeof event !== 'object') return;
@@ -102,11 +102,28 @@ export function createRealtimeSession({
       onToolCall({ callId, name, arguments: parsedArguments });
       return;
     }
-    // A full response (including its output audio) has finished playing. The
-    // command router waits for this before opening a confirmation window, so
-    // a proposal's read-back always finishes speaking before the human's
-    // reply can be heard — see commands.js's handleProposeBoardAction.
-    if (event.type === 'response.done') onResponseDone();
+    // Response lifecycle, forwarded with the ids that make it correlatable.
+    // The command router waits for a proposal's read-back to finish speaking
+    // before it opens a confirmation window, and it can only tell that turn
+    // apart from the function-call response that triggered it (which emits
+    // its own `response.done` moments after the tool call above) by id.
+    //
+    // `response.created` is how the router learns the id of the response its
+    // own `response.create` produced. `response.done` means the model has
+    // finished GENERATING — on WebRTC the output audio keeps draining after
+    // it, so `output_audio_buffer.stopped` (same response, under
+    // `response_id`) is the only event that means "finished speaking".
+    if (event.type === 'response.created' && typeof event.response?.id === 'string') {
+      onResponseEvent({ type: 'response.created', responseId: event.response.id });
+      return;
+    }
+    if (event.type === 'response.done' && typeof event.response?.id === 'string') {
+      onResponseEvent({ type: 'response.done', responseId: event.response.id, status: event.response.status });
+      return;
+    }
+    if (event.type === 'output_audio_buffer.stopped' && typeof event.response_id === 'string') {
+      onResponseEvent({ type: 'output_audio_buffer.stopped', responseId: event.response_id });
+    }
   }
 
   async function postOffer(sdp) {
@@ -130,7 +147,7 @@ export function createRealtimeSession({
   // Any failure mid-open (denied mic, no WebRTC, SDP exchange failure) cleans
   // up whatever was already acquired before rethrowing — the caller never has
   // to know how far this got to avoid leaking a live microphone track.
-  async function open({ onTranscript = () => {}, onToolCall = () => {}, onResponseDone = () => {}, onClose = () => {} } = {}) {
+  async function open({ onTranscript = () => {}, onToolCall = () => {}, onResponseEvent = () => {}, onClose = () => {} } = {}) {
     if (opened) throw new Error('session already open');
     opened = true;
     try {
@@ -149,7 +166,7 @@ export function createRealtimeSession({
         pc.addTrack(track, stream);
       }
       dataChannel = pc.createDataChannel('oai-events');
-      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, { onTranscript, onToolCall, onResponseDone }));
+      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, { onTranscript, onToolCall, onResponseEvent }));
       pc.addEventListener?.('track', attachRemoteAudio);
       pc.addEventListener?.('connectionstatechange', () => {
         if (closed) return;

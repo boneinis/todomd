@@ -43,12 +43,12 @@ function fakeRealtimeFactory({ manual = false } = {}) {
     const openPromise = new Promise((res, rej) => { resolveOpen = res; rejectOpen = rej; });
     if (!manual) resolveOpen();
     const session = {
-      closeCalls: 0, closed: false, onTranscript: null, onToolCall: null, onResponseDone: null, onClose: null,
+      closeCalls: 0, closed: false, onTranscript: null, onToolCall: null, onResponseEvent: null, onClose: null,
       sent: [],
       async open(handlers) {
         session.onTranscript = handlers.onTranscript;
         session.onToolCall = handlers.onToolCall;
-        session.onResponseDone = handlers.onResponseDone;
+        session.onResponseEvent = handlers.onResponseEvent;
         session.onClose = handlers.onClose;
         await openPromise;
       },
@@ -94,7 +94,7 @@ function build(overrides = {}) {
   const states = [];
   const diagnostics = [];
   const toolCalls = [];
-  const responseDones = [];
+  const responseEvents = [];
   const controller = createVoiceController({
     wakeEngine,
     earcons,
@@ -104,10 +104,10 @@ function build(overrides = {}) {
     onState: (s, detail) => states.push({ s, detail }),
     onDiagnostic: (d) => diagnostics.push(d),
     onToolCall: (c) => toolCalls.push(c),
-    onResponseDone: () => responseDones.push(1),
+    onResponseEvent: (e) => responseEvents.push(e),
     ...overrides.options,
   });
-  return { controller, wakeEngine, earcons, realtime, clock, states, diagnostics, toolCalls, responseDones };
+  return { controller, wakeEngine, earcons, realtime, clock, states, diagnostics, toolCalls, responseEvents };
 }
 
 test('happy path: arm, wake, active, sign-off back to armed, second wake, offline', async () => {
@@ -503,20 +503,28 @@ test('the controller forwards onToolCall events only from the currently active r
   assert.deepEqual(toolCalls, [{ callId: 'c1', name: 'read_board_report', arguments: {} }]);
 });
 
-test('the controller forwards onResponseDone events only from the currently active realtime session', async () => {
-  const { controller, wakeEngine, realtime, responseDones } = build();
+test('the controller forwards response lifecycle events, with their ids, only from the currently active realtime session', async () => {
+  const { controller, wakeEngine, realtime, responseEvents } = build();
   await controller.arm();
   wakeEngine.triggerWake();
   await flush();
   const stale = realtime.sessions[0];
   await controller.signOff(); // supersedes session 0
-  stale.onResponseDone();
-  assert.equal(responseDones.length, 0, 'a response.done from a session that is no longer current is dropped');
+  stale.onResponseEvent({ type: 'output_audio_buffer.stopped', responseId: 'resp_stale' });
+  assert.deepEqual(responseEvents, [], 'a lifecycle event from a session that is no longer current is dropped');
 
   wakeEngine.triggerWake();
   await flush();
-  realtime.sessions[1].onResponseDone();
-  assert.equal(responseDones.length, 1);
+  // The id has to survive the hop: the router correlates on it to tell a
+  // readback apart from the function-call response that triggered it.
+  realtime.sessions[1].onResponseEvent({ type: 'response.created', responseId: 'resp_1' });
+  realtime.sessions[1].onResponseEvent({ type: 'response.done', responseId: 'resp_1', status: 'completed' });
+  realtime.sessions[1].onResponseEvent({ type: 'output_audio_buffer.stopped', responseId: 'resp_1' });
+  assert.deepEqual(responseEvents, [
+    { type: 'response.created', responseId: 'resp_1' },
+    { type: 'response.done', responseId: 'resp_1', status: 'completed' },
+    { type: 'output_audio_buffer.stopped', responseId: 'resp_1' },
+  ]);
 });
 
 test('send() forwards to the active realtime session and is false with none open', async () => {

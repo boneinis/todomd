@@ -29,33 +29,60 @@ function readToolOutput(callId) {
   })()`;
 }
 
-// Fires the fake data channel's completed function-call event a real Realtime
-// session would send when the model invokes one of the three exposed tools.
+// Delivers one server event on the most recently opened fake data channel,
+// exactly as it would arrive over a real one.
+function emitEvent(event) {
+  return `window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', { data: ${JSON.stringify(JSON.stringify(event))} })`;
+}
+
+// The completed function-call event a real Realtime session sends when the
+// model invokes one of the three exposed tools.
 function emitToolCall(callId, name, args) {
-  return `window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', { data: JSON.stringify({
+  return emitEvent({
     type: 'response.output_item.done',
-    item: { type: 'function_call', call_id: ${JSON.stringify(callId)}, name: ${JSON.stringify(name)}, arguments: ${JSON.stringify(JSON.stringify(args))} },
-  }) })`;
+    item: { type: 'function_call', call_id: callId, name, arguments: JSON.stringify(args) },
+  });
 }
 
-// Fires the fake data channel's finalized-input-transcription event — the
-// only signal the controller trusts for a spoken sign-off/offline/confirmation
-// reply.
+// The finalized-input-transcription event — the only signal the controller
+// trusts for a spoken sign-off/offline/confirmation reply.
 function emitTranscript(text) {
-  return `window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', { data: JSON.stringify({
-    type: 'conversation.item.input_audio_transcription.completed', transcript: ${JSON.stringify(text)},
-  }) })`;
+  return emitEvent({ type: 'conversation.item.input_audio_transcription.completed', transcript: text });
 }
 
-// Fires the fake data channel's response-complete event. The command router
-// waits for this after a propose_board_action readback before it opens the
-// confirmation window (public/voice/commands.js) — a real Realtime session
-// always sends it once the model finishes speaking; these tests must send it
-// too, or the router only proceeds after its own bounded fallback timeout.
-function emitResponseDone() {
-  return `window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', { data: JSON.stringify({
-    type: 'response.done', response: { id: 'resp-test', status: 'completed' },
-  }) })`;
+// The response lifecycle a real session emits after a propose_board_action
+// tool call, in arrival order. TWO responses are involved, and telling them
+// apart is the whole point:
+//
+//   1. the function-call response that carried the tool call finishes with its
+//      OWN `response.done`. Preparing a proposal is an async POST, so this can
+//      land after the router has already armed its read-back wait — a router
+//      keying off any `response.done` opens the confirmation window here,
+//      before the read-back has even started.
+//   2. the router's `response.create` produces the read-back as a separate
+//      response: `response.created` (naming its id), `response.done`
+//      (generation finished), and only then `output_audio_buffer.stopped` —
+//      on WebRTC the output audio is still draining until that event, and the
+//      read-back speaks the challenge phrase aloud.
+//
+// Only the read-back's stopped event may open the confirmation window.
+async function playReadback(page, tag) {
+  await page.eval(emitEvent({ type: 'response.done', response: { id: `resp-tool-${tag}`, status: 'completed' } }));
+  await page.eval(emitEvent({ type: 'response.created', response: { id: `resp-readback-${tag}` } }));
+  await page.eval(emitEvent({ type: 'response.done', response: { id: `resp-readback-${tag}`, status: 'completed' } }));
+  await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: `resp-readback-${tag}` }));
+}
+
+// Records every state the mic control passes through. Polling can only show a
+// state isn't entered right now; proving `confirming` was NEVER entered while
+// a read-back was unverified needs the whole transition history.
+function observeVoiceStates(page) {
+  return page.eval(`(() => {
+    window.__voiceStates = [];
+    const btn = document.getElementById('voice-btn');
+    new MutationObserver(() => window.__voiceStates.push(btn.dataset.voiceState))
+      .observe(btn, { attributes: true, attributeFilter: ['data-voice-state'] });
+  })()`);
 }
 
 function freePort() {
@@ -119,12 +146,14 @@ function installVoiceFakes() {
     tracks: [],
     pcs: [],
     sessionRequests: [], // every fetch to /api/voice/session — the SDP endpoint itself, not just the fixture upstream it forwards to
+    actionRequests: [],  // every fetch to the Actions API — prepare, confirm, and reject
     getUserMediaMode: 'ok', // 'ok' | 'deny'
   };
   const realFetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     const url = String(typeof input === 'string' ? input : input.url);
     if (url.includes('/api/voice/session')) window.__voiceHooks.sessionRequests.push(url);
+    if (url.includes('/api/voice/actions')) window.__voiceHooks.actionRequests.push(url);
     return realFetch(input, init);
   };
 
@@ -380,7 +409,7 @@ test('UI voice: a reversible proposal reads back the exact action and executes o
   assert.match(proposal.readback, /task-0010 back to Planned/);
   assert.equal(await page.eval(`document.getElementById('voice-btn').dataset.voiceState`), 'active',
     'the confirmation window must not open before the readback finishes playing');
-  await page.eval(emitResponseDone()); // the model finishes speaking the readback
+  await playReadback(page, 'p1'); // the model finishes speaking the readback
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
   await page.eval(emitTranscript('Yes To-do'));
@@ -406,12 +435,99 @@ test('UI voice: an unrelated reply rejects the pending proposal instead of confi
 
   await page.eval(emitToolCall('call-p2', 'propose_board_action', { cardId: 'task-0011', action: 'retry_planned' }));
   await until(async () => (await page.eval(readToolOutput('call-p2'))) || null, { timeout: BUDGET.quick });
-  await page.eval(emitResponseDone());
+  await playReadback(page, 'p2');
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
   await page.eval(emitTranscript('what is the weather today'));
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
   assert.equal(await cardStatus(page, 'task-0011'), 'Needs Human', 'an unrelated reply must execute nothing');
+
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: the tool call\'s own response finishing cannot open the confirmation window before the read-back has played', async (t) => {
+  if (!page) return t.skip(SKIP);
+  writeCard(repo, 'task-0015', { status: 'Needs Human', title: 'premature confirmation candidate' });
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+  await observeVoiceStates(page);
+
+  await page.eval(emitToolCall('call-race', 'propose_board_action', { cardId: 'task-0015', action: 'retry_planned' }));
+  // Once the tool result is visible the router has armed its read-back wait,
+  // so everything below reproduces the real post-arming event ordering.
+  await until(async () => (await page.eval(readToolOutput('call-race'))) || null, { timeout: BUDGET.quick });
+
+  // The function-call response finishes — generation AND playback — with its
+  // own id. Neither event belongs to the read-back.
+  await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-tool-race', status: 'completed' } }));
+  await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: 'resp-tool-race' }));
+
+  // The assistant is still speaking the read-back, which says the challenge
+  // phrase aloud: a transcript landing now is its own echo, not the human's
+  // answer, and must be able to execute nothing.
+  await page.eval(emitTranscript('Yes To-do'));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(await cardStatus(page, 'task-0015'), 'Needs Human',
+    'nothing can be confirmed while the read-back is still playing');
+  assert.equal(await page.eval(`window.__voiceStates.includes('confirming')`), false,
+    'the confirmation window never opened on another response finishing');
+
+  // The read-back's own generation completing is still not enough on WebRTC —
+  // only its drained output audio is.
+  await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-readback-race' } }));
+  await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-readback-race', status: 'completed' } }));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(await page.eval(`window.__voiceStates.includes('confirming')`), false,
+    'generation complete is not finished speaking');
+
+  await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: 'resp-readback-race' }));
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
+
+  // The same phrase, now heard for real after the read-back, confirms — the
+  // human got the full confirmation window, not what was left of it.
+  await page.eval(emitTranscript('Yes To-do'));
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+  assert.equal(await cardStatus(page, 'task-0015'), 'Planned');
+
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: a read-back that never finishes playing releases the proposal instead of opening a confirmation window', async (t) => {
+  if (!page) return t.skip(SKIP);
+  writeCard(repo, 'task-0016', { status: 'Needs Human', title: 'lost read-back candidate' });
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+  await observeVoiceStates(page);
+
+  await page.eval(emitToolCall('call-lost', 'propose_board_action', { cardId: 'task-0016', action: 'retry_planned' }));
+  await until(async () => (await page.eval(readToolOutput('call-lost'))) || null, { timeout: BUDGET.quick });
+  const rejectsBefore = await page.eval(`window.__voiceHooks.actionRequests.filter((u) => u.includes('/reject')).length`);
+
+  // The read-back is created and generated, but its finished-playing event
+  // never arrives — the data channel died mid-turn.
+  await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-tool-lost', status: 'completed' } }));
+  await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-readback-lost' } }));
+  await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-readback-lost', status: 'completed' } }));
+
+  // The router's bounded wait elapses and releases the reservation rather than
+  // asking the human to confirm something they may never have heard.
+  await until(async () => (await page.eval(
+    `window.__voiceHooks.actionRequests.filter((u) => u.includes('/reject')).length`,
+  )) > rejectsBefore || null, { timeout: BUDGET.stage });
+  assert.equal(await page.eval(`window.__voiceStates.includes('confirming')`), false,
+    'an unverified read-back must never open a confirmation window');
+  assert.equal(await cardStatus(page, 'task-0016'), 'Needs Human');
+
+  // and the released proposal cannot be revived by saying the phrase after
+  await page.eval(emitTranscript('Yes To-do'));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(await cardStatus(page, 'task-0016'), 'Needs Human', 'a released proposal executes nothing');
 
   await page.eval(`document.getElementById('voice-btn').click()`);
   assert.deepEqual(page.errors, []);
@@ -452,7 +568,7 @@ test('UI voice: Resume Build continues the preserved worktree via its spoken cha
     assert.equal(firstAttempt.confirmation.tier, 'agent');
     assert.match(firstAttempt.readback, /resume the build for task-0012 in its preserved worktree/);
     assert.match(firstAttempt.confirmation.challenge, /^Confirm resume build task-0012 /);
-    await page.eval(emitResponseDone());
+    await playReadback(page, 'resume-1');
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
     await page.eval(emitTranscript('yes'));
@@ -464,7 +580,7 @@ test('UI voice: Resume Build continues the preserved worktree via its spoken cha
     const secondAttempt = await page.eval(readToolOutput('call-resume-2'));
     const challenge = secondAttempt.confirmation.challenge;
     assert.notEqual(challenge, firstAttempt.confirmation.challenge, 'a fresh proposal gets a fresh, unpredictable challenge');
-    await page.eval(emitResponseDone());
+    await playReadback(page, 'resume-2');
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
     await page.eval(emitTranscript(challenge));
@@ -528,7 +644,7 @@ test('UI voice: Retry Verification reruns only Verify in the preserved worktree 
     assert.match(proposal.readback, /retry verification for task-0014 in its preserved worktree/);
     const challenge = proposal.confirmation.challenge;
     assert.match(challenge, /^Confirm retry verification task-0014 /);
-    await page.eval(emitResponseDone());
+    await playReadback(page, 'retry-verify');
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
     await page.eval(emitTranscript(challenge));
