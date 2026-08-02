@@ -207,6 +207,8 @@ body.viewer .col-edit { display: none; }
 .col-cards {
   padding: 4px 8px 10px; overflow-y: auto; flex: 1; min-height: 40px;
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  /* reserve the scrollbar gutter unconditionally so card width doesn't depend on whether the column overflows */
+  scrollbar-gutter: stable;
 }
 
 /* ── cards ── */
@@ -518,9 +520,12 @@ body.viewer .col-edit { display: none; }
 }
 
 .card-run { color: var(--amber); font-size: 10px; font-family: var(--mono); letter-spacing: .04em; }
-.card.running { border-color: var(--amber); border-left-width: 3px; }
+/* status stripe rendered as an inset shadow (not border-left) so it never changes the card's box width */
+.card.running { border-color: var(--amber); box-shadow: inset 3px 0 0 var(--amber), var(--shadow-card); }
+.card.running:hover { box-shadow: inset 3px 0 0 var(--amber), var(--shadow-lift); }
 .card.running .card-run { animation: pulse 1.4s ease-in-out infinite; }
-.card.queued { border-left: 3px solid var(--faint); }
+.card.queued { box-shadow: inset 3px 0 0 var(--faint), var(--shadow-card); }
+.card.queued:hover { box-shadow: inset 3px 0 0 var(--faint), var(--shadow-lift); }
 .card.queued .card-run { color: var(--faint); }
 
 .drawer-cancel { color: var(--red); border-color: var(--red); }

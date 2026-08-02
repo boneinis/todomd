@@ -253,3 +253,47 @@ test('UI smoke: screened email list renders seeded records, and a held email car
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error rendering the screened-email list');
   }
 });
+
+// task-0045: a scrollbar-consuming column and border-left status stripes both
+// shrank a card's content box, so dragging a card between columns (or into a
+// running/queued state) visibly changed its width. This test replaces the
+// board with a minimal synthetic layout — real .column/.col-cards/.card
+// markup, no app state needed — so it exercises the CSS rules directly rather
+// than depending on runStates plumbing. It's the LAST test in this file: it
+// tears down boardEl's contents and doesn't restore them.
+test('UI smoke: card width is unaffected by column overflow or running/queued status', async (t) => {
+  if (!page) return t.skip(SKIP);
+  {
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+    await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null,
+      { timeout: BUDGET.stage });
+    await page.setViewport(1200, 900);
+
+    const widths = await page.eval(`(() => {
+      boardEl.innerHTML = '';
+      const makeColumn = (cardCount) => {
+        const col = document.createElement('section');
+        col.className = 'column';
+        const list = document.createElement('div');
+        list.className = 'col-cards';
+        for (let i = 0; i < cardCount; i++) {
+          const card = document.createElement('div');
+          card.className = 'card';
+          if (i === 0) card.classList.add('running');
+          if (i === 1) card.classList.add('queued');
+          list.appendChild(card);
+        }
+        col.appendChild(list);
+        boardEl.appendChild(col);
+      };
+      makeColumn(80); // enough cards to force .col-cards to scroll
+      makeColumn(1);  // no overflow — should still match
+      return [...document.querySelectorAll('.card')].map((c) => c.getBoundingClientRect().width);
+    })()`);
+    const unique = new Set(widths.map((w) => Math.round(w * 100) / 100));
+    assert.equal(unique.size, 1,
+      `every card (overflowing column, non-overflowing column, running, queued, plain) must report the same width, got ${JSON.stringify(widths)}`);
+
+    assert.deepEqual(page.errors, [], 'no console error building the synthetic card-width layout');
+  }
+});
