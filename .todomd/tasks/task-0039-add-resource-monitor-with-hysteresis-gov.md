@@ -1,7 +1,7 @@
 ---
 id: task-0039
 title: Add resource monitor with hysteresis governor
-status: Verify
+status: Build
 type: module
 priority: medium
 labels: []
@@ -12,9 +12,9 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0021)
-session_id: b7cded7a-7e9e-4e4f-a0cf-c294258ec278
+session_id: 019fc346-4dce-75f0-919e-4a82cf5afaf3
 worktree: todomd/task-0039
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 3.0185
 needs_human_reason:
@@ -72,3 +72,5 @@ null disk metric instead of crashing the server at startup.
   - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
 - 2026-08-02 15:57Z · Restart Build · preserved worktree unavailable; starting a fresh build
 - 2026-08-02 16:19Z · Build attempt 1 · 12 turns · $3.019 · ok
+- 2026-08-02 16:27Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 4)
+  - retrying with findings (attempt 2/3)
