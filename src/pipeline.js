@@ -200,13 +200,24 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
 function stageConfig(config, stageName, card) {
   const stage = (config.stages || {})[stageName] || {};
   const independentVerify = stageName === 'Verify' && !!stage.agent;
+  const workflow = card?.data?.workflow || stage.workflow || '';
+  let effort = independentVerify
+    ? (stage.effort || config.default_effort)
+    : (card?.data?.effort || stage.effort || config.default_effort);
+  // Ultra Code is the board's high-rigor Build contract, not merely an extra
+  // sentence in the prompt. A stale per-card Low/Medium/High override must not
+  // silently weaken that contract. Preserve Max, otherwise enforce XHigh as
+  // the minimum while leaving ordinary stage/card precedence unchanged.
+  const effortRank = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
+  if (stageName === 'Build' && workflow === 'ultra_code' &&
+      (effortRank[effort] ?? -1) < effortRank.xhigh) effort = 'xhigh';
   return {
     command: stage.command || `todomd-${stageName.toLowerCase()}`,
     // A model selected for the card's Build provider may be invalid for the
     // independent verifier. Prefer Verify's own routing (or provider default).
     model: independentVerify ? (stage.model || undefined) : (card?.data?.model || stage.model || config.default_model),
-    effort: independentVerify ? (stage.effort || config.default_effort) : (card?.data?.effort || stage.effort || config.default_effort),
-    workflow: card?.data?.workflow || stage.workflow || '',
+    effort,
+    workflow,
     // Zero deliberately means "let the provider choose its per-session cap".
     // Build continuations below still turn a provider cap into a checkpoint.
     maxTurns: stage.max_turns ?? 30,

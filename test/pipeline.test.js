@@ -108,6 +108,33 @@ test('stage routing precedence: a column agent gates the queue; a card agent ove
   clearFakeAgent();
 });
 
+test('Ultra Code enforces xhigh effort even when a card carries a low override', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('ultra-code-routing'), 'argv.jsonl');
+  useFakeAgent({ verdict: 'pass', build: 'good', argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+
+  await setStageRouting(repo, 'Build', { effort: 'high', workflow: 'ultra_code' });
+  writeCard(repo, 'task-ultra', { status: 'Planned', extra: 'effort: low\n' });
+
+  try {
+    const r = await pipeline.humanMove(p, 'task-ultra', 'Queue');
+    assert.equal(r.ok, true, r.error);
+    await until(() => status(repo, 'task-ultra') === 'Done', { timeout: BUDGET.chain });
+
+    const invocations = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+    const build = invocations.find((args) => args.some((arg) => String(arg).includes('todomd-build task-ultra')));
+    assert.ok(build, 'the Build invocation was captured');
+    assert.deepEqual(build.slice(build.indexOf('--effort'), build.indexOf('--effort') + 2),
+      ['--effort', 'xhigh']);
+    assert.match(build[build.indexOf('-p') + 1], /Ultra Code workflow/);
+  } finally {
+    clearFakeAgent();
+  }
+});
+
 test('Verify column routing stays independent from a card Build-agent override', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });
