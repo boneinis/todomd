@@ -1,7 +1,7 @@
 ---
 id: task-0038
 title: Command routing confirmation browser tests
-status: Queue
+status: Build
 type: module
 priority: medium
 labels: []
@@ -13,8 +13,9 @@ assignee:
 agent: claude
 triaged: n/a (chunk 4/4 of task-0020)
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0038
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+base_branch: main
 ---
 
 ## Description
