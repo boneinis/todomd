@@ -1,7 +1,7 @@
 ---
 id: task-0045
 title: consistent card width
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
