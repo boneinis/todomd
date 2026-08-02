@@ -108,7 +108,11 @@ const BYTES_PER_GB = 1024 ** 3;
 function evaluateMetric(state, value, { defer, resume, critical }, isWorse, isRecovered, recoverySamples) {
   const stickyHit = () => ({
     reason: state.lastReason,
-    critical: state.lastReason?.level === 'critical',
+    // `critical` describes the current sample because later scheduler stages
+    // use it to decide whether a running CI job should be cancelled. The
+    // reason remains sticky until full recovery, but a safe/unknown sample
+    // must not revive an earlier critical-pressure signal.
+    critical: false,
   });
 
   if (value === null || value === undefined) {

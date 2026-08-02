@@ -190,6 +190,25 @@ test('governor: critical breach reports level=critical with the critical thresho
   assert.deepEqual(s.reasons, [{ metric: 'memory', value: 0.99, threshold: 0.95, level: 'critical' }]);
 });
 
+test('governor: improving samples never revive a previous critical-pressure signal', () => {
+  const gov = createGovernor({ thresholds: THRESHOLDS, sample: queueSampler([
+    { ...BASE_SNAPSHOT, cpuLoad: 1.6 },  // current critical pressure
+    { ...BASE_SNAPSHOT, cpuLoad: 0.7 },  // dead band: still deferred, no longer critical
+    { ...BASE_SNAPSHOT, cpuLoad: 0.3 },  // recovery 1/3: still deferred, no longer critical
+  ]) });
+
+  assert.equal(gov.check().critical, true);
+
+  const deadBand = gov.check();
+  assert.equal(deadBand.critical, false);
+  assert.deepEqual(deadBand.reasons, [{ metric: 'cpu', value: 1.6, threshold: 1.5, level: 'critical' }],
+    'the actual breach remains the sticky deferral explanation');
+
+  const improving = gov.check();
+  assert.equal(improving.critical, false, 'a safe sample must not revive stale critical pressure');
+  assert.deepEqual(improving.reasons, deadBand.reasons);
+});
+
 test('governor: a null metric never defers, even when persistently null', () => {
   const gov = createGovernor({ thresholds: THRESHOLDS, sample: queueSampler([
     { ...BASE_SNAPSHOT, cpuLoad: null },
