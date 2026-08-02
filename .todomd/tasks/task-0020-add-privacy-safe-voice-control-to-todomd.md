@@ -1,7 +1,7 @@
 ---
 id: task-0020
 title: Add privacy-safe voice control to TODOMD
-status: Queue
+status: Done
 type: module
 priority: critical
 labels: [voice, accessibility, realtime]
