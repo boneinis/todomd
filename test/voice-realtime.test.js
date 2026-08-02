@@ -426,6 +426,28 @@ test('the response lifecycle surfaces through onResponseEvent with the ids the r
   ]);
 });
 
+test('session update acknowledgements and correlated provider errors surface to the router', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const events = [];
+  await session.open({ onResponseEvent: (event) => events.push(event) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'session.updated', session: { type: 'realtime' } }) });
+  channel.emit('message', { data: JSON.stringify({
+    type: 'error',
+    error: { event_id: 'client-update-1', message: 'invalid update' },
+  }) });
+  assert.deepEqual(events, [
+    { type: 'session.updated' },
+    { type: 'error', relatedEventId: 'client-update-1', message: 'invalid update' },
+  ]);
+});
+
 test('response lifecycle events with no id are dropped rather than forwarded uncorrelated', async () => {
   const RTC = fakeRtcClass();
   const session = createRealtimeSession({

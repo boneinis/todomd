@@ -28,11 +28,18 @@ function emitOriginatingDone(router, id = 'resp_tool') {
 // is created, finishes generating, and finally finishes playing. Only that
 // last event means the human has heard the readback; on WebRTC the output
 // audio is still draining when `response.done` arrives.
-function playReadback(router, { id = 'resp_readback', readbackId = 'p2', status = 'completed', stopped = true } = {}) {
+async function acknowledgeSessionUpdate(router) {
+  router.handleResponseEvent({ type: 'session.updated' });
+  await flush();
+}
+
+async function playReadback(router, { id = 'resp_readback', readbackId = 'p2', status = 'completed', stopped = true } = {}) {
+  await acknowledgeSessionUpdate(router);
   emitOriginatingDone(router);
   router.handleResponseEvent({ type: 'response.created', responseId: id, readbackId });
   router.handleResponseEvent({ type: 'response.done', responseId: id, status });
   if (stopped) router.handleResponseEvent({ type: 'output_audio_buffer.stopped', responseId: id });
+  await flush();
 }
 
 // Manual timers for the router's bounded readback wait — the only thing in
@@ -51,12 +58,14 @@ function fakeClock() {
 function fakeController({ entersConfirming = true } = {}) {
   const sent = [];
   const enterConfirmingCalls = [];
+  const inputEnabledCalls = [];
   let pending = null;
   return {
     sent,
     enterConfirmingCalls,
+    inputEnabledCalls,
     send(event) { sent.push(event); return true; },
-    setInputEnabled() { return true; },
+    setInputEnabled(enabled) { inputEnabledCalls.push(enabled); return true; },
     enterConfirming(opts) {
       enterConfirmingCalls.push(opts);
       if (!entersConfirming) return false;
@@ -176,6 +185,61 @@ test('a visible-tier proposal (cancel/restart/archive) is reported but never ent
   assert.deepEqual(functionOutput(controller.sent, 'c1'), { ok: true, readback: 'archive task-0020', requiresVisibleApproval: true });
 });
 
+test('reset during a delayed visible-tier rejection cannot send the old tool result into a new session', async () => {
+  const controller = fakeController();
+  let currentProject = 'old-project';
+  let releaseReject;
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(url);
+    if (url === '/api/voice/actions?project=old-project') return {
+      ok: true, status: 200, json: async () => ({
+        proposalId: 'p-visible', readback: 'archive task-0020',
+        confirmation: { tier: 'visible', visibleApprovalRequired: true },
+      }),
+    };
+    if (url === '/api/voice/actions/p-visible/reject?project=old-project') {
+      await new Promise((resolve) => { releaseReject = resolve; });
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const router = createCommandRouter({ controller, project: () => currentProject, fetchFn });
+  const pending = router.handleToolCall({ callId: 'old-call', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'archive' } });
+  await flush();
+  router.reset(); // sign-off/offline/project change
+  currentProject = 'new-project';
+  releaseReject();
+  await pending;
+
+  assert.equal(functionOutput(controller.sent, 'old-call'), undefined);
+  assert.equal(controller.sent.some((event) => event.type === 'response.create'), false);
+  assert.ok(calls.includes('/api/voice/actions/p-visible/reject?project=old-project'));
+});
+
+test('suppression must be acknowledged before readback; a matching provider error fails closed', async () => {
+  const controller = fakeController();
+  const proposalBody = { proposalId: 'p-safe', readback: 'move task-0020 back to Review', confirmation: { tier: 'reversible', phrase: 'Yes To-do' } };
+  const fetchFn = fakeFetch((url) => (url.includes('/reject')
+    ? { status: 200, body: { ok: true, rejected: true } }
+    : { status: 200, body: proposalBody }));
+  const router = createCommandRouter({ controller, project: () => 'demo', fetchFn });
+  const pending = router.handleToolCall({ callId: 'c-safe', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
+  await flush();
+  const update = controller.sent.find((event) => event.type === 'session.update');
+  assert.equal(update.session.type, 'realtime');
+  router.handleResponseEvent({ type: 'error', relatedEventId: update.event_id, message: 'invalid session update' });
+  await pending;
+
+  assert.deepEqual(controller.inputEnabledCalls, [false, true]);
+  assert.equal(controller.enterConfirmingCalls.length, 0);
+  assert.equal(controller.sent.some((event) => event.type === 'response.create' && event.response.metadata), false);
+  assert.equal(fetchFn.calls.some((call) => call.url === '/api/voice/actions/p-safe/reject?project=demo'), true);
+  assert.deepEqual(functionOutput(controller.sent, 'c-safe'), {
+    ok: false,
+    error: 'the voice session could not safely open confirmation',
+  });
+});
+
 test('a reversible-tier proposal suppresses auto-response, clears buffered audio, and enters confirming', async () => {
   const controller = fakeController();
   const proposalBody = { proposalId: 'p2', readback: 'move task-0020 back to Review', confirmation: { tier: 'reversible', phrase: 'Yes To-do', challenge: null, visibleApprovalRequired: false } };
@@ -183,12 +247,14 @@ test('a reversible-tier proposal suppresses auto-response, clears buffered audio
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
   await flush();
-  playReadback(router);
+  await playReadback(router);
   await pending;
 
   const bufferClear = controller.sent.find((e) => e.type === 'input_audio_buffer.clear');
   assert.ok(bufferClear, 'buffered input audio is discarded before opening the confirmation window');
   const suppress = controller.sent.find((e) => e.type === 'session.update');
+  assert.equal(suppress.session.type, 'realtime');
+  assert.match(suppress.event_id, /^todomd-session-update-/);
   assert.equal(suppress.session.audio.input.turn_detection.create_response, false);
   assert.equal(suppress.session.audio.input.turn_detection.interrupt_response, false);
   assert.equal(controller.enterConfirmingCalls.length, 1);
@@ -223,12 +289,12 @@ test('the confirmation window opens only after the readback response finishes �
 
   // Now the readback finishes: the window opens, buffered audio is cleared,
   // and the SAME exact phrase — heard for real, after the readback — confirms.
-  playReadback(router);
+  await playReadback(router);
   await pending;
   assert.equal(controller.sent.some((e) => e.type === 'input_audio_buffer.clear'), true);
   assert.equal(controller.enterConfirmingCalls.length, 1);
   controller.resolve('Yes To-do');
-  await flush();
+  await acknowledgeSessionUpdate(router);
   assert.equal(fetchFn.calls.some((c) => c.url.includes('/confirm')), true,
     'the same exact phrase confirms once actually heard after the readback finished');
 });
@@ -239,7 +305,8 @@ test('an unrelated response.created — including the response that carried the 
   const fetchFn = fakeFetch([{ status: 200, body: proposalBody }]);
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
-  await flush(); // the actions POST settles: the wait is armed and response.create is out
+  await flush(); // the actions POST settles: suppression is sent and awaits acknowledgement
+  await acknowledgeSessionUpdate(router);
 
   // The function-call response completes — after the wait was armed, which is
   // the real ordering — and its own audio drains too. Neither is the readback.
@@ -293,7 +360,7 @@ test('simultaneous mutation tool calls prepare only one proposal and reject the 
 
   finishPrepare();
   await flush();
-  playReadback(router, { readbackId: 'p-first' });
+  await playReadback(router, { readbackId: 'p-first' });
   await first;
   assert.equal(controller.enterConfirmingCalls.length, 1, 'only the accepted proposal reaches confirmation');
 });
@@ -342,8 +409,10 @@ test('a readback that never finishes playing releases the proposal instead of op
   });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
   await flush();
-  playReadback(router, { stopped: false }); // the finished-playing event is lost (dead channel, dead session)
+  await playReadback(router, { stopped: false }); // the finished-playing event is lost (dead channel, dead session)
   clock.fire();
+  await flush();
+  await acknowledgeSessionUpdate(router);
   await pending;
 
   assert.equal(controller.enterConfirmingCalls.length, 0,
@@ -368,12 +437,41 @@ test('a failed or cancelled readback releases the proposal immediately, without 
   });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
   await flush();
-  playReadback(router, { status: 'cancelled', stopped: false });
+  await playReadback(router, { status: 'cancelled', stopped: false });
+  await acknowledgeSessionUpdate(router);
   await pending; // no clock.fire() — a cancelled turn will never finish playing
 
   assert.equal(clock.pending(), 0, 'the bounded wait is cleared, not left running');
   assert.equal(controller.enterConfirmingCalls.length, 0);
   assert.equal(fetchFn.calls.some((c) => c.url === '/api/voice/actions/p2/reject?project=demo'), true);
+});
+
+test('reset during delayed readback-failure cleanup cannot speak into the replacement session', async () => {
+  const controller = fakeController();
+  let currentProject = 'old-project';
+  let releaseReject;
+  const calls = [];
+  const proposalBody = { proposalId: 'p-old', readback: 'move task-0020 back to Review', confirmation: { tier: 'reversible', phrase: 'Yes To-do' } };
+  const fetchFn = async (url) => {
+    calls.push(url);
+    if (url === '/api/voice/actions/p-old/reject?project=old-project') {
+      await new Promise((resolve) => { releaseReject = resolve; });
+    }
+    return { ok: true, status: 200, json: async () => (url.includes('/actions?') ? proposalBody : { ok: true }) };
+  };
+  const router = createCommandRouter({ controller, project: () => currentProject, fetchFn });
+  const pending = router.handleToolCall({ callId: 'old-call', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
+  await flush();
+  await playReadback(router, { readbackId: 'p-old', status: 'cancelled', stopped: false });
+  await acknowledgeSessionUpdate(router); // restoration accepted; cleanup reject is now held
+  const sentBeforeReset = controller.sent.length;
+  router.reset();
+  currentProject = 'new-project';
+  releaseReject();
+  await pending;
+
+  assert.equal(controller.sent.length, sentBeforeReset, 'no stale cancellation is spoken into the replacement session');
+  assert.equal(calls.filter((url) => url === '/api/voice/actions/p-old/reject?project=old-project').length, 1);
 });
 
 test('a matching "Yes To-do" reply confirms exactly once and speaks the completion', async () => {
@@ -385,10 +483,11 @@ test('a matching "Yes To-do" reply confirms exactly once and speaks the completi
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
   await flush();
-  playReadback(router);
+  await playReadback(router);
   await pending;
 
   controller.resolve('  yes,  TO-DO!  '); // punctuation/case/whitespace must not defeat the match
+  await acknowledgeSessionUpdate(router);
   await flush();
 
   const confirmCall = fetchFn.calls.find((c) => c.url.includes('/confirm'));
@@ -409,10 +508,11 @@ test('an unrelated or wrong reply rejects the proposal instead of confirming it'
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
   await flush();
-  playReadback(router);
+  await playReadback(router);
   await pending;
 
   controller.resolve('what is the weather today');
+  await acknowledgeSessionUpdate(router);
   await flush();
 
   const rejectCall = fetchFn.calls.find((c) => c.url.includes('/reject'));
@@ -434,10 +534,11 @@ test('a bare "yes" does not confirm an agent-tier action — only its exact chal
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'approve' } });
   await flush();
-  playReadback(router, { readbackId: 'p3' });
+  await playReadback(router, { readbackId: 'p3' });
   await pending;
 
   controller.resolve('yes');
+  await acknowledgeSessionUpdate(router);
   await flush();
   assert.equal(fetchFn.calls.some((c) => c.url.includes('/confirm')), false, '"yes" alone can never confirm an agent-starting action');
   assert.equal(fetchFn.calls.some((c) => c.url.includes('/reject')), true);
@@ -455,10 +556,11 @@ test('the exact challenge phrase confirms an agent-tier action', async () => {
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'approve' } });
   await flush();
-  playReadback(router, { readbackId: 'p3' });
+  await playReadback(router, { readbackId: 'p3' });
   await pending;
 
   controller.resolve('confirm APPROVE task-0020 amber7');
+  await acknowledgeSessionUpdate(router);
   await flush();
   assert.equal(fetchFn.calls.some((c) => c.url.includes('/confirm')), true);
 });
@@ -472,10 +574,11 @@ test('a confirmation timeout releases the proposal and restores auto-response', 
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
   await flush();
-  playReadback(router);
+  await playReadback(router);
   await pending;
 
   controller.timeout();
+  await acknowledgeSessionUpdate(router);
   await flush();
   assert.equal(fetchFn.calls.some((c) => c.url === '/api/voice/actions/p2/reject?project=demo'), true);
   const restore = controller.sent.filter((e) => e.type === 'session.update').at(-1);
@@ -491,7 +594,8 @@ test('sign-off/offline landing while the readback was playing releases the propo
   const router = createCommandRouter({ controller, token: 't', project: () => 'demo', fetchFn });
   const pending = router.handleToolCall({ callId: 'c1', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
   await flush();
-  playReadback(router);
+  await playReadback(router);
+  await acknowledgeSessionUpdate(router);
   await pending;
 
   // The tool call already got its (successful) result before the race was

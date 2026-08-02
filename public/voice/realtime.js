@@ -115,6 +115,21 @@ export function createRealtimeSession({
       onToolCall({ callId, name, arguments: parsedArguments });
       return;
     }
+    // `session.update` is not effective until the server acknowledges it.
+    // A successful acknowledgement has no client-event id, while an error
+    // carries the rejected client's `event_id` under `error.event_id`.
+    if (event.type === 'session.updated') {
+      onResponseEvent({ type: 'session.updated' });
+      return;
+    }
+    if (event.type === 'error') {
+      onResponseEvent({
+        type: 'error',
+        relatedEventId: typeof event.error?.event_id === 'string' ? event.error.event_id : null,
+        message: typeof event.error?.message === 'string' ? event.error.message : 'realtime event failed',
+      });
+      return;
+    }
     // Response lifecycle, forwarded with the ids that make it correlatable.
     // The command router waits for a proposal's read-back to finish speaking
     // before it opens a confirmation window, and it can only tell that turn

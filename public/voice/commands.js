@@ -42,10 +42,14 @@ function requestResponse(overrides = {}) {
   return { type: 'response.create', response: { tool_choice: 'none', ...overrides } };
 }
 
-function suppressionUpdate(createResponse) {
+function suppressionUpdate(createResponse, eventId) {
   return {
+    event_id: eventId,
     type: 'session.update',
-    session: { audio: { input: { turn_detection: { type: 'server_vad', create_response: createResponse, interrupt_response: createResponse } } } },
+    session: {
+      type: 'realtime',
+      audio: { input: { turn_detection: { type: 'server_vad', create_response: createResponse, interrupt_response: createResponse } } },
+    },
   };
 }
 
@@ -55,6 +59,7 @@ function suppressionUpdate(createResponse) {
 // onClose race left to catch), so the proposal gets released instead of
 // hanging forever.
 const READBACK_TIMEOUT_MS = 8_000;
+const SESSION_UPDATE_TIMEOUT_MS = 3_000;
 const READBACK_METADATA_KEY = 'todomd_readback_id';
 
 export function createCommandRouter({
@@ -65,10 +70,14 @@ export function createCommandRouter({
   setTimeoutFn = (...args) => setTimeout(...args),
   clearTimeoutFn = (...args) => clearTimeout(...args),
   readbackTimeoutMs = READBACK_TIMEOUT_MS,
+  sessionUpdateTimeoutMs = SESSION_UPDATE_TIMEOUT_MS,
 } = {}) {
   let pendingReadback = null; // the readback turn currently being waited on, if any
+  let pendingSessionUpdate = null; // the one GA session.update awaiting session.updated/error
   let activeMutation = null; // one proposal lifecycle at a time, including its async prepare
   let generation = 0;
+  let sessionUpdateSequence = 0;
+  let sessionUpdatesUsable = true;
 
   function isCurrent(owner) {
     return owner.generation === generation && (!owner.mutation || activeMutation === owner);
@@ -89,7 +98,31 @@ export function createCommandRouter({
     const owner = activeMutation;
     activeMutation = null;
     pendingReadback?.settle({ cancelled: true });
+    pendingSessionUpdate?.settle({ cancelled: true });
+    sessionUpdatesUsable = true;
     if (owner) void cleanupMutation(owner);
+  }
+
+  function updateSuppression(createResponse) {
+    if (!sessionUpdatesUsable) return Promise.resolve({ failed: true });
+    return new Promise((resolve) => {
+      const eventId = `todomd-session-update-${++sessionUpdateSequence}`;
+      const wait = {
+        eventId,
+        settled: false,
+        settle(outcome) {
+          if (wait.settled) return;
+          wait.settled = true;
+          if (pendingSessionUpdate === wait) pendingSessionUpdate = null;
+          clearTimeoutFn(wait.timer);
+          if (!outcome.completed && !outcome.cancelled) sessionUpdatesUsable = false;
+          resolve(outcome);
+        },
+      };
+      wait.timer = setTimeoutFn(() => wait.settle({ timedOut: true }), sessionUpdateTimeoutMs);
+      pendingSessionUpdate = wait;
+      if (!controller.send(suppressionUpdate(createResponse, eventId))) wait.settle({ failed: true });
+    });
   }
 
   // Resolves with { completed } once the readback turn has finished SPEAKING,
@@ -127,6 +160,15 @@ export function createCommandRouter({
   // Everything that does not belong to the readback currently being waited on
   // is ignored, including every event while no wait is armed.
   function handleResponseEvent(event) {
+    const update = pendingSessionUpdate;
+    if (update && event?.type === 'session.updated') {
+      update.settle({ completed: true });
+      return;
+    }
+    if (update && event?.type === 'error' && event.relatedEventId === update.eventId) {
+      update.settle({ failed: true, message: event.message });
+      return;
+    }
     const wait = pendingReadback;
     if (!wait || !event) return;
     if (event.type === 'response.created') {
@@ -206,12 +248,24 @@ export function createCommandRouter({
   // at confirm time; this decides only which of the two endpoints to call.
   async function settle(proposal, text, mutation) {
     if (!isCurrent(mutation)) return;
-    mutation.settling = true;
-    controller.send(suppressionUpdate(true));
     try {
+      const restored = await updateSuppression(true);
+      if (!isCurrent(mutation)) return;
+      if (!restored.completed) {
+        mutation.settling = true;
+        await reject(proposal.proposalId, mutation.project);
+        if (!isCurrent(mutation)) return;
+        speak('Cancelled — the voice session could not be secured.');
+        return;
+      }
       const tier = proposal.confirmation.tier;
       const expected = tier === 'reversible' ? 'yes to do' : normalizePhrase(proposal.confirmation.challenge);
       const matches = normalizePhrase(text) === expected;
+      // Once the human's valid post-window answer has selected confirm or
+      // reject, that request owns the proposal even if the session closes
+      // while the board API is processing it. Its captured project and the
+      // generation check below still prevent output leaking to a new session.
+      mutation.settling = true;
       if (!matches) {
         await reject(proposal.proposalId, mutation.project);
         if (!isCurrent(mutation)) return;
@@ -272,7 +326,9 @@ export function createCommandRouter({
       // Reject the reservation immediately instead of leaving it pending for
       // its TTL, so a later voice request for the same card isn't blocked by
       // a proposal nothing will ever confirm.
+      mutation.settling = true;
       await reject(proposal.proposalId, mutation.project);
+      if (!isCurrent(mutation)) return;
       releaseMutation(mutation);
       controller.send(functionCallOutput(call_.callId, {
         ok: true, readback: proposal.readback, requiresVisibleApproval: true,
@@ -287,8 +343,22 @@ export function createCommandRouter({
     // immediately before triggering the one response this tool result is
     // allowed to produce, so none of that response's lifecycle events — the
     // `response.created` that names it least of all — can be missed.
-    controller.send(suppressionUpdate(false));
     controller.setInputEnabled(false);
+    const suppressed = await updateSuppression(false);
+    if (!isCurrent(mutation)) { await cleanupMutation(mutation); return; }
+    if (!suppressed.completed) {
+      controller.setInputEnabled(true);
+      mutation.settling = true;
+      await reject(proposal.proposalId, mutation.project);
+      if (!isCurrent(mutation)) return;
+      releaseMutation(mutation);
+      controller.send(functionCallOutput(call_.callId, {
+        ok: false,
+        error: 'the voice session could not safely open confirmation',
+      }));
+      controller.send(requestResponse());
+      return;
+    }
     controller.send(functionCallOutput(call_.callId, {
       ok: true, readback: proposal.readback, confirmation: proposal.confirmation,
     }));
@@ -303,9 +373,12 @@ export function createCommandRouter({
       // confirmation window now would ask the human to confirm something they
       // may never have heard, and would leave that window open to the
       // assistant's own audio, so release the reservation instead.
-      controller.send(suppressionUpdate(true));
       controller.setInputEnabled(true);
+      await updateSuppression(true);
+      if (!isCurrent(mutation)) { await cleanupMutation(mutation); return; }
+      mutation.settling = true;
       await reject(proposal.proposalId, mutation.project);
+      if (!isCurrent(mutation)) return;
       releaseMutation(mutation);
       speak('Cancelled — nothing was changed.');
       return;
@@ -319,8 +392,10 @@ export function createCommandRouter({
       onResolve: (text) => settle(proposal, text, mutation),
       onTimeout: async () => {
         if (!isCurrent(mutation)) return;
-        controller.send(suppressionUpdate(true));
         try {
+          await updateSuppression(true);
+          if (!isCurrent(mutation)) return;
+          mutation.settling = true;
           await reject(proposal.proposalId, mutation.project);
           if (!isCurrent(mutation)) return;
           speak('Cancelled — you did not confirm in time.');
@@ -335,8 +410,11 @@ export function createCommandRouter({
       // confirm through, so release the reservation instead of leaving it to
       // expire on its own. The tool call already got its result above; there
       // is no live session left to speak anything further into.
-      controller.send(suppressionUpdate(true));
+      await updateSuppression(true);
+      if (!isCurrent(mutation)) { await cleanupMutation(mutation); return; }
+      mutation.settling = true;
       await reject(proposal.proposalId, mutation.project);
+      if (!isCurrent(mutation)) return;
       releaseMutation(mutation);
     }
   }

@@ -159,6 +159,7 @@ function installVoiceFakes() {
     sessionRequests: [], // every fetch to /api/voice/session — the SDP endpoint itself, not just the fixture upstream it forwards to
     actionRequests: [],  // every fetch to the Actions API — prepare, confirm, and reject
     holdNextAction: false,
+    holdNextReject: false,
     releaseAction: null,
     getUserMediaMode: 'ok', // 'ok' | 'deny'
   };
@@ -169,6 +170,12 @@ function installVoiceFakes() {
     if (url.includes('/api/voice/actions')) window.__voiceHooks.actionRequests.push(url);
     if (window.__voiceHooks.holdNextAction && /\/api\/voice\/actions\?/.test(url)) {
       window.__voiceHooks.holdNextAction = false;
+      return new Promise((resolve) => {
+        window.__voiceHooks.releaseAction = () => resolve(realFetch(input, init));
+      });
+    }
+    if (window.__voiceHooks.holdNextReject && /\/reject\?/.test(url)) {
+      window.__voiceHooks.holdNextReject = false;
       return new Promise((resolve) => {
         window.__voiceHooks.releaseAction = () => resolve(realFetch(input, init));
       });
@@ -197,7 +204,15 @@ function installVoiceFakes() {
     constructor() { this.listeners = {}; this.sent = []; }
     addEventListener(type, fn) { this.listeners[type] = fn; }
     emit(type, payload) { if (this.listeners[type]) this.listeners[type](payload); }
-    send(data) { this.sent.push(data); }
+    send(data) {
+      this.sent.push(data);
+      const event = JSON.parse(data);
+      if (event.type === 'session.update') {
+        queueMicrotask(() => this.emit('message', {
+          data: JSON.stringify({ type: 'session.updated', session: { type: 'realtime' } }),
+        }));
+      }
+    }
     close() {}
   }
   class FakeRTCPeerConnection {
@@ -560,6 +575,37 @@ test('UI voice: sign-off fences an in-flight proposal from the next conversation
     return sent.some((event) => event.type === 'conversation.item.create' && event.item?.call_id === 'old-call');
   })()`), false, 'the old result never enters the new data channel');
   assert.equal(await cardStatus(page, 'task-0017'), 'Needs Human');
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: a delayed proposal rejection cannot answer in a re-woken conversation', async (t) => {
+  if (!page) return t.skip(SKIP);
+  writeCard(repo, 'task-0018', { status: 'Review', title: 'delayed rejection candidate' });
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+
+  await page.eval(`window.__voiceHooks.holdNextReject = true`);
+  await page.eval(emitToolCall('old-visible-call', 'propose_board_action', { cardId: 'task-0018', action: 'archive' }));
+  await until(async () => (await page.eval(
+    `window.__voiceHooks.actionRequests.some((url) => url.includes('/reject'))`,
+  )) || null, { timeout: BUDGET.quick });
+  await page.eval(emitTranscript('That is all, To-do'));
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
+
+  await page.eval(`window.__voiceHooks.recognitions.at(-1).result('Hey To-do', true)`);
+  await until(async () => (await page.eval(`window.__voiceHooks.pcs.length`)) === 2 || null, { timeout: BUDGET.quick });
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+  await page.eval(`window.__voiceHooks.releaseAction()`);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  assert.equal(await page.eval(`(() => {
+    const sent = window.__voiceHooks.pcs.at(-1).dataChannel.sent.map((entry) => JSON.parse(entry));
+    return sent.some((event) => event.type === 'conversation.item.create' && event.item?.call_id === 'old-visible-call');
+  })()`), false);
+  assert.equal(await cardStatus(page, 'task-0018'), 'Review');
   await page.eval(`document.getElementById('voice-btn').click()`);
   assert.deepEqual(page.errors, []);
 });
