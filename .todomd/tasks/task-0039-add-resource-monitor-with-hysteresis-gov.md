@@ -1,7 +1,7 @@
 ---
 id: task-0039
 title: Add resource monitor with hysteresis governor
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 1/4 of task-0021)
-session_id: 019fc431-89ed-7c00-a2c7-029ec7213eaa
+session_id: 019fc437-000e-70c3-9a47-b9c1364d630b
 worktree: todomd/task-0039
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 11.7717
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -89,3 +89,5 @@ null disk metric instead of crashing the server at startup.
   - attempts_exhausted: `npm test` passed outside the restricted sandbox (493 unit/integration tests and 29 UI tests). However, adversarial review found reachable governor defects:
 
 1. In src/resources.js:109-155, critical state can reappear on an improving sample. CPU samples 1.6 (critical), 0.7 (dead band), then 0.3 (recovery) produce `critical: true → false → true`, while retaining the same critical reason. `stickyHit
+- 2026-08-02 20:45Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: Adversarial review found a reachable critical-threshold bug in src/resources.js. resourcesConfig() validates only resume < defer, allowing a partial override such as cpu.defer: 2 to merge with the default critical: 1.5. evaluateMetric() then returns early when 1.6 does not breach defer, so that sample incorrectly produces {deferring:false, critical:false, reasons:[]} despite breaching critical. Va
