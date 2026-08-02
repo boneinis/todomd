@@ -10,7 +10,7 @@ const flag = (name) => {
 };
 
 try {
-  await startMcpServer({ token: flag('--token') });
+  await startMcpServer({ token: flag('--token'), baseUrl: flag('--url') });
 } catch (e) {
   console.error(`todomd-mcp: ${e.message}`);
   process.exit(1);

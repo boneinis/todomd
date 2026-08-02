@@ -1,20 +1,26 @@
-// A thin MCP (Model Context Protocol) server over the existing To-do MD API.
-// It does not re-implement board/pipeline logic: every tool below calls the
-// same functions src/server.js's HTTP routes call (board.js, pipeline.js,
-// registry.js, api-shared.js), so the two front-ends share one source of
-// truth for auth, sanitization, and board mutation.
+// A thin MCP (Model Context Protocol) server over the existing To-do MD HTTP
+// API. Every tool below is an HTTP client of that API — the same routes
+// src/server.js already exposes — rather than a second importer of
+// board.js/pipeline.js. That matters beyond style: pipeline.js's run/queue
+// state (children, runs, triggerClaims, ...) lives in the memory of whichever
+// process called pipeline.init() — the one running `todomd serve`. An MCP
+// server that imported pipeline.js directly would be a SECOND process with
+// its own, permanently-empty copy of that state: get_run_state would never
+// see a live run, and hasLiveRun()/waitForTriage() guards would silently
+// never trigger, letting a write tool race or conflict with a real run. Going
+// through HTTP means every guard, every CARD_ID/project check, and every
+// piece of run state is read from the one authoritative process — nothing
+// here duplicates that logic, it just calls it.
 //
-// MCP itself is just newline-delimited JSON-RPC 2.0 over stdio — small enough
+// MCP itself is newline-delimited JSON-RPC 2.0 over stdio — small enough
 // that, like the rest of this repo's HTTP/WebSocket layer, it's hand-rolled
 // here rather than pulled in as a dependency.
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import readline from 'node:readline';
 import crypto from 'node:crypto';
-import { listProjects } from './registry.js';
-import { loadBoard, loadConfig, readCard, createCard, patchFrontmatter } from './board.js';
-import { sanitizeAssignee, resolveAttachmentFile } from './api-shared.js';
 import { loadToken } from './server.js';
-import * as pipeline from './pipeline.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -24,21 +30,78 @@ const eq = (a, b) => {
 };
 
 // A read tool works for either token tier; a write tool needs the full
-// token — the same read/write split server.js's handleApi enforces via
-// viewerAuthed()/fullAccess. A couple of "read" HTTP routes (commands) are
-// full-token-only in server.js because they expose repo file contents; those
-// tools are marked tier: 'full' below to match, not weakened for MCP.
+// token — the tier is used only to decide which tools this session sees.
+// The actual enforcement happens where it always has: server.js's
+// viewerAuthed()/fullAccess checks on the HTTP request itself.
+export function resolveTier(suppliedToken) {
+  const full = loadToken('token');
+  const viewer = loadToken('token-viewer');
+  if (eq(suppliedToken, full)) return 'full';
+  if (eq(suppliedToken, viewer)) return 'viewer';
+  return null;
+}
+
+// `todomd serve` records "<pid> <port>" in ~/.todomd/server.pid (bin/todomd.js)
+// — read it so an MCP client doesn't have to know or pass the port itself.
+export function discoverBaseUrl() {
+  if (process.env.TODOMD_MCP_URL) return process.env.TODOMD_MCP_URL;
+  if (process.env.TODOMD_MCP_PORT) return `http://127.0.0.1:${process.env.TODOMD_MCP_PORT}`;
+  const home = process.env.TODOMD_HOME || os.homedir();
+  try {
+    const [, portStr] = fs.readFileSync(path.join(home, '.todomd', 'server.pid'), 'utf8').trim().split(/\s+/);
+    if (Number(portStr)) return `http://127.0.0.1:${Number(portStr)}`;
+  } catch { /* no pid file — fall through to the default port */ }
+  return 'http://127.0.0.1:7337';
+}
+
+const enc = encodeURIComponent;
+
+// One JSON call against the live todomd HTTP API.
+async function apiCall(ctx, method, pathname, { query = {}, body } = {}) {
+  const url = new URL(pathname, ctx.baseUrl);
+  for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: { 'x-todomd-token': ctx.token, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    return { status: 0, json: { ok: false, error: `couldn't reach the todomd server at ${ctx.baseUrl} — is \`todomd serve\` running? (${e.message})` } };
+  }
+  let json;
+  try { json = await res.json(); } catch { json = { ok: false, error: `bad response from todomd server (status ${res.status})` }; }
+  return { status: res.status, json };
+}
+
+// /api/file isn't JSON — it streams the raw attachment bytes with a
+// content-type header — so it gets its own thin fetch instead of apiCall().
+async function fetchFile(ctx, project, rel) {
+  const url = new URL('/api/file', ctx.baseUrl);
+  url.searchParams.set('project', project);
+  url.searchParams.set('p', rel);
+  let res;
+  try { res = await fetch(url, { headers: { 'x-todomd-token': ctx.token } }); }
+  catch (e) { return { status: 0, json: { ok: false, error: `couldn't reach the todomd server: ${e.message}` } }; }
+  if (!res.ok) {
+    let json;
+    try { json = await res.json(); } catch { json = { ok: false, error: `not found (status ${res.status})` }; }
+    return { status: res.status, json };
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { status: 200, json: { ok: true, path: rel, contentType: res.headers.get('content-type') || '', base64: buf.toString('base64') } };
+}
+
 const TOOLS = [
   {
-    name: 'list_projects',
-    tier: 'viewer',
+    name: 'list_projects', tier: 'viewer',
     description: 'List registered To-do MD project names.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    handler: () => ({ projects: listProjects().map((p) => p.name) }),
+    call: (ctx) => apiCall(ctx, 'GET', '/api/projects'),
   },
   {
-    name: 'get_board',
-    tier: 'viewer',
+    name: 'get_board', tier: 'viewer',
     description: "Get a project's board (columns, cards, run state, usage, banners).",
     inputSchema: {
       type: 'object',
@@ -49,20 +112,10 @@ const TOOLS = [
       required: ['project'],
       additionalProperties: false,
     },
-    handler: (args, project) => {
-      const board = loadBoard(project.path, { includeArchived: !!args.includeArchived });
-      return {
-        ...board,
-        mode: board.config.mode || 'launcher',
-        runStates: pipeline.getRunStates(project.name),
-        banners: pipeline.getBanners(),
-        usage: pipeline.usage(project.name),
-      };
-    },
+    call: (ctx, args) => apiCall(ctx, 'GET', '/api/board', { query: { project: args.project, archived: args.includeArchived ? '1' : undefined } }),
   },
   {
-    name: 'get_run_state',
-    tier: 'viewer',
+    name: 'get_run_state', tier: 'viewer',
     description: 'Get live run state, banners, and usage for a project (diagnostic info).',
     inputSchema: {
       type: 'object',
@@ -70,15 +123,15 @@ const TOOLS = [
       required: ['project'],
       additionalProperties: false,
     },
-    handler: (args, project) => ({
-      runStates: pipeline.getRunStates(project.name),
-      banners: pipeline.getBanners(),
-      usage: pipeline.usage(project.name),
-    }),
+    call: async (ctx, args) => {
+      const { status, json } = await apiCall(ctx, 'GET', '/api/board', { query: { project: args.project } });
+      if (status >= 400) return { status, json };
+      const { runStates, banners, usage } = json;
+      return { status, json: { runStates, banners, usage } };
+    },
   },
   {
-    name: 'get_card',
-    tier: 'viewer',
+    name: 'get_card', tier: 'viewer',
     description: 'Get a single card by id, including recovery actions.',
     inputSchema: {
       type: 'object',
@@ -86,15 +139,10 @@ const TOOLS = [
       required: ['project', 'id'],
       additionalProperties: false,
     },
-    handler: async (args, project) => {
-      const card = readCard(project.path, args.id);
-      if (!card) return { ok: false, error: 'card not found' };
-      return { ...card, recovery: await pipeline.recoveryActions(project, args.id) };
-    },
+    call: (ctx, args) => apiCall(ctx, 'GET', `/api/cards/${enc(args.id)}`, { query: { project: args.project } }),
   },
   {
-    name: 'get_card_file',
-    tier: 'viewer',
+    name: 'get_card_file', tier: 'viewer',
     description: 'Read an attachment file from a card (base64), confined to .todomd/attachments/.',
     inputSchema: {
       type: 'object',
@@ -102,15 +150,10 @@ const TOOLS = [
       required: ['project', 'path'],
       additionalProperties: false,
     },
-    handler: (args, project) => {
-      const resolved = resolveAttachmentFile(project.path, args.path);
-      if (!resolved.ok) return { ok: false, error: resolved.error };
-      return { ok: true, path: args.path, base64: fs.readFileSync(resolved.real).toString('base64') };
-    },
+    call: (ctx, args) => fetchFile(ctx, args.project, args.path),
   },
   {
-    name: 'list_commands',
-    tier: 'full',
+    name: 'list_commands', tier: 'full',
     description: "List a project's pipeline stage commands (agent/model routing). Requires full access.",
     inputSchema: {
       type: 'object',
@@ -118,18 +161,10 @@ const TOOLS = [
       required: ['project'],
       additionalProperties: false,
     },
-    handler: (args, project) => {
-      const cfg = loadConfig(project.path);
-      const list = [];
-      for (const [col, s] of Object.entries(cfg.stages || {})) {
-        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', agent: s.agent || '' });
-      }
-      return { commands: list, defaultAgent: cfg.default_agent || 'claude' };
-    },
+    call: (ctx, args) => apiCall(ctx, 'GET', '/api/commands', { query: { project: args.project } }),
   },
   {
-    name: 'create_card',
-    tier: 'full',
+    name: 'create_card', tier: 'full',
     description: "Create a new card on a project's board.",
     inputSchema: {
       type: 'object',
@@ -145,16 +180,13 @@ const TOOLS = [
       required: ['project', 'title'],
       additionalProperties: false,
     },
-    handler: async (args, project) => {
-      const { project: _p, ...fields } = args;
-      const result = await createCard(project.path, fields);
-      if (result.ok) pipeline.maybeTriage(project, result.id).catch(() => {});
-      return result;
+    call: (ctx, args) => {
+      const { project, ...fields } = args;
+      return apiCall(ctx, 'POST', '/api/cards', { query: { project }, body: fields });
     },
   },
   {
-    name: 'move_card',
-    tier: 'full',
+    name: 'move_card', tier: 'full',
     description: 'Move a card to a new status column (a human move).',
     inputSchema: {
       type: 'object',
@@ -162,11 +194,10 @@ const TOOLS = [
       required: ['project', 'id', 'status'],
       additionalProperties: false,
     },
-    handler: (args, project) => pipeline.humanMove(project, args.id, args.status),
+    call: (ctx, args) => apiCall(ctx, 'POST', `/api/cards/${enc(args.id)}/move`, { query: { project: args.project }, body: { status: args.status } }),
   },
   {
-    name: 'assign_card',
-    tier: 'full',
+    name: 'assign_card', tier: 'full',
     description: "Set a card's assignee.",
     inputSchema: {
       type: 'object',
@@ -174,11 +205,10 @@ const TOOLS = [
       required: ['project', 'id', 'assignee'],
       additionalProperties: false,
     },
-    handler: (args, project) => patchFrontmatter(project.path, args.id, { assignee: sanitizeAssignee(args.assignee) }),
+    call: (ctx, args) => apiCall(ctx, 'POST', `/api/cards/${enc(args.id)}/set`, { query: { project: args.project }, body: { assignee: args.assignee } }),
   },
   {
-    name: 'retry_verify',
-    tier: 'full',
+    name: 'retry_verify', tier: 'full',
     description: 'Retry verification for a card that failed Verify.',
     inputSchema: {
       type: 'object',
@@ -186,11 +216,10 @@ const TOOLS = [
       required: ['project', 'id'],
       additionalProperties: false,
     },
-    handler: (args, project) => pipeline.retryVerification(project, args.id),
+    call: (ctx, args) => apiCall(ctx, 'POST', `/api/cards/${enc(args.id)}/retry-verify`, { query: { project: args.project } }),
   },
   {
-    name: 'cancel_card',
-    tier: 'full',
+    name: 'cancel_card', tier: 'full',
     description: "Cancel a card's in-progress run.",
     inputSchema: {
       type: 'object',
@@ -198,11 +227,10 @@ const TOOLS = [
       required: ['project', 'id'],
       additionalProperties: false,
     },
-    handler: (args, project) => pipeline.cancel(project, args.id),
+    call: (ctx, args) => apiCall(ctx, 'POST', `/api/cards/${enc(args.id)}/cancel`, { query: { project: args.project } }),
   },
   {
-    name: 'archive_card',
-    tier: 'full',
+    name: 'archive_card', tier: 'full',
     description: 'Archive or unarchive a card.',
     inputSchema: {
       type: 'object',
@@ -210,63 +238,44 @@ const TOOLS = [
       required: ['project', 'id'],
       additionalProperties: false,
     },
-    handler: (args, project) => pipeline.archiveCard(project, args.id, args.archived !== false),
+    call: (ctx, args) => apiCall(ctx, 'POST', `/api/cards/${enc(args.id)}/archive`, { query: { project: args.project }, body: { archived: args.archived !== false } }),
   },
 ];
 
 const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
-// Resolve the two credential tiers once (persisted per machine, same files
-// server.js's loadToken() reads/writes) — this process is started with one
-// token and stays bound to that tier for its lifetime, mirroring the
-// stdio-per-session model MCP clients use.
-export function resolveTier(suppliedToken) {
-  const full = loadToken('token');
-  const viewer = loadToken('token-viewer');
-  if (eq(suppliedToken, full)) return 'full';
-  if (eq(suppliedToken, viewer)) return 'viewer';
-  return null;
+function listToolsFor(tier) {
+  return TOOLS.filter((t) => tier === 'full' || t.tier === 'viewer').map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 }
 
-const findProject = (name) => listProjects().find((p) => p.name === name);
-
-function toolResult(result) {
-  const isError = !!(result && result.ok === false);
-  return { content: [{ type: 'text', text: JSON.stringify(result) }], isError };
+function toolResult(status, json) {
+  const isError = status === 0 || status >= 400 || json?.ok === false;
+  return { content: [{ type: 'text', text: JSON.stringify(json) }], isError };
 }
 
 function errorResult(message) {
   return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message }) }], isError: true };
 }
 
-async function callTool(tier, name, args = {}) {
+async function callTool(ctx, name, args = {}) {
   const tool = TOOLS_BY_NAME.get(name);
   if (!tool) return errorResult(`unknown tool: ${name}`);
-  if (tool.tier === 'full' && tier !== 'full') return errorResult('full access required');
-  // every tool but list_projects targets one registered project — validate it
-  // against the registry before touching anything, the same boundary
-  // findProject() enforces for every HTTP route (server.js:323-324)
-  let project;
-  if (name !== 'list_projects') {
-    project = findProject(args.project);
-    if (!project) return errorResult('unknown project');
-  }
+  if (tool.tier === 'full' && ctx.tier !== 'full') return errorResult('full access required');
   try {
-    return toolResult(await tool.handler(args, project));
+    const { status, json } = await tool.call(ctx, args);
+    return toolResult(status, json);
   } catch (e) {
     return errorResult(String(e?.message || e));
   }
 }
 
-function listToolsFor(tier) {
-  return TOOLS
-    .filter((t) => tier === 'full' || t.tier === 'viewer')
-    .map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
-}
+// Builds a tier- and server-bound MCP request handler. `baseUrl` defaults to
+// discoverBaseUrl() but is overridable so tests can point it at a throwaway
+// `startServer()` instance instead of a real, already-running `todomd serve`.
+export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
+  const tier = resolveTier(token);
+  const ctx = { token, tier, baseUrl };
 
-// Builds a tier-bound MCP request handler. Split out from startMcpServer()
-// so tests can drive JSON-RPC messages directly, without a real stdio pipe.
-export function createMcpServer(tier) {
   // handleMessage: given one parsed JSON-RPC request/notification, returns
   // the JSON-RPC response object, or null for a notification (no reply).
   async function handleMessage(msg) {
@@ -287,7 +296,7 @@ export function createMcpServer(tier) {
         case 'tools/list':
           return respond({ tools: listToolsFor(tier) });
         case 'tools/call': {
-          const result = await callTool(tier, params?.name, params?.arguments || {});
+          const result = await callTool(ctx, params?.name, params?.arguments || {});
           return respond(result);
         }
         default:
@@ -300,18 +309,19 @@ export function createMcpServer(tier) {
 
   // Exposed for tests that want to skip JSON-RPC framing and call a tool
   // directly; startMcpServer() only ever goes through handleMessage.
-  return { handleMessage, listTools: () => listToolsFor(tier), callTool: (name, args) => callTool(tier, name, args) };
+  return { handleMessage, listTools: () => listToolsFor(tier), callTool: (name, args) => callTool(ctx, name, args), tier };
 }
 
 // Entry point used by bin/todomd-mcp.js: validates the token, then reads
 // newline-delimited JSON-RPC requests from stdin and writes responses to
 // stdout — the MCP stdio transport. Never returns while stdin stays open.
-export async function startMcpServer({ token, input = process.stdin, output = process.stdout } = {}) {
-  const tier = resolveTier(token || process.env.TODOMD_MCP_TOKEN || '');
+export async function startMcpServer({ token, baseUrl, input = process.stdin, output = process.stdout } = {}) {
+  const resolvedToken = token || process.env.TODOMD_MCP_TOKEN || '';
+  const tier = resolveTier(resolvedToken);
   if (!tier) {
     throw new Error('bad or missing token — set TODOMD_MCP_TOKEN (or pass --token) to the value in ~/.todomd/token or ~/.todomd/token-viewer');
   }
-  const server = createMcpServer(tier);
+  const server = createMcpServer({ token: resolvedToken, baseUrl });
   const rl = readline.createInterface({ input, terminal: false });
   rl.on('line', async (line) => {
     line = line.trim();

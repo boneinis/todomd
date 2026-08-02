@@ -105,7 +105,7 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 
 ## MCP server (agent tool access)
 
-`bin/todomd-mcp.js` exposes the board over the [Model Context Protocol](https://modelcontextprotocol.io) as a stdio server, so Claude, Codex, or any MCP-capable agent can read and drive the board through reliable tools instead of shelling out to `curl`. It's a thin wrapper: every tool calls the same `board.js`/`pipeline.js`/`registry.js` functions the HTTP API in `src/server.js` uses, so auth and validation stay in one place.
+`bin/todomd-mcp.js` exposes the board over the [Model Context Protocol](https://modelcontextprotocol.io) as a stdio server, so Claude, Codex, or any MCP-capable agent can read and drive the board through reliable tools instead of shelling out to `curl`. It's a thin HTTP client of the *running* `todomd serve` process — every tool calls the same routes the web UI does — rather than a second importer of `board.js`/`pipeline.js`. That's not just style: run/queue state only exists in the memory of the one process that's actually driving the pipeline, so **`todomd serve` must already be running** for these tools to see or change anything real.
 
 **Auth.** The server is started with one token (`~/.todomd/token` for full access, `~/.todomd/token-viewer` for read-only — the same files `todomd serve` writes) and refuses to start with anything else. Pass it as `--token <value>` or `TODOMD_MCP_TOKEN`:
 
@@ -113,7 +113,9 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 TODOMD_MCP_TOKEN=$(cat ~/.todomd/token) npx todomd-mcp
 ```
 
-**Read tools** (either token): `list_projects`, `get_board`, `get_run_state`, `get_card`, `get_card_file`. **Full-access-only tools**: `list_commands` (reads stage routing) and every write tool — `create_card`, `move_card`, `assign_card`, `retry_verify`, `cancel_card`, `archive_card`. A viewer-token session simply doesn't see the full-access tools listed. Every tool validates its `project` argument against the registry first, so a call can't reach an unregistered project or escape the board's own project boundary — the same check the HTTP API applies before touching a repo.
+**Finding the running server.** By default it reads the port `todomd serve` recorded in `~/.todomd/server.pid`. Override with `--url <http://host:port>`/`TODOMD_MCP_URL`, or just `--port`/`TODOMD_MCP_PORT` if it's local.
+
+**Read tools** (either token): `list_projects`, `get_board`, `get_run_state`, `get_card`, `get_card_file`. **Full-access-only tools**: `list_commands` (reads stage routing) and every write tool — `create_card`, `move_card`, `assign_card`, `retry_verify`, `cancel_card`, `archive_card`. A viewer-token session simply doesn't see the full-access tools listed, and the running server enforces the same tier on every request regardless — a bad or mismatched token is a 401/403 from the real API, not a client-side guess. Every card/project id a tool touches goes through the HTTP API's own validation (registered-project lookup, the `task-NNNN` id format, live-run/triage guards), so an MCP call can't do anything the web UI couldn't.
 
 **Connecting a client.** Point an MCP-capable agent at the stdio command, e.g. for Claude Code (`.mcp.json` or `claude mcp add`):
 
