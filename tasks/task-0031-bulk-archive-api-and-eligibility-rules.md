@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
