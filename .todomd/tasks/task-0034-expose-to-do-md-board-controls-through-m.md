@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Review
+status: Plan
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -17,6 +17,7 @@ worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-07-31
 cost_usd: 0.1616
+needs_human_reason:
 ---
 
 ## Description
