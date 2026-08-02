@@ -108,12 +108,17 @@ test('full tier: create, move, assign, retry-verify guard, cancel, and archive r
   try {
     const server = createMcpServer({ token: full, baseUrl });
 
-    // triaged: set so the fire-and-forget maybeTriage() claim (same one server.js's
-    // POST /api/cards kicks off) doesn't race the very next move_card call below
-    const created = await server.callTool('create_card', { project: name, title: 'MCP round trip', description: 'covers the write tools', triaged: 'test' });
+    const created = await server.callTool('create_card', { project: name, title: 'MCP round trip', description: 'covers the write tools' });
     const createResult = JSON.parse(created.content[0].text);
     assert.equal(createResult.ok, true);
     const id = createResult.id;
+
+    // POST /api/cards kicks off maybeTriage() fire-and-forget, and that claims
+    // the card *before* it reads config — so even with triage disabled there's
+    // a window where humanMove() answers "run in progress". Wait it out with
+    // the helper the drawer uses for the same race (pipeline.js:1780), rather
+    // than smuggling an off-schema `triaged` field past the tool's contract.
+    await pipeline.waitForTriage(name, id);
 
     const moved = await server.callTool('move_card', { project: name, id, status: 'Plan' });
     assert.equal(JSON.parse(moved.content[0].text).ok, true);
@@ -133,6 +138,45 @@ test('full tier: create, move, assign, retry-verify guard, cancel, and archive r
 
     const archived = await server.callTool('archive_card', { project: name, id, archived: true });
     assert.equal(JSON.parse(archived.content[0].text).ok, true);
+  } finally { srv.close(); }
+});
+
+test('tool arguments are validated against the advertised schema before dispatch', async () => {
+  isolateHome();
+  const { full } = tokens();
+  const { name, repo, srv, baseUrl } = await boot();
+  writeCard(repo, 'task-0001'); // a real target, so a rejection can't be mistaken for "no such card"
+  try {
+    const server = createMcpServer({ token: full, baseUrl });
+    const rejected = async (tool, args, re) => {
+      const r = await server.callTool(tool, args);
+      assert.equal(r.isError, true, `${tool} ${JSON.stringify(args)} must be rejected`);
+      assert.match(JSON.parse(r.content[0].text).error, re);
+    };
+
+    // POST /api/cards is a trusted-caller route that honours internal
+    // orchestrator fields for the Plan stage's chunk creator — an MCP caller
+    // must not reach them and mint a card that skips triage/build/verify
+    await rejected('create_card', { project: name, title: 'born done', status: 'Done' }, /unknown property: status/);
+    await rejected('create_card', { project: name, title: 'pre-triaged', triaged: '2026-01-01' }, /unknown property: triaged/);
+    await rejected('create_card', { project: name, title: 'as agent', agent: 'codex', plan: 'x' }, /unknown property: (agent|plan)/);
+    await rejected('create_card', { project: name, description: 'no title given' }, /missing required property: title/);
+    await rejected('move_card', { project: name, id: 'task-0001', status: 'Done', force: true }, /unknown property: force/);
+
+    // types are checked without coercion: the string "false" is not `false`,
+    // and archiving a card the caller asked to *un*archive is not a no-op
+    await rejected('archive_card', { project: name, id: 'task-0001', archived: 'false' }, /property archived must be a boolean/);
+    await rejected('get_board', { project: name, includeArchived: 'yes' }, /property includeArchived must be a boolean/);
+    await rejected('create_card', { project: name, title: 'bad labels', labels: 'urgent' }, /property labels must be an array/);
+    await rejected('create_card', { project: name, title: 'bad criteria', criteria: [1, 2] }, /property criteria must be an array of strings/);
+    await rejected('get_card', { project: name, id: 1 }, /property id must be a string/);
+    await rejected('get_board', 'not-an-object', /arguments must be an object/);
+
+    // end state: nothing above reached the board — no card was created, and
+    // task-0001 is neither moved nor archived (archived cards drop off here)
+    const board = JSON.parse((await server.callTool('get_board', { project: name })).content[0].text);
+    assert.deepEqual(board.cards.map((c) => c.id), ['task-0001']);
+    assert.equal(board.cards[0].status, 'Review');
   } finally { srv.close(); }
 });
 
@@ -184,8 +228,11 @@ test('a separate MCP process sees run state and live-run guards owned by the ser
     await pipeline.humanMove(project, 'task-0001', 'Queue');
     await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
 
-    child = spawn(process.execPath, [path.join(ROOT, 'bin/todomd-mcp.js')], {
-      env: { ...process.env, TODOMD_HOME: process.env.TODOMD_HOME, TODOMD_MCP_TOKEN: full, TODOMD_MCP_PORT: String(srv.port) },
+    // --port (not TODOMD_MCP_PORT) on purpose: it's the documented flag, and
+    // with no server.pid in the isolated home a broken --port would fall back
+    // to the default 7337 and fail every call below
+    child = spawn(process.execPath, [path.join(ROOT, 'bin/todomd-mcp.js'), '--port', String(srv.port)], {
+      env: { ...process.env, TODOMD_HOME: process.env.TODOMD_HOME, TODOMD_MCP_TOKEN: full, TODOMD_MCP_PORT: '', TODOMD_MCP_URL: '' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const responses = new Map();

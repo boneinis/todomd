@@ -30,9 +30,9 @@ const eq = (a, b) => {
 };
 
 // A read tool works for either token tier; a write tool needs the full
-// token — the tier is used only to decide which tools this session sees.
-// The actual enforcement happens where it always has: server.js's
-// viewerAuthed()/fullAccess checks on the HTTP request itself.
+// token. The tier decides which tools a session sees *and* is re-checked in
+// callTool() before dispatch; server.js's viewerAuthed()/fullAccess checks on
+// the HTTP request itself remain the backstop behind both.
 export function resolveTier(suppliedToken) {
   const full = loadToken('token');
   const viewer = loadToken('token-viewer');
@@ -180,9 +180,18 @@ const TOOLS = [
       required: ['project', 'title'],
       additionalProperties: false,
     },
+    // Built from an explicit allowlist rather than `{ project, ...rest }`:
+    // POST /api/cards is a trusted-caller route that deliberately honours
+    // internal orchestrator fields (status, triaged, parent, plan, agent, ...)
+    // for the Plan stage's chunk creator — see board.js createCard(). The
+    // schema check in callTool() already rejects those, and this keeps a
+    // future schema edit from silently widening what gets forwarded.
     call: (ctx, args) => {
-      const { project, ...fields } = args;
-      return apiCall(ctx, 'POST', '/api/cards', { query: { project }, body: fields });
+      const body = {};
+      for (const k of ['title', 'description', 'type', 'priority', 'labels', 'criteria']) {
+        if (args[k] !== undefined) body[k] = args[k];
+      }
+      return apiCall(ctx, 'POST', '/api/cards', { query: { project: args.project }, body });
     },
   },
   {
@@ -257,10 +266,54 @@ function errorResult(message) {
   return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message }) }], isError: true };
 }
 
+// Type check for one property, with NO coercion — a string "false" is not a
+// boolean here, because `archived: "false"` coerced to true would archive a
+// card the caller asked to *un*archive. Only string, boolean and
+// array-of-string appear across the schemas above.
+function typeError(spec, value) {
+  if (spec.type === 'array') {
+    if (!Array.isArray(value)) return 'must be an array';
+    if (spec.items?.type === 'string' && !value.every((v) => typeof v === 'string')) return 'must be an array of strings';
+    return null;
+  }
+  return typeof value === spec.type ? null : `must be a ${spec.type}`;
+}
+
+// Validate one tool call against the `inputSchema` the tool advertises.
+// Returns null when valid, or a message naming the offending property.
+// Hand-rolled rather than pulling in a JSON-Schema validator: this repo ships
+// with no runtime deps for its HTTP/WebSocket layer either, and the schemas
+// above only use object/string/boolean/array-of-string.
+function validateArgs(schema, args) {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return 'arguments must be an object';
+  const props = schema.properties || {};
+  for (const key of schema.required || []) {
+    if (args[key] === undefined) return `missing required property: ${key}`;
+  }
+  for (const [key, value] of Object.entries(args)) {
+    const spec = props[key];
+    if (!spec) {
+      if (schema.additionalProperties === false) return `unknown property: ${key}`;
+      continue;
+    }
+    const bad = typeError(spec, value);
+    if (bad) return `property ${key} ${bad}`;
+  }
+  return null;
+}
+
 async function callTool(ctx, name, args = {}) {
   const tool = TOOLS_BY_NAME.get(name);
   if (!tool) return errorResult(`unknown tool: ${name}`);
   if (tool.tier === 'full' && ctx.tier !== 'full') return errorResult('full access required');
+  // The advertised schemas ARE the trust boundary for MCP callers. The HTTP
+  // API behind them is a trusted-caller interface — POST /api/cards honours
+  // internal fields like status/triaged so the Plan stage can mint chunk
+  // cards — so an unvalidated pass-through would let a full-token MCP caller
+  // create a card born `status: "Done"`, skipping Review → triage → build →
+  // verify entirely. Enforce the contract here, before anything is dispatched.
+  const invalid = validateArgs(tool.inputSchema, args);
+  if (invalid) return errorResult(`invalid arguments for ${name}: ${invalid}`);
   try {
     const { status, json } = await tool.call(ctx, args);
     return toolResult(status, json);

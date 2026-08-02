@@ -9,8 +9,14 @@ const flag = (name) => {
   return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : undefined;
 };
 
+// --url wins over --port; with neither, mcp-server.js discovers the port from
+// TODOMD_MCP_URL/TODOMD_MCP_PORT or ~/.todomd/server.pid.
+const port = flag('--port');
 try {
-  await startMcpServer({ token: flag('--token'), baseUrl: flag('--url') });
+  await startMcpServer({
+    token: flag('--token'),
+    baseUrl: flag('--url') || (port ? `http://127.0.0.1:${port}` : undefined),
+  });
 } catch (e) {
   console.error(`todomd-mcp: ${e.message}`);
   process.exit(1);
