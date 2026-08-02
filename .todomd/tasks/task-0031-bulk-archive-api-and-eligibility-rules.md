@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 1/2 of task-0027)
-session_id: df9f4777-dbcb-439e-87d5-653a9e0a31ed
+session_id: 019fc321-4aa4-79b2-9639-e369f0ea3b4b
 worktree: todomd/task-0031
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 11.4863
+needs_human_reason: attempts_exhausted
+recovery_stage:
 ---
 
 ## Description
@@ -89,3 +91,5 @@ Bulk archive API and eligibility rules
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-02 15:21Z · Escalate attempt 2 · 15 turns · $1.587 · diagnosis complete
 - 2026-08-02 15:39Z · Build attempt 3 · 32 turns · $1.707 · ok (escalation repair)
+- 2026-08-02 15:47Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - attempts_exhausted: Reachable identity-binding bug: src/pipeline.js validates eligibility using loadBoard entries keyed by frontmatter `id`, but then readCard/setArchived resolve the target by filename. Reproduced with `task-0002-card.md` in Queue and a later `task-0003-card.md` whose frontmatter ID was edited to `task-0002` and status was Done. Requesting `task-0002` returned `{archived:["task-0002"],failed:[]}` whi
