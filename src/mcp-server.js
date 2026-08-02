@@ -3,15 +3,20 @@
 // same functions src/server.js's HTTP routes call (board.js, pipeline.js,
 // registry.js, api-shared.js), so the two front-ends share one source of
 // truth for auth, sanitization, and board mutation.
+//
+// MCP itself is just newline-delimited JSON-RPC 2.0 over stdio — small enough
+// that, like the rest of this repo's HTTP/WebSocket layer, it's hand-rolled
+// here rather than pulled in as a dependency.
 import fs from 'node:fs';
+import readline from 'node:readline';
 import crypto from 'node:crypto';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { listProjects } from './registry.js';
 import { loadBoard, loadConfig, readCard, createCard, patchFrontmatter } from './board.js';
 import { sanitizeAssignee, resolveAttachmentFile } from './api-shared.js';
 import { loadToken } from './server.js';
 import * as pipeline from './pipeline.js';
+
+const PROTOCOL_VERSION = '2024-11-05';
 
 const eq = (a, b) => {
   const ba = Buffer.from(String(a ?? '')), bb = Buffer.from(String(b ?? ''));
@@ -34,7 +39,7 @@ const TOOLS = [
   {
     name: 'get_board',
     tier: 'viewer',
-    description: 'Get a project\'s board (columns, cards, run state, usage, banners).',
+    description: "Get a project's board (columns, cards, run state, usage, banners).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -106,7 +111,7 @@ const TOOLS = [
   {
     name: 'list_commands',
     tier: 'full',
-    description: 'List a project\'s pipeline stage commands (agent/model routing). Requires full access.',
+    description: "List a project's pipeline stage commands (agent/model routing). Requires full access.",
     inputSchema: {
       type: 'object',
       properties: { project: { type: 'string' } },
@@ -125,7 +130,7 @@ const TOOLS = [
   {
     name: 'create_card',
     tier: 'full',
-    description: 'Create a new card on a project\'s board.',
+    description: "Create a new card on a project's board.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -162,7 +167,7 @@ const TOOLS = [
   {
     name: 'assign_card',
     tier: 'full',
-    description: 'Set a card\'s assignee.',
+    description: "Set a card's assignee.",
     inputSchema: {
       type: 'object',
       properties: { project: { type: 'string' }, id: { type: 'string' }, assignee: { type: 'string' } },
@@ -186,7 +191,7 @@ const TOOLS = [
   {
     name: 'cancel_card',
     tier: 'full',
-    description: 'Cancel a card\'s in-progress run.',
+    description: "Cancel a card's in-progress run.",
     inputSchema: {
       type: 'object',
       properties: { project: { type: 'string' }, id: { type: 'string' } },
@@ -212,9 +217,8 @@ const TOOLS = [
 const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
 // Resolve the two credential tiers once (persisted per machine, same files
-// server.js's loadToken() reads/writes) and build the tool server bound to a
-// SINGLE caller tier for its lifetime — this process was started with one
-// token, so it never needs to re-check auth per call, mirroring the
+// server.js's loadToken() reads/writes) — this process is started with one
+// token and stays bound to that tier for its lifetime, mirroring the
 // stdio-per-session model MCP clients use.
 export function resolveTier(suppliedToken) {
   const full = loadToken('token');
@@ -226,56 +230,100 @@ export function resolveTier(suppliedToken) {
 
 const findProject = (name) => listProjects().find((p) => p.name === name);
 
-// Builds an (unconnected) MCP Server bound to the given caller tier. Split
-// out from startMcpServer() so tests can drive it over an in-memory
-// transport instead of real stdio.
-export function createMcpServer(tier) {
-  const server = new Server({ name: 'todomd', version: '0.1.0' }, { capabilities: { tools: {} } });
-
-  server.setRequestHandler(ListToolsRequestSchema, () => ({
-    tools: TOOLS
-      .filter((t) => tier === 'full' || t.tier === 'viewer')
-      .map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const tool = TOOLS_BY_NAME.get(req.params.name);
-    if (!tool) return errorResult(`unknown tool: ${req.params.name}`);
-    if (tool.tier === 'full' && tier !== 'full') return errorResult('full access required');
-    const args = req.params.arguments || {};
-    // every tool but list_projects targets one registered project — validate
-    // it against the registry before touching anything, the same boundary
-    // findProject() enforces for every HTTP route (server.js:323-324)
-    let project;
-    if (tool.name !== 'list_projects') {
-      project = findProject(args.project);
-      if (!project) return errorResult('unknown project');
-    }
-    try {
-      const result = await tool.handler(args, project);
-      const isError = result && result.ok === false;
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], isError };
-    } catch (e) {
-      return errorResult(String(e?.message || e));
-    }
-  });
-
-  return server;
+function toolResult(result) {
+  const isError = !!(result && result.ok === false);
+  return { content: [{ type: 'text', text: JSON.stringify(result) }], isError };
 }
 
 function errorResult(message) {
   return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message }) }], isError: true };
 }
 
-// Entry point used by bin/todomd-mcp.js: validates the token, connects a
-// stdio transport, and never returns while the transport is open.
-export async function startMcpServer({ token } = {}) {
+async function callTool(tier, name, args = {}) {
+  const tool = TOOLS_BY_NAME.get(name);
+  if (!tool) return errorResult(`unknown tool: ${name}`);
+  if (tool.tier === 'full' && tier !== 'full') return errorResult('full access required');
+  // every tool but list_projects targets one registered project — validate it
+  // against the registry before touching anything, the same boundary
+  // findProject() enforces for every HTTP route (server.js:323-324)
+  let project;
+  if (name !== 'list_projects') {
+    project = findProject(args.project);
+    if (!project) return errorResult('unknown project');
+  }
+  try {
+    return toolResult(await tool.handler(args, project));
+  } catch (e) {
+    return errorResult(String(e?.message || e));
+  }
+}
+
+function listToolsFor(tier) {
+  return TOOLS
+    .filter((t) => tier === 'full' || t.tier === 'viewer')
+    .map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+}
+
+// Builds a tier-bound MCP request handler. Split out from startMcpServer()
+// so tests can drive JSON-RPC messages directly, without a real stdio pipe.
+export function createMcpServer(tier) {
+  // handleMessage: given one parsed JSON-RPC request/notification, returns
+  // the JSON-RPC response object, or null for a notification (no reply).
+  async function handleMessage(msg) {
+    const { id, method, params } = msg || {};
+    const respond = (result) => (id === undefined ? null : { jsonrpc: '2.0', id, result });
+    const fail = (code, message) => (id === undefined ? null : { jsonrpc: '2.0', id, error: { code, message } });
+    try {
+      switch (method) {
+        case 'initialize':
+          return respond({
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: { tools: {} },
+            serverInfo: { name: 'todomd', version: '0.1.0' },
+          });
+        case 'notifications/initialized':
+        case 'ping':
+          return respond({});
+        case 'tools/list':
+          return respond({ tools: listToolsFor(tier) });
+        case 'tools/call': {
+          const result = await callTool(tier, params?.name, params?.arguments || {});
+          return respond(result);
+        }
+        default:
+          return fail(-32601, `method not found: ${method}`);
+      }
+    } catch (e) {
+      return fail(-32603, String(e?.message || e));
+    }
+  }
+
+  // Exposed for tests that want to skip JSON-RPC framing and call a tool
+  // directly; startMcpServer() only ever goes through handleMessage.
+  return { handleMessage, listTools: () => listToolsFor(tier), callTool: (name, args) => callTool(tier, name, args) };
+}
+
+// Entry point used by bin/todomd-mcp.js: validates the token, then reads
+// newline-delimited JSON-RPC requests from stdin and writes responses to
+// stdout — the MCP stdio transport. Never returns while stdin stays open.
+export async function startMcpServer({ token, input = process.stdin, output = process.stdout } = {}) {
   const tier = resolveTier(token || process.env.TODOMD_MCP_TOKEN || '');
   if (!tier) {
     throw new Error('bad or missing token — set TODOMD_MCP_TOKEN (or pass --token) to the value in ~/.todomd/token or ~/.todomd/token-viewer');
   }
-  const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
   const server = createMcpServer(tier);
-  await server.connect(new StdioServerTransport());
+  const rl = readline.createInterface({ input, terminal: false });
+  rl.on('line', async (line) => {
+    line = line.trim();
+    if (!line) return;
+    let msg;
+    try { msg = JSON.parse(line); } catch {
+      output.write(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'invalid JSON' } }) + '\n');
+      return;
+    }
+    const reply = await server.handleMessage(msg);
+    if (reply) output.write(JSON.stringify(reply) + '\n');
+  });
+  await new Promise((resolve) => rl.once('close', resolve));
   return server;
 }
