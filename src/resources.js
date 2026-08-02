@@ -22,8 +22,13 @@ export function resourcesConfig(config) {
   const cpu = c.cpu || {};
   const memory = c.memory || {};
   const disk = c.disk || {};
-  const recoverySamples = Number(c.recovery_samples);
-  const sampleIntervalSeconds = Number(c.sample_interval_seconds);
+  // Accept both the snake_case YAML input and this function's own camelCase
+  // output. normalizeConfig() is shared by multiple read paths and must remain
+  // idempotent when an already-normalized config passes through it again.
+  const diskMinFreeGb = disk.min_free_gb ?? disk.minFreeGb;
+  const diskResumeFreeGb = disk.resume_free_gb ?? disk.resumeFreeGb;
+  const recoverySamples = Number(c.recovery_samples ?? c.recoverySamples);
+  const sampleIntervalSeconds = Number(c.sample_interval_seconds ?? c.sampleIntervalSeconds);
   return {
     enabled: c.enabled !== false,
     cpu: validHysteresis({
@@ -37,8 +42,8 @@ export function resourcesConfig(config) {
       critical: Number.isFinite(memory.critical) ? memory.critical : DEFAULT_RESOURCES_CONFIG.memory.critical,
     }, (b) => b.resume < b.defer && b.defer < b.critical, DEFAULT_RESOURCES_CONFIG.memory),
     disk: validHysteresis({
-      minFreeGb: Number.isFinite(disk.min_free_gb) ? disk.min_free_gb : DEFAULT_RESOURCES_CONFIG.disk.minFreeGb,
-      resumeFreeGb: Number.isFinite(disk.resume_free_gb) ? disk.resume_free_gb : DEFAULT_RESOURCES_CONFIG.disk.resumeFreeGb,
+      minFreeGb: Number.isFinite(diskMinFreeGb) ? diskMinFreeGb : DEFAULT_RESOURCES_CONFIG.disk.minFreeGb,
+      resumeFreeGb: Number.isFinite(diskResumeFreeGb) ? diskResumeFreeGb : DEFAULT_RESOURCES_CONFIG.disk.resumeFreeGb,
     }, (b) => b.resumeFreeGb > b.minFreeGb, DEFAULT_RESOURCES_CONFIG.disk),
     recoverySamples: Number.isInteger(recoverySamples) && recoverySamples > 0
       ? recoverySamples : DEFAULT_RESOURCES_CONFIG.recoverySamples,

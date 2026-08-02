@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks, withRepoLock, withoutRepoLockContext } from '../src/board.js';
+import { loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, normalizeConfig, parseChunks, withRepoLock, withoutRepoLockContext } from '../src/board.js';
 import { DEFAULT_RESOURCES_CONFIG } from '../src/resources.js';
 
 test('reorderCards persists deterministic in-column priority in one commit', async () => {
@@ -813,6 +813,25 @@ test('loadConfig merges a partial resources override with the documented default
   assert.equal(cfg.resources.cpu.defer, 0.75);
   assert.equal(cfg.resources.cpu.resume, DEFAULT_RESOURCES_CONFIG.cpu.resume);
   assert.deepEqual(cfg.resources.memory, DEFAULT_RESOURCES_CONFIG.memory);
+});
+
+test('normalizeConfig is idempotent for its camelCase resources output', () => {
+  const once = normalizeConfig({
+    columns: ['Review', 'Queue', 'Build', 'Verify', 'Needs Human', 'Done'],
+    resources: {
+      enabled: false,
+      cpu: { defer: 0.8, resume: 0.6, critical: 1.4 },
+      memory: { defer: 0.82, resume: 0.62, critical: 0.94 },
+      disk: { min_free_gb: 7, resume_free_gb: 9 },
+      recovery_samples: 6,
+      sample_interval_seconds: 4,
+    },
+  });
+  const twice = normalizeConfig(once);
+  assert.deepEqual(twice, once);
+  assert.deepEqual(twice.resources.disk, { minFreeGb: 7, resumeFreeGb: 9 });
+  assert.equal(twice.resources.recoverySamples, 6);
+  assert.equal(twice.resources.sampleIntervalSeconds, 4);
 });
 
 test('loadConfig discards a hand-edited resources band whose resume is looser than its defer', () => {
