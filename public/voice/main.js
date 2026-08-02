@@ -9,6 +9,7 @@ import { createWakeWordEngine, inspectLocalSpeech } from './wake-word.js';
 import { createEarcons } from './earcons.js';
 import { createRealtimeSession } from './realtime.js';
 import { createVoiceController } from './controller.js';
+import { createCommandRouter } from './commands.js';
 
 const btn = document.getElementById('voice-btn');
 const ptt = document.getElementById('voice-ptt');
@@ -47,6 +48,17 @@ if (btn && widget) {
     createRealtime: () => createRealtimeSession({ scope: window, token, project }),
     onState: renderState,
     onDiagnostic: renderDiagnostic,
+    // task-0038: routes read_board_report/read_card/propose_board_action tool
+    // calls to the Actions API and, for a proposed mutation, the human's
+    // spoken reply to confirm/reject. `commands` closes over this same
+    // `controller` binding, assigned right below.
+    onToolCall: (call) => commands.handleToolCall(call),
+  });
+  const commands = createCommandRouter({
+    controller,
+    token,
+    project: () => project,
+    fetchFn: window.fetch.bind(window),
   });
 
   function renderState(state) {

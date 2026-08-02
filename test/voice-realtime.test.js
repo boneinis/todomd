@@ -27,8 +27,10 @@ function fakeRtcClass({ connectionState = 'connected' } = {}) {
       const channel = {
         label,
         closed: false,
+        sent: [],
         addEventListener(type, fn) { listeners[type] = fn; },
         emit(type, payload) { listeners[type]?.(payload); },
+        send(data) { this.sent.push(data); },
         close() { this.closed = true; },
       };
       this.dataChannels.push(channel);
@@ -305,4 +307,92 @@ test('open() can only run once per session object', async () => {
   });
   await session.open({});
   await assert.rejects(() => session.open({}), /already open/);
+});
+
+test('a completed function-call output item surfaces through onToolCall with parsed arguments', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done',
+    item: { type: 'function_call', call_id: 'call_1', name: 'read_card', arguments: '{"cardId":"task-0020"}' },
+  }) });
+  assert.deepEqual(calls, [{ callId: 'call_1', name: 'read_card', arguments: { cardId: 'task-0020' } }]);
+});
+
+test('a function call with no arguments string defaults to an empty object', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done',
+    item: { type: 'function_call', call_id: 'call_2', name: 'read_board_report' },
+  }) });
+  assert.deepEqual(calls, [{ callId: 'call_2', name: 'read_board_report', arguments: {} }]);
+});
+
+test('malformed function-call arguments surface as null instead of being silently dropped', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done',
+    item: { type: 'function_call', call_id: 'call_3', name: 'read_card', arguments: 'not json' },
+  }) });
+  assert.deepEqual(calls, [{ callId: 'call_3', name: 'read_card', arguments: null }]);
+});
+
+test('output items that are not function calls, and calls missing an id/name, are ignored', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { type: 'message' } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { type: 'function_call', name: 'read_board_report' } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { type: 'function_call', call_id: 'x' } }) });
+  assert.deepEqual(calls, []);
+});
+
+test('send() writes JSON to the open data channel and is a silent no-op with no channel', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const before = createRealtimeSession({ RTCPeerConnectionClass: RTC, token: 't', project: 'p' });
+  assert.equal(before.send({ type: 'response.create' }), false, 'no channel exists before open()');
+
+  await session.open({});
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  assert.equal(session.send({ type: 'response.create', response: { tool_choice: 'none' } }), true);
+  assert.deepEqual(channel.sent.map((s) => JSON.parse(s)), [{ type: 'response.create', response: { tool_choice: 'none' } }]);
 });

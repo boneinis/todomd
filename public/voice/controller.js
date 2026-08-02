@@ -56,6 +56,7 @@ export function createVoiceController({
   confirmTimeoutMs = DEFAULT_CONFIRM_TIMEOUT_MS,
   onState = () => {},
   onDiagnostic = () => {},
+  onToolCall = () => {},
 } = {}) {
   let state = 'inactive';
   let realtime = null;
@@ -200,6 +201,7 @@ export function createVoiceController({
     try {
       await session.open({
         onTranscript: (t) => { if (realtime === session) handleTranscript(t); },
+        onToolCall: (call) => { if (realtime === session) onToolCall(call); },
         onClose: (reason) => { if (realtime === session) handleRealtimeClosed(reason); },
       });
     } catch (error) {
@@ -245,7 +247,13 @@ export function createVoiceController({
     if (state === 'confirming') {
       if (isOffline) { goOffline('phrase'); return; }
       if (isSignoff) { signOff('phrase'); return; }
-      return; // matching an outstanding proposal's response is task-0038's concern
+      // Any other finalized reply is the human's answer to the outstanding
+      // proposal. Matching it against the expected phrase (and deciding
+      // confirm vs. reject) is the command router's job, not the state
+      // machine's — resolveConfirmation only forwards it to whichever
+      // enterConfirming() call is still pending.
+      resolveConfirmation(text);
+      return;
     }
     if (state !== 'active') return;
     if (isOffline) { goOffline('phrase'); return; }
@@ -342,6 +350,15 @@ export function createVoiceController({
     return { state, armedByWake, wake: wakeEngine?.diagnostics?.() ?? null };
   }
 
+  // Lets the command router (task-0038) send tool results, suppression
+  // session.updates, and result read-backs to whichever Realtime session is
+  // currently open, without handing out the session object itself. A false
+  // return (no open session — e.g. a race with sign-off/offline) tells the
+  // caller its event went nowhere.
+  function send(clientEvent) {
+    return realtime ? realtime.send(clientEvent) : false;
+  }
+
   return {
     arm,
     signOff,
@@ -349,6 +366,7 @@ export function createVoiceController({
     pushToTalkStart,
     pushToTalkEnd,
     enterConfirming,
+    send,
     resolveConfirmation,
     notifyWakeEngineError,
     diagnostics,

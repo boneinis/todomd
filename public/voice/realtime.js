@@ -75,7 +75,7 @@ export function createRealtimeSession({
     audioEl = null;
   }
 
-  function handleServerEvent(raw, onTranscript) {
+  function handleServerEvent(raw, { onTranscript, onToolCall }) {
     let event;
     try { event = JSON.parse(raw); } catch { return; }
     if (!event || typeof event !== 'object') return;
@@ -85,6 +85,21 @@ export function createRealtimeSession({
     if (event.type === 'conversation.item.input_audio_transcription.completed'
       && typeof event.transcript === 'string') {
       onTranscript({ text: event.transcript, final: true });
+      return;
+    }
+    // A finished function-call output item — the model invoking one of
+    // read_board_report/read_card/propose_board_action. `arguments` arrives as
+    // a JSON string; a malformed one surfaces as `null` so the router can
+    // reply with an error instead of silently dropping the call and leaving
+    // the model waiting forever for a tool result.
+    if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+      const { call_id: callId, name, arguments: rawArguments } = event.item;
+      if (typeof callId !== 'string' || typeof name !== 'string') return;
+      let parsedArguments = {};
+      if (typeof rawArguments === 'string' && rawArguments) {
+        try { parsedArguments = JSON.parse(rawArguments); } catch { parsedArguments = null; }
+      }
+      onToolCall({ callId, name, arguments: parsedArguments });
     }
   }
 
@@ -109,7 +124,7 @@ export function createRealtimeSession({
   // Any failure mid-open (denied mic, no WebRTC, SDP exchange failure) cleans
   // up whatever was already acquired before rethrowing — the caller never has
   // to know how far this got to avoid leaking a live microphone track.
-  async function open({ onTranscript = () => {}, onClose = () => {} } = {}) {
+  async function open({ onTranscript = () => {}, onToolCall = () => {}, onClose = () => {} } = {}) {
     if (opened) throw new Error('session already open');
     opened = true;
     try {
@@ -128,7 +143,7 @@ export function createRealtimeSession({
         pc.addTrack(track, stream);
       }
       dataChannel = pc.createDataChannel('oai-events');
-      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, onTranscript));
+      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, { onTranscript, onToolCall }));
       pc.addEventListener?.('track', attachRemoteAudio);
       pc.addEventListener?.('connectionstatechange', () => {
         if (closed) return;
@@ -167,5 +182,15 @@ export function createRealtimeSession({
     dataChannel = null;
   }
 
-  return { open, close };
+  // Sends one client event (a tool result, a suppression session.update, an
+  // explicit response.create/instructions override) over the data channel.
+  // Best effort and silent: a channel that isn't open yet/anymore (not opened,
+  // already closed, or mid-teardown) must never throw into command-routing
+  // code that has no useful recovery for a session that's already gone.
+  function send(clientEvent) {
+    if (!dataChannel) return false;
+    try { dataChannel.send(JSON.stringify(clientEvent)); return true; } catch { return false; }
+  }
+
+  return { open, close, send };
 }

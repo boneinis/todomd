@@ -12,10 +12,40 @@ import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import { isolateHome, makeRepo, writeCard, until, BUDGET } from '../helpers.js';
+import { isolateHome, makeRepo, writeCard, until, BUDGET, useFakeAgent, clearFakeAgent, git } from '../helpers.js';
 import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
 import { openPage } from '../browser.js';
+
+// Reads the router's function_call_output for one tool call id off the most
+// recently opened data channel, or null while it hasn't arrived yet — for use
+// with `until()`. Stringified and evaluated in the page like installVoiceFakes.
+function readToolOutput(callId) {
+  return `(() => {
+    const sent = window.__voiceHooks.pcs.at(-1).dataChannel.sent;
+    const entry = sent.map((s) => JSON.parse(s)).reverse()
+      .find((e) => e.type === 'conversation.item.create' && e.item.call_id === ${JSON.stringify(callId)});
+    return entry ? JSON.parse(entry.item.output) : null;
+  })()`;
+}
+
+// Fires the fake data channel's completed function-call event a real Realtime
+// session would send when the model invokes one of the three exposed tools.
+function emitToolCall(callId, name, args) {
+  return `window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done',
+    item: { type: 'function_call', call_id: ${JSON.stringify(callId)}, name: ${JSON.stringify(name)}, arguments: ${JSON.stringify(JSON.stringify(args))} },
+  }) })`;
+}
+
+// Fires the fake data channel's finalized-input-transcription event — the
+// only signal the controller trusts for a spoken sign-off/offline/confirmation
+// reply.
+function emitTranscript(text) {
+  return `window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', { data: JSON.stringify({
+    type: 'conversation.item.input_audio_transcription.completed', transcript: ${JSON.stringify(text)},
+  }) })`;
+}
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -98,9 +128,10 @@ function installVoiceFakes() {
   window.SpeechRecognition = FakeSpeechRecognition;
 
   class FakeDataChannel {
-    constructor() { this.listeners = {}; }
+    constructor() { this.listeners = {}; this.sent = []; }
     addEventListener(type, fn) { this.listeners[type] = fn; }
     emit(type, payload) { if (this.listeners[type]) this.listeners[type](payload); }
+    send(data) { this.sent.push(data); }
     close() {}
   }
   class FakeRTCPeerConnection {
@@ -161,12 +192,12 @@ function installUnavailableWakeFake() {
   window.webkitSpeechRecognition = undefined;
 }
 
-let page, srv, name, upstream;
+let page, srv, name, upstream, repo;
 const SKIP = 'no Chrome/Chromium found (set TODOMD_CHROME_BIN to run this)';
 
 before(async () => {
   isolateHome();
-  const repo = makeRepo();
+  repo = makeRepo();
   writeCard(repo, 'task-0001', { status: 'Review' });
   addProject(repo);
   name = path.basename(repo);
@@ -265,6 +296,172 @@ test('UI voice: arm, wake, active session, sign-off phrase, second wake, offline
   assert.equal(totalTracks, 2, 'one microphone track per opened session');
   assert.equal(stoppedTracks, totalTracks, 'every acquired microphone track was stopped by offline');
   assert.deepEqual(page.errors, []);
+});
+
+// Shared by the command-routing tests below: arm, wake, and wait for `active`
+// so each test starts from an open post-wake session with a real data channel.
+async function armAndActivate(page) {
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
+  await page.eval(`window.__voiceHooks.recognitions.at(-1).result('Hey To-do', true)`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+}
+
+async function cardStatus(page, id) {
+  return page.eval(`fetch('/api/cards/${id}?project=${encodeURIComponent(name)}', {
+    headers: { 'x-todomd-token': sessionStorage.getItem('todomd-token') },
+  }).then((r) => r.json()).then((c) => c.data.status)`);
+}
+
+test('UI voice: read_board_report and read_card relay exactly the deterministic server text', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+
+  await page.eval(emitToolCall('call-report', 'read_board_report', {}));
+  await until(async () => (await page.eval(readToolOutput('call-report'))) || null, { timeout: BUDGET.quick });
+  const report = await page.eval(readToolOutput('call-report'));
+  assert.equal(report.ok, true);
+  assert.match(report.text, /card.* on the board/);
+  assert.equal('counts' in report, false, 'only the deterministic text is exposed to the model, not raw structured data');
+
+  await page.eval(emitToolCall('call-card', 'read_card', { cardId: 'task-0001' }));
+  await until(async () => (await page.eval(readToolOutput('call-card'))) || null, { timeout: BUDGET.quick });
+  const cardReport = await page.eval(readToolOutput('call-card'));
+  assert.equal(cardReport.ok, true);
+  assert.match(cardReport.text, /task-0001/);
+
+  await page.eval(emitToolCall('call-missing', 'read_card', { cardId: 'task-9999' }));
+  await until(async () => (await page.eval(readToolOutput('call-missing'))) || null, { timeout: BUDGET.quick });
+  assert.equal((await page.eval(readToolOutput('call-missing'))).ok, false, 'an unknown card is reported, not invented');
+
+  await page.eval(`document.getElementById('voice-btn').click()`); // offline cleanup
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: a reversible proposal reads back the exact action and executes only after "Yes To-do"', async (t) => {
+  if (!page) return t.skip(SKIP);
+  writeCard(repo, 'task-0010', { status: 'Needs Human', title: 'retry candidate' });
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+
+  await page.eval(emitToolCall('call-p1', 'propose_board_action', { cardId: 'task-0010', action: 'retry_planned' }));
+  await until(async () => (await page.eval(readToolOutput('call-p1'))) || null, { timeout: BUDGET.quick });
+  const proposal = await page.eval(readToolOutput('call-p1'));
+  assert.equal(proposal.ok, true);
+  assert.equal(proposal.confirmation.tier, 'reversible');
+  assert.equal(proposal.confirmation.phrase, 'Yes To-do');
+  assert.match(proposal.readback, /task-0010 back to Planned/);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
+
+  await page.eval(emitTranscript('Yes To-do'));
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+  assert.equal(await cardStatus(page, 'task-0010'), 'Planned', 'the confirmed action executed exactly once');
+
+  // a second, later "Yes To-do" with nothing pending must do nothing
+  await page.eval(emitTranscript('Yes To-do'));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(await cardStatus(page, 'task-0010'), 'Planned');
+
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: an unrelated reply rejects the pending proposal instead of confirming it', async (t) => {
+  if (!page) return t.skip(SKIP);
+  writeCard(repo, 'task-0011', { status: 'Needs Human', title: 'reject candidate' });
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+
+  await page.eval(emitToolCall('call-p2', 'propose_board_action', { cardId: 'task-0011', action: 'retry_planned' }));
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
+
+  await page.eval(emitTranscript('what is the weather today'));
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+  assert.equal(await cardStatus(page, 'task-0011'), 'Needs Human', 'an unrelated reply must execute nothing');
+
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: Resume Build continues the preserved worktree via its spoken challenge; Restart Build stays visible-approval-only', async (t) => {
+  if (!page) return t.skip(SKIP);
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  try {
+    const base = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const branch = 'todomd/task-0012';
+    const wt = path.join(repo, '.todomd/worktrees/task-0012');
+    writeCard(repo, 'task-0012', {
+      status: 'Needs Human',
+      extra: `needs_human_reason: orphaned_run\nrecovery_stage: Build\nworktree: ${branch}\nbase_branch: ${base}\nsession_id: fake-session-0012\n`,
+    });
+    git(repo, ['worktree', 'add', '-q', '-b', branch, wt]);
+    // an orphaned card with the SAME recovery reason but no surviving worktree
+    // — restart_build's only eligible target, and never voice-confirmable
+    writeCard(repo, 'task-0013', {
+      status: 'Needs Human',
+      extra: 'needs_human_reason: orphaned_run\nrecovery_stage: Build\nworktree: todomd/task-0013\nsession_id: fake-session-0013\n',
+    });
+
+    await page.presetScript(`(${installVoiceFakes.toString()})();`);
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+    await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+    await armAndActivate(page);
+
+    // Resume Build: agent tier — the vague "yes" a bare confirmation would
+    // accept for a reversible move must NOT be enough here. One reply always
+    // settles (confirms or rejects) a proposal's one-shot window, so a
+    // mismatched "yes" rejects the first proposal outright; re-propose for the
+    // successful path rather than expecting a second chance on the same one.
+    await page.eval(emitToolCall('call-resume-1', 'propose_board_action', { cardId: 'task-0012', action: 'resume_build' }));
+    await until(async () => (await page.eval(readToolOutput('call-resume-1'))) || null, { timeout: BUDGET.quick });
+    const firstAttempt = await page.eval(readToolOutput('call-resume-1'));
+    assert.equal(firstAttempt.confirmation.tier, 'agent');
+    assert.match(firstAttempt.readback, /resume the build for task-0012 in its preserved worktree/);
+    assert.match(firstAttempt.confirmation.challenge, /^Confirm resume build task-0012 /);
+
+    await page.eval(emitTranscript('yes'));
+    await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+    assert.equal(await cardStatus(page, 'task-0012'), 'Needs Human', 'a bare "yes" cannot confirm an agent-starting action');
+
+    await page.eval(emitToolCall('call-resume-2', 'propose_board_action', { cardId: 'task-0012', action: 'resume_build' }));
+    await until(async () => (await page.eval(readToolOutput('call-resume-2'))) || null, { timeout: BUDGET.quick });
+    const secondAttempt = await page.eval(readToolOutput('call-resume-2'));
+    const challenge = secondAttempt.confirmation.challenge;
+    assert.notEqual(challenge, firstAttempt.confirmation.challenge, 'a fresh proposal gets a fresh, unpredictable challenge');
+
+    await page.eval(emitTranscript(challenge));
+    await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+    await until(async () => (await cardStatus(page, 'task-0012')) === 'Done' || null, { timeout: BUDGET.chain });
+    assert.ok(!fs.existsSync(wt), 'successful completion still cleans up the preserved worktree');
+
+    // Restart Build: visible tier only — proposing it must not enter voice
+    // confirmation at all, so no spoken phrase (even a plausible-looking one)
+    // can ever execute it.
+    await page.eval(emitToolCall('call-restart', 'propose_board_action', { cardId: 'task-0013', action: 'restart_build' }));
+    await until(async () => (await page.eval(readToolOutput('call-restart'))) || null, { timeout: BUDGET.quick });
+    const restartProposal = await page.eval(readToolOutput('call-restart'));
+    assert.equal(restartProposal.ok, true);
+    assert.equal(restartProposal.requiresVisibleApproval, true);
+    assert.equal('confirmation' in restartProposal, false, 'no spoken confirmation object is offered for a visible-only action');
+    assert.equal(await page.eval(`document.getElementById('voice-btn').dataset.voiceState`), 'active',
+      'a visible-tier proposal never enters the confirming state');
+
+    await page.eval(emitTranscript('Yes To-do'));
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await cardStatus(page, 'task-0013'), 'Needs Human', 'restart_build can never execute from a spoken phrase');
+
+    await page.eval(`document.getElementById('voice-btn').click()`);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    clearFakeAgent();
+  }
 });
 
 test('UI voice: the board replays context when the voice module announces readiness', async (t) => {

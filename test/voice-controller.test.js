@@ -43,12 +43,15 @@ function fakeRealtimeFactory({ manual = false } = {}) {
     const openPromise = new Promise((res, rej) => { resolveOpen = res; rejectOpen = rej; });
     if (!manual) resolveOpen();
     const session = {
-      closeCalls: 0, closed: false, onTranscript: null, onClose: null,
+      closeCalls: 0, closed: false, onTranscript: null, onToolCall: null, onClose: null,
+      sent: [],
       async open(handlers) {
         session.onTranscript = handlers.onTranscript;
+        session.onToolCall = handlers.onToolCall;
         session.onClose = handlers.onClose;
         await openPromise;
       },
+      send(event) { session.sent.push(event); return true; },
       // Idempotent, matching realtime.js's real close() — a superseded
       // in-flight open can legitimately be closed both by the canceller
       // (immediately) and by openActiveSession's own post-await cleanup.
@@ -89,6 +92,7 @@ function build(overrides = {}) {
   const clock = overrides.clock || fakeClock();
   const states = [];
   const diagnostics = [];
+  const toolCalls = [];
   const controller = createVoiceController({
     wakeEngine,
     earcons,
@@ -97,9 +101,10 @@ function build(overrides = {}) {
     clearTimeoutFn: clock.clearTimeoutFn,
     onState: (s, detail) => states.push({ s, detail }),
     onDiagnostic: (d) => diagnostics.push(d),
+    onToolCall: (c) => toolCalls.push(c),
     ...overrides.options,
   });
-  return { controller, wakeEngine, earcons, realtime, clock, states, diagnostics };
+  return { controller, wakeEngine, earcons, realtime, clock, states, diagnostics, toolCalls };
 }
 
 test('happy path: arm, wake, active, sign-off back to armed, second wake, offline', async () => {
@@ -448,6 +453,61 @@ test('offline from confirming goes fully inactive and rejects the pending confir
   await controller.goOffline();
   assert.equal(controller.state, 'inactive');
   assert.equal(timedOut, 'offline');
+});
+
+// task-0038: matching an outstanding proposal's response against the
+// realtime session's own finalized transcript — not just a direct
+// resolveConfirmation() call — is the command router's actual entry point in
+// production (public/voice/commands.js). Without this wiring, a proposal
+// could never be confirmed or rejected by voice at all.
+test('confirming: a finalized transcript from the realtime session resolves the pending confirmation', async () => {
+  const { controller, wakeEngine, realtime } = build();
+  await controller.arm();
+  wakeEngine.triggerWake();
+  await flush();
+  let resolved = null;
+  controller.enterConfirming({ challenge: 'confirm task-0020 amber7', onResolve: (r) => { resolved = r; } });
+  realtime.sessions[0].onTranscript({ text: 'Yes To-do', final: true });
+  assert.equal(controller.state, 'active');
+  assert.equal(resolved, 'Yes To-do');
+});
+
+test('confirming: an interim (non-final) transcript never resolves the pending confirmation', async () => {
+  const { controller, wakeEngine, realtime } = build();
+  await controller.arm();
+  wakeEngine.triggerWake();
+  await flush();
+  let resolved = null;
+  controller.enterConfirming({ onResolve: (r) => { resolved = r; } });
+  realtime.sessions[0].onTranscript({ text: 'Yes To-do', final: false });
+  assert.equal(controller.state, 'confirming');
+  assert.equal(resolved, null);
+});
+
+test('the controller forwards onToolCall events only from the currently active realtime session', async () => {
+  const { controller, wakeEngine, realtime, toolCalls } = build();
+  await controller.arm();
+  wakeEngine.triggerWake();
+  await flush();
+  const stale = realtime.sessions[0];
+  await controller.signOff(); // supersedes session 0
+  stale.onToolCall({ callId: 'c0', name: 'read_board_report', arguments: {} });
+  assert.deepEqual(toolCalls, [], 'a tool call from a session that is no longer current is dropped');
+
+  wakeEngine.triggerWake();
+  await flush();
+  realtime.sessions[1].onToolCall({ callId: 'c1', name: 'read_board_report', arguments: {} });
+  assert.deepEqual(toolCalls, [{ callId: 'c1', name: 'read_board_report', arguments: {} }]);
+});
+
+test('send() forwards to the active realtime session and is false with none open', async () => {
+  const { controller, wakeEngine, realtime } = build();
+  assert.equal(controller.send({ type: 'response.create' }), false, 'nothing open yet');
+  await controller.arm();
+  wakeEngine.triggerWake();
+  await flush();
+  assert.equal(controller.send({ type: 'response.create' }), true);
+  assert.deepEqual(realtime.sessions[0].sent, [{ type: 'response.create' }]);
 });
 
 test('push-to-talk opens a session without arming local wake, and release returns to inactive (not a fake armed state)', async () => {
