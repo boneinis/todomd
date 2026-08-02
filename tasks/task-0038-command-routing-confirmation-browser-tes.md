@@ -1,7 +1,7 @@
 ---
 id: task-0038
 title: Command routing confirmation browser tests
-status: Needs Human
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0038
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 40.3103
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
