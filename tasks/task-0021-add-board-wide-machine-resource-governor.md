@@ -1,7 +1,7 @@
 ---
 id: task-0021
 title: Add board-wide machine resource governor and CI queue
-status: Planned
+status: Queue
 type: improvement
 priority: high
 labels: [ci, scheduler, reliability]
