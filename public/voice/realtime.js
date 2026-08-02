@@ -42,6 +42,9 @@ export function createRealtimeSession({
   let closed = false;
   let opened = false;
   let offerAbortController = null;
+  let inputSequence = 0;
+  const inputItems = new Map();
+  const toolCallsByResponse = new Map();
 
   function stopStream() {
     for (const track of stream?.getTracks?.() || []) {
@@ -75,16 +78,96 @@ export function createRealtimeSession({
     audioEl = null;
   }
 
-  function handleServerEvent(raw, onTranscript) {
+  function handleServerEvent(raw, { onTranscript, onToolCall, onResponseEvent }) {
     let event;
     try { event = JSON.parse(raw); } catch { return; }
     if (!event || typeof event !== 'object') return;
+    if ((event.type === 'input_audio_buffer.speech_started' || event.type === 'input_audio_buffer.committed')
+      && typeof event.item_id === 'string') {
+      if (!inputItems.has(event.item_id)) inputItems.set(event.item_id, ++inputSequence);
+      return;
+    }
     // Realtime's finalized-input-transcript event — the only remote signal the
     // controller trusts for "That is all, To-do" / "Go offline, To-do" (never
     // the assistant's own output-audio transcript).
     if (event.type === 'conversation.item.input_audio_transcription.completed'
       && typeof event.transcript === 'string') {
-      onTranscript({ text: event.transcript, final: true });
+      onTranscript({
+        text: event.transcript,
+        final: true,
+        itemId: typeof event.item_id === 'string' ? event.item_id : null,
+        inputSequence: inputItems.get(event.item_id) ?? null,
+      });
+      inputItems.delete(event.item_id);
+      return;
+    }
+    // A finished function-call output item — the model invoking one of
+    // read_board_report/read_card/propose_board_action. `arguments` arrives as
+    // a JSON string; a malformed one surfaces as `null` so the router can
+    // reply with an error instead of silently dropping the call and leaving
+    // the model waiting forever for a tool result.
+    if (event.type === 'response.output_item.done' && event.item?.type === 'function_call') {
+      const { call_id: callId, name, arguments: rawArguments } = event.item;
+      if (typeof callId !== 'string' || typeof name !== 'string') return;
+      let parsedArguments = {};
+      if (typeof rawArguments === 'string' && rawArguments) {
+        try { parsedArguments = JSON.parse(rawArguments); } catch { parsedArguments = null; }
+      }
+      const call = { callId, name, arguments: parsedArguments };
+      if (typeof event.response_id === 'string') {
+        const batch = toolCallsByResponse.get(event.response_id) || [];
+        batch.push(call);
+        toolCallsByResponse.set(event.response_id, batch);
+      } else {
+        // Compatibility fallback for a provider/fixture that omits the
+        // documented response id. Such a call cannot be batched, but it still
+        // goes through the router's mutation/session guards.
+        onToolCall(call);
+      }
+      return;
+    }
+    // `session.update` is not effective until the server acknowledges it.
+    // A successful acknowledgement has no client-event id, while an error
+    // carries the rejected client's `event_id` under `error.event_id`.
+    if (event.type === 'session.updated') {
+      onResponseEvent({ type: 'session.updated' });
+      return;
+    }
+    if (event.type === 'error') {
+      onResponseEvent({
+        type: 'error',
+        relatedEventId: typeof event.error?.event_id === 'string' ? event.error.event_id : null,
+        message: typeof event.error?.message === 'string' ? event.error.message : 'realtime event failed',
+      });
+      return;
+    }
+    // Response lifecycle, forwarded with the ids that make it correlatable.
+    // The command router waits for a proposal's read-back to finish speaking
+    // before it opens a confirmation window, and it can only tell that turn
+    // apart from the function-call response that triggered it (which emits
+    // its own `response.done` moments after the tool call above) by id.
+    //
+    // `response.created` is how the router learns the id of the response its
+    // own `response.create` produced. `response.done` means the model has
+    // finished GENERATING — on WebRTC the output audio keeps draining after
+    // it, so `output_audio_buffer.stopped` (same response, under
+    // `response_id`) is the only event that means "finished speaking".
+    if (event.type === 'response.created' && typeof event.response?.id === 'string') {
+      const readbackId = typeof event.response.metadata?.todomd_readback_id === 'string'
+        ? event.response.metadata.todomd_readback_id
+        : null;
+      onResponseEvent({ type: 'response.created', responseId: event.response.id, readbackId });
+      return;
+    }
+    if (event.type === 'response.done' && typeof event.response?.id === 'string') {
+      const batch = toolCallsByResponse.get(event.response.id);
+      toolCallsByResponse.delete(event.response.id);
+      if (batch?.length) onToolCall(batch.length === 1 ? batch[0] : { batch });
+      onResponseEvent({ type: 'response.done', responseId: event.response.id, status: event.response.status });
+      return;
+    }
+    if (event.type === 'output_audio_buffer.stopped' && typeof event.response_id === 'string') {
+      onResponseEvent({ type: 'output_audio_buffer.stopped', responseId: event.response_id });
     }
   }
 
@@ -109,7 +192,7 @@ export function createRealtimeSession({
   // Any failure mid-open (denied mic, no WebRTC, SDP exchange failure) cleans
   // up whatever was already acquired before rethrowing — the caller never has
   // to know how far this got to avoid leaking a live microphone track.
-  async function open({ onTranscript = () => {}, onClose = () => {} } = {}) {
+  async function open({ onTranscript = () => {}, onToolCall = () => {}, onResponseEvent = () => {}, onClose = () => {} } = {}) {
     if (opened) throw new Error('session already open');
     opened = true;
     try {
@@ -128,7 +211,7 @@ export function createRealtimeSession({
         pc.addTrack(track, stream);
       }
       dataChannel = pc.createDataChannel('oai-events');
-      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, onTranscript));
+      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, { onTranscript, onToolCall, onResponseEvent }));
       pc.addEventListener?.('track', attachRemoteAudio);
       pc.addEventListener?.('connectionstatechange', () => {
         if (closed) return;
@@ -163,9 +246,28 @@ export function createRealtimeSession({
     try { pc?.close?.(); } catch { /* already closed */ }
     stopStream();
     stopAudioSink();
+    toolCallsByResponse.clear();
     pc = null;
     dataChannel = null;
   }
 
-  return { open, close };
+  // Sends one client event (a tool result, a suppression session.update, an
+  // explicit response.create/instructions override) over the data channel.
+  // Best effort and silent: a channel that isn't open yet/anymore (not opened,
+  // already closed, or mid-teardown) must never throw into command-routing
+  // code that has no useful recovery for a session that's already gone.
+  function send(clientEvent) {
+    if (!dataChannel) return false;
+    try { dataChannel.send(JSON.stringify(clientEvent)); return true; } catch { return false; }
+  }
+
+  function setInputEnabled(enabled) {
+    for (const track of stream?.getAudioTracks?.() || []) {
+      try { track.enabled = enabled; } catch { /* already ended */ }
+    }
+  }
+
+  function inputBoundary() { return inputSequence; }
+
+  return { open, close, send, setInputEnabled, inputBoundary };
 }

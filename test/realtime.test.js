@@ -38,6 +38,7 @@ test('buildSessionConfig exposes exactly the read + propose tools, never a confi
   assert.equal(session.model, 'gpt-realtime-2.1-mini');
   assert.equal(typeof session.instructions, 'string');
   assert.ok(session.instructions.length > 0);
+  assert.match(session.instructions, /at most one board tool/i);
 });
 
 test('buildSessionConfig uses the current session schema, not the beta-era one', () => {

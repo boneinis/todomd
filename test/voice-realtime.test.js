@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRealtimeSession } from '../public/voice/realtime.js';
 
-function fakeTrack() { return { stopped: false, stop() { this.stopped = true; } }; }
+function fakeTrack() { return { enabled: true, stopped: false, stop() { this.stopped = true; } }; }
 function fakeStream(tracks) {
   return { getAudioTracks: () => tracks, getTracks: () => tracks };
 }
@@ -27,8 +27,10 @@ function fakeRtcClass({ connectionState = 'connected' } = {}) {
       const channel = {
         label,
         closed: false,
+        sent: [],
         addEventListener(type, fn) { listeners[type] = fn; },
         emit(type, payload) { listeners[type]?.(payload); },
+        send(data) { this.sent.push(data); },
         close() { this.closed = true; },
       };
       this.dataChannels.push(channel);
@@ -103,9 +105,28 @@ test('a finalized input-transcription event surfaces through onTranscript; other
   await session.open({ onTranscript: (t) => transcripts.push(t) });
   const channel = RTC.instances.at(-1).dataChannels.at(-1);
   channel.emit('message', { data: JSON.stringify({ type: 'response.audio_transcript.delta', transcript: 'ignore me' }) });
-  channel.emit('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'That is all, To-do' }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'input_audio_buffer.speech_started', item_id: 'item_1' }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'item_1', transcript: 'That is all, To-do' }) });
   channel.emit('message', { data: 'not json' }); // must not throw
-  assert.deepEqual(transcripts, [{ text: 'That is all, To-do', final: true }]);
+  assert.deepEqual(transcripts, [{ text: 'That is all, To-do', final: true, itemId: 'item_1', inputSequence: 1 }]);
+  assert.equal(session.inputBoundary(), 1);
+});
+
+test('setInputEnabled gates the existing microphone track without replacing or stopping it', async () => {
+  const track = fakeTrack();
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([track]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  await session.open({});
+  session.setInputEnabled(false);
+  assert.equal(track.enabled, false);
+  assert.equal(track.stopped, false, 'read-back gating preserves the active session track');
+  session.setInputEnabled(true);
+  assert.equal(track.enabled, true);
 });
 
 test('a remote track is rendered to an audio sink and played; close() tears it down', async () => {
@@ -305,4 +326,187 @@ test('open() can only run once per session object', async () => {
   });
   await session.open({});
   await assert.rejects(() => session.open({}), /already open/);
+});
+
+test('a completed function-call output item surfaces through onToolCall with parsed arguments', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done',
+    item: { type: 'function_call', call_id: 'call_1', name: 'read_card', arguments: '{"cardId":"task-0020"}' },
+  }) });
+  assert.deepEqual(calls, [{ callId: 'call_1', name: 'read_card', arguments: { cardId: 'task-0020' } }]);
+});
+
+test('parallel function calls from one provider response are delivered as one router batch', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (call) => calls.push(call) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done', response_id: 'resp_mixed',
+    item: { type: 'function_call', call_id: 'read-call', name: 'read_board_report', arguments: '{}' },
+  }) });
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done', response_id: 'resp_mixed',
+    item: { type: 'function_call', call_id: 'action-call', name: 'propose_board_action', arguments: '{"cardId":"task-0020","action":"retriage"}' },
+  }) });
+  assert.deepEqual(calls, [], 'the adapter waits for the response boundary before dispatching calls');
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.done', response: { id: 'resp_mixed', status: 'completed' },
+  }) });
+  assert.deepEqual(calls, [{ batch: [
+    { callId: 'read-call', name: 'read_board_report', arguments: {} },
+    { callId: 'action-call', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } },
+  ] }]);
+});
+
+test('a function call with no arguments string defaults to an empty object', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done',
+    item: { type: 'function_call', call_id: 'call_2', name: 'read_board_report' },
+  }) });
+  assert.deepEqual(calls, [{ callId: 'call_2', name: 'read_board_report', arguments: {} }]);
+});
+
+test('malformed function-call arguments surface as null instead of being silently dropped', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done',
+    item: { type: 'function_call', call_id: 'call_3', name: 'read_card', arguments: 'not json' },
+  }) });
+  assert.deepEqual(calls, [{ callId: 'call_3', name: 'read_card', arguments: null }]);
+});
+
+test('output items that are not function calls, and calls missing an id/name, are ignored', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (c) => calls.push(c) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { type: 'message' } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { type: 'function_call', name: 'read_board_report' } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_item.done', item: { type: 'function_call', call_id: 'x' } }) });
+  assert.deepEqual(calls, []);
+});
+
+test('the response lifecycle surfaces through onResponseEvent with the ids the router correlates on', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const events = [];
+  await session.open({ onResponseEvent: (e) => events.push(e) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_audio.delta', delta: 'ignore me' }) });
+  assert.deepEqual(events, [], 'partial output events are not part of the lifecycle the router waits on');
+
+  channel.emit('message', { data: JSON.stringify({ type: 'response.created', response: { id: 'resp_1', metadata: { todomd_readback_id: 'proposal_1' } } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.done', response: { id: 'resp_1', status: 'completed' } }) });
+  // The WebRTC finished-PLAYING event, which carries the id under a different
+  // key than the response events do — the router only opens a confirmation
+  // window on this one, so it must arrive correlated, not bare.
+  channel.emit('message', { data: JSON.stringify({ type: 'output_audio_buffer.stopped', response_id: 'resp_1' }) });
+  assert.deepEqual(events, [
+    { type: 'response.created', responseId: 'resp_1', readbackId: 'proposal_1' },
+    { type: 'response.done', responseId: 'resp_1', status: 'completed' },
+    { type: 'output_audio_buffer.stopped', responseId: 'resp_1' },
+  ]);
+});
+
+test('session update acknowledgements and correlated provider errors surface to the router', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const events = [];
+  await session.open({ onResponseEvent: (event) => events.push(event) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'session.updated', session: { type: 'realtime' } }) });
+  channel.emit('message', { data: JSON.stringify({
+    type: 'error',
+    error: { event_id: 'client-update-1', message: 'invalid update' },
+  }) });
+  assert.deepEqual(events, [
+    { type: 'session.updated' },
+    { type: 'error', relatedEventId: 'client-update-1', message: 'invalid update' },
+  ]);
+});
+
+test('response lifecycle events with no id are dropped rather than forwarded uncorrelated', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const events = [];
+  await session.open({ onResponseEvent: (e) => events.push(e) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'response.created', response: {} }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'response.done', response: { status: 'completed' } }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'output_audio_buffer.stopped' }) });
+  assert.deepEqual(events, [], 'an event the router could not attribute must never look like a completed readback');
+});
+
+test('send() writes JSON to the open data channel and is a silent no-op with no channel', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const before = createRealtimeSession({ RTCPeerConnectionClass: RTC, token: 't', project: 'p' });
+  assert.equal(before.send({ type: 'response.create' }), false, 'no channel exists before open()');
+
+  await session.open({});
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  assert.equal(session.send({ type: 'response.create', response: { tool_choice: 'none' } }), true);
+  assert.deepEqual(channel.sent.map((s) => JSON.parse(s)), [{ type: 'response.create', response: { tool_choice: 'none' } }]);
 });
