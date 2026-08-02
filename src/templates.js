@@ -54,9 +54,9 @@ build_continuation:
 # fs.statfsSync) comes back null and a null metric never triggers a deferral.
 # Boards with no resources key at all get these same defaults, and enabled:
 # false switches the whole monitor off (nothing is sampled, nothing defers).
-# resume must sit on the safe side of defer — resume <= defer for cpu/memory,
-# resume_free_gb >= min_free_gb for disk. A metric whose two thresholds are
-# inverted has no hysteresis band at all, so that metric silently reverts to
+# resume must sit strictly on the safe side of defer — resume < defer for cpu/memory,
+# resume_free_gb > min_free_gb for disk. A metric whose two thresholds are
+# inverted or equal has no hysteresis band at all, so that metric silently reverts to
 # the defaults below rather than flapping.
 resources:
   enabled: true

@@ -54,13 +54,15 @@ test('resourcesConfig: a fully-specified valid custom band passes through untouc
   assert.deepEqual(cfg.disk, { minFreeGb: 10, resumeFreeGb: 20 });
 });
 
-test('resourcesConfig: equal defer/resume is still a legal (zero-gap) band — the recovery streak alone carries the hysteresis', () => {
+test('resourcesConfig: equal thresholds have no hysteresis gap and fall back to documented defaults', () => {
   const cfg = resourcesConfig({ resources: {
     cpu: { defer: 0.7, resume: 0.7 },
+    memory: { defer: 0.6, resume: 0.6 },
     disk: { min_free_gb: 4, resume_free_gb: 4 },
   } });
-  assert.deepEqual(cfg.cpu, { defer: 0.7, resume: 0.7, critical: DEFAULT_RESOURCES_CONFIG.cpu.critical });
-  assert.deepEqual(cfg.disk, { minFreeGb: 4, resumeFreeGb: 4 });
+  assert.deepEqual(cfg.cpu, DEFAULT_RESOURCES_CONFIG.cpu);
+  assert.deepEqual(cfg.memory, DEFAULT_RESOURCES_CONFIG.memory);
+  assert.deepEqual(cfg.disk, DEFAULT_RESOURCES_CONFIG.disk);
 });
 
 test('resourcesConfig: an inverted cpu band (resume looser than defer) falls back to the documented cpu defaults', () => {
@@ -135,6 +137,21 @@ test('governor hysteresis: one dip below resume does NOT clear the deferral', ()
   gov.check();
   const s = gov.check();
   assert.equal(s.deferring, true, 'a single good sample must not clear a sticky deferral');
+  assert.deepEqual(s.reasons, [{ metric: 'cpu', value: 0.9, threshold: 0.8, level: 'defer' }],
+    'a recovery sample preserves the actual breach as the deferral explanation');
+});
+
+test('governor hysteresis: equality at resume is not a strictly safe recovery sample', () => {
+  const gov = createGovernor({ thresholds: THRESHOLDS, sample: queueSampler([
+    { ...BASE_SNAPSHOT, cpuLoad: 0.9 },
+    { ...BASE_SNAPSHOT, cpuLoad: 0.5 },
+    { ...BASE_SNAPSHOT, cpuLoad: 0.5 },
+    { ...BASE_SNAPSHOT, cpuLoad: 0.5 },
+  ]) });
+  gov.check(); gov.check(); gov.check();
+  const s = gov.check();
+  assert.equal(s.deferring, true, 'a value equal to resume must not advance recovery');
+  assert.deepEqual(s.reasons, [{ metric: 'cpu', value: 0.9, threshold: 0.8, level: 'defer' }]);
 });
 
 test('governor hysteresis: recovery_samples consecutive good samples DO clear the deferral', () => {
@@ -212,12 +229,41 @@ test('governor regression: a breach followed by an unknown (null) sample keeps t
   assert.equal(gov2.check().deferring, true, 'only 2 real good samples observed — recovery_samples is 3');
 });
 
+test('governor regression: an unknown sample breaks an in-progress recovery streak', () => {
+  const gov = createGovernor({ thresholds: THRESHOLDS, sample: queueSampler([
+    { ...BASE_SNAPSHOT, cpuLoad: 0.9 },   // breach
+    { ...BASE_SNAPSHOT, cpuLoad: 0.3 },   // good 1/3
+    { ...BASE_SNAPSHOT, cpuLoad: 0.3 },   // good 2/3
+    { ...BASE_SNAPSHOT, cpuLoad: null },  // unknown: streak must reset
+    { ...BASE_SNAPSHOT, cpuLoad: 0.3 },   // good 1/3 again
+    { ...BASE_SNAPSHOT, cpuLoad: 0.3 },   // good 2/3 again
+    { ...BASE_SNAPSHOT, cpuLoad: 0.3 },   // good 3/3 -> clear
+  ]) });
+  for (let i = 0; i < 6; i++) gov.check();
+  assert.equal(gov.state().deferring, true,
+    'two good samples after an unknown reading must not complete a three-sample recovery');
+  assert.equal(gov.check().deferring, false);
+});
+
 test('governor: disk uses the inverted (lower free = worse) comparison in GB', () => {
   const gov = createGovernor({ thresholds: THRESHOLDS, sample: queueSampler([
     { ...BASE_SNAPSHOT, diskFreeBytes: 1 * BYTES_PER_GB }, // below min_free_gb: 2 -> breach
   ]) });
   const s = gov.check();
   assert.equal(s.deferring, true);
+  assert.deepEqual(s.reasons, [{ metric: 'disk', value: 1, threshold: 2, level: 'defer' }]);
+});
+
+test('governor hysteresis: disk equality at resume is not a strictly safe recovery sample', () => {
+  const gov = createGovernor({ thresholds: THRESHOLDS, sample: queueSampler([
+    { ...BASE_SNAPSHOT, diskFreeBytes: 1 * BYTES_PER_GB },
+    { ...BASE_SNAPSHOT, diskFreeBytes: 5 * BYTES_PER_GB },
+    { ...BASE_SNAPSHOT, diskFreeBytes: 5 * BYTES_PER_GB },
+    { ...BASE_SNAPSHOT, diskFreeBytes: 5 * BYTES_PER_GB },
+  ]) });
+  gov.check(); gov.check(); gov.check();
+  const s = gov.check();
+  assert.equal(s.deferring, true, 'free space equal to resume must not advance recovery');
   assert.deepEqual(s.reasons, [{ metric: 'disk', value: 1, threshold: 2, level: 'defer' }]);
 });
 

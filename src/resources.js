@@ -30,16 +30,16 @@ export function resourcesConfig(config) {
       defer: Number.isFinite(cpu.defer) ? cpu.defer : DEFAULT_RESOURCES_CONFIG.cpu.defer,
       resume: Number.isFinite(cpu.resume) ? cpu.resume : DEFAULT_RESOURCES_CONFIG.cpu.resume,
       critical: Number.isFinite(cpu.critical) ? cpu.critical : DEFAULT_RESOURCES_CONFIG.cpu.critical,
-    }, (b) => b.resume <= b.defer, DEFAULT_RESOURCES_CONFIG.cpu),
+    }, (b) => b.resume < b.defer, DEFAULT_RESOURCES_CONFIG.cpu),
     memory: validHysteresis({
       defer: Number.isFinite(memory.defer) ? memory.defer : DEFAULT_RESOURCES_CONFIG.memory.defer,
       resume: Number.isFinite(memory.resume) ? memory.resume : DEFAULT_RESOURCES_CONFIG.memory.resume,
       critical: Number.isFinite(memory.critical) ? memory.critical : DEFAULT_RESOURCES_CONFIG.memory.critical,
-    }, (b) => b.resume <= b.defer, DEFAULT_RESOURCES_CONFIG.memory),
+    }, (b) => b.resume < b.defer, DEFAULT_RESOURCES_CONFIG.memory),
     disk: validHysteresis({
       minFreeGb: Number.isFinite(disk.min_free_gb) ? disk.min_free_gb : DEFAULT_RESOURCES_CONFIG.disk.minFreeGb,
       resumeFreeGb: Number.isFinite(disk.resume_free_gb) ? disk.resume_free_gb : DEFAULT_RESOURCES_CONFIG.disk.resumeFreeGb,
-    }, (b) => b.resumeFreeGb >= b.minFreeGb, DEFAULT_RESOURCES_CONFIG.disk),
+    }, (b) => b.resumeFreeGb > b.minFreeGb, DEFAULT_RESOURCES_CONFIG.disk),
     recoverySamples: Number.isInteger(recoverySamples) && recoverySamples > 0
       ? recoverySamples : DEFAULT_RESOURCES_CONFIG.recoverySamples,
     sampleIntervalSeconds: Number.isFinite(sampleIntervalSeconds) && sampleIntervalSeconds > 0
@@ -48,9 +48,9 @@ export function resourcesConfig(config) {
 }
 
 // Hysteresis only exists when the resume threshold sits on the *safe* side of
-// the defer threshold: for cpu/memory (higher is worse) resume <= defer, and for
-// disk (less free space is worse) resume_free_gb >= min_free_gb. An inverted
-// pair defeats the governor entirely — with cpu defer 0.8 / resume 0.9 a steady
+// the defer threshold: for cpu/memory (higher is worse) resume < defer, and for
+// disk (less free space is worse) resume_free_gb > min_free_gb. An inverted or
+// zero-width pair defeats the governor entirely — with cpu defer 0.8 / resume 0.9 a steady
 // 0.85 load both breaches defer (0.85 > 0.8) and counts as a recovery sample
 // (0.85 < 0.9), so the governor flaps defer -> clear -> defer forever.
 //
@@ -105,22 +105,31 @@ const BYTES_PER_GB = 1024 ** 3;
 // A metric whose sticky `deferred` flag only clears after `recoverySamples`
 // CONSECUTIVE samples held below `resume` — that gap between defer/resume plus
 // the streak requirement IS the hysteresis; a single good sample must not clear it.
-function evaluateMetric(state, value, { defer, resume, critical }, isWorse, recoverySamples) {
+function evaluateMetric(state, value, { defer, resume, critical }, isWorse, isRecovered, recoverySamples) {
+  const stickyHit = () => ({
+    reason: state.lastReason,
+    critical: state.lastReason?.level === 'critical',
+  });
+
   if (value === null || value === undefined) {
     // Unknown sample this tick: it can neither trigger nor clear a deferral
-    // (no data to judge), so leave the sticky flag and recovery streak alone.
+    // (no data to judge). Preserve the sticky flag/reason, but break any
+    // recovery streak because the required samples must be consecutive.
     // If already deferred, re-report the last known reason — otherwise the
     // scheduler/board would see the metric silently drop out of `reasons`
     // and read that as "recovered" with zero recovery samples observed.
-    return state.deferred ? state.lastReason : null;
+    if (state.deferred) state.goodStreak = 0;
+    return state.deferred ? stickyHit() : null;
   }
 
   if (!state.deferred) {
     if (defer !== undefined && isWorse(value, defer)) {
       state.deferred = true;
       state.goodStreak = 0;
+    } else {
+      return null;
     }
-  } else if (resume !== undefined && !isWorse(value, resume)) {
+  } else if (resume !== undefined && isRecovered(value, resume)) {
     state.goodStreak += 1;
     if (state.goodStreak >= recoverySamples) {
       state.deferred = false;
@@ -128,16 +137,22 @@ function evaluateMetric(state, value, { defer, resume, critical }, isWorse, reco
       state.lastReason = null;
       return null;
     }
+    // A safe recovery sample is not the cause of the sticky deferral. Keep the
+    // last real breach reason until the required recovery streak completes.
+    return stickyHit();
   } else {
     state.goodStreak = 0; // dipped below resume then bounced back — streak must restart
   }
 
   const isCritical = critical !== undefined && isWorse(value, critical);
-  const reason = isCritical
-    ? { value, threshold: critical, level: 'critical' }
-    : (state.deferred ? { value, threshold: defer, level: 'defer' } : null);
-  state.lastReason = reason;
-  return reason;
+  // Only an actual current breach replaces the sticky explanation. A value in
+  // the dead band merely resets recovery and keeps the last real breach.
+  if (isCritical) {
+    state.lastReason = { value, threshold: critical, level: 'critical' };
+  } else if (defer !== undefined && isWorse(value, defer)) {
+    state.lastReason = { value, threshold: defer, level: 'defer' };
+  }
+  return { reason: state.lastReason, critical: isCritical };
 }
 
 // thresholds: the shape returned by resourcesConfig() — cpu/memory/disk
@@ -169,21 +184,23 @@ export function createGovernor({ thresholds, sample }) {
     const snapshot = sample();
     const higherIsWorse = (v, th) => v > th;
     const lowerIsWorse = (v, th) => v < th;
+    const higherIsRecovered = (v, th) => v < th;
+    const lowerIsRecovered = (v, th) => v > th;
     const diskFreeGb = snapshot.diskFreeBytes == null ? null : snapshot.diskFreeBytes / BYTES_PER_GB;
 
     const results = [
-      ['cpu', snapshot.cpuLoad, t.cpu || {}, higherIsWorse],
-      ['memory', snapshot.memoryPressure, t.memory || {}, higherIsWorse],
-      ['disk', diskFreeGb, { defer: (t.disk || {}).minFreeGb, resume: (t.disk || {}).resumeFreeGb }, lowerIsWorse],
+      ['cpu', snapshot.cpuLoad, t.cpu || {}, higherIsWorse, higherIsRecovered],
+      ['memory', snapshot.memoryPressure, t.memory || {}, higherIsWorse, higherIsRecovered],
+      ['disk', diskFreeGb, { defer: (t.disk || {}).minFreeGb, resume: (t.disk || {}).resumeFreeGb }, lowerIsWorse, lowerIsRecovered],
     ];
 
     const reasons = [];
     let critical = false;
-    for (const [metric, value, metricThresholds, isWorse] of results) {
-      const hit = evaluateMetric(metricState[metric], value, metricThresholds, isWorse, recoverySamples);
+    for (const [metric, value, metricThresholds, isWorse, isRecovered] of results) {
+      const hit = evaluateMetric(metricState[metric], value, metricThresholds, isWorse, isRecovered, recoverySamples);
       if (!hit) continue;
-      reasons.push({ metric, ...hit });
-      if (hit.level === 'critical') critical = true;
+      reasons.push({ metric, ...hit.reason });
+      if (hit.critical) critical = true;
     }
 
     last = { deferring: reasons.length > 0, critical, reasons };
