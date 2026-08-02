@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc461-f88c-7f73-8d49-76e464c5ee0b
+session_id: f75114b1-44f1-4b54-9548-3ff6c8b23d5a
 worktree: todomd/task-0040
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 12.5068
+cost_usd: 27.4388
+needs_human_reason: orphaned_run
+recovery_stage: Build
 ---
 
 ## Description
@@ -77,3 +79,5 @@ budget boards will start double-running work against the dispatcher.
 - 2026-08-02 21:29Z · Build attempt 1 · 17 turns · $3.150 · ok
 - 2026-08-02 21:34Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
+- 2026-08-02 22:02Z · Build attempt 2 · 88 turns · $14.932 · cancelled
+  - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
