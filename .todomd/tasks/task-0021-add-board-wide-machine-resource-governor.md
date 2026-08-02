@@ -1,7 +1,7 @@
 ---
 id: task-0021
 title: Add board-wide machine resource governor and CI queue
-status: Review
+status: Plan
 type: improvement
 priority: high
 labels: [ci, scheduler, reliability]
@@ -14,6 +14,7 @@ session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: failed (agent)
+needs_human_reason:
 ---
 
 ## Description
