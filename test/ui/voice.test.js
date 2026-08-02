@@ -366,6 +366,25 @@ test('UI voice: switching to a different project disarms voice; reloading the SA
   assert.equal(await page.eval(`document.getElementById('voice-btn').dataset.voiceState`), 'armed',
     'reloading the same project/access context must not disarm an already-armed control');
 
+  // Hold an old-project reload so it lands after the new project. The stale A
+  // response must not redraw A or publish A's primary access under B's name.
+  await page.eval(`(() => {
+    window.__origVoiceFetch = window.fetch;
+    window.__oldBoardHeld = false;
+    const gate = new Promise((resolve) => { window.__releaseOldBoard = resolve; });
+    window.fetch = (input, init) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      if (!window.__oldBoardHeld && url.includes('/api/board?project=${encodeURIComponent(name)}')) {
+        window.__oldBoardHeld = true;
+        window.__oldBoardDone = gate.then(() => window.__origVoiceFetch(input, init));
+        return window.__oldBoardDone;
+      }
+      return window.__origVoiceFetch(input, init);
+    };
+    window.__staleBoardLoad = loadBoard();
+  })()`);
+  await until(async () => (await page.eval(`window.__oldBoardHeld`)) || null, { timeout: BUDGET.quick });
+
   // switching to a DIFFERENT project must disarm — a live session or armed
   // recognizer must never outlive the board it was opened against
   const immediate = await page.eval(`(() => {
@@ -380,6 +399,18 @@ test('UI voice: switching to a different project disarms voice; reloading the SA
   assert.deepEqual(immediate, { hidden: true, state: 'inactive' },
     'selection revokes the old voice context before the new board request settles');
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'inactive' || null, { timeout: BUDGET.quick });
+  await until(async () => (await page.eval(`latestVoiceContext?.project`)) === name2 || null, { timeout: BUDGET.quick });
+
+  await page.eval(`(async () => {
+    window.__releaseOldBoard();
+    await window.__staleBoardLoad;
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
+    window.fetch = window.__origVoiceFetch;
+  })()`);
+  assert.equal(await page.eval(`latestVoiceContext?.project`), name2,
+    'a late old-project response cannot overwrite the selected project context');
+  assert.equal(await page.eval(`document.querySelectorAll('.card').length`), 0,
+    'a late old-project response cannot redraw the old board');
 
   assert.deepEqual(page.errors, []);
 });

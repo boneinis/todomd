@@ -28,6 +28,7 @@ const projectSel = $('#project');
 const filterInput = $('#filter');
 let currentProject = null;
 let boardData = null;
+let boardLoadGeneration = 0;
 let runStates = {};
 let drawerCard = null;
 let myName = localStorage.getItem('todomd-me') || '';
@@ -96,7 +97,9 @@ async function loadProjects() {
 }
 
 async function loadBoard() {
-  if (!currentProject) { // no projects (e.g. the last one was removed) — show an empty state
+  const requestedProject = currentProject;
+  const generation = ++boardLoadGeneration;
+  if (!requestedProject) { // no projects (e.g. the last one was removed) — show an empty state
     boardData = null;
     boardEl.innerHTML = `<div class="empty-board">
       <h2>No project yet</h2>
@@ -110,7 +113,12 @@ async function loadBoard() {
     publishVoiceContext({ project: '', access: 'none', primary: false });
     return;
   }
-  boardData = await api(`board?project=${encodeURIComponent(currentProject)}${showArchived ? '&archived=1' : ''}`);
+  const nextBoard = await api(`board?project=${encodeURIComponent(requestedProject)}${showArchived ? '&archived=1' : ''}`);
+  // A project switch can finish its newer request before this one. Never let a
+  // late response redraw the old board or republish its access as if it belonged
+  // to the newly-selected project.
+  if (generation !== boardLoadGeneration || requestedProject !== currentProject) return;
+  boardData = nextBoard;
   (boardData.cards || []).forEach(normalizeCardLists);
   runStates = boardData.runStates || {};
   renderBanners(boardData.banners || []);
@@ -123,7 +131,7 @@ async function loadBoard() {
   renderBoard();
   // voice/main.js is a separate ES module (see index.html) with no access to
   // this classic script's top-level scope — this is the only bridge it needs.
-  publishVoiceContext({ project: currentProject, access: boardData.access, primary: boardData.primary === true });
+  publishVoiceContext({ project: requestedProject, access: boardData.access, primary: boardData.primary === true });
 }
 
 function renderBanners(list) {
