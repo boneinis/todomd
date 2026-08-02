@@ -10,8 +10,8 @@ created_date: 2026-07-31
 source: ui
 assignee:
 agent: claude
-model: claude-sonnet-5
-effort: low
+model:
+effort:
 session_id: 019fc2e1-c539-7fd3-b8d4-5f7826635b00
 worktree: todomd/task-0034
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
