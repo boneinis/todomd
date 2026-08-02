@@ -126,6 +126,28 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     })()`);
     assert.equal(survived, 7, 'the client survives a raw scalar on its own, independent of the server');
 
+    // In-column drag uses the reorder endpoint (not the status-move endpoint),
+    // persists the rank, then reloads the column in that same order.
+    await page.eval(`(() => {
+      const source = document.querySelector('[data-id="task-0003"]');
+      const first = document.querySelector('[data-id="task-0001"]');
+      const column = first.closest('.column');
+      const dt = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      column.dispatchEvent(new DragEvent('dragover', {
+        bubbles: true, cancelable: true, dataTransfer: dt,
+        clientY: first.getBoundingClientRect().top,
+      }));
+      column.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    })()`);
+    const reviewOrder = await until(async () => {
+      const ids = await page.eval(`[...document.querySelector('.column[data-status="Review"] .col-cards').children]
+        .filter((el) => el.classList.contains('card')).map((el) => el.dataset.id)`);
+      return ids[0] === 'task-0003' ? ids : null;
+    }, { timeout: BUDGET.quick, label: 'task-0003 reordered before task-0001 in Review' });
+    assert.equal(reviewOrder[0], 'task-0003');
+
     // the drawer is the other place a bad shape aborted mid-render — and this
     // one is NOT masked by the server: /api/cards/:id returns raw frontmatter
     await page.eval(`document.querySelector('[data-id="task-0002"]').click()`);
@@ -251,5 +273,49 @@ test('UI smoke: screened email list renders seeded records, and a held email car
       'the empty state is hidden once records are present');
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error rendering the screened-email list');
+  }
+});
+
+// task-0045: a scrollbar-consuming column and border-left status stripes both
+// shrank a card's content box, so dragging a card between columns (or into a
+// running/queued state) visibly changed its width. This test replaces the
+// board with a minimal synthetic layout — real .column/.col-cards/.card
+// markup, no app state needed — so it exercises the CSS rules directly rather
+// than depending on runStates plumbing. It's the LAST test in this file: it
+// tears down boardEl's contents and doesn't restore them.
+test('UI smoke: card width is unaffected by column overflow or running/queued status', async (t) => {
+  if (!page) return t.skip(SKIP);
+  {
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+    await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null,
+      { timeout: BUDGET.stage });
+    await page.setViewport(1200, 900);
+
+    const widths = await page.eval(`(() => {
+      boardEl.innerHTML = '';
+      const makeColumn = (cardCount) => {
+        const col = document.createElement('section');
+        col.className = 'column';
+        const list = document.createElement('div');
+        list.className = 'col-cards';
+        for (let i = 0; i < cardCount; i++) {
+          const card = document.createElement('div');
+          card.className = 'card';
+          if (i === 0) card.classList.add('running');
+          if (i === 1) card.classList.add('queued');
+          list.appendChild(card);
+        }
+        col.appendChild(list);
+        boardEl.appendChild(col);
+      };
+      makeColumn(80); // enough cards to force .col-cards to scroll
+      makeColumn(1);  // no overflow — should still match
+      return [...document.querySelectorAll('.card')].map((c) => c.getBoundingClientRect().width);
+    })()`);
+    const unique = new Set(widths.map((w) => Math.round(w * 100) / 100));
+    assert.equal(unique.size, 1,
+      `every card (overflowing column, non-overflowing column, running, queued, plain) must report the same width, got ${JSON.stringify(widths)}`);
+
+    assert.deepEqual(page.errors, [], 'no console error building the synthetic card-width layout');
   }
 });

@@ -593,6 +593,22 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const result = await pipeline.humanMove(project, moveMatch[1], status);
       return json(res, result.ok ? 200 : 400, result);
     }
+    const reorderMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/reorder$/);
+    if (reorderMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let beforeId = null;
+      try {
+        ({ beforeId = null } = JSON.parse(body || '{}'));
+      } catch {
+        return json(res, 400, { error: 'invalid JSON body' });
+      }
+      if (beforeId !== null && (typeof beforeId !== 'string' || !/^[\w.-]+$/.test(beforeId))) {
+        return json(res, 400, { error: 'beforeId must be a card id or null' });
+      }
+      const result = await pipeline.reorder(project, reorderMatch[1], beforeId);
+      return json(res, result.ok ? 200 : 400, result);
+    }
     // human-owned routing fields, editable from the drawer
     const setMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/set$/);
     if (setMatch && req.method === 'POST') {

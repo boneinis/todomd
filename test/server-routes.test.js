@@ -136,6 +136,38 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
   } finally { srv.close(); }
 });
 
+test('API reorder persists same-column priority and rejects cross-column targets', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Planned' });
+    writeCard(repo, 'task-0002', { status: 'Planned' });
+    writeCard(repo, 'task-0003', { status: 'Planned' });
+    writeCard(repo, 'task-0004', { status: 'Review' });
+
+    let r = await fetch(`${base}/api/cards/task-0003/reorder${q}`, {
+      method: 'POST', headers: h, body: '{"beforeId":"task-0001"}',
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual((await r.json()).order, ['task-0003', 'task-0001', 'task-0002']);
+    assert.equal(readCard(repo, 'task-0003').data.board_order, 1);
+    assert.equal(readCard(repo, 'task-0001').data.board_order, 2);
+    assert.equal(readCard(repo, 'task-0002').data.board_order, 3);
+
+    r = await fetch(`${base}/api/cards/task-0003/reorder${q}`, {
+      method: 'POST', headers: h, body: '{"beforeId":"task-0004"}',
+    });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /same column/);
+
+    r = await fetch(`${base}/api/cards/task-0003/reorder${q}`, {
+      method: 'POST', headers: h, body: '{"beforeId":{"bad":true}}',
+    });
+    assert.equal(r.status, 400);
+  } finally { srv.close(); }
+});
+
 test('API attachments + /api/file containment, projects, commands, resume-queues', async () => {
   isolateHome();
   const { base, srv, q, name } = await boot();

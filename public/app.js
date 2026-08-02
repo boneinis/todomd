@@ -36,6 +36,7 @@ let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'min
 let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
+let draggedCardId = null;
 
 // The classic board script can finish its async load before the voice module
 // graph has registered a context listener. Retain the latest safe UI context
@@ -260,7 +261,13 @@ function renderBoard() {
     // rendered inside its epic's card, not as a card of its own here.
     const cards = boardData.cards.filter(
       (c) => c.status === col && passesView(c) && !shownNested.has(c.id)
-    );
+    ).sort((a, b) => {
+      const ao = Number(a.board_order), bo = Number(b.board_order);
+      const aRanked = Number.isFinite(ao), bRanked = Number.isFinite(bo);
+      if (aRanked && bRanked && ao !== bo) return ao - bo;
+      if (aRanked !== bRanked) return aRanked ? -1 : 1;
+      return String(a.file || a.id || '').localeCompare(String(b.file || b.id || ''));
+    });
     const colEl = document.createElement('section');
     colEl.className = 'column';
     colEl.style.setProperty('--col', color);
@@ -279,7 +286,7 @@ function renderBoard() {
     if (!cards.length) list.innerHTML = `<p class="col-empty">empty</p>`;
     cards.forEach((card, i) => list.appendChild(renderCard(card, color, i, shownNested)));
     colEl.appendChild(list);
-    wireDrop(colEl);
+    wireDrop(colEl, list);
     boardEl.appendChild(colEl);
   }
 }
@@ -412,31 +419,71 @@ function renderCard(card, color, i, nestedIds) {
     runEl.textContent = '◌ queued';
   }
   el.addEventListener('dragstart', (e) => {
+    draggedCardId = card.id;
     e.dataTransfer.setData('text/todomd-id', card.id);
+    e.dataTransfer.effectAllowed = 'move';
     el.classList.add('dragging');
   });
-  el.addEventListener('dragend', () => el.classList.remove('dragging'));
+  el.addEventListener('dragend', () => {
+    draggedCardId = null;
+    el.classList.remove('dragging');
+    clearDropIndicators();
+  });
   el.addEventListener('click', () => openDrawer(card.id));
   return el;
 }
 
-function wireDrop(colEl) {
-  colEl.addEventListener('dragover', (e) => { e.preventDefault(); colEl.classList.add('drag-over'); });
-  colEl.addEventListener('dragleave', () => colEl.classList.remove('drag-over'));
+function clearDropIndicators() {
+  document.querySelectorAll('.column.drag-over').forEach((el) => el.classList.remove('drag-over'));
+  document.querySelectorAll('.card.drop-before').forEach((el) => el.classList.remove('drop-before'));
+  document.querySelectorAll('.col-cards.drop-at-end').forEach((el) => el.classList.remove('drop-at-end'));
+  document.querySelectorAll('.col-cards[data-drop-before]').forEach((el) => delete el.dataset.dropBefore);
+}
+
+function wireDrop(colEl, listEl) {
+  colEl.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const source = findBoardCard(draggedCardId);
+    clearDropIndicators();
+    if (source?.status !== colEl.dataset.status) {
+      colEl.classList.add('drag-over');
+      return;
+    }
+
+    // Native DnD gives us the pointer Y even when it is over a child inside a
+    // card. Compare it with every other card's midpoint; the first midpoint
+    // below the pointer is the persisted `beforeId`. Excluding the source
+    // avoids the classic A-after-B → "insert before A" self-reference.
+    const peers = [...listEl.querySelectorAll(':scope > .card')]
+      .filter((el) => el.dataset.id !== draggedCardId);
+    const before = peers.find((el) => e.clientY < el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2);
+    listEl.dataset.dropBefore = before?.dataset.id || '';
+    if (before) before.classList.add('drop-before');
+    else listEl.classList.add('drop-at-end');
+  });
+  colEl.addEventListener('dragleave', (e) => {
+    if (!colEl.contains(e.relatedTarget)) clearDropIndicators();
+  });
   colEl.addEventListener('drop', async (e) => {
     e.preventDefault();
-    colEl.classList.remove('drag-over');
     const id = e.dataTransfer.getData('text/todomd-id');
+    const source = findBoardCard(id);
+    const sameColumn = source?.status === colEl.dataset.status;
+    const beforeId = listEl.dataset.dropBefore || null;
+    clearDropIndicators();
     if (!id) return;
     try {
-      const res = await fetch(`/api/cards/${id}/move?project=${encodeURIComponent(currentProject)}`, {
+      const action = sameColumn ? 'reorder' : 'move';
+      const res = await fetch(`/api/cards/${id}/${action}?project=${encodeURIComponent(currentProject)}`, {
         method: 'POST',
         headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ status: colEl.dataset.status }),
+        body: JSON.stringify(sameColumn ? { beforeId } : { status: colEl.dataset.status }),
       });
       const out = await res.json();
       if (!res.ok) toast(out.error || 'move failed');
       else if (out.warning) toast(out.warning);
+      else if (sameColumn) toast('priority updated');
     } catch {
       toast('server unreachable — move not saved');
     }
