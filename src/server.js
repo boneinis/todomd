@@ -16,6 +16,7 @@ import { isGitRepo } from './git.js';
 import { createMetadataScheduler } from './github-sync.js';
 import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction, invalidateProject as invalidateVoiceProject } from './voice.js';
 import { createRealtimeSession } from './realtime.js';
+import { sanitizeAssignee, resolveAttachmentFile } from './api-shared.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -65,7 +66,7 @@ const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript
 
 // Tokens persisted per machine so restarts don't invalidate open tabs.
 // `token` = full access; `viewer` = read-only (the QR/mobile monitor link).
-function loadToken(name) {
+export function loadToken(name) {
   const file = path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', name);
   try {
     const t = fs.readFileSync(file, 'utf8').trim();
@@ -241,7 +242,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
           pass: f.pass ? String(f.pass) : '', // blank keeps the saved one
           folder: String(f.folder || 'INBOX').trim(),
           pollSeconds: Math.max(30, Number(f.pollSeconds) || 300),
-          assignee: String(f.assignee || '').replace(/[^\w.@ -]/g, '').trim() || undefined,
+          assignee: sanitizeAssignee(f.assignee) || undefined,
         });
         restartIntake();               // pick up the change without a server restart
         return json(res, 200, { ok: true });
@@ -505,17 +506,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
     // viewer-token holder can't read arbitrary repo files (source, secrets)
     if (url.pathname === '/api/file' && req.method === 'GET') {
       const rel = url.searchParams.get('p') || '';
-      const attDir = path.join(project.path, '.todomd', 'attachments');
-      const abs = path.resolve(project.path, rel);
-      if (!abs.startsWith(attDir + path.sep)) return json(res, 404, { error: 'not found' });
-      // realpath both sides so a symlink inside attachments/ can't read repo
-      // secrets: the resolved target must still live under the resolved dir
-      let real, root;
-      try { root = fs.realpathSync(attDir); real = fs.realpathSync(abs); } catch { return json(res, 404, { error: 'not found' }); }
-      if (!real.startsWith(root + path.sep) || !fs.statSync(real).isFile()) {
-        return json(res, 404, { error: 'not found' });
-      }
-      const ext = path.extname(real).toLowerCase();
+      const resolved = resolveAttachmentFile(project.path, rel);
+      if (!resolved.ok) return json(res, 404, { error: resolved.error });
+      const { real, ext } = resolved;
       res.writeHead(200, {
         'content-type': FILE_MIME[ext] || 'application/octet-stream',
         'content-disposition': `${INLINE_EXT.has(ext) ? 'inline' : 'attachment'}; filename="${path.basename(real).replace(/"/g, '')}"`,
@@ -633,7 +626,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
       if ('workflow' in fields) updates.workflow = fields.workflow === 'ultra_code' ? 'ultra_code' : '';
       if ('skill' in fields) updates.skill = String(fields.skill || '').replace(/[^\w:-]/g, '');
-      if ('assignee' in fields) updates.assignee = String(fields.assignee || '').replace(/[^\w.@ -]/g, '').trim();
+      if ('assignee' in fields) updates.assignee = sanitizeAssignee(fields.assignee);
       if (!Object.keys(updates).length) return json(res, 400, { error: 'nothing to set' });
       const result = await patchFrontmatter(project.path, setMatch[1], updates);
       return json(res, result.ok ? 200 : 400, result);

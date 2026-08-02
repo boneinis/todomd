@@ -4,7 +4,8 @@
   "description": "Markdown-native kanban board for git repos that drives subscription coding agents through a Review → Plan → Build → Verify pipeline.",
   "type": "module",
   "bin": {
-    "todomd": "bin/todomd.js"
+    "todomd": "bin/todomd.js",
+    "todomd-mcp": "bin/todomd-mcp.js"
   },
   "files": [
     "bin",
@@ -26,6 +27,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "chokidar": "^4.0.3",
     "gray-matter": "^4.0.3",
     "imapflow": "^1.4.0",

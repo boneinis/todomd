@@ -103,6 +103,34 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 
 > **Network exposure:** the server's main listener is **always loopback-only** (`127.0.0.1`). Mobile/QR access runs on a **separate LAN listener you toggle from the board** (the ▦ button → "enable network access") or start with `todomd --lan` — turning it off closes that listener entirely. It serves plain **HTTP** for the QR links: a read-only **monitor** link and an opt-in full-control link (clearly marked). Enabling/disabling requires the desktop session (a phone can't). Use only on trusted networks; for remote access put it behind a VPN/Tailscale. Revoke device links with `todomd revoke`.
 
+## MCP server (agent tool access)
+
+`bin/todomd-mcp.js` exposes the board over the [Model Context Protocol](https://modelcontextprotocol.io) as a stdio server, so Claude, Codex, or any MCP-capable agent can read and drive the board through reliable tools instead of shelling out to `curl`. It's a thin wrapper: every tool calls the same `board.js`/`pipeline.js`/`registry.js` functions the HTTP API in `src/server.js` uses, so auth and validation stay in one place.
+
+**Auth.** The server is started with one token (`~/.todomd/token` for full access, `~/.todomd/token-viewer` for read-only — the same files `todomd serve` writes) and refuses to start with anything else. Pass it as `--token <value>` or `TODOMD_MCP_TOKEN`:
+
+```bash
+TODOMD_MCP_TOKEN=$(cat ~/.todomd/token) npx todomd-mcp
+```
+
+**Read tools** (either token): `list_projects`, `get_board`, `get_run_state`, `get_card`, `get_card_file`. **Full-access-only tools**: `list_commands` (reads stage routing) and every write tool — `create_card`, `move_card`, `assign_card`, `retry_verify`, `cancel_card`, `archive_card`. A viewer-token session simply doesn't see the full-access tools listed. Every tool validates its `project` argument against the registry first, so a call can't reach an unregistered project or escape the board's own project boundary — the same check the HTTP API applies before touching a repo.
+
+**Connecting a client.** Point an MCP-capable agent at the stdio command, e.g. for Claude Code (`.mcp.json` or `claude mcp add`):
+
+```json
+{
+  "mcpServers": {
+    "todomd": {
+      "command": "npx",
+      "args": ["todomd-mcp"],
+      "env": { "TODOMD_MCP_TOKEN": "<value from ~/.todomd/token>" }
+    }
+  }
+}
+```
+
+Use the viewer token instead for a read-only connection.
+
 ## Development
 
 `npm test` runs the suite (Node's built-in runner, no deps): unit tests for the board/frontmatter, git, registry, intake, and run-output parsing layers, plus an integration test that drives a card through the real state machine (happy path, verification-retry loop, attempt-cap escalation, transition-table guards, quota park/resume) using a deterministic fake agent — no LLM or network. Tests isolate to a temp `TODOMD_HOME` and temp git repos; they never touch your real boards. `test/ui/` adds a headless-Chrome smoke test of the board render (driven over the DevTools protocol with the `ws` dep — no Playwright); it skips itself where no Chrome is installed.
