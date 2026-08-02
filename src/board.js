@@ -6,6 +6,7 @@ import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
 import { withFileLock } from './lockfile.js';
+import { resourcesConfig } from './resources.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'Verify', 'Needs Human', 'Done'];
 
@@ -35,6 +36,9 @@ export function normalizeConfig(cfg) {
   const out = { columns: DEFAULT_COLUMNS, ...(cfg || {}) };
   out.columns = Array.isArray(out.columns) && out.columns.length ? [...out.columns] : [...DEFAULT_COLUMNS];
   for (const col of REQUIRED_COLUMNS) if (!out.columns.includes(col)) out.columns.push(col);
+  // Every board gets a fully-defaulted resources block, including one whose
+  // config.yml predates this key entirely — see resourcesConfig in resources.js.
+  out.resources = resourcesConfig(out);
   return out;
 }
 

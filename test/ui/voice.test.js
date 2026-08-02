@@ -98,6 +98,26 @@ async function playReadback(page, tag) {
   await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: `resp-readback-${tag}` }));
 }
 
+// Counts the times the router asked the model to speak `text`, for use with
+// `until()`. The cancellation line is the completion barrier for a settled
+// proposal: settle() only speaks it AFTER its reject POST resolves, and the
+// `finally` that frees the one-proposal-at-a-time reservation runs synchronously
+// after that speak — so once this is observable, the reservation is released.
+//
+// Gating on `voiceState === 'active'` is NOT such a barrier. The controller
+// flips that the moment the confirmation window resolves, while the reject
+// round-trip is still in flight, so a test that re-proposes on state alone
+// races the teardown and gets back `another board action is already awaiting
+// confirmation` (an intentional refusal) instead of a fresh proposal.
+// `__voiceHooks.actionRequests` is no better: it records fetches at issuance.
+const CANCELLED_LINE = 'Cancelled — nothing was changed.';
+
+function spokeCount(text) {
+  return `window.__voiceHooks.pcs.at(-1).dataChannel.sent
+    .map((entry) => JSON.parse(entry))
+    .filter((event) => event.type === 'response.create' && event.response?.instructions === ${JSON.stringify(text)}).length`;
+}
+
 // Records every state the mic control passes through. Polling can only show a
 // state isn't entered right now; proving `confirming` was NEVER entered while
 // a read-back was unverified needs the whole transition history.
@@ -728,13 +748,22 @@ test('UI voice: Resume Build continues the preserved worktree via its spoken cha
     await playReadback(page, 'resume-1');
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
+    const cancellationsBefore = await page.eval(spokeCount(CANCELLED_LINE));
     await page.eval(emitTranscript('yes'));
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
     assert.equal(await cardStatus(page, 'task-0012'), 'Needs Human', 'a bare "yes" cannot confirm an agent-starting action');
+    // Wait for the rejection to finish landing before proposing again — see
+    // spokeCount. Without this the second proposal can race the first's
+    // teardown and be refused outright.
+    await until(async () => (await page.eval(spokeCount(CANCELLED_LINE))) > cancellationsBefore || null,
+      { timeout: BUDGET.stage });
 
     await page.eval(emitToolCall('call-resume-2', 'propose_board_action', { cardId: 'task-0012', action: 'resume_build' }));
     await until(async () => (await page.eval(readToolOutput('call-resume-2'))) || null, { timeout: BUDGET.quick });
     const secondAttempt = await page.eval(readToolOutput('call-resume-2'));
+    // assert before dereferencing so a refusal reports the router's error
+    // string rather than a bare TypeError on `undefined.challenge`
+    assert.equal(secondAttempt.ok, true, `re-proposal refused: ${secondAttempt.error}`);
     const challenge = secondAttempt.confirmation.challenge;
     assert.notEqual(challenge, firstAttempt.confirmation.challenge, 'a fresh proposal gets a fresh, unpredictable challenge');
     await playReadback(page, 'resume-2');
