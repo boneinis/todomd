@@ -365,6 +365,27 @@ test('simultaneous mutation tool calls prepare only one proposal and reject the 
   assert.equal(controller.enterConfirmingCalls.length, 1, 'only the accepted proposal reaches confirmation');
 });
 
+test('a mixed read-plus-proposal provider batch is rejected with one response and no board request', async () => {
+  const controller = fakeController();
+  const fetchFn = fakeFetch([]);
+  const router = createCommandRouter({ controller, project: () => 'demo', fetchFn });
+  await router.handleToolCall({ batch: [
+    { callId: 'read-call', name: 'read_board_report', arguments: {} },
+    { callId: 'action-call', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } },
+  ] });
+
+  assert.equal(fetchFn.calls.length, 0, 'no read or proposal reaches the board from an ambiguous multi-tool turn');
+  assert.deepEqual(functionOutput(controller.sent, 'read-call'), {
+    ok: false, error: 'only one board request can be handled per voice turn',
+  });
+  assert.deepEqual(functionOutput(controller.sent, 'action-call'), {
+    ok: false, error: 'only one board request can be handled per voice turn',
+  });
+  const responses = controller.sent.filter((event) => event.type === 'response.create');
+  assert.equal(responses.length, 1, 'one provider response owns the whole rejected batch');
+  assert.match(responses[0].response.instructions, /one board request at a time/i);
+});
+
 test('reset fences an in-flight prepare to its captured project and sends nothing into a later session', async () => {
   const controller = fakeController();
   let currentProject = 'old-project';

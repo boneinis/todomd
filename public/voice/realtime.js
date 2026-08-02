@@ -44,6 +44,7 @@ export function createRealtimeSession({
   let offerAbortController = null;
   let inputSequence = 0;
   const inputItems = new Map();
+  const toolCallsByResponse = new Map();
 
   function stopStream() {
     for (const track of stream?.getTracks?.() || []) {
@@ -112,7 +113,17 @@ export function createRealtimeSession({
       if (typeof rawArguments === 'string' && rawArguments) {
         try { parsedArguments = JSON.parse(rawArguments); } catch { parsedArguments = null; }
       }
-      onToolCall({ callId, name, arguments: parsedArguments });
+      const call = { callId, name, arguments: parsedArguments };
+      if (typeof event.response_id === 'string') {
+        const batch = toolCallsByResponse.get(event.response_id) || [];
+        batch.push(call);
+        toolCallsByResponse.set(event.response_id, batch);
+      } else {
+        // Compatibility fallback for a provider/fixture that omits the
+        // documented response id. Such a call cannot be batched, but it still
+        // goes through the router's mutation/session guards.
+        onToolCall(call);
+      }
       return;
     }
     // `session.update` is not effective until the server acknowledges it.
@@ -149,6 +160,9 @@ export function createRealtimeSession({
       return;
     }
     if (event.type === 'response.done' && typeof event.response?.id === 'string') {
+      const batch = toolCallsByResponse.get(event.response.id);
+      toolCallsByResponse.delete(event.response.id);
+      if (batch?.length) onToolCall(batch.length === 1 ? batch[0] : { batch });
       onResponseEvent({ type: 'response.done', responseId: event.response.id, status: event.response.status });
       return;
     }
@@ -232,6 +246,7 @@ export function createRealtimeSession({
     try { pc?.close?.(); } catch { /* already closed */ }
     stopStream();
     stopAudioSink();
+    toolCallsByResponse.clear();
     pc = null;
     dataChannel = null;
   }

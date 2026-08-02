@@ -44,6 +44,20 @@ function emitToolCall(callId, name, args) {
   });
 }
 
+function emitToolBatch(responseId, calls) {
+  return `(() => {
+    const channel = window.__voiceHooks.pcs.at(-1).dataChannel;
+    const calls = ${JSON.stringify(calls)};
+    for (const call of calls) channel.emit('message', { data: JSON.stringify({
+      type: 'response.output_item.done', response_id: ${JSON.stringify(responseId)},
+      item: { type: 'function_call', call_id: call.callId, name: call.name, arguments: JSON.stringify(call.arguments) },
+    }) });
+    channel.emit('message', { data: JSON.stringify({
+      type: 'response.done', response: { id: ${JSON.stringify(responseId)}, status: 'completed' },
+    }) });
+  })()`;
+}
+
 // The finalized-input-transcription event — the only signal the controller
 // trusts for a spoken sign-off/offline/confirmation reply.
 function emitTranscript(text) {
@@ -423,6 +437,29 @@ test('UI voice: read_board_report and read_card relay exactly the deterministic 
   assert.equal((await page.eval(readToolOutput('call-missing'))).ok, false, 'an unknown card is reported, not invented');
 
   await page.eval(`document.getElementById('voice-btn').click()`); // offline cleanup
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: a mixed read-plus-proposal provider turn gets one reply and never reaches the board', async (t) => {
+  if (!page) return t.skip(SKIP);
+  writeCard(repo, 'task-0019', { status: 'Review', title: 'mixed tool candidate' });
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+
+  await page.eval(emitToolBatch('resp-mixed', [
+    { callId: 'mixed-read', name: 'read_board_report', arguments: {} },
+    { callId: 'mixed-action', name: 'propose_board_action', arguments: { cardId: 'task-0019', action: 'retriage' } },
+  ]));
+  await until(async () => (await page.eval(readToolOutput('mixed-read'))) || null, { timeout: BUDGET.quick });
+  await until(async () => (await page.eval(readToolOutput('mixed-action'))) || null, { timeout: BUDGET.quick });
+
+  assert.equal(await page.eval(`window.__voiceHooks.actionRequests.length`), 0);
+  assert.equal(await page.eval(`(() => window.__voiceHooks.pcs.at(-1).dataChannel.sent
+    .map((entry) => JSON.parse(entry)).filter((event) => event.type === 'response.create').length)()`), 1);
+  assert.equal(await cardStatus(page, 'task-0019'), 'Review');
+  await page.eval(`document.getElementById('voice-btn').click()`);
   assert.deepEqual(page.errors, []);
 });
 

@@ -420,6 +420,22 @@ export function createCommandRouter({
   }
 
   async function handleToolCall(toolCall) {
+    if (Array.isArray(toolCall?.batch)) {
+      if (toolCall.batch.length === 1) return handleToolCall(toolCall.batch[0]);
+      let outputs = 0;
+      for (const call_ of toolCall.batch) {
+        if (typeof call_?.callId !== 'string') continue;
+        controller.send(functionCallOutput(call_.callId, {
+          ok: false,
+          error: 'only one board request can be handled per voice turn',
+        }));
+        outputs += 1;
+      }
+      if (outputs) controller.send(requestResponse({
+        instructions: 'I can handle one board request at a time. Please ask again.',
+      }));
+      return;
+    }
     if (!toolCall || typeof toolCall.callId !== 'string' || typeof toolCall.name !== 'string') return;
     if (toolCall.arguments === null) {
       controller.send(functionCallOutput(toolCall.callId, { ok: false, error: 'malformed tool arguments' }));

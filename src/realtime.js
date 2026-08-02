@@ -16,6 +16,8 @@ const INSTRUCTIONS = [
   'outcomes. You cannot execute or confirm any action yourself: propose it and',
   'let the human-facing confirmation flow decide. Never repeat, transcribe, or',
   'guess at credentials, tokens, file paths, or environment values.',
+  'Call at most one board tool in each response. If the user asks for multiple',
+  'board operations, handle one and ask them to repeat the next request.',
   'Card ids are exactly "task-" followed by a zero-padded number, for example',
   '"task-0020". Normalize spoken numbers ("task twenty", "twenty", "zero zero',
   'two zero") into that form yourself before calling a tool. If more than one',

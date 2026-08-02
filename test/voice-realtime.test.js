@@ -346,6 +346,35 @@ test('a completed function-call output item surfaces through onToolCall with par
   assert.deepEqual(calls, [{ callId: 'call_1', name: 'read_card', arguments: { cardId: 'task-0020' } }]);
 });
 
+test('parallel function calls from one provider response are delivered as one router batch', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  const calls = [];
+  await session.open({ onToolCall: (call) => calls.push(call) });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done', response_id: 'resp_mixed',
+    item: { type: 'function_call', call_id: 'read-call', name: 'read_board_report', arguments: '{}' },
+  }) });
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.output_item.done', response_id: 'resp_mixed',
+    item: { type: 'function_call', call_id: 'action-call', name: 'propose_board_action', arguments: '{"cardId":"task-0020","action":"retriage"}' },
+  }) });
+  assert.deepEqual(calls, [], 'the adapter waits for the response boundary before dispatching calls');
+  channel.emit('message', { data: JSON.stringify({
+    type: 'response.done', response: { id: 'resp_mixed', status: 'completed' },
+  }) });
+  assert.deepEqual(calls, [{ batch: [
+    { callId: 'read-call', name: 'read_board_report', arguments: {} },
+    { callId: 'action-call', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } },
+  ] }]);
+});
+
 test('a function call with no arguments string defaults to an empty object', async () => {
   const RTC = fakeRtcClass();
   const session = createRealtimeSession({
