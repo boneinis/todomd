@@ -5,6 +5,7 @@ import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
 import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks, withRepoLock, withoutRepoLockContext } from '../src/board.js';
+import { DEFAULT_RESOURCES_CONFIG } from '../src/resources.js';
 
 test('withRepoLock is reentrant for a guarded operation that uses board helpers', async () => {
   const repo = makeRepo();
@@ -766,4 +767,33 @@ test('loadConfig re-adds pipeline-required columns a config edit dropped', () =>
     assert.ok(cfg.columns.includes(col), `${col} unioned back in`);
   }
   assert.deepEqual(cfg.columns.slice(0, 4), ['Review', 'Plan', 'Planned', 'Build'], 'user order preserved');
+});
+
+test('loadConfig fills the documented resources defaults for a legacy board with no resources key', () => {
+  const repo = makeRepo(); // fixture config.yml has no `resources:` block at all
+  const cfg = loadConfig(repo);
+  assert.deepEqual(cfg.resources, DEFAULT_RESOURCES_CONFIG);
+});
+
+test('loadConfig merges a partial resources override with the documented defaults', () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/config.yml');
+  // 0.75 still sits above the default resume of 0.65, so the merged band stays
+  // a valid hysteresis pair (resourcesConfig discards inverted ones wholesale)
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + 'resources:\n  cpu:\n    defer: 0.75\n');
+  const cfg = loadConfig(repo);
+  assert.equal(cfg.resources.cpu.defer, 0.75);
+  assert.equal(cfg.resources.cpu.resume, DEFAULT_RESOURCES_CONFIG.cpu.resume);
+  assert.deepEqual(cfg.resources.memory, DEFAULT_RESOURCES_CONFIG.memory);
+});
+
+test('loadConfig discards a hand-edited resources band whose resume is looser than its defer', () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8')
+    + 'resources:\n  cpu:\n    defer: 0.8\n    resume: 0.9\n');
+  // a bad config.yml must not throw on the board-load path, and the governor it
+  // feeds must not be left flapping — the whole cpu band reverts to the defaults
+  const cfg = loadConfig(repo);
+  assert.deepEqual(cfg.resources.cpu, DEFAULT_RESOURCES_CONFIG.cpu);
 });
