@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -12,10 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id:
+session_id: f75114b1-44f1-4b54-9548-3ff6c8b23d5a
 worktree: todomd/task-0040
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 12.5068
 ---
 
 ## Description
@@ -72,3 +73,5 @@ Risk: budget mode (`mode: budget`) deliberately does not enqueue builds
 budget boards will start double-running work against the dispatcher.
 
 ## Run Log
+- 2026-08-02 21:24Z · Build attempt 1 · 101 turns · $9.357 · checkpoint 1: progress detected; continuing
+- 2026-08-02 21:29Z · Build attempt 1 · 17 turns · $3.150 · ok
