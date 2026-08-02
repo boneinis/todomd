@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Build
+status: Verify
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -12,11 +12,11 @@ assignee:
 agent: claude
 model: claude-sonnet-5
 effort: low
-session_id: be984e8b-fef3-4991-b059-9cb5d74ab02b
+session_id: dcac5bcd-ea08-41ab-98f1-52c0f62d5b59
 worktree: todomd/task-0034
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 triaged: 2026-07-31
-cost_usd: 12.2132
+cost_usd: 14.7103
 needs_human_reason:
 base_branch: main
 ---
@@ -70,3 +70,4 @@ Risks:
 - 2026-08-02 14:19Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-02 14:22Z · Escalate attempt 2 · 19 turns · $2.527 · diagnosis complete
+- 2026-08-02 14:30Z · Build attempt 3 · 42 turns · $2.497 · ok (escalation repair)
