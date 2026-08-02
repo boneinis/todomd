@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 1/2 of task-0027)
-session_id: ce53be2a-1209-4c2b-b9c5-b213013d752a
+session_id: df9f4777-dbcb-439e-87d5-653a9e0a31ed
 worktree: todomd/task-0031
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 9.7791
+cost_usd: 11.4863
 ---
 
 ## Description
@@ -88,3 +88,4 @@ Bulk archive API and eligibility rules
 - 2026-08-02 15:19Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 3)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-02 15:21Z · Escalate attempt 2 · 15 turns · $1.587 · diagnosis complete
+- 2026-08-02 15:39Z · Build attempt 3 · 32 turns · $1.707 · ok (escalation repair)
