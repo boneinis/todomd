@@ -1,7 +1,7 @@
 ---
 id: task-0045
 title: consistent card width
-status: Queue
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -11,11 +11,12 @@ source: ui
 assignee: 
 agent: claude
 session_id: 71caca1c-4ec9-42e0-8312-8b8c6fbd6d56
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0045
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-08-02
 cost_usd: 0.7728
 needs_human_reason:
+base_branch: main
 ---
 
 ## Description
