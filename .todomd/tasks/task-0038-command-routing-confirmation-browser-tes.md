@@ -1,7 +1,7 @@
 ---
 id: task-0038
 title: Command routing confirmation browser tests
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,13 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 4/4 of task-0020)
-session_id: d3521a31-f2bc-431b-b517-0af5d960ff5c
+session_id: 019fc037-9e41-7df1-9672-9179ed190b8f
 worktree: todomd/task-0038
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 40.3103
+needs_human_reason: attempts_exhausted
+recovery_stage:
 ---
 
 ## Description
@@ -64,3 +66,5 @@ confirmation and recovery commands, and verify the complete foreground flow.
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-02 01:52Z · Escalate attempt 2 · 12 turns · $1.583 · diagnosis complete
 - 2026-08-02 02:04Z · Build attempt 3 · 69 turns · $5.456 · ok (escalation repair)
+- 2026-08-02 02:09Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: `npm test` passed with normal runtime permissions: 449 core tests and 25 browser tests. However, the confirmation read-back has a reachable response-correlation race. `public/voice/commands.js:68-125` stores one global `pendingReadback` and binds it to the first `response.created` observed; the `response.create` sent at lines 240-242 contains no correlation metadata. An unrelated response already 
