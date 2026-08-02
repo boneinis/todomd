@@ -1,7 +1,7 @@
 ---
 id: task-0027
 title: Add safe bulk archiving for Done cards
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: [board-ui, archive, workflow]
