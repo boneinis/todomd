@@ -700,8 +700,33 @@ body.viewer #manage-projects, body.viewer #intake-btn, body.viewer #prompts-btn 
 }
 .qr-tab.active { border-color: var(--accent); color: var(--accent); }
 
-body.viewer .new-card, body.viewer .qr-btn, body.viewer .drawer-rail { display: none !important; }
+body.viewer .new-card, body.viewer .qr-btn, body.viewer .drawer-rail, body.viewer .voice-widget { display: none !important; }
 body.viewer .card { cursor: default; }
+
+/* ── voice mic control (docs/voice.md) ── */
+.voice-widget { display: flex; align-items: center; gap: 6px; }
+.voice-btn {
+  background: none; border: 1px solid var(--line); color: var(--dim);
+  font: inherit; font-size: 14px; padding: 5px 10px; cursor: pointer; border-radius: var(--r-btn);
+  line-height: 1;
+}
+.voice-btn:hover { color: var(--accent); border-color: var(--accent); }
+.voice-btn[data-voice-state="arming"] { color: var(--amber); border-color: var(--amber); }
+.voice-btn[data-voice-state="armed"] { color: var(--cyan); border-color: var(--cyan); }
+.voice-btn[data-voice-state="active"] {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.voice-btn[data-voice-state="confirming"] { color: var(--violet); border-color: var(--violet); }
+.voice-btn[data-voice-state="error"] { color: var(--red); border-color: var(--red); }
+.voice-ptt { font-size: 11px; letter-spacing: .02em; }
+.voice-diag {
+  color: var(--dim); font-size: 10px; font-family: var(--mono); letter-spacing: .04em;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-btn[data-voice-state="active"] { animation: none !important; }
+}
 
 /* archive / delete card controls */
 #archived-toggle.active { color: var(--accent); border-color: var(--accent); }
@@ -731,6 +756,7 @@ body.viewer .drawer-question { display: none; }
   #filter { flex: 1; min-width: 90px; width: auto; }
   #project { max-width: 42vw; }
   .usage { display: none; } /* spend meter is desktop-only on mobile to save room */
+  .voice-diag { display: none; } /* the mic button's data-voice-state still carries the status */
   .board {
     padding: 12px 12px 18px; gap: 10px;
     scroll-snap-type: x mandatory;

@@ -150,6 +150,14 @@ export async function openPage() {
 
   return {
     errors,
+    // Installs `js` so it runs before ANY script on the next navigation (CDP's
+    // Page.addScriptToEvaluateOnNewDocument) — the only race-free way to seed
+    // fakes (SpeechRecognition, RTCPeerConnection, getUserMedia…) that a
+    // page's own module scripts read at load time. `page.eval` after goto()
+    // is too late for that; this runs first every time.
+    async presetScript(js) {
+      await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: js }, sessionId);
+    },
     async goto(url) {
       await cdp.send('Page.navigate', { url }, sessionId);
     },

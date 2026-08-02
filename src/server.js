@@ -15,6 +15,7 @@ import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 import { createMetadataScheduler } from './github-sync.js';
 import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction, invalidateProject as invalidateVoiceProject } from './voice.js';
+import { createRealtimeSession } from './realtime.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -405,6 +406,10 @@ export function startServer({ port = 7337, lan = false } = {}) {
         ...board,
         mode: board.config.mode || 'launcher',
         access: fullAccess ? 'full' : 'viewer',
+        // `access: full` includes the revocable mobile-control token. Voice
+        // remains desktop-only, so expose the narrower tier separately and
+        // let the client hide controls that its token cannot actually use.
+        primary: primary(req),
         runStates: pipeline.getRunStates(project.name),
         banners: pipeline.getBanners(),
         usage: pipeline.usage(project.name),
@@ -455,6 +460,27 @@ export function startServer({ port = 7337, lan = false } = {}) {
       try { if (body) fields = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
       const { status, ...result } = await rejectVoiceAction(project, voiceRejectMatch[1], fields);
       return json(res, status, result);
+    }
+    // Post-wake Realtime SDP exchange (docs/voice.md, docs/security.md § Voice
+    // control). Sits after the generic non-GET write guard above — a viewer
+    // token is already rejected there, and a mobile token is rejected by this
+    // route's own primary(req) check, same shape as /api/lan. The standard
+    // OPENAI_API_KEY lives only in createRealtimeSession and never reaches
+    // this response.
+    if (url.pathname === '/api/voice/session' && req.method === 'POST') {
+      if (!primary(req)) return json(res, 403, { error: 'voice actions require the primary desktop session' });
+      const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (contentType !== 'application/sdp') return json(res, 400, { error: 'content-type must be application/sdp' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      const ac = new AbortController();
+      let responded = false;
+      res.on('close', () => { if (!responded) ac.abort(); });
+      const result = await createRealtimeSession(body, { signal: ac.signal });
+      responded = true;
+      if (!result.ok) return json(res, result.status, { error: result.error });
+      res.writeHead(200, { 'content-type': 'application/sdp' });
+      return res.end(result.sdp);
     }
     if (url.pathname === '/api/models') { // model suggestions for the chosen vendor (CLI --help + config)
       // full token only: this spawns blocking CLI --help processes

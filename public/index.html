@@ -28,6 +28,11 @@
     <button id="manage-projects" class="qr-btn" title="add / remove projects">⊕</button>
     <button id="intake-btn" class="qr-btn" title="email intake (IMAP) settings">✉</button>
     <button id="prompts-btn" class="qr-btn" title="edit column prompts">⚙</button>
+    <div id="voice-widget" class="voice-widget" hidden>
+      <button id="voice-btn" class="voice-btn" type="button" data-voice-state="inactive" aria-pressed="false" aria-label="voice control — voice off">🎙</button>
+      <button id="voice-ptt" class="voice-btn voice-ptt" type="button" hidden aria-label="push to talk — press and hold">🎙 hold to talk</button>
+      <span id="voice-diag" class="voice-diag" role="status" aria-live="polite"></span>
+    </div>
     <span class="usage" id="usage" title="model spend this month"></span>
     <span class="conn" id="conn" title="live connection"><span class="conn-dot"></span><span id="conn-label">SYNC</span></span>
   </div>
@@ -332,5 +337,6 @@ todomd init             # scaffolds the board + registers it</code></pre>
 
 <script src="/hierarchy.js"></script>
 <script src="/app.js"></script>
+<script type="module" src="/voice/main.js"></script>
 </body>
 </html>

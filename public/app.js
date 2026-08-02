@@ -28,6 +28,7 @@ const projectSel = $('#project');
 const filterInput = $('#filter');
 let currentProject = null;
 let boardData = null;
+let boardLoadGeneration = 0;
 let runStates = {};
 let drawerCard = null;
 let myName = localStorage.getItem('todomd-me') || '';
@@ -35,6 +36,33 @@ let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'min
 let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
+
+// The classic board script can finish its async load before the voice module
+// graph has registered a context listener. Retain the latest safe UI context
+// and replay it when voice announces readiness so that one lost event cannot
+// leave the initially-hidden control hidden forever.
+let latestVoiceContext = null;
+function publishVoiceContext(detail) {
+  latestVoiceContext = detail;
+  document.dispatchEvent(new CustomEvent('todomd:context', { detail }));
+}
+function setCurrentProject(nextProject) {
+  const next = nextProject || null;
+  if (next === currentProject) {
+    projectSel.value = next || '';
+    return false;
+  }
+  // Revoke capture before changing project identity. Callers may still need to
+  // fetch the replacement board, and that request is allowed to fail without
+  // leaving voice bound to the project we just left.
+  publishVoiceContext({ project: '', access: 'none', primary: false });
+  currentProject = next;
+  projectSel.value = next || '';
+  return true;
+}
+document.addEventListener('todomd:voice-ready', () => {
+  if (latestVoiceContext) publishVoiceContext(latestVoiceContext);
+});
 
 // project/card pairs whose subtask rows are collapsed — task ids repeat across
 // projects, so an id alone would leak UI state when the project selector moves.
@@ -78,12 +106,14 @@ async function api(path) {
 async function loadProjects() {
   const { projects } = await api('projects');
   projectSel.innerHTML = projects.map((p) => `<option>${esc(p)}</option>`).join('');
-  if (!currentProject || !projects.includes(currentProject)) currentProject = projects[0]; // undefined if none
-  projectSel.value = currentProject || '';
+  const selected = (!currentProject || !projects.includes(currentProject)) ? projects[0] : currentProject;
+  setCurrentProject(selected); // also fences voice if reconnect discovers the old project disappeared
 }
 
 async function loadBoard() {
-  if (!currentProject) { // no projects (e.g. the last one was removed) — show an empty state
+  const requestedProject = currentProject;
+  const generation = ++boardLoadGeneration;
+  if (!requestedProject) { // no projects (e.g. the last one was removed) — show an empty state
     boardData = null;
     boardEl.innerHTML = `<div class="empty-board">
       <h2>No project yet</h2>
@@ -91,9 +121,18 @@ async function loadBoard() {
       <p><button id="empty-guide" class="modal-submit">open the Getting Started guide</button></p>
     </div>`;
     $('#empty-guide')?.addEventListener('click', openGuide);
+    // no board to point voice at (e.g. the last project was just removed) —
+    // tell voice/main.js so an armed/active session doesn't keep running
+    // against a project that no longer has a board behind it
+    publishVoiceContext({ project: '', access: 'none', primary: false });
     return;
   }
-  boardData = await api(`board?project=${encodeURIComponent(currentProject)}${showArchived ? '&archived=1' : ''}`);
+  const nextBoard = await api(`board?project=${encodeURIComponent(requestedProject)}${showArchived ? '&archived=1' : ''}`);
+  // A project switch can finish its newer request before this one. Never let a
+  // late response redraw the old board or republish its access as if it belonged
+  // to the newly-selected project.
+  if (generation !== boardLoadGeneration || requestedProject !== currentProject) return;
+  boardData = nextBoard;
   (boardData.cards || []).forEach(normalizeCardLists);
   runStates = boardData.runStates || {};
   renderBanners(boardData.banners || []);
@@ -104,6 +143,9 @@ async function loadBoard() {
   document.body.classList.toggle('viewer', viewer);
   setSkillOptions();
   renderBoard();
+  // voice/main.js is a separate ES module (see index.html) with no access to
+  // this classic script's top-level scope — this is the only bridge it needs.
+  publishVoiceContext({ project: requestedProject, access: boardData.access, primary: boardData.primary === true });
 }
 
 function renderBanners(list) {
@@ -1180,7 +1222,10 @@ async function renderProjectList() {
     btn.addEventListener('click', async () => {
       const name = btn.dataset.name;
       const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE', headers });
-      if (res.ok) { toast(`removed ${name}`); await renderProjectList(); await loadProjects(); loadBoard(); }
+      if (res.ok) {
+        if (name === currentProject) setCurrentProject(null);
+        toast(`removed ${name}`); await renderProjectList(); await loadProjects(); loadBoard();
+      }
       else toast('remove failed');
     })
   );
@@ -1205,7 +1250,7 @@ async function addProjectByPath() {
     toast(`added ${out.name}`);
     $('#proj-path').value = '';
     await loadProjects();
-    currentProject = out.name; projectSel.value = out.name;
+    setCurrentProject(out.name);
     await renderProjectList();
     loadBoard();
   } catch { toast('server unreachable'); }
@@ -1297,7 +1342,13 @@ $('#card-form').addEventListener('submit', async (e) => {
   }
 });
 
-projectSel.addEventListener('change', () => { currentProject = projectSel.value; loadBoard(); });
+projectSel.addEventListener('change', () => {
+  // Revoke the old context before waiting for the newly-selected board. A
+  // slow/failed request must never let capture outlive the project it belongs
+  // to; the authenticated full/primary context is restored by loadBoard().
+  setCurrentProject(projectSel.value);
+  loadBoard();
+});
 filterInput.addEventListener('input', renderBoard);
 applyViewToggle();
 
