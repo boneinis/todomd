@@ -1,7 +1,7 @@
 ---
 id: task-0038
 title: Command routing confirmation browser tests
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 4/4 of task-0020)
-session_id: 5b8828c7-5c03-4411-983b-fb20fede7a7c
+session_id: d3521a31-f2bc-431b-b517-0af5d960ff5c
 worktree: todomd/task-0038
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 34.8544
+cost_usd: 40.3103
 ---
 
 ## Description
@@ -63,3 +63,4 @@ confirmation and recovery commands, and verify the complete foreground flow.
 - 2026-08-02 01:50Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-02 01:52Z · Escalate attempt 2 · 12 turns · $1.583 · diagnosis complete
+- 2026-08-02 02:04Z · Build attempt 3 · 69 turns · $5.456 · ok (escalation repair)
