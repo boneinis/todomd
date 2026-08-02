@@ -6,6 +6,7 @@ import yaml from 'js-yaml';
 import { tmp, git, makeRepo } from './helpers.js';
 import { detectWorktreeLinks, initProject, cmdDispatch, CMD_BUILD } from '../src/templates.js';
 import { resourcesConfig, DEFAULT_RESOURCES_CONFIG } from '../src/resources.js';
+import { normalizeConfig } from '../src/board.js';
 
 test('CMD_BUILD rule 5 prohibits git add -A and committing under .todomd/', () => {
   assert.match(CMD_BUILD, /git add -A/, 'rule mentions git add -A');
@@ -81,6 +82,36 @@ test('shipped config.yml documents the resource monitor and matches resources.js
   assert.ok(parsed.resources, 'config.yml parses a resources block');
   assert.deepEqual(resourcesConfig(parsed), DEFAULT_RESOURCES_CONFIG,
     'the shipped resources: values equal the documented defaults resourcesConfig() falls back to');
+});
+
+test('shipped config.yml documents the scheduler block; its 0-defaults are unlimited', () => {
+  const repo = tmp('scheduler-config');
+  git(repo, ['init', '-q']);
+  initProject(repo);
+  const cfg = fs.readFileSync(path.join(repo, '.todomd/config.yml'), 'utf8');
+  assert.match(cfg, /^scheduler:$/m);
+  const parsed = yaml.load(cfg);
+  assert.ok(parsed.scheduler, 'config.yml parses a scheduler block');
+  const normalized = normalizeConfig(parsed);
+  // The shipped board only ever configures `concurrency` (no scheduler
+  // overrides) — global and every column resolve to unlimited. None of them
+  // default to this board's own `concurrency`: that value is combined via
+  // Math.min across every OTHER registered project too, so defaulting a
+  // column to it would make an unrelated project's default concurrency:1
+  // silently throttle this board's Build column machine-wide. The "boards
+  // that only set concurrency keep their effective Build parallelism"
+  // guarantee is carried entirely by the separate, per-project concurrency
+  // cap (never combined across projects) — see scheduler.js.
+  assert.equal(normalized.scheduler.global, Infinity);
+  assert.equal(normalized.scheduler.columns.Build, Infinity);
+  assert.equal(normalized.scheduler.columns.CI, Infinity);
+  assert.equal(normalized.scheduler.columns.Verify, Infinity);
+});
+
+test('normalizeConfig scheduler: an explicit global/column override is honored verbatim', () => {
+  const normalized = normalizeConfig({ concurrency: 4, scheduler: { global: 2, columns: { Build: 3, CI: 1, Verify: 1 } } });
+  assert.equal(normalized.scheduler.global, 2);
+  assert.deepEqual(normalized.scheduler.columns, { Build: 3, CI: 1, Verify: 1 });
 });
 
 test('dispatch LOCK loop steals an ownerless lock by the lock dir mtime', () => {

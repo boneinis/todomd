@@ -9,6 +9,7 @@ import { readCard, loadBoard, setStageRouting, patchFrontmatter, withRepoLock } 
 import { addProject } from '../src/registry.js';
 import * as pipeline from '../src/pipeline.js';
 import * as voice from '../src/voice.js';
+import * as scheduler from '../src/scheduler.js';
 
 const noop = () => {};
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
@@ -138,6 +139,108 @@ test('manual queue resume never launches dispatcher-managed budget work', async 
     pipeline.forgetProject(p.name);
     await pipeline.killAllChildren({ graceMs: 1000 });
     clearFakeAgent();
+  }
+});
+
+test('scheduler: one authoritative global cap governs two real projects with differing configured globals', async () => {
+  isolateHome();
+  useFakeAgent({ hang: 'build', verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repoA = makeRepo();
+  const repoB = makeRepo();
+  for (const [repo, global] of [[repoA, 1], [repoB, 5]]) {
+    const cfg = path.join(repo, '.todomd/config.yml');
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8') + `scheduler:\n  global: ${global}\n`);
+  }
+  const a = project(repoA);
+  const b = project(repoB);
+  writeCard(repoA, 'task-a1', { status: 'Planned' });
+  writeCard(repoB, 'task-b1', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(a, 'task-a1', 'Queue');
+    await until(() => status(repoA, 'task-a1') === 'Build', { timeout: BUDGET.stage });
+    await pipeline.humanMove(b, 'task-b1', 'Queue');
+    // project b's OWN configured global (5) would admit this alone — the
+    // authoritative cap is min(1, 5) = 1, computed fresh from BOTH known
+    // projects, never read off whichever entry happens to be checked.
+    await sleep(200);
+    assert.equal(status(repoB, 'task-b1'), 'Queue', "b's own looser global must not let it bypass the shared cap of 1");
+    // An ordinary capacity wait (global/column/project caps) reports plainly
+    // 'queued' — 'deferred' is reserved for governor/resource pressure.
+    assert.equal(pipeline.getRunStates(b.name)['task-b1']?.state, 'queued');
+  } finally {
+    pipeline.forgetProject(a.name);
+    pipeline.forgetProject(b.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('scheduler: the Build column slot releases before Verify starts — a full Build column does not hold Verify hostage', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', hang: 'verify' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+    .replace('concurrency: 1', 'concurrency: 2') + 'scheduler:\n  columns:\n    Build: 1\n');
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Verify', { timeout: BUDGET.stage });
+    // task-0001 is hung IN Verify. If Build's slot were still held for the
+    // whole chain (the bug this fixes), the Build column limit of 1 would
+    // keep task-0002 queued forever instead of admitting it.
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
+    await until(() => status(repo, 'task-0002') === 'Build', { timeout: BUDGET.stage });
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('scheduler: the governor is constructed from this board\'s OWN configured resource thresholds, not hard-coded defaults', async () => {
+  isolateHome();
+  // Give any straggling async settlement from an earlier test's killed
+  // children a moment to fully drain (they release scheduler counters and
+  // can trigger ensureGovernor() asynchronously) before resetState() below —
+  // otherwise a belated release() could reconstruct the governor from an
+  // empty project set (the real documented defaults) right after this reset,
+  // silently overriding the aggressive thresholds this test relies on.
+  await sleep(300);
+  scheduler.resetState(); // force a fresh governor built from THIS test's project config
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  const events = [];
+  pipeline.init({ broadcast: (m) => events.push(m) });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  // An impossible-to-satisfy defer threshold: only deferring proves the
+  // scheduler actually read and used THIS board's configured resources block
+  // — the documented defaults would never breach on a real test machine.
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('resources:\n  enabled: false\n',
+    'resources:\n  enabled: true\n  cpu:\n    defer: 0.001\n    resume: 0.0005\n    critical: 100\n'));
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.state === 'deferred', { timeout: BUDGET.quick });
+    const state = pipeline.getRunStates(p.name)['task-0001'];
+    assert.match(state.reason, /cpu/, 'the deferral reason names the configured metric that breached');
+    assert.equal(status(repo, 'task-0001'), 'Queue', 'no child was ever spawned while deferred');
+    const deferredEvent = events.find((e) => e.type === 'run-state' && e.card === 'task-0001' && e.state === 'deferred');
+    assert.ok(deferredEvent, 'the deferred state + reason is carried through the live run-state broadcast');
+    assert.match(deferredEvent.reason, /cpu/);
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState(); // this test's aggressive thresholds must not leak into later tests
   }
 });
 

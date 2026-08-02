@@ -75,6 +75,27 @@ resources:
   recovery_samples: 3
   sample_interval_seconds: 30
 
+# Shared cross-project scheduler: one machine-wide admission gate that every
+# registered project's Build/CI/Verify work competes for, on top of (not
+# instead of) this board's own \`concurrency\`. 0 or omitted means unlimited —
+# a board that never sets this block sees no change in its own behavior:
+# this board's \`concurrency\` alone still caps its own effective parallelism,
+# exactly as before this key existed. \`global\` caps everything running at
+# once, across every project on this machine. \`columns\` caps each column
+# independently of \`global\` and of each other — a full Build column never
+# blocks a Verify slot that has room. Leave these at 0 unless you deliberately
+# want a machine-wide cap: setting one here also applies to every OTHER
+# registered project (the strictest configured value wins), not just this
+# board. When the resource monitor above reports pressure, new work is held
+# (deferredReason shows why) and resumes on its own once a later sample
+# recovers — a running job is never signalled.
+scheduler:
+  global: 0       # 0 = unlimited
+  columns:
+    Build: 0      # 0 = unlimited
+    CI: 0         # 0 = unlimited
+    Verify: 0     # 0 = unlimited
+
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
 # in-flight work (which card/files each worker is building), so several people
 # on this repo don't overlap. Off by default.

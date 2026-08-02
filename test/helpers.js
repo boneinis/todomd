@@ -47,6 +47,11 @@ export function makeRepo({ triage = false } = {}) {
     `columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]\n` +
     `mode: launcher\nverify_command: npm test\nmax_attempts: 3\nconcurrency: 1\n` +
     `default_agent: claude\n` +
+    // These fixtures exercise the pipeline itself, not the resource governor
+    // (that's resources.test.js/scheduler.test.js, both driven by injected
+    // fake samplers) — disabled here so the scheduler's admission gate never
+    // depends on the REAL host's live CPU/memory/disk at test time.
+    `resources:\n  enabled: false\n` +
     `triage:\n  enabled: ${triage}\n  model: sonnet\n` +
     `stages:\n` +
     `  Plan:\n    command: todomd-plan\n    model: sonnet\n` +
