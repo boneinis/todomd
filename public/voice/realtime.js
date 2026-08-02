@@ -42,6 +42,8 @@ export function createRealtimeSession({
   let closed = false;
   let opened = false;
   let offerAbortController = null;
+  let inputSequence = 0;
+  const inputItems = new Map();
 
   function stopStream() {
     for (const track of stream?.getTracks?.() || []) {
@@ -79,12 +81,23 @@ export function createRealtimeSession({
     let event;
     try { event = JSON.parse(raw); } catch { return; }
     if (!event || typeof event !== 'object') return;
+    if ((event.type === 'input_audio_buffer.speech_started' || event.type === 'input_audio_buffer.committed')
+      && typeof event.item_id === 'string') {
+      if (!inputItems.has(event.item_id)) inputItems.set(event.item_id, ++inputSequence);
+      return;
+    }
     // Realtime's finalized-input-transcript event — the only remote signal the
     // controller trusts for "That is all, To-do" / "Go offline, To-do" (never
     // the assistant's own output-audio transcript).
     if (event.type === 'conversation.item.input_audio_transcription.completed'
       && typeof event.transcript === 'string') {
-      onTranscript({ text: event.transcript, final: true });
+      onTranscript({
+        text: event.transcript,
+        final: true,
+        itemId: typeof event.item_id === 'string' ? event.item_id : null,
+        inputSequence: inputItems.get(event.item_id) ?? null,
+      });
+      inputItems.delete(event.item_id);
       return;
     }
     // A finished function-call output item — the model invoking one of
@@ -218,5 +231,13 @@ export function createRealtimeSession({
     try { dataChannel.send(JSON.stringify(clientEvent)); return true; } catch { return false; }
   }
 
-  return { open, close, send };
+  function setInputEnabled(enabled) {
+    for (const track of stream?.getAudioTracks?.() || []) {
+      try { track.enabled = enabled; } catch { /* already ended */ }
+    }
+  }
+
+  function inputBoundary() { return inputSequence; }
+
+  return { open, close, send, setInputEnabled, inputBoundary };
 }

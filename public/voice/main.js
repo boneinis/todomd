@@ -54,6 +54,7 @@ if (btn && widget) {
     // `controller` binding, assigned right below.
     onToolCall: (call) => commands.handleToolCall(call),
     onResponseEvent: (event) => commands.handleResponseEvent(event),
+    onSessionEnd: () => commands.reset(),
   });
   const commands = createCommandRouter({
     controller,

@@ -68,9 +68,28 @@ export function createCommandRouter({
 } = {}) {
   let pendingReadback = null; // the readback turn currently being waited on, if any
   let activeMutation = null; // one proposal lifecycle at a time, including its async prepare
+  let generation = 0;
+
+  function isCurrent(owner) {
+    return owner.generation === generation && (!owner.mutation || activeMutation === owner);
+  }
+
+  async function cleanupMutation(owner) {
+    if (!owner?.proposalId || owner.cleaned || owner.settling) return;
+    owner.cleaned = true;
+    await reject(owner.proposalId, owner.project);
+  }
 
   function releaseMutation(owner) {
     if (activeMutation === owner) activeMutation = null;
+  }
+
+  function reset() {
+    generation += 1;
+    const owner = activeMutation;
+    activeMutation = null;
+    pendingReadback?.settle({ cancelled: true });
+    if (owner) void cleanupMutation(owner);
   }
 
   // Resolves with { completed } once the readback turn has finished SPEAKING,
@@ -126,9 +145,9 @@ export function createCommandRouter({
     if (event.type === 'output_audio_buffer.stopped') wait.settle({ completed: true });
   }
 
-  async function call(path, { method = 'GET', body } = {}) {
+  async function call(path, { method = 'GET', body, projectName = project() } = {}) {
     const sep = path.includes('?') ? '&' : '?';
-    const url = `/api/voice/${path}${sep}project=${encodeURIComponent(project())}`;
+    const url = `/api/voice/${path}${sep}project=${encodeURIComponent(projectName)}`;
     try {
       const res = await fetchFn(url, {
         method,
@@ -146,33 +165,35 @@ export function createCommandRouter({
     }
   }
 
-  function reject(proposalId) {
-    return call(`actions/${encodeURIComponent(proposalId)}/reject`, { method: 'POST', body: {} });
+  function reject(proposalId, projectName) {
+    return call(`actions/${encodeURIComponent(proposalId)}/reject`, { method: 'POST', body: {}, projectName });
   }
-  function confirm(proposalId, text) {
-    return call(`actions/${encodeURIComponent(proposalId)}/confirm`, { method: 'POST', body: { confirmation: text } });
+  function confirm(proposalId, text, projectName) {
+    return call(`actions/${encodeURIComponent(proposalId)}/confirm`, { method: 'POST', body: { confirmation: text }, projectName });
   }
 
   function speak(text) {
     controller.send(requestResponse({ instructions: text }));
   }
 
-  async function handleReadBoardReport(call_) {
-    const result = await call('summary');
+  async function handleReadBoardReport(call_, owner) {
+    const result = await call('summary', { projectName: owner.project });
+    if (!isCurrent(owner)) return;
     controller.send(functionCallOutput(call_.callId, result.ok
       ? { ok: true, text: result.body.text }
       : { ok: false, error: result.body?.error || 'the board report is unavailable right now' }));
     controller.send(requestResponse());
   }
 
-  async function handleReadCard(call_) {
+  async function handleReadCard(call_, owner) {
     const cardId = typeof call_.arguments?.cardId === 'string' ? call_.arguments.cardId : '';
     if (!cardId) {
       controller.send(functionCallOutput(call_.callId, { ok: false, error: 'cardId is required' }));
       controller.send(requestResponse());
       return;
     }
-    const result = await call(`cards/${encodeURIComponent(cardId)}`);
+    const result = await call(`cards/${encodeURIComponent(cardId)}`, { projectName: owner.project });
+    if (!isCurrent(owner)) return;
     controller.send(functionCallOutput(call_.callId, result.ok
       ? { ok: true, text: result.body.text }
       : { ok: false, error: result.body?.error || 'card not found' }));
@@ -184,17 +205,21 @@ export function createCommandRouter({
   // sentence — rejects. The server independently re-checks the exact phrase
   // at confirm time; this decides only which of the two endpoints to call.
   async function settle(proposal, text, mutation) {
+    if (!isCurrent(mutation)) return;
+    mutation.settling = true;
     controller.send(suppressionUpdate(true));
     try {
       const tier = proposal.confirmation.tier;
       const expected = tier === 'reversible' ? 'yes to do' : normalizePhrase(proposal.confirmation.challenge);
       const matches = normalizePhrase(text) === expected;
       if (!matches) {
-        await reject(proposal.proposalId);
+        await reject(proposal.proposalId, mutation.project);
+        if (!isCurrent(mutation)) return;
         speak('Cancelled — nothing was changed.');
         return;
       }
-      const outcome = await confirm(proposal.proposalId, text);
+      const outcome = await confirm(proposal.proposalId, text, mutation.project);
+      if (!isCurrent(mutation)) return;
       speak(outcome.ok
         ? `Done — ${proposal.readback}.`
         : `That could not be completed: ${outcome.body?.error || 'unknown error'}.`);
@@ -203,7 +228,7 @@ export function createCommandRouter({
     }
   }
 
-  async function handleProposeBoardAction(call_) {
+  async function handleProposeBoardAction(call_, context) {
     const { cardId, action, arguments: actionArguments } = call_.arguments || {};
     if (typeof cardId !== 'string' || typeof action !== 'string') {
       controller.send(functionCallOutput(call_.callId, { ok: false, error: 'cardId and action are required' }));
@@ -221,11 +246,13 @@ export function createCommandRouter({
       }));
       return;
     }
-    const mutation = { callId: call_.callId };
+    const mutation = { ...context, mutation: true, callId: call_.callId, proposalId: null, cleaned: false, settling: false };
     activeMutation = mutation;
     const body = { cardId, action };
     if (actionArguments !== undefined) body.arguments = actionArguments;
-    const result = await call('actions', { method: 'POST', body });
+    const result = await call('actions', { method: 'POST', body, projectName: mutation.project });
+    if (typeof result.body?.proposalId === 'string') mutation.proposalId = result.body.proposalId;
+    if (!isCurrent(mutation)) { await cleanupMutation(mutation); return; }
     if (!result.ok) {
       releaseMutation(mutation);
       controller.send(functionCallOutput(call_.callId, { ok: false, error: result.body?.error || 'unable to prepare this action' }));
@@ -245,7 +272,7 @@ export function createCommandRouter({
       // Reject the reservation immediately instead of leaving it pending for
       // its TTL, so a later voice request for the same card isn't blocked by
       // a proposal nothing will ever confirm.
-      await reject(proposal.proposalId);
+      await reject(proposal.proposalId, mutation.project);
       releaseMutation(mutation);
       controller.send(functionCallOutput(call_.callId, {
         ok: true, readback: proposal.readback, requiresVisibleApproval: true,
@@ -261,12 +288,14 @@ export function createCommandRouter({
     // allowed to produce, so none of that response's lifecycle events — the
     // `response.created` that names it least of all — can be missed.
     controller.send(suppressionUpdate(false));
+    controller.setInputEnabled(false);
     controller.send(functionCallOutput(call_.callId, {
       ok: true, readback: proposal.readback, confirmation: proposal.confirmation,
     }));
     const readback = waitForReadback(proposal.proposalId);
     controller.send(requestResponse({ metadata: { [READBACK_METADATA_KEY]: proposal.proposalId } }));
     const outcome = await readback;
+    if (!isCurrent(mutation)) { await cleanupMutation(mutation); return; }
 
     if (!outcome.completed) {
       // The readback is not known to have finished speaking — its lifecycle
@@ -275,7 +304,8 @@ export function createCommandRouter({
       // may never have heard, and would leave that window open to the
       // assistant's own audio, so release the reservation instead.
       controller.send(suppressionUpdate(true));
-      await reject(proposal.proposalId);
+      controller.setInputEnabled(true);
+      await reject(proposal.proposalId, mutation.project);
       releaseMutation(mutation);
       speak('Cancelled — nothing was changed.');
       return;
@@ -288,9 +318,11 @@ export function createCommandRouter({
       challenge: proposal.confirmation.challenge,
       onResolve: (text) => settle(proposal, text, mutation),
       onTimeout: async () => {
+        if (!isCurrent(mutation)) return;
         controller.send(suppressionUpdate(true));
         try {
-          await reject(proposal.proposalId);
+          await reject(proposal.proposalId, mutation.project);
+          if (!isCurrent(mutation)) return;
           speak('Cancelled — you did not confirm in time.');
         } finally {
           releaseMutation(mutation);
@@ -304,7 +336,7 @@ export function createCommandRouter({
       // expire on its own. The tool call already got its result above; there
       // is no live session left to speak anything further into.
       controller.send(suppressionUpdate(true));
-      await reject(proposal.proposalId);
+      await reject(proposal.proposalId, mutation.project);
       releaseMutation(mutation);
     }
   }
@@ -316,12 +348,13 @@ export function createCommandRouter({
       controller.send(requestResponse());
       return;
     }
-    if (toolCall.name === 'read_board_report') return handleReadBoardReport(toolCall);
-    if (toolCall.name === 'read_card') return handleReadCard(toolCall);
-    if (toolCall.name === 'propose_board_action') return handleProposeBoardAction(toolCall);
+    const context = { generation, project: project(), mutation: false };
+    if (toolCall.name === 'read_board_report') return handleReadBoardReport(toolCall, context);
+    if (toolCall.name === 'read_card') return handleReadCard(toolCall, context);
+    if (toolCall.name === 'propose_board_action') return handleProposeBoardAction(toolCall, context);
     controller.send(functionCallOutput(toolCall.callId, { ok: false, error: `unknown tool: ${toolCall.name}` }));
     controller.send(requestResponse());
   }
 
-  return { handleToolCall, handleResponseEvent };
+  return { handleToolCall, handleResponseEvent, reset };
 }

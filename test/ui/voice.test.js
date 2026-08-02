@@ -47,7 +47,12 @@ function emitToolCall(callId, name, args) {
 // The finalized-input-transcription event — the only signal the controller
 // trusts for a spoken sign-off/offline/confirmation reply.
 function emitTranscript(text) {
-  return emitEvent({ type: 'conversation.item.input_audio_transcription.completed', transcript: text });
+  return `(() => {
+    const channel = window.__voiceHooks.pcs.at(-1).dataChannel;
+    const itemId = 'voice-input-' + (window.__voiceInputSequence = (window.__voiceInputSequence || 0) + 1);
+    channel.emit('message', { data: JSON.stringify({ type: 'input_audio_buffer.speech_started', item_id: itemId }) });
+    channel.emit('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: itemId, transcript: ${JSON.stringify(text)} }) });
+  })()`;
 }
 
 // The response lifecycle a real session emits after a propose_board_action
@@ -153,6 +158,8 @@ function installVoiceFakes() {
     pcs: [],
     sessionRequests: [], // every fetch to /api/voice/session — the SDP endpoint itself, not just the fixture upstream it forwards to
     actionRequests: [],  // every fetch to the Actions API — prepare, confirm, and reject
+    holdNextAction: false,
+    releaseAction: null,
     getUserMediaMode: 'ok', // 'ok' | 'deny'
   };
   const realFetch = window.fetch.bind(window);
@@ -160,6 +167,12 @@ function installVoiceFakes() {
     const url = String(typeof input === 'string' ? input : input.url);
     if (url.includes('/api/voice/session')) window.__voiceHooks.sessionRequests.push(url);
     if (url.includes('/api/voice/actions')) window.__voiceHooks.actionRequests.push(url);
+    if (window.__voiceHooks.holdNextAction && /\/api\/voice\/actions\?/.test(url)) {
+      window.__voiceHooks.holdNextAction = false;
+      return new Promise((resolve) => {
+        window.__voiceHooks.releaseAction = () => resolve(realFetch(input, init));
+      });
+    }
     return realFetch(input, init);
   };
 
@@ -211,7 +224,7 @@ function installVoiceFakes() {
       e.name = 'NotAllowedError';
       throw e;
     }
-    const track = { kind: 'audio', stopped: false, stop() { this.stopped = true; } };
+    const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; } };
     window.__voiceHooks.tracks.push(track);
     return { getAudioTracks: () => [track], getTracks: () => [track] };
   };
@@ -479,6 +492,7 @@ test('UI voice: the tool call\'s own response finishing cannot open the confirma
   await page.eval(emitEvent({ type: 'response.created', response: { id: 'resp-unrelated-race', metadata: { todomd_readback_id: 'unrelated' } } }));
   await page.eval(emitEvent({ type: 'response.done', response: { id: 'resp-unrelated-race', status: 'completed' } }));
   await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: 'resp-unrelated-race' }));
+  await page.eval(emitEvent({ type: 'input_audio_buffer.speech_started', item_id: 'readback-echo' }));
 
   // The assistant is still speaking the read-back, which says the challenge
   // phrase aloud: a transcript landing now is its own echo, not the human's
@@ -501,12 +515,51 @@ test('UI voice: the tool call\'s own response finishing cannot open the confirma
   await page.eval(emitEvent({ type: 'output_audio_buffer.stopped', response_id: 'resp-readback-race' }));
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
+  // Transcription is asynchronous: audio captured during the read-back can
+  // finish transcribing only after confirmation opens. Its exact echoed phrase
+  // is still pre-window input and must not execute anything.
+  await page.eval(emitEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'readback-echo', transcript: 'Yes To-do' }));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(await cardStatus(page, 'task-0015'), 'Needs Human');
+  assert.equal(await page.eval(`document.getElementById('voice-btn').dataset.voiceState`), 'confirming');
+
   // The same phrase, now heard for real after the read-back, confirms — the
   // human got the full confirmation window, not what was left of it.
   await page.eval(emitTranscript('Yes To-do'));
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
   assert.equal(await cardStatus(page, 'task-0015'), 'Planned');
 
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  assert.deepEqual(page.errors, []);
+});
+
+test('UI voice: sign-off fences an in-flight proposal from the next conversation', async (t) => {
+  if (!page) return t.skip(SKIP);
+  writeCard(repo, 'task-0017', { status: 'Needs Human', title: 'session fence candidate' });
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  await armAndActivate(page);
+
+  await page.eval(`window.__voiceHooks.holdNextAction = true`);
+  await page.eval(emitToolCall('old-call', 'propose_board_action', { cardId: 'task-0017', action: 'retry_planned' }));
+  await until(async () => (await page.eval(`window.__voiceHooks.actionRequests.length`)) > 0 || null, { timeout: BUDGET.quick });
+  await page.eval(emitTranscript('That is all, To-do'));
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
+
+  await page.eval(`window.__voiceHooks.recognitions.at(-1).result('Hey To-do', true)`);
+  await until(async () => (await page.eval(`window.__voiceHooks.pcs.length`)) === 2 || null, { timeout: BUDGET.quick });
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+  await page.eval(`window.__voiceHooks.releaseAction()`);
+  await until(async () => (await page.eval(
+    `window.__voiceHooks.actionRequests.some((url) => url.includes('/reject'))`,
+  )) || null, { timeout: BUDGET.quick });
+
+  assert.equal(await page.eval(`(() => {
+    const sent = window.__voiceHooks.pcs.at(-1).dataChannel.sent.map((entry) => JSON.parse(entry));
+    return sent.some((event) => event.type === 'conversation.item.create' && event.item?.call_id === 'old-call');
+  })()`), false, 'the old result never enters the new data channel');
+  assert.equal(await cardStatus(page, 'task-0017'), 'Needs Human');
   await page.eval(`document.getElementById('voice-btn').click()`);
   assert.deepEqual(page.errors, []);
 });

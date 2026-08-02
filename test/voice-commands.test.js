@@ -56,6 +56,7 @@ function fakeController({ entersConfirming = true } = {}) {
     sent,
     enterConfirmingCalls,
     send(event) { sent.push(event); return true; },
+    setInputEnabled() { return true; },
     enterConfirming(opts) {
       enterConfirmingCalls.push(opts);
       if (!entersConfirming) return false;
@@ -295,6 +296,37 @@ test('simultaneous mutation tool calls prepare only one proposal and reject the 
   playReadback(router, { readbackId: 'p-first' });
   await first;
   assert.equal(controller.enterConfirmingCalls.length, 1, 'only the accepted proposal reaches confirmation');
+});
+
+test('reset fences an in-flight prepare to its captured project and sends nothing into a later session', async () => {
+  const controller = fakeController();
+  let currentProject = 'old-project';
+  let finishPrepare;
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(url);
+    if (url === '/api/voice/actions?project=old-project') {
+      await new Promise((resolve) => { finishPrepare = resolve; });
+      return { ok: true, status: 200, json: async () => ({
+        proposalId: 'p-old', readback: 'move task-0020 back to Review',
+        confirmation: { tier: 'reversible', phrase: 'Yes To-do', challenge: null },
+      }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const router = createCommandRouter({ controller, project: () => currentProject, fetchFn });
+  const pending = router.handleToolCall({ callId: 'old-call', name: 'propose_board_action', arguments: { cardId: 'task-0020', action: 'retriage' } });
+  await flush();
+  router.reset();
+  currentProject = 'new-project';
+  finishPrepare();
+  await pending;
+
+  assert.equal(functionOutput(controller.sent, 'old-call'), undefined,
+    'the old tool result is never delivered into the replacement session');
+  assert.ok(calls.includes('/api/voice/actions/p-old/reject?project=old-project'),
+    'cleanup is bound to the project that created the proposal');
+  assert.equal(controller.enterConfirmingCalls.length, 0);
 });
 
 test('a readback that never finishes playing releases the proposal instead of opening a confirmation window', async () => {

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRealtimeSession } from '../public/voice/realtime.js';
 
-function fakeTrack() { return { stopped: false, stop() { this.stopped = true; } }; }
+function fakeTrack() { return { enabled: true, stopped: false, stop() { this.stopped = true; } }; }
 function fakeStream(tracks) {
   return { getAudioTracks: () => tracks, getTracks: () => tracks };
 }
@@ -105,9 +105,28 @@ test('a finalized input-transcription event surfaces through onTranscript; other
   await session.open({ onTranscript: (t) => transcripts.push(t) });
   const channel = RTC.instances.at(-1).dataChannels.at(-1);
   channel.emit('message', { data: JSON.stringify({ type: 'response.audio_transcript.delta', transcript: 'ignore me' }) });
-  channel.emit('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'That is all, To-do' }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'input_audio_buffer.speech_started', item_id: 'item_1' }) });
+  channel.emit('message', { data: JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'item_1', transcript: 'That is all, To-do' }) });
   channel.emit('message', { data: 'not json' }); // must not throw
-  assert.deepEqual(transcripts, [{ text: 'That is all, To-do', final: true }]);
+  assert.deepEqual(transcripts, [{ text: 'That is all, To-do', final: true, itemId: 'item_1', inputSequence: 1 }]);
+  assert.equal(session.inputBoundary(), 1);
+});
+
+test('setInputEnabled gates the existing microphone track without replacing or stopping it', async () => {
+  const track = fakeTrack();
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([track]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  await session.open({});
+  session.setInputEnabled(false);
+  assert.equal(track.enabled, false);
+  assert.equal(track.stopped, false, 'read-back gating preserves the active session track');
+  session.setInputEnabled(true);
+  assert.equal(track.enabled, true);
 });
 
 test('a remote track is rendered to an audio sink and played; close() tears it down', async () => {

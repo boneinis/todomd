@@ -58,6 +58,7 @@ export function createVoiceController({
   onDiagnostic = () => {},
   onToolCall = () => {},
   onResponseEvent = () => {},
+  onSessionEnd = () => {},
 } = {}) {
   let state = 'inactive';
   let realtime = null;
@@ -111,6 +112,7 @@ export function createVoiceController({
   async function settleSession({ earcon } = {}) {
     stopIdle();
     stopConfirmTimer();
+    try { onSessionEnd(); } catch { /* teardown must continue */ }
     rejectPendingConfirmation();
     await closeRealtime();
     if (earcon === 'exit') earcons?.exit?.();
@@ -241,12 +243,15 @@ export function createVoiceController({
     try { await p.close(); } catch { /* best effort */ }
   }
 
-  function handleTranscript({ text, final } = {}) {
+  function handleTranscript({ text, final, inputSequence } = {}) {
     if (!final) return;
     const normalized = normalize(text);
     const isOffline = OFFLINE_PHRASES.has(normalized);
     const isSignoff = SIGNOFF_PHRASES.has(normalized);
     if (state === 'confirming') {
+      const boundary = pendingConfirmation?.inputBoundary;
+      if (Number.isInteger(boundary)
+        && (!Number.isInteger(inputSequence) || inputSequence <= boundary)) return;
       if (isOffline) { goOffline('phrase'); return; }
       if (isSignoff) { signOff('phrase'); return; }
       // Any other finalized reply is the human's answer to the outstanding
@@ -290,6 +295,7 @@ export function createVoiceController({
     stopArmedLifetime();
     stopIdle();
     stopConfirmTimer();
+    try { onSessionEnd(); } catch { /* teardown must continue */ }
     rejectPendingConfirmation('offline');
     // Stop local recognition and revoke the visible state before awaiting any
     // potentially slow WebRTC/provider cleanup. Project changes call this and
@@ -325,7 +331,8 @@ export function createVoiceController({
   function enterConfirming({ challenge, onResolve = () => {}, onTimeout = () => {} } = {}) {
     if (state !== 'active') return false;
     stopIdle();
-    pendingConfirmation = { challenge, onResolve, onTimeout };
+    pendingConfirmation = { challenge, onResolve, onTimeout, inputBoundary: realtime?.inputBoundary?.() ?? null };
+    realtime?.setInputEnabled?.(true);
     setState('confirming');
     confirmTimer = setTimeoutFn(() => {
       const pending = pendingConfirmation;
@@ -361,6 +368,12 @@ export function createVoiceController({
     return realtime ? realtime.send(clientEvent) : false;
   }
 
+  function setInputEnabled(enabled) {
+    if (!realtime) return false;
+    realtime.setInputEnabled?.(enabled);
+    return true;
+  }
+
   return {
     arm,
     signOff,
@@ -369,6 +382,7 @@ export function createVoiceController({
     pushToTalkEnd,
     enterConfirming,
     send,
+    setInputEnabled,
     resolveConfirmation,
     notifyWakeEngineError,
     diagnostics,

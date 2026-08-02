@@ -44,7 +44,7 @@ function fakeRealtimeFactory({ manual = false } = {}) {
     if (!manual) resolveOpen();
     const session = {
       closeCalls: 0, closed: false, onTranscript: null, onToolCall: null, onResponseEvent: null, onClose: null,
-      sent: [],
+      sent: [], inputSequence: null, inputEnabledCalls: [],
       async open(handlers) {
         session.onTranscript = handlers.onTranscript;
         session.onToolCall = handlers.onToolCall;
@@ -53,6 +53,8 @@ function fakeRealtimeFactory({ manual = false } = {}) {
         await openPromise;
       },
       send(event) { session.sent.push(event); return true; },
+      inputBoundary() { return session.inputSequence; },
+      setInputEnabled(enabled) { session.inputEnabledCalls.push(enabled); },
       // Idempotent, matching realtime.js's real close() — a superseded
       // in-flight open can legitimately be closed both by the canceller
       // (immediately) and by openActiveSession's own post-await cleanup.
@@ -471,6 +473,25 @@ test('confirming: a finalized transcript from the realtime session resolves the 
   let resolved = null;
   controller.enterConfirming({ challenge: 'confirm task-0020 amber7', onResolve: (r) => { resolved = r; } });
   realtime.sessions[0].onTranscript({ text: 'Yes To-do', final: true });
+  assert.equal(controller.state, 'active');
+  assert.equal(resolved, 'Yes To-do');
+});
+
+test('confirming: only input captured after the confirmation boundary can resolve it', async () => {
+  const { controller, wakeEngine, realtime } = build();
+  await controller.arm();
+  wakeEngine.triggerWake();
+  await flush();
+  const session = realtime.sessions[0];
+  session.inputSequence = 7;
+  let resolved = null;
+  controller.enterConfirming({ onResolve: (r) => { resolved = r; } });
+  assert.deepEqual(session.inputEnabledCalls, [true], 'confirmation re-enables microphone input');
+
+  session.onTranscript({ text: 'Yes To-do', final: true, inputSequence: 7 });
+  assert.equal(controller.state, 'confirming', 'a delayed transcript from pre-window audio is ignored');
+  assert.equal(resolved, null);
+  session.onTranscript({ text: 'Yes To-do', final: true, inputSequence: 8 });
   assert.equal(controller.state, 'active');
   assert.equal(resolved, 'Yes To-do');
 });
