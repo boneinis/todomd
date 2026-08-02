@@ -46,6 +46,20 @@ function publishVoiceContext(detail) {
   latestVoiceContext = detail;
   document.dispatchEvent(new CustomEvent('todomd:context', { detail }));
 }
+function setCurrentProject(nextProject) {
+  const next = nextProject || null;
+  if (next === currentProject) {
+    projectSel.value = next || '';
+    return false;
+  }
+  // Revoke capture before changing project identity. Callers may still need to
+  // fetch the replacement board, and that request is allowed to fail without
+  // leaving voice bound to the project we just left.
+  publishVoiceContext({ project: '', access: 'none', primary: false });
+  currentProject = next;
+  projectSel.value = next || '';
+  return true;
+}
 document.addEventListener('todomd:voice-ready', () => {
   if (latestVoiceContext) publishVoiceContext(latestVoiceContext);
 });
@@ -92,8 +106,8 @@ async function api(path) {
 async function loadProjects() {
   const { projects } = await api('projects');
   projectSel.innerHTML = projects.map((p) => `<option>${esc(p)}</option>`).join('');
-  if (!currentProject || !projects.includes(currentProject)) currentProject = projects[0]; // undefined if none
-  projectSel.value = currentProject || '';
+  const selected = (!currentProject || !projects.includes(currentProject)) ? projects[0] : currentProject;
+  setCurrentProject(selected); // also fences voice if reconnect discovers the old project disappeared
 }
 
 async function loadBoard() {
@@ -1208,7 +1222,10 @@ async function renderProjectList() {
     btn.addEventListener('click', async () => {
       const name = btn.dataset.name;
       const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE', headers });
-      if (res.ok) { toast(`removed ${name}`); await renderProjectList(); await loadProjects(); loadBoard(); }
+      if (res.ok) {
+        if (name === currentProject) setCurrentProject(null);
+        toast(`removed ${name}`); await renderProjectList(); await loadProjects(); loadBoard();
+      }
       else toast('remove failed');
     })
   );
@@ -1233,8 +1250,7 @@ async function addProjectByPath() {
     toast(`added ${out.name}`);
     $('#proj-path').value = '';
     await loadProjects();
-    publishVoiceContext({ project: '', access: 'none', primary: false });
-    currentProject = out.name; projectSel.value = out.name;
+    setCurrentProject(out.name);
     await renderProjectList();
     loadBoard();
   } catch { toast('server unreachable'); }
@@ -1330,8 +1346,7 @@ projectSel.addEventListener('change', () => {
   // Revoke the old context before waiting for the newly-selected board. A
   // slow/failed request must never let capture outlive the project it belongs
   // to; the authenticated full/primary context is restored by loadBoard().
-  publishVoiceContext({ project: '', access: 'none', primary: false });
-  currentProject = projectSel.value;
+  setCurrentProject(projectSel.value);
   loadBoard();
 });
 filterInput.addEventListener('input', renderBoard);

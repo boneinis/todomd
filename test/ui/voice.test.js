@@ -415,6 +415,61 @@ test('UI voice: switching to a different project disarms voice; reloading the SA
   assert.deepEqual(page.errors, []);
 });
 
+test('UI voice: removing the current project disarms before its replacement board arrives', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const removableRepo = makeRepo();
+  addProject(removableRepo);
+  const removableName = path.basename(removableRepo);
+
+  await page.presetScript(`(${installVoiceFakes.toString()})();`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+
+  await page.eval(`(() => {
+    const sel = document.getElementById('project');
+    sel.value = ${JSON.stringify(removableName)};
+    sel.dispatchEvent(new Event('change'));
+  })()`);
+  await until(async () => (await page.eval(`latestVoiceContext?.project`)) === removableName || null, { timeout: BUDGET.quick });
+  await page.eval(`document.getElementById('voice-btn').click()`);
+  await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
+
+  await page.eval(`document.getElementById('manage-projects').click()`);
+  await until(async () => (await page.eval(
+    `Boolean(document.querySelector('.proj-remove[data-name=${JSON.stringify(removableName)}]'))`,
+  )) || null, { timeout: BUDGET.quick });
+  await page.eval(`(() => {
+    window.__origRemoveFetch = window.fetch;
+    window.__replacementHeld = false;
+    const gate = new Promise((resolve) => { window.__releaseReplacement = resolve; });
+    window.fetch = (input, init) => {
+      const url = String(typeof input === 'string' ? input : input.url);
+      if (!window.__replacementHeld && url.includes('/api/board?project=')) {
+        window.__replacementHeld = true;
+        window.__replacementDone = gate.then(() => window.__origRemoveFetch(input, init));
+        return window.__replacementDone;
+      }
+      return window.__origRemoveFetch(input, init);
+    };
+    document.querySelector('.proj-remove[data-name=${JSON.stringify(removableName)}]').click();
+  })()`);
+
+  await until(async () => (await page.eval(`window.__replacementHeld`)) || null, { timeout: BUDGET.quick });
+  assert.deepEqual(await page.eval(`({
+    hidden: document.getElementById('voice-widget').hidden,
+    state: document.getElementById('voice-btn').dataset.voiceState,
+  })`), { hidden: true, state: 'inactive' },
+  'project removal revokes capture without waiting for the replacement board');
+
+  await page.eval(`(async () => {
+    window.__releaseReplacement();
+    await window.__replacementDone;
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
+    window.fetch = window.__origRemoveFetch;
+  })()`);
+  assert.deepEqual(page.errors, []);
+});
+
 test('UI voice: the board losing its current project also disarms voice', async (t) => {
   if (!page) return t.skip(SKIP);
   await page.presetScript(`(${installVoiceFakes.toString()})();`);
