@@ -247,7 +247,9 @@ if (cmd === 'serve') {
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      try { await killAllChildren(); } catch {}
+      // A server restart is not a user cancellation. Stop billing children but
+      // leave Build/Verify branches and worktrees intact for guarded recovery.
+      try { await killAllChildren({ preserveWorktrees: true }); } catch {}
       try { close?.(); } catch {}
       cleanup();
       process.exit(0);

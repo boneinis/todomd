@@ -4,7 +4,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
-import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
+import { isGitRepo, addWorktree, archiveBranchForRestart, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
@@ -821,6 +821,7 @@ async function preservedWorktree(project, card) {
 function canRetryVerification(card) {
   const reason = card?.data?.needs_human_reason;
   return ['bad_verdict', 'hook_cancelled', 'attempts_exhausted'].includes(reason)
+    || (reason === 'orphaned_run' && card?.data?.recovery_stage === 'Verify')
     // A real fail followed by an infrastructure error in the repair Build can
     // be fixed manually in the preserved worktree, then re-verified in place.
     || (['error', 'retry_failed'].includes(reason) && card?.data?.verification?.last_verdict === 'fail');
@@ -900,6 +901,11 @@ export async function restartBuild(project, id) {
   }
   const config = await execConfig(project.path);
   const verification = card.data.verification || {};
+  const branch = card.data.worktree || `${config.branch_prefix || 'todomd/'}${id}`;
+  const archived = await withRepoLock(project.path, () => archiveBranchForRestart(project.path, branch));
+  if (!archived.ok) {
+    return { ok: false, error: `could not preserve the existing task branch: ${archived.reason}` };
+  }
   retryFindings.delete(key);
   recoveryBuilds.delete(key);
   await patchFrontmatter(project.path, id, {
@@ -911,7 +917,8 @@ export async function restartBuild(project, id) {
     verification: { attempts: 0, max_attempts: verification.max_attempts || config.max_attempts || 3, last_verdict: '' },
   });
   await appendRunLog(project.path, id,
-    `- ${now()} · Restart Build · preserved worktree unavailable; starting a fresh build`);
+    `- ${now()} · Restart Build · preserved worktree unavailable; starting a fresh build` +
+    (archived.archived ? ` (prior branch kept as ${archived.archived})` : ''));
   const moved = await orchMove(project, id, 'Queue', 'retrying orphaned build from scratch');
   if (!moved.ok) return moved;
   enqueueBuild(project, id);
@@ -1044,11 +1051,13 @@ export async function archiveCard(project, id, on) {
 // flagged cancelled so its exit handler reverts the card instead of treating
 // the kill as an agent failure). Resolves once all children are dead or
 // force-killed.
-export async function killAllChildren({ graceMs = 5000 } = {}) {
+export async function killAllChildren({ graceMs = 5000, preserveWorktrees = false } = {}) {
   for (const [key, child] of children) {
     const run = runs.get(key);
     if (run) {
       run.cancelled = true;
+      run.preserveWorktree = preserveWorktrees &&
+        (run.stage === 'Build' || run.stage === 'Verify' || run.prevStatus === 'Build' || run.prevStatus === 'Verify');
       run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
       // shutdown: the card parks in Queue and the next boot's reconcile
       // re-enqueues it — the verify cancel handler must not respawn a build
@@ -1063,12 +1072,15 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
   for (const [key, run] of runs) {
     if (children.has(key)) continue;
     run.cancelled = true;
+    run.preserveWorktree = preserveWorktrees &&
+      (run.stage === 'Build' || run.stage === 'Verify' || run.prevStatus === 'Build' || run.prevStatus === 'Verify');
     run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
     run.noRequeue = true;
   }
   for (const claim of triaging.values()) claim.cancelled = true;
   for (const claim of triggerClaims.values()) {
     claim.cancelled = true;
+    claim.preserveWorktree = preserveWorktrees && claim.stage === 'Verify';
     claim.revertTo = claim.stage === 'Verify' ? 'Queue' : 'Review';
     claim.noRequeue = true;
   }
@@ -1077,6 +1089,7 @@ export async function killAllChildren({ graceMs = 5000 } = {}) {
   // process
   for (const pend of pending.values()) {
     pend.cancelled = true;
+    pend.preserveWorktree = preserveWorktrees;
     pend.revertTo = 'Queue';
     pend.noRequeue = true;
   }
@@ -1331,6 +1344,11 @@ function pendingCancelled(project, id) {
 // not a failed try), honor cascadeArchive, and re-drive a Queue revert unless
 // shutdown (noRequeue) or budget mode opted out.
 async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict }) {
+  if (pc.preserveWorktree) {
+    const stage = readCard(project.path, id)?.data?.status === 'Verify' ? 'Verify' : 'Build';
+    return toNeedsHuman(project, id, stage, 'orphaned_run',
+      'server stopped during a run — unmerged work is preserved in the worktree/branch');
+  }
   await releaseCoordination(project, id);
   await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
   await patchFrontmatter(project.path, id, {
@@ -1534,6 +1552,10 @@ async function buildChain(project, id, retry = null, recovery = null) {
 
   if (run?.cancelled) {
     await recordRun(project, id, 'Build', attempt, result, 'cancelled');
+    if (run.preserveWorktree) {
+      return toNeedsHuman(project, id, 'Build', 'orphaned_run',
+        'server stopped during Build — unmerged work is preserved in the worktree/branch');
+    }
     await releaseCoordination(project, id);
     // abandon the worktree so the cancelled attempt's commits don't linger (and
     // the card's worktree: frontmatter isn't left stale) — a re-approval starts fresh
@@ -1617,6 +1639,10 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const vendor = cardVendor(config, card, 'Verify');
 
   if (triggerClaim?.cancelled) {
+    if (triggerClaim.preserveWorktree) {
+      return toNeedsHuman(project, id, 'Verify', 'orphaned_run',
+        'server stopped before Verify — completed Build work is preserved in the worktree/branch');
+    }
     await releaseCoordination(project, id);
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
     await patchFrontmatter(project.path, id, {
@@ -1657,6 +1683,10 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
   if (run?.cancelled) {
     await recordRun(project, id, 'Verify', attempt, result, 'cancelled');
+    if (run.preserveWorktree) {
+      return toNeedsHuman(project, id, 'Verify', 'orphaned_run',
+        'server stopped during Verify — completed Build work is preserved in the worktree/branch');
+    }
     await releaseCoordination(project, id);
     // abandon the worktree (see Build cancel) so nothing stale is left behind
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));

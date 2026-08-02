@@ -923,6 +923,36 @@ test('killAllChildren stops a live agent child and reverts its card', async () =
   clearFakeAgent();
 });
 
+test('server shutdown kills billing children but preserves an interrupted Build worktree for Resume Build', async () => {
+  isolateHome();
+  const marker = path.join(tmp('shutdown-preserve'), 'started');
+  useFakeAgent({ build: 'good', hang: '1', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(marker) && status(repo, 'task-0001') === 'Build', { timeout: BUDGET.chain });
+    const wt = path.join(repo, '.todomd/worktrees/task-0001');
+    fs.writeFileSync(path.join(wt, 'shutdown-sentinel.txt'), 'keep me\n');
+
+    await pipeline.killAllChildren({ graceMs: 1000, preserveWorktrees: true });
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
+
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'orphaned_run');
+    assert.equal(card.data.recovery_stage, 'Build');
+    assert.equal(fs.readFileSync(path.join(wt, 'shutdown-sentinel.txt'), 'utf8'), 'keep me\n');
+    assert.match(git(repo, ['branch', '--list', 'todomd/task-0001']), /todomd\/task-0001/);
+    assert.equal((await pipeline.recoveryActions(p, 'task-0001')).resume_build, true);
+  } finally {
+    clearFakeAgent();
+  }
+});
+
 test('killAllChildren SIGKILLs a child that ignores SIGTERM', async () => {
   isolateHome();
   const marker = path.join(tmp('killall-stubborn'), 'started');
@@ -1474,6 +1504,10 @@ test('Restart Build re-drives a legacy orphan only when its preserved assets are
     status: 'Needs Human',
     extra: 'needs_human_reason: orphaned_run\nsession_id: stale-session\nworktree: todomd/task-0001\nbase_branch: main\n',
   });
+  // Exact task-0040 failure mode: the worktree vanished but its branch did not.
+  // Restart must preserve that ref, free the canonical name, and fork fresh
+  // work from current main rather than failing `git worktree add -b`.
+  git(repo, ['branch', 'todomd/task-0001']);
 
   try {
     const actions = await pipeline.recoveryActions(p, 'task-0001');
@@ -1487,6 +1521,9 @@ test('Restart Build re-drives a legacy orphan only when its preserved assets are
     const card = readCard(repo, 'task-0001');
     assert.equal(card.data.verification.attempts, 1, 'fresh retry starts at attempt one');
     assert.match(card.raw, /Restart Build · preserved worktree unavailable; starting a fresh build/);
+    const archived = git(repo, ['branch', '--list', 'todomd/task-0001-preserved-*']);
+    assert.match(archived, /todomd\/task-0001-preserved-/,
+      'the surviving orphan branch is retained under a backup ref');
     assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')),
       'successful Build → Verify → Done cleanup is unchanged');
   } finally {

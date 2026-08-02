@@ -49,6 +49,29 @@ export async function addWorktree(repoPath, worktreePath, branch) {
   return res.ok ? { ok: true } : { ok: false, reason: res.stderr };
 }
 
+// A fresh Restart Build must fork from the current base branch, but an older
+// orphan can have lost only its worktree while its task branch still survives.
+// Preserve that branch under a deterministic backup ref before freeing the
+// canonical task branch name. Nothing is deleted, and a branch checked out in
+// some other live worktree fails closed instead of being disturbed.
+export async function archiveBranchForRestart(repoPath, branch) {
+  const exists = await git(repoPath, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+  if (!exists.ok) return { ok: true, archived: null };
+
+  const tip = await git(repoPath, ['rev-parse', '--short=8', branch]);
+  const stem = `${branch}-preserved-${tip.ok && tip.stdout ? tip.stdout : 'orphan'}`;
+  let archived = stem;
+  for (let i = 2; i < 100; i++) {
+    const taken = await git(repoPath, ['show-ref', '--verify', '--quiet', `refs/heads/${archived}`]);
+    if (!taken.ok) break;
+    archived = `${stem}-${i}`;
+  }
+  const moved = await git(repoPath, ['branch', '-m', branch, archived]);
+  return moved.ok
+    ? { ok: true, archived }
+    : { ok: false, reason: moved.stderr || `could not preserve existing branch ${branch}` };
+}
+
 // Symlink gitignored runtime deps (node_modules, .env, …) from the main repo
 // into a fresh worktree so the verify command can actually run. Symlinks are
 // instant and share one install; never overwrites anything already present.
