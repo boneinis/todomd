@@ -1,7 +1,7 @@
 ---
 id: task-0039
 title: Add resource monitor with hysteresis governor
-status: Build
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -16,6 +16,9 @@ session_id:
 worktree: todomd/task-0039
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 0
+needs_human_reason: orphaned_run
+recovery_stage: Build
 ---
 
 ## Description
@@ -65,3 +68,5 @@ Risk: `fs.statfsSync` is Node 18.15+; guard it so older runtimes degrade to a
 null disk metric instead of crashing the server at startup.
 
 ## Run Log
+- 2026-08-02 15:51Z · Build attempt 1 · ? turns · $0.000 · cancelled
+  - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
