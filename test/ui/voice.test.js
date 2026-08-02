@@ -368,11 +368,17 @@ test('UI voice: switching to a different project disarms voice; reloading the SA
 
   // switching to a DIFFERENT project must disarm — a live session or armed
   // recognizer must never outlive the board it was opened against
-  await page.eval(`(() => {
+  const immediate = await page.eval(`(() => {
     const sel = document.getElementById('project');
     sel.value = ${JSON.stringify(name2)};
     sel.dispatchEvent(new Event('change'));
+    return {
+      hidden: document.getElementById('voice-widget').hidden,
+      state: document.getElementById('voice-btn').dataset.voiceState,
+    };
   })()`);
+  assert.deepEqual(immediate, { hidden: true, state: 'inactive' },
+    'selection revokes the old voice context before the new board request settles');
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'inactive' || null, { timeout: BUDGET.quick });
 
   assert.deepEqual(page.errors, []);

@@ -273,7 +273,21 @@ test('missing provider configuration after wake behaves the same as any other se
   wakeEngine.triggerWake();
   await flush();
   assert.equal(controller.state, 'armed');
-  assert.match(diagnostics.at(-1).message, /voice is not configured/);
+  assert.match(diagnostics.at(-1).message, /voice provider not configured/);
+});
+
+test('environment failures name the remediation that makes push-to-talk retry operable', async () => {
+  const denied = build({ realtime: fakeFailingRealtimeFactory('Permission denied') });
+  await denied.controller.pushToTalkStart();
+  await flush();
+  assert.match(denied.diagnostics.at(-1).message, /site settings.*push-to-talk to retry/i);
+  assert.equal(denied.diagnostics.at(-1).recovery, true);
+
+  const unconfigured = build({ realtime: fakeFailingRealtimeFactory('voice is not configured') });
+  await unconfigured.controller.pushToTalkStart();
+  await flush();
+  assert.match(unconfigured.diagnostics.at(-1).message, /OPENAI_API_KEY.*restart.*push-to-talk to retry/i);
+  assert.equal(unconfigured.diagnostics.at(-1).recovery, true);
 });
 
 test('an unexpected realtime close while active plays the error cue and returns to armed', async () => {

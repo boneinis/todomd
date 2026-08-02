@@ -239,6 +239,10 @@ model-change, deletion, or bulk-operation permission.
 
 - Missing local capability: show **Local wake unavailable** and offer
   push-to-talk.
+- Microphone permission denied: name the browser site-setting recovery; keep
+  push-to-talk available as the explicit retry after permission is restored.
+- Provider configuration missing: name `OPENAI_API_KEY` and the required board
+  restart; keep push-to-talk available as the retry after configuration.
 - Local language pack missing: offer installation only from explicit arming.
 - Local recognition stops normally: restart with bounded backoff.
 - Local recognition fails terminally: stop capture and show a bounded local

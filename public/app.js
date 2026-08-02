@@ -1225,6 +1225,7 @@ async function addProjectByPath() {
     toast(`added ${out.name}`);
     $('#proj-path').value = '';
     await loadProjects();
+    publishVoiceContext({ project: '', access: 'none', primary: false });
     currentProject = out.name; projectSel.value = out.name;
     await renderProjectList();
     loadBoard();
@@ -1317,7 +1318,14 @@ $('#card-form').addEventListener('submit', async (e) => {
   }
 });
 
-projectSel.addEventListener('change', () => { currentProject = projectSel.value; loadBoard(); });
+projectSel.addEventListener('change', () => {
+  // Revoke the old context before waiting for the newly-selected board. A
+  // slow/failed request must never let capture outlive the project it belongs
+  // to; the authenticated full/primary context is restored by loadBoard().
+  publishVoiceContext({ project: '', access: 'none', primary: false });
+  currentProject = projectSel.value;
+  loadBoard();
+});
 filterInput.addEventListener('input', renderBoard);
 applyViewToggle();
 

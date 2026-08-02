@@ -33,6 +33,18 @@ function boundedMessage(value, max = 200) {
   return String(text).replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+function sessionFailureDiagnostic(error) {
+  const message = boundedMessage(error);
+  const code = String(error?.name || error?.code || '').toLowerCase();
+  if (code === 'notallowederror' || /permission|denied|not allowed/i.test(message)) {
+    return 'microphone permission denied — allow microphone access in browser site settings, then hold push-to-talk to retry';
+  }
+  if (/not configured|openai_api_key|provider configuration/i.test(message)) {
+    return 'voice provider not configured — configure OPENAI_API_KEY and restart TODOMD, then hold push-to-talk to retry';
+  }
+  return `voice session unavailable: ${message} — hold push-to-talk to retry`;
+}
+
 export function createVoiceController({
   wakeEngine,
   earcons = null,
@@ -198,7 +210,10 @@ export function createVoiceController({
       // provider the server has no configuration for — so each one leaves a
       // working way to talk to the board, not just an explanation of why the
       // last attempt did not.
-      diag(`voice session unavailable: ${boundedMessage(error)}`, { fallback: true });
+      // Push-to-talk cannot bypass a denied OS permission or an absent server
+      // credential. It is the explicit recovery gesture after the user fixes
+      // that prerequisite, so say exactly what must change before retrying.
+      diag(sessionFailureDiagnostic(error), { fallback: true, recovery: true });
       return;
     }
     if (myEpoch !== sessionEpoch) { // offline/sign-off landed while the open() above was in flight
@@ -266,11 +281,14 @@ export function createVoiceController({
     stopIdle();
     stopConfirmTimer();
     rejectPendingConfirmation('offline');
-    await closePendingSession();
-    await closeRealtime();
+    // Stop local recognition and revoke the visible state before awaiting any
+    // potentially slow WebRTC/provider cleanup. Project changes call this and
+    // must take effect in the same event turn, not after the next board fetch.
     try { wakeEngine.stop(); } catch { /* already stopped, or never armed */ }
     armedByWake = false;
     setState('inactive', { reason });
+    await closePendingSession();
+    await closeRealtime();
     return true;
   }
 
