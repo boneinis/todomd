@@ -1,7 +1,7 @@
 ---
 id: task-0038
 title: Command routing confirmation browser tests
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 4/4 of task-0020)
-session_id: 019fc25f-5439-7033-b99c-446bcd12af3e
+session_id: 019fc26b-bfda-7493-ba74-66ed0de2a92e
 worktree: todomd/task-0038
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 40.3103
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -70,3 +70,7 @@ confirmation and recovery commands, and verify the complete foreground flow.
   - attempts_exhausted: `npm test` passed with normal runtime permissions: 449 core tests and 25 browser tests. However, the confirmation read-back has a reachable response-correlation race. `public/voice/commands.js:68-125` stores one global `pendingReadback` and binds it to the first `response.created` observed; the `response.create` sent at lines 240-242 contains no correlation metadata. An unrelated response already 
 - 2026-08-02 12:11Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - attempts_exhausted: `npm test` passes with localhost access: 450 unit tests and 25 UI tests. Two reachable bugs remain. First, confirmation transcripts are not fenced by capture time: microphone transcription remains active during read-back, and audio committed then may finish transcribing after the confirmation state opens. That delayed challenge phrase is accepted, allowing assistant echo or recorded playback to co
+- 2026-08-02 12:29Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: Boolean verdict: false.
+
+1. `public/voice/commands.js:45-49` sends GA `session.update` events without the required `session.type: "realtime"` discriminator. The official generated OpenAPI type requires it ([OpenAI Realtime types](https://raw.githubusercontent.com/openai/openai-node/master/src/resources/realtime/realtime.ts)). The server can reject both suppression and restoration updates, while th
