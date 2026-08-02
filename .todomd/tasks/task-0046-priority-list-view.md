@@ -1,7 +1,7 @@
 ---
 id: task-0046
 title: priority list view
-status: Review
+status: Plan
 type: improvement
 priority: medium
 labels: []
@@ -15,6 +15,7 @@ worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-08-02
 cost_usd: 0.1721
+needs_human_reason:
 ---
 
 ## Description
