@@ -74,6 +74,18 @@ Risk: budget mode (`mode: budget`) deliberately does not enqueue builds
 (`pipeline.js:680`, `:1280`); the scheduler must keep that opt-out intact or
 budget boards will start double-running work against the dispatcher.
 
+## Recovery Requirements
+
+The first implementation failed independent review. The fresh build must address all of these:
+
+- Resolve one authoritative machine-wide global cap across differently configured projects; never select the global limit from whichever entry is being considered.
+- Schedule Build, CI, and Verify as their actual columns. Do not hold a Build slot for the whole Build-to-Verify chain or leave CI/Verify limits inert.
+- Construct the production governor from normalized configured resource thresholds, recovery samples, enabled state, and sampling interval—not hard-coded defaults.
+- Carry `deferredReason` through live run-state broadcasts and render deferred state/reasons in the board UI.
+- Catch scheduler job settlement failures and release counters without creating an unhandled rejection.
+- Preserve the deployed persistent manual Queue Pause behavior: a manually paused project must admit no new scheduler work, pause state must survive restart, and explicit resume must rehydrate parked Queue cards. Keep the existing pause API/UI tests green.
+- Add pipeline-level regression coverage for differing project global settings, real stage-column accounting, configured governor values, deferred WebSocket/UI state, rejected jobs, and manual pause integration.
+
 ## Run Log
 - 2026-08-02 21:24Z · Build attempt 1 · 101 turns · $9.357 · checkpoint 1: progress detected; continuing
 - 2026-08-02 21:29Z · Build attempt 1 · 17 turns · $3.150 · ok
