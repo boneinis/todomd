@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -12,10 +12,11 @@ source: chunk
 assignee:
 agent: claude
 triaged: n/a (chunk 1/2 of task-0027)
-session_id:
+session_id: e3deedd6-d0a9-4110-b8de-a592c458ba44
 worktree: todomd/task-0031
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 2.691
 ---
 
 ## Description
@@ -80,3 +81,4 @@ Bulk archive API and eligibility rules
    the existing `POST /api/cards/:id/archive` `{"archived":false}` route.
 
 ## Run Log
+- 2026-08-02 14:44Z · Build attempt 1 · 62 turns · $2.691 · ok
