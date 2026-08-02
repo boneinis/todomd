@@ -276,6 +276,34 @@ test('UI smoke: screened email list renders seeded records, and a held email car
   }
 });
 
+test('UI smoke: queue pause control persists across reload and resumes explicitly', async (t) => {
+  if (!page) return t.skip(SKIP);
+  {
+    page.errors.length = 0;
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}`);
+    await until(async () => (await page.eval(`document.getElementById('queue-pause').textContent`)) === 'pause queue' || null,
+      { timeout: BUDGET.stage });
+
+    await page.eval(`document.getElementById('queue-pause').click()`);
+    await until(async () => (await page.eval(`document.getElementById('queue-pause').getAttribute('aria-pressed')`)) === 'true' || null,
+      { timeout: BUDGET.quick });
+    assert.equal(await page.eval(`document.getElementById('queue-pause').textContent`), 'resume queue');
+    assert.match(await page.eval(`document.getElementById('usage').textContent`), /queue paused/);
+
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}`);
+    await until(async () => (await page.eval(`document.getElementById('queue-pause').getAttribute('aria-pressed')`)) === 'true' || null,
+      { timeout: BUDGET.stage });
+    assert.equal(await page.eval(`document.getElementById('queue-pause').textContent`), 'resume queue',
+      'the server-backed pause survives a page and board reload');
+
+    await page.eval(`document.getElementById('queue-pause').click()`);
+    await until(async () => (await page.eval(`document.getElementById('queue-pause').getAttribute('aria-pressed')`)) === 'false' || null,
+      { timeout: BUDGET.quick });
+    assert.equal(await page.eval(`document.getElementById('queue-pause').textContent`), 'pause queue');
+    assert.deepEqual(page.errors, [], 'pause/resume produces no browser errors');
+  }
+});
+
 // task-0045: a scrollbar-consuming column and border-left status stripes both
 // shrank a card's content box, so dragging a card between columns (or into a
 // running/queued state) visibly changed its width. This test replaces the

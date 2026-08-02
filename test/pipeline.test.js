@@ -77,6 +77,70 @@ test('reordering Queue cards reprioritizes the live scheduler', async () => {
   }
 });
 
+test('manual queue pause lets active work finish, persists, and parks followers until resume', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good', exit_delay_ms: 500 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Build', { timeout: BUDGET.quick });
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
+
+    assert.deepEqual(pipeline.pauseQueue(p), { ok: true, queue_paused: true });
+    assert.equal(pipeline.usage(p).queue_paused, true);
+    assert.equal(pipeline.getRunStates(p.name)['task-0002']?.state, 'queued');
+
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    await sleep(100);
+    assert.equal(status(repo, 'task-0002'), 'Queue', 'a follower stays parked after the active chain finishes');
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0002')), false,
+      'pausing never creates the follower worktree');
+
+    // Forgetting volatile scheduler state models a board restart. The local
+    // marker remains authoritative, and resume rehydrates the parked card.
+    pipeline.forgetProject(p.name);
+    assert.equal(pipeline.isQueuePaused(p), true, 'the pause survives process state being discarded');
+    assert.deepEqual(pipeline.resumeQueue(p), { ok: true, queue_paused: false });
+    await until(() => status(repo, 'task-0002') === 'Done', { timeout: BUDGET.chain });
+    assert.equal(pipeline.isQueuePaused(p), false);
+  } finally {
+    pipeline.resumeQueue(p);
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('manual queue resume never launches dispatcher-managed budget work', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+  const p = project(repo);
+  const marker = path.join(repo, '.unexpected-build');
+  useFakeAgent({ hang: 'build', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  writeCard(repo, 'task-0001', { status: 'Queue' });
+
+  try {
+    pipeline.pauseQueue(p);
+    assert.deepEqual(pipeline.resumeQueue(p), { ok: true, queue_paused: false });
+    await sleep(150);
+    assert.equal(status(repo, 'task-0001'), 'Queue');
+    assert.equal(fs.existsSync(marker), false, 'resume leaves budget work for the dispatcher');
+    assert.deepEqual(pipeline.getRunStates(p.name), {});
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('a productive Build turn-limit checkpoint resumes automatically and reaches Done', async () => {
   isolateHome();
   const marker = path.join(tmp('checkpoint'), 'first-slice');

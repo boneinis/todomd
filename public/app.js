@@ -140,14 +140,47 @@ async function loadBoard() {
   const usage = boardData.usage || {};
   const modeTag = boardData.mode === 'budget' ? ' · budget' : '';
   const viewer = boardData.access === 'viewer';
-  $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag + (viewer ? ' · monitor' : '');
+  const pausedTag = usage.queue_paused ? ' · queue paused' : '';
+  $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag + pausedTag + (viewer ? ' · monitor' : '');
   document.body.classList.toggle('viewer', viewer);
+  applyQueuePause(usage.queue_paused === true);
   setSkillOptions();
   renderBoard();
   // voice/main.js is a separate ES module (see index.html) with no access to
   // this classic script's top-level scope — this is the only bridge it needs.
   publishVoiceContext({ project: requestedProject, access: boardData.access, primary: boardData.primary === true });
 }
+
+function applyQueuePause(paused) {
+  const btn = $('#queue-pause');
+  btn.textContent = paused ? 'resume queue' : 'pause queue';
+  btn.classList.toggle('active', paused);
+  btn.setAttribute('aria-pressed', String(paused));
+  btn.title = paused
+    ? 'resume starting parked Queue cards'
+    : 'let active work finish, then hold new starts';
+}
+
+$('#queue-pause').addEventListener('click', async () => {
+  if (!currentProject || !boardData || boardData.access !== 'full') return;
+  const btn = $('#queue-pause');
+  const paused = boardData.usage?.queue_paused === true;
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/queue/${paused ? 'resume' : 'pause'}?project=${encodeURIComponent(currentProject)}`,
+      { method: 'POST', headers });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || `could not ${paused ? 'resume' : 'pause'} queue`);
+    boardData.usage = { ...(boardData.usage || {}), queue_paused: out.queue_paused === true };
+    applyQueuePause(out.queue_paused === true);
+    toast(out.queue_paused ? 'queue paused — active work will finish' : 'queue resumed');
+    await loadBoard();
+  } catch {
+    toast('server unreachable');
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 function renderBanners(list) {
   const el = $('#banners');
@@ -201,7 +234,7 @@ const COLUMN_HELP = {
   Review: 'New cards land here. An agent auto-triages each one — codebase insight, a proposed plan, an estimate, and flags — written into the card. You decide: drag to Plan to proceed.',
   Plan: 'An agent writes a concrete implementation plan into the card, then moves it to Planned. (No code is written yet.)',
   Planned: 'The plan is ready for your review. Read it in the card, then drag to Queue to approve and build it.',
-  Queue: 'Approved & waiting to build. An agent picks it up automatically (launcher mode) or via your /loop dispatcher (budget mode). Quota-paused cards also wait here to resume.',
+  Queue: 'Approved & waiting to build. An agent picks it up automatically (launcher mode) or via your /loop dispatcher (budget mode). Manually paused and quota-paused cards wait here without losing work.',
   Build: 'An agent is implementing the card in an isolated git worktree (your main branch is untouched until it passes).',
   Verify: 'An independent agent checks the work against the acceptance criteria. Pass → merged to Done; fail → it retries with the findings, up to the attempt cap.',
   'Needs Human': 'The pipeline paused for you: attempts exhausted, a merge/work conflict, a worktree-env issue, or the agent has a question. Open the card for the reason — answer it, or drag it back to retry.',

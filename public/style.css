@@ -636,7 +636,7 @@ body.viewer .col-edit { display: none; }
   font: inherit; font-size: 10.5px; padding: 3px 9px; cursor: pointer; border-radius: var(--r-btn);
 }
 .proj-remove:hover { border-color: var(--red); color: var(--red); }
-body.viewer #manage-projects, body.viewer #intake-btn, body.viewer #prompts-btn { display: none !important; }
+body.viewer #manage-projects, body.viewer #intake-btn, body.viewer #prompts-btn, body.viewer #queue-pause { display: none !important; }
 .prompts-modal { width: min(760px, 94vw); }
 .prompts-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
 .prompts-row select { background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); font: inherit; font-size: 12px; padding: 6px 10px; border-radius: var(--r-btn); }

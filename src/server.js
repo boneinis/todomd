@@ -412,7 +412,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
         primary: primary(req),
         runStates: pipeline.getRunStates(project.name),
         banners: pipeline.getBanners(),
-        usage: pipeline.usage(project.name),
+        usage: pipeline.usage(project),
         skills: listSkills(project.path), // available command/skill names for the picker
       });
     }
@@ -682,6 +682,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
       // resume only the board the user clicked, not every paused project
       pipeline.resumeQueues([project]);
       return json(res, 200, { ok: true });
+    }
+    if (url.pathname === '/api/queue/pause' && req.method === 'POST') {
+      return json(res, 200, pipeline.pauseQueue(project));
+    }
+    if (url.pathname === '/api/queue/resume' && req.method === 'POST') {
+      return json(res, 200, pipeline.resumeQueue(project));
     }
     return json(res, 404, { error: 'not found' });
   }

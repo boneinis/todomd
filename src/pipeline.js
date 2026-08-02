@@ -72,6 +72,34 @@ let nextRunGeneration = 0;
 const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
+
+// A manual queue pause is local operational state, not shared board metadata:
+// committing it would unexpectedly pause teammates' machines too. Keep one
+// marker per project under the already-gitignored .todomd/local directory so
+// it survives this board process restarting without touching cards or Git.
+function queuePauseFile(project) {
+  return path.join(project.path, '.todomd', 'local', 'queue-paused');
+}
+
+export function isQueuePaused(project) {
+  if (!project?.path) return false;
+  try { return fs.statSync(queuePauseFile(project)).isFile(); }
+  catch { return false; }
+}
+
+function persistQueuePause(project, paused) {
+  const file = queuePauseFile(project);
+  if (!paused) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // The file's contents are informational; existence is the fail-safe state.
+  // A direct tiny write is portable when replacing an existing marker too
+  // (Windows rename-over-existing behavior differs from POSIX).
+  fs.writeFileSync(file, `${new Date().toISOString()}\n`, { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+}
 const retryFindings = new Map();      // runKey → { project, card, findings }
 const recoveryBuilds = new Map();     // runKey → guarded continuation state with exact project/card ownership
 
@@ -1255,7 +1283,9 @@ function enqueueBuild(project, id) {
 }
 
 function processQueue(project) {
-  if (quotaPaused.has(project.name)) return;
+  // Manual pause is deliberately a start gate only: an already-running
+  // Build→Verify chain finishes normally, while every follower stays queued.
+  if (quotaPaused.has(project.name) || isQueuePaused(project)) return;
   const config = loadConfig(project.path);
   const limit = config.concurrency || 1;
   const q = queues.get(project.name) || [];
@@ -2137,8 +2167,30 @@ export function forgetProject(projectName) {
   for (const [k, entry] of runGenerations) if (entry.project === projectName) runGenerations.delete(k);
 }
 
-export function usage(projectName) {
-  return { month_cost_usd: monthCost(), quota_paused: projectName ? quotaPaused.has(projectName) : quotaPaused.size > 0 };
+export function usage(projectOrName) {
+  const projectName = typeof projectOrName === 'string' ? projectOrName : projectOrName?.name;
+  return {
+    month_cost_usd: monthCost(),
+    quota_paused: projectName ? quotaPaused.has(projectName) : quotaPaused.size > 0,
+    queue_paused: typeof projectOrName === 'object' && isQueuePaused(projectOrName),
+  };
+}
+
+export function pauseQueue(project) {
+  persistQueuePause(project, true);
+  return { ok: true, queue_paused: true };
+}
+
+export function resumeQueue(project) {
+  persistQueuePause(project, false);
+  if ((loadConfig(project.path).mode || 'launcher') === 'budget') {
+    return { ok: true, queue_paused: false };
+  }
+  // Rehydrate cards that were parked across a restart as well as entries still
+  // present in the in-memory queue; both helpers dedupe before starting work.
+  enqueueQueue(project);
+  processQueue(project);
+  return { ok: true, queue_paused: false };
 }
 
 export function resumeQueues(projects) {

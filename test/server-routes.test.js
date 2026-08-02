@@ -168,9 +168,9 @@ test('API reorder persists same-column priority and rejects cross-column targets
   } finally { srv.close(); }
 });
 
-test('API attachments + /api/file containment, projects, commands, resume-queues', async () => {
+test('API attachments + /api/file containment, projects, commands, queue controls', async () => {
   isolateHome();
-  const { base, srv, q, name } = await boot();
+  const { repo, base, srv, q, name } = await boot();
   const tok = srv.token;
   const h = { 'x-todomd-token': tok, origin: base };
   try {
@@ -225,7 +225,22 @@ test('API attachments + /api/file containment, projects, commands, resume-queues
     // a bad command name (not [\w-]) is not routed → 404
     assert.equal((await fetch(`${base}/api/commands/todomd..evil${q}`, { headers: { 'x-todomd-token': tok } })).status, 404);
 
-    // resume-queues (no-op when nothing paused) → 200
+    // project queue pause is persistent local state exposed on the board;
+    // resume clears it without touching cards or worktrees
+    r = await fetch(`${base}/api/queue/pause${q}`, { method: 'POST', headers: h });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).queue_paused, true);
+    r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': tok } });
+    assert.equal((await r.json()).usage.queue_paused, true);
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/local/queue-paused')), true);
+
+    r = await fetch(`${base}/api/queue/resume${q}`, { method: 'POST', headers: h });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).queue_paused, false);
+    r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': tok } });
+    assert.equal((await r.json()).usage.queue_paused, false);
+
+    // legacy quota-resume action remains compatible (no-op when unpaused)
     r = await fetch(`${base}/api/resume-queues${q}`, { method: 'POST', headers: h });
     assert.equal(r.status, 200);
   } finally { srv.close(); }
