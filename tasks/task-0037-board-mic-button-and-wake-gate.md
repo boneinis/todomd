@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Needs Human
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0037
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 28.5062
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
