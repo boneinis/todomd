@@ -1,7 +1,7 @@
 ---
 id: task-0033
 title: Synchronize team assignments through GitHub
-status: Review
+status: Plan
 type: improvement
 priority: high
 labels: [sync, github, team]
@@ -17,6 +17,7 @@ worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-07-31
 cost_usd: 0.1823
+needs_human_reason:
 ---
 
 ## Description
