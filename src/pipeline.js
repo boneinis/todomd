@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
-import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
+import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, stopHookSettings } from './runner.js';
@@ -115,9 +115,9 @@ async function parkForQuota(project, id, attempt, maxAttempts, findings) {
 // enqueueBuild dedupes, so this is safe to call repeatedly.
 function enqueueQueue(project) {
   try {
-    for (const card of loadBoard(project.path).cards) {
+    for (const card of sortCardsByBoardOrder(loadBoard(project.path).cards.filter((c) => c.status === 'Queue'))) {
       // epics sit in Queue as trackers — they never build (their chunks do)
-      if (card.status === 'Queue' && card.id && !card.epic &&
+      if (card.id && !card.epic &&
           !children.has(runKey(project.name, card.id)) && !pending.has(runKey(project.name, card.id))) {
         enqueueBuild(project, card.id);
       }
@@ -751,6 +751,31 @@ export async function humanMove(project, id, to) {
 
   // free human move between non-pipeline columns
   return moveCard(project.path, id, to);
+}
+
+// Reorder a card without changing its status. Queue order is mirrored into the
+// live in-memory scheduler immediately; the persisted board_order values make
+// the same priority survive a server restart. A column with active agent work
+// is left alone because rebalancing writes every card file in that column.
+export async function reorder(project, id, beforeId = null) {
+  const card = readCard(project.path, id);
+  if (!card) return { ok: false, error: `card not found: ${id}` };
+  const status = card.data.status;
+  const peers = loadBoard(project.path, { includeArchived: true }).cards
+    .filter((c) => c.status === status && !!c.archived === !!card.data.archived);
+  if (status !== 'Queue' && peers.some((c) => c.id && hasLiveRun(project.name, c.id))) {
+    return { ok: false, error: 'cannot reorder a column while one of its cards is running' };
+  }
+
+  const result = await reorderCards(project.path, id, beforeId);
+  if (!result.ok || result.status !== 'Queue') return result;
+
+  const q = queues.get(project.name);
+  if (q?.length) {
+    const rank = new Map(result.order.map((cardId, i) => [cardId, i]));
+    q.sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER));
+  }
+  return result;
 }
 
 // A verifier that could not return a verdict may be retried without throwing

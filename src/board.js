@@ -258,6 +258,19 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
   return { config, cards };
 }
 
+// Manual priority within a column. Cards without an explicit order retain the
+// historical filename order and sit after cards a human has ranked. Return a
+// copy so callers never mutate loadBoard's shared payload accidentally.
+export function sortCardsByBoardOrder(cards) {
+  return [...cards].sort((a, b) => {
+    const ao = Number(a?.board_order), bo = Number(b?.board_order);
+    const aRanked = Number.isFinite(ao), bRanked = Number.isFinite(bo);
+    if (aRanked && bRanked && ao !== bo) return ao - bo;
+    if (aRanked !== bRanked) return aRanked ? -1 : 1;
+    return String(a?.file || a?.id || '').localeCompare(String(b?.file || b?.id || ''));
+  });
+}
+
 // The most recent run's streamed events, for back-filling the drawer's live log
 // when you open a card mid-run (or to review a finished run). Reads the newest
 // .todomd/runs/<id>/<stage>-<n>.jsonl. Returns the raw stream-json events.
@@ -311,6 +324,16 @@ function setStatusInFrontmatter(raw, newStatus) {
   const newFm = /^status:.*$/m.test(fm)
     ? fm.replace(/^status:.*$/m, () => `status: ${newStatus}`)
     : `${fm}\nstatus: ${newStatus}`;
+  return `---\n${newFm}\n---` + raw.slice(m[0].length);
+}
+
+function setFrontmatterScalar(raw, key, value) {
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return null;
+  const fm = m[1];
+  const re = new RegExp(`^${key}:.*$`, 'm');
+  const line = `${key}: ${value}`;
+  const newFm = re.test(fm) ? fm.replace(re, () => line) : `${fm}\n${line}`;
   return `---\n${newFm}\n---` + raw.slice(m[0].length);
 }
 
@@ -382,6 +405,57 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
     const commit = await commitCard(repoPath, relFile, msg);
     const result = { ok: true, oldStatus, newStatus, commit };
     if (!commit.committed) result.warning = `moved, but not committed: ${commit.reason}`;
+    return result;
+  });
+}
+
+// Persist a card's position inside its current column. Rebalance the complete
+// visible column to compact integer ranks in one repository transaction and
+// one path-scoped commit; this avoids fractional-rank drift and makes restart
+// ordering deterministic. Archived and active-board views remain separate.
+export function reorderCards(repoPath, id, beforeId = null) {
+  return withRepoLock(repoPath, async () => {
+    const board = loadBoard(repoPath, { includeArchived: true });
+    const movingMatches = board.cards.filter((c) => !c.unparseable && c.id === id);
+    if (movingMatches.length !== 1) {
+      return { ok: false, error: movingMatches.length ? `ambiguous card id: ${id}` : `card not found: ${id}` };
+    }
+    const moving = movingMatches[0];
+    const archived = !!moving.archived;
+    const peers = sortCardsByBoardOrder(board.cards.filter((c) =>
+      !c.unparseable && c.status === moving.status && !!c.archived === archived));
+
+    if (beforeId === id) return { ok: true, unchanged: true, status: moving.status, order: peers.map((c) => c.id) };
+    let before = null;
+    if (beforeId !== null) {
+      const matches = peers.filter((c) => c.id === beforeId);
+      if (matches.length !== 1) {
+        return { ok: false, error: matches.length ? `ambiguous card id: ${beforeId}` : 'reorder target must be in the same column' };
+      }
+      before = matches[0];
+    }
+
+    const ordered = peers.filter((c) => c.file !== moving.file);
+    const insertAt = before ? ordered.findIndex((c) => c.file === before.file) : ordered.length;
+    ordered.splice(insertAt, 0, moving);
+
+    const changed = [];
+    for (let i = 0; i < ordered.length; i++) {
+      const card = ordered[i];
+      const rank = i + 1;
+      if (Number(card.board_order) === rank) continue;
+      const relFile = path.join('.todomd', 'tasks', card.file);
+      const absFile = path.join(repoPath, relFile);
+      const updated = setFrontmatterScalar(fs.readFileSync(absFile, 'utf8'), 'board_order', rank);
+      if (updated === null) return { ok: false, error: `${card.id} has no frontmatter block; fix the file manually` };
+      writeFileAtomic(absFile, updated);
+      changed.push(relFile);
+    }
+
+    if (!changed.length) return { ok: true, unchanged: true, status: moving.status, order: ordered.map((c) => c.id) };
+    const commit = await commitPaths(repoPath, changed, `chore(todomd): reorder ${moving.status} cards`);
+    const result = { ok: true, status: moving.status, order: ordered.map((c) => c.id), commit };
+    if (!commit.committed) result.warning = `reordered, but not committed: ${commit.reason}`;
     return result;
   });
 }

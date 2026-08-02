@@ -4,7 +4,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks, withRepoLock, withoutRepoLockContext } from '../src/board.js';
+import { loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, parseChunks, withRepoLock, withoutRepoLockContext } from '../src/board.js';
+
+test('reorderCards persists deterministic in-column priority in one commit', async () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001');
+  writeCard(repo, 'task-0002');
+  writeCard(repo, 'task-0003');
+
+  const result = await reorderCards(repo, 'task-0003', 'task-0001');
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.commit.committed, true);
+  assert.deepEqual(result.order, ['task-0003', 'task-0001', 'task-0002']);
+  assert.deepEqual(
+    sortCardsByBoardOrder(loadBoard(repo).cards.filter((c) => c.status === 'Review')).map((c) => c.id),
+    ['task-0003', 'task-0001', 'task-0002'],
+  );
+  assert.equal(readCard(repo, 'task-0003').data.board_order, 1);
+  assert.equal(readCard(repo, 'task-0001').data.board_order, 2);
+  assert.equal(readCard(repo, 'task-0002').data.board_order, 3);
+  assert.equal(git(repo, ['status', '--porcelain']), '', 'the complete rebalance is committed atomically');
+
+  const unchanged = await reorderCards(repo, 'task-0003', 'task-0001');
+  assert.equal(unchanged.unchanged, true);
+
+  writeCard(repo, 'task-0004', { status: 'Plan' });
+  const crossColumn = await reorderCards(repo, 'task-0003', 'task-0004');
+  assert.equal(crossColumn.ok, false);
+  assert.match(crossColumn.error, /same column/);
+});
 
 test('withRepoLock is reentrant for a guarded operation that uses board helpers', async () => {
   const repo = makeRepo();

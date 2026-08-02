@@ -126,6 +126,28 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     })()`);
     assert.equal(survived, 7, 'the client survives a raw scalar on its own, independent of the server');
 
+    // In-column drag uses the reorder endpoint (not the status-move endpoint),
+    // persists the rank, then reloads the column in that same order.
+    await page.eval(`(() => {
+      const source = document.querySelector('[data-id="task-0003"]');
+      const first = document.querySelector('[data-id="task-0001"]');
+      const column = first.closest('.column');
+      const dt = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      column.dispatchEvent(new DragEvent('dragover', {
+        bubbles: true, cancelable: true, dataTransfer: dt,
+        clientY: first.getBoundingClientRect().top,
+      }));
+      column.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+      source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    })()`);
+    const reviewOrder = await until(async () => {
+      const ids = await page.eval(`[...document.querySelector('.column[data-status="Review"] .col-cards').children]
+        .filter((el) => el.classList.contains('card')).map((el) => el.dataset.id)`);
+      return ids[0] === 'task-0003' ? ids : null;
+    }, { timeout: BUDGET.quick, label: 'task-0003 reordered before task-0001 in Review' });
+    assert.equal(reviewOrder[0], 'task-0003');
+
     // the drawer is the other place a bad shape aborted mid-render — and this
     // one is NOT masked by the server: /api/cards/:id returns raw frontmatter
     await page.eval(`document.querySelector('[data-id="task-0002"]').click()`);

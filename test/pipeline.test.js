@@ -47,6 +47,36 @@ test('happy path: Review → Plan → Planned → Queue → Build → Verify →
   clearFakeAgent();
 });
 
+test('reordering Queue cards reprioritizes the live scheduler', async () => {
+  isolateHome();
+  const marker = path.join(tmp('priority-queue'), 'first-build');
+  useFakeAgent({ hang: 'build', hang_marker: marker, verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+  writeCard(repo, 'task-0003', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(marker) && status(repo, 'task-0001') === 'Build', { timeout: BUDGET.stage });
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
+    await pipeline.humanMove(p, 'task-0003', 'Queue');
+    assert.deepEqual(Object.entries(pipeline.getRunStates(p.name))
+      .filter(([, state]) => state.state === 'queued').map(([id]) => id), ['task-0002', 'task-0003']);
+
+    const result = await pipeline.reorder(p, 'task-0003', 'task-0002');
+    assert.equal(result.ok, true, result.error);
+    assert.deepEqual(Object.entries(pipeline.getRunStates(p.name))
+      .filter(([, state]) => state.state === 'queued').map(([id]) => id), ['task-0003', 'task-0002']);
+  } finally {
+    pipeline.forgetProject(p.name); // discard queued followers before stopping the hanging first build
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('a productive Build turn-limit checkpoint resumes automatically and reaches Done', async () => {
   isolateHome();
   const marker = path.join(tmp('checkpoint'), 'first-slice');
