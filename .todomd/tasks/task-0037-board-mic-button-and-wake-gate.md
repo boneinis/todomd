@@ -1,7 +1,7 @@
 ---
 id: task-0037
 title: Board mic button and wake gate
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 3/4 of task-0020)
-session_id: 019fbfc6-fac3-7093-a60f-d93eddf5ccac
+session_id: 019fbfd0-471b-7f80-bc09-b83be4526cc4
 worktree: todomd/task-0037
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 28.5062
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -80,3 +80,5 @@ local speech or provider configuration is unavailable.
 1. Startup race: `public/app.js:109` emits the one-shot `todomd:context` event after asynchronous board loading, while `public/voice/main.js:91` registers its listener only after the voice 
 - 2026-08-02 00:08Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: 1. The push-to-talk fallback is nonfunctional after microphone denial or missing provider configuration. `public/voice/controller.js` marks these failures `fallback: true`, but `pushToTalkStart()` retries the same `getUserMedia` and `/api/voice/session` path that just failed. The tests only verify that the button becomes visible. Provide an actually operable fallback/recovery path instead of treat
+- 2026-08-02 00:17Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: Real cross-file race in public/app.js: loadBoard() does not snapshot the requested project or use a request generation. It fetches the board for the project selected at invocation, but after await it renders that response and publishes the current global currentProject. If an in-flight request for project A finishes after switching to B, it can undo the switch handler's voice revocation by publish
