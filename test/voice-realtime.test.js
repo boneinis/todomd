@@ -380,6 +380,23 @@ test('output items that are not function calls, and calls missing an id/name, ar
   assert.deepEqual(calls, []);
 });
 
+test('a response.done event surfaces through onResponseDone — the command router waits on it before opening confirmation', async () => {
+  const RTC = fakeRtcClass();
+  const session = createRealtimeSession({
+    RTCPeerConnectionClass: RTC,
+    getUserMediaFn: async () => fakeStream([fakeTrack()]),
+    fetchFn: fakeFetchOk(),
+    token: 't', project: 'p',
+  });
+  let calls = 0;
+  await session.open({ onResponseDone: () => { calls += 1; } });
+  const channel = RTC.instances.at(-1).dataChannels.at(-1);
+  channel.emit('message', { data: JSON.stringify({ type: 'response.output_audio.delta', delta: 'ignore me' }) });
+  assert.equal(calls, 0, 'only the full response.done event counts as complete, not partial output events');
+  channel.emit('message', { data: JSON.stringify({ type: 'response.done', response: { id: 'resp_1', status: 'completed' } }) });
+  assert.equal(calls, 1);
+});
+
 test('send() writes JSON to the open data channel and is a silent no-op with no channel', async () => {
   const RTC = fakeRtcClass();
   const session = createRealtimeSession({

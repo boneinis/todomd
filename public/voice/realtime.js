@@ -75,7 +75,7 @@ export function createRealtimeSession({
     audioEl = null;
   }
 
-  function handleServerEvent(raw, { onTranscript, onToolCall }) {
+  function handleServerEvent(raw, { onTranscript, onToolCall, onResponseDone }) {
     let event;
     try { event = JSON.parse(raw); } catch { return; }
     if (!event || typeof event !== 'object') return;
@@ -100,7 +100,13 @@ export function createRealtimeSession({
         try { parsedArguments = JSON.parse(rawArguments); } catch { parsedArguments = null; }
       }
       onToolCall({ callId, name, arguments: parsedArguments });
+      return;
     }
+    // A full response (including its output audio) has finished playing. The
+    // command router waits for this before opening a confirmation window, so
+    // a proposal's read-back always finishes speaking before the human's
+    // reply can be heard — see commands.js's handleProposeBoardAction.
+    if (event.type === 'response.done') onResponseDone();
   }
 
   async function postOffer(sdp) {
@@ -124,7 +130,7 @@ export function createRealtimeSession({
   // Any failure mid-open (denied mic, no WebRTC, SDP exchange failure) cleans
   // up whatever was already acquired before rethrowing — the caller never has
   // to know how far this got to avoid leaking a live microphone track.
-  async function open({ onTranscript = () => {}, onToolCall = () => {}, onClose = () => {} } = {}) {
+  async function open({ onTranscript = () => {}, onToolCall = () => {}, onResponseDone = () => {}, onClose = () => {} } = {}) {
     if (opened) throw new Error('session already open');
     opened = true;
     try {
@@ -143,7 +149,7 @@ export function createRealtimeSession({
         pc.addTrack(track, stream);
       }
       dataChannel = pc.createDataChannel('oai-events');
-      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, { onTranscript, onToolCall }));
+      dataChannel.addEventListener?.('message', (event) => handleServerEvent(event.data, { onTranscript, onToolCall, onResponseDone }));
       pc.addEventListener?.('track', attachRemoteAudio);
       pc.addEventListener?.('connectionstatechange', () => {
         if (closed) return;

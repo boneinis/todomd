@@ -47,6 +47,17 @@ function emitTranscript(text) {
   }) })`;
 }
 
+// Fires the fake data channel's response-complete event. The command router
+// waits for this after a propose_board_action readback before it opens the
+// confirmation window (public/voice/commands.js) — a real Realtime session
+// always sends it once the model finishes speaking; these tests must send it
+// too, or the router only proceeds after its own bounded fallback timeout.
+function emitResponseDone() {
+  return `window.__voiceHooks.pcs.at(-1).dataChannel.emit('message', { data: JSON.stringify({
+    type: 'response.done', response: { id: 'resp-test', status: 'completed' },
+  }) })`;
+}
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer();
@@ -107,7 +118,14 @@ function installVoiceFakes() {
     recognitions: [],
     tracks: [],
     pcs: [],
+    sessionRequests: [], // every fetch to /api/voice/session — the SDP endpoint itself, not just the fixture upstream it forwards to
     getUserMediaMode: 'ok', // 'ok' | 'deny'
+  };
+  const realFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const url = String(typeof input === 'string' ? input : input.url);
+    if (url.includes('/api/voice/session')) window.__voiceHooks.sessionRequests.push(url);
+    return realFetch(input, init);
   };
 
   class FakeSpeechRecognition {
@@ -266,10 +284,14 @@ test('UI voice: arm, wake, active session, sign-off phrase, second wake, offline
   await page.eval(`document.getElementById('voice-btn').click()`);
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'armed' || null, { timeout: BUDGET.quick });
   assert.equal(await page.eval(`window.__voiceHooks.pcs.length`), 0, 'no transport before wake');
+  assert.equal(await page.eval(`window.__voiceHooks.tracks.length`), 0, 'no microphone track acquired before wake');
+  assert.equal(await page.eval(`window.__voiceHooks.sessionRequests.length`), 0, 'no /api/voice/session request before wake');
+  assert.equal(upstream.requests.length, 0, 'no request ever reached the provider-shaped upstream before wake');
 
   await page.eval(`window.__voiceHooks.recognitions.at(-1).result('Hey To-do', true)`);
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
   assert.equal(await page.eval(`window.__voiceHooks.pcs.length`), 1);
+  assert.equal(await page.eval(`window.__voiceHooks.sessionRequests.length`), 1, 'wake opens exactly one /api/voice/session request');
 
   // the request that actually reached the provider-shaped upstream, through
   // the real server — the end of the "primary-only SDP endpoint" path
@@ -356,6 +378,9 @@ test('UI voice: a reversible proposal reads back the exact action and executes o
   assert.equal(proposal.confirmation.tier, 'reversible');
   assert.equal(proposal.confirmation.phrase, 'Yes To-do');
   assert.match(proposal.readback, /task-0010 back to Planned/);
+  assert.equal(await page.eval(`document.getElementById('voice-btn').dataset.voiceState`), 'active',
+    'the confirmation window must not open before the readback finishes playing');
+  await page.eval(emitResponseDone()); // the model finishes speaking the readback
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
   await page.eval(emitTranscript('Yes To-do'));
@@ -380,6 +405,8 @@ test('UI voice: an unrelated reply rejects the pending proposal instead of confi
   await armAndActivate(page);
 
   await page.eval(emitToolCall('call-p2', 'propose_board_action', { cardId: 'task-0011', action: 'retry_planned' }));
+  await until(async () => (await page.eval(readToolOutput('call-p2'))) || null, { timeout: BUDGET.quick });
+  await page.eval(emitResponseDone());
   await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
   await page.eval(emitTranscript('what is the weather today'));
@@ -425,6 +452,8 @@ test('UI voice: Resume Build continues the preserved worktree via its spoken cha
     assert.equal(firstAttempt.confirmation.tier, 'agent');
     assert.match(firstAttempt.readback, /resume the build for task-0012 in its preserved worktree/);
     assert.match(firstAttempt.confirmation.challenge, /^Confirm resume build task-0012 /);
+    await page.eval(emitResponseDone());
+    await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
     await page.eval(emitTranscript('yes'));
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
@@ -435,6 +464,8 @@ test('UI voice: Resume Build continues the preserved worktree via its spoken cha
     const secondAttempt = await page.eval(readToolOutput('call-resume-2'));
     const challenge = secondAttempt.confirmation.challenge;
     assert.notEqual(challenge, firstAttempt.confirmation.challenge, 'a fresh proposal gets a fresh, unpredictable challenge');
+    await page.eval(emitResponseDone());
+    await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
 
     await page.eval(emitTranscript(challenge));
     await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
@@ -456,6 +487,56 @@ test('UI voice: Resume Build continues the preserved worktree via its spoken cha
     await page.eval(emitTranscript('Yes To-do'));
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(await cardStatus(page, 'task-0013'), 'Needs Human', 'restart_build can never execute from a spoken phrase');
+
+    await page.eval(`document.getElementById('voice-btn').click()`);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    clearFakeAgent();
+  }
+});
+
+test('UI voice: Retry Verification reruns only Verify in the preserved worktree via its spoken challenge', async (t) => {
+  if (!page) return t.skip(SKIP);
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  try {
+    const base = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const branch = 'todomd/task-0014';
+    const wt = path.join(repo, '.todomd/worktrees/task-0014');
+    writeCard(repo, 'task-0014', {
+      status: 'Needs Human',
+      extra: `needs_human_reason: bad_verdict\nworktree: ${branch}\nbase_branch: ${base}\nsession_id: fake-session-0014\n`,
+    });
+    git(repo, ['worktree', 'add', '-q', '-b', branch, wt]);
+
+    await page.presetScript(`(${installVoiceFakes.toString()})();`);
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+    await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+    await armAndActivate(page);
+
+    // The fake Build stage appends a `prod` function to src/calc.js and
+    // commits it (test/fixtures/fake-agent.js); Verify never touches it. An
+    // unchanged file after completion is direct proof Build never reran —
+    // stronger than a log-file check, since a successful buffered Verify
+    // pass writes no jsonl tee at all.
+    const calcPath = path.join(repo, 'src/calc.js');
+    const calcBefore = fs.readFileSync(calcPath, 'utf8');
+
+    await page.eval(emitToolCall('call-retry-verify', 'propose_board_action', { cardId: 'task-0014', action: 'retry_verification' }));
+    await until(async () => (await page.eval(readToolOutput('call-retry-verify'))) || null, { timeout: BUDGET.quick });
+    const proposal = await page.eval(readToolOutput('call-retry-verify'));
+    assert.equal(proposal.confirmation.tier, 'agent');
+    assert.match(proposal.readback, /retry verification for task-0014 in its preserved worktree/);
+    const challenge = proposal.confirmation.challenge;
+    assert.match(challenge, /^Confirm retry verification task-0014 /);
+    await page.eval(emitResponseDone());
+    await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'confirming' || null, { timeout: BUDGET.quick });
+
+    await page.eval(emitTranscript(challenge));
+    await until(async () => (await page.eval(`document.getElementById('voice-btn').dataset.voiceState`)) === 'active' || null, { timeout: BUDGET.quick });
+    await until(async () => (await cardStatus(page, 'task-0014')) === 'Done' || null, { timeout: BUDGET.chain });
+
+    assert.equal(fs.readFileSync(calcPath, 'utf8'), calcBefore, 'retry_verification must never rerun Build');
+    assert.ok(!fs.existsSync(wt), 'successful completion still cleans up the preserved worktree');
 
     await page.eval(`document.getElementById('voice-btn').click()`);
     assert.deepEqual(page.errors, []);

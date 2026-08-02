@@ -53,6 +53,7 @@ if (btn && widget) {
     // spoken reply to confirm/reject. `commands` closes over this same
     // `controller` binding, assigned right below.
     onToolCall: (call) => commands.handleToolCall(call),
+    onResponseDone: () => commands.handleResponseDone(),
   });
   const commands = createCommandRouter({
     controller,

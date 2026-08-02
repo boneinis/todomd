@@ -6,11 +6,17 @@
 // testable with plain fakes; there is no DOM access here at all.
 //
 // Suppression sequence when a mutation is proposed (voice-control-plan.md §
-// Command recognition): clear any buffered input audio, disable automatic
-// model responses/interruption so only the human's answer can end the window,
-// then let the model speak the immutable server read-back with `tool_choice:
-// 'none'` so it cannot call another tool on top of its own turn. Restoring
-// happens the moment the window closes, whichever way it closes.
+// Command recognition): disable automatic model responses/interruption BEFORE
+// the model's readback turn plays, let it speak the immutable server
+// read-back with `tool_choice: 'none'` so it cannot call another tool on top
+// of its own turn, and WAIT for that turn's own `response.done` to arrive.
+// Only then clear buffered input audio and open the confirmation window —
+// opening it any earlier would let a transcript that lands mid-readback (an
+// echo, a leftover finalized fragment) resolve the confirmation before the
+// human ever heard what they'd be confirming, and would burn part of the
+// fixed confirmation timeout on read-back latency instead of the human's
+// actual reply. Restoring auto-response happens the moment the window
+// closes, whichever way it closes.
 
 function normalizePhrase(value) {
   return String(value || '')
@@ -41,12 +47,48 @@ function suppressionUpdate(createResponse) {
   };
 }
 
+// A `response.done` for the readback should arrive almost immediately over an
+// open data channel; this only guards against one that's lost entirely (the
+// session died mid-readback with no onClose race left to catch), so the
+// confirmation window still opens — or the proposal still gets released —
+// instead of hanging forever.
+const READBACK_TIMEOUT_MS = 8_000;
+
 export function createCommandRouter({
   controller,
   token = '',
   project = () => '',
   fetchFn = (...args) => fetch(...args),
+  setTimeoutFn = (...args) => setTimeout(...args),
+  clearTimeoutFn = (...args) => clearTimeout(...args),
+  readbackTimeoutMs = READBACK_TIMEOUT_MS,
 } = {}) {
+  let pendingReadbackDone = null; // resolver for the readback response currently in flight, if any
+
+  // Resolves once the readback response's own `response.done` arrives (or the
+  // bounded timeout elapses). Armed synchronously so a caller can safely send
+  // `response.create` on the very next line — there is no window in which a
+  // same-tick `response.done` could arrive before this is listening.
+  function waitForReadbackDone() {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (pendingReadbackDone === finish) pendingReadbackDone = null;
+        clearTimeoutFn(timer);
+        resolve();
+      };
+      pendingReadbackDone = finish;
+      const timer = setTimeoutFn(finish, readbackTimeoutMs);
+    });
+  }
+
+  // Realtime session event, forwarded by the controller — see main.js.
+  function handleResponseDone() {
+    pendingReadbackDone?.();
+  }
+
   async function call(path, { method = 'GET', body } = {}) {
     const sep = path.includes('?') ? '&' : '?';
     const url = `/api/voice/${path}${sep}project=${encodeURIComponent(project())}`;
@@ -150,11 +192,21 @@ export function createCommandRouter({
       return;
     }
 
-    // Suppress automatic responses/interruption and drop buffered input audio
-    // BEFORE the model's readback turn plays, so no stray audio during that
-    // turn can trigger a second automatic response or tool call once entering
-    // confirming below.
+    // Suppress automatic responses/interruption BEFORE the model's readback
+    // turn plays, so no stray audio during that turn can trigger a second
+    // automatic response or tool call. Arm the readback wait synchronously,
+    // immediately before triggering the one response this tool result is
+    // allowed to produce, so no `response.done` for it can be missed.
     controller.send(suppressionUpdate(false));
+    controller.send(functionCallOutput(call_.callId, {
+      ok: true, readback: proposal.readback, confirmation: proposal.confirmation,
+    }));
+    const readbackDone = waitForReadbackDone();
+    controller.send(requestResponse());
+    await readbackDone;
+
+    // Only now — after the readback has actually finished playing — drop
+    // whatever audio buffered during it and open the confirmation window.
     controller.send({ type: 'input_audio_buffer.clear' });
     const entered = controller.enterConfirming({
       challenge: proposal.confirmation.challenge,
@@ -166,20 +218,14 @@ export function createCommandRouter({
       },
     });
     if (!entered) {
-      // Lost the race — sign-off/offline/another proposal landed while this
-      // one was being prepared. There is no longer an active session to
+      // Lost the race — sign-off/offline/another proposal landed while the
+      // readback was playing. There is no longer an active session to
       // confirm through, so release the reservation instead of leaving it to
-      // expire on its own.
+      // expire on its own. The tool call already got its result above; there
+      // is no live session left to speak anything further into.
       controller.send(suppressionUpdate(true));
       reject(proposal.proposalId);
-      controller.send(functionCallOutput(call_.callId, { ok: false, error: 'no longer listening for a confirmation' }));
-      controller.send(requestResponse());
-      return;
     }
-    controller.send(functionCallOutput(call_.callId, {
-      ok: true, readback: proposal.readback, confirmation: proposal.confirmation,
-    }));
-    controller.send(requestResponse());
   }
 
   async function handleToolCall(toolCall) {
@@ -196,5 +242,5 @@ export function createCommandRouter({
     controller.send(requestResponse());
   }
 
-  return { handleToolCall };
+  return { handleToolCall, handleResponseDone };
 }
