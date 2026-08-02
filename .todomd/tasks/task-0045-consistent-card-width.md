@@ -1,7 +1,7 @@
 ---
 id: task-0045
 title: consistent card width
-status: Verify
+status: Done
 type: improvement
 priority: medium
 labels: []
@@ -10,13 +10,13 @@ created_date: 2026-08-02
 source: ui
 assignee: 
 agent: claude
-session_id: 2050dace-bb6e-4ac9-861e-4ecc2b082743
-worktree: todomd/task-0045
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+session_id: 019fc384-fb8c-7a63-9550-a7fde8278b19
+worktree:
+verification: { attempts: 1, max_attempts: 3, last_verdict: pass }
 triaged: 2026-08-02
 cost_usd: 2.8
 needs_human_reason:
-base_branch: main
+base_branch:
 ---
 
 ## Description
@@ -82,6 +82,7 @@ Risks:
 - 2026-08-02 13:43Z · Triage · 4 turns · $0.165 · ok
 - 2026-08-02 13:58Z · Plan · 11 turns · $0.607 · ok
 - 2026-08-02 17:28Z · Build attempt 1 · 59 turns · $2.027 · ok
+- 2026-08-02 17:34Z · Verify attempt 1 · 1 turns · $0.000 · verdict: pass
 
 ## Triage
 
