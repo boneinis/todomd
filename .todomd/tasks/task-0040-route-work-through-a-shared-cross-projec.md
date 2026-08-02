@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Needs Human
+status: Queue
 type: improvement
 priority: medium
 labels: []
@@ -12,13 +12,13 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: f75114b1-44f1-4b54-9548-3ff6c8b23d5a
-worktree: todomd/task-0040
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
-base_branch: main
+session_id:
+worktree:
+verification: { attempts: 0, max_attempts: 3, last_verdict:  }
+base_branch:
 cost_usd: 27.4388
-needs_human_reason: orphaned_run
-recovery_stage: Build
+needs_human_reason:
+recovery_stage:
 ---
 
 ## Description
@@ -93,3 +93,4 @@ The first implementation failed independent review. The fresh build must address
   - retrying with findings (attempt 2/3)
 - 2026-08-02 22:02Z · Build attempt 2 · 88 turns · $14.932 · cancelled
   - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
+- 2026-08-02 22:27Z · Restart Build · preserved worktree unavailable; starting a fresh build (prior branch kept as todomd/task-0040-preserved-b54fbdf4)
