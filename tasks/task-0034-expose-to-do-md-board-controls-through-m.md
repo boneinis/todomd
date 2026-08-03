@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Needs Human
+status: Queue
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -12,9 +12,9 @@ assignee:
 agent: gemini
 model:
 effort:
-session_id: 489d4d1d-0bf0-49cb-a617-6161674727d9
+session_id:
 worktree: todomd/task-0034
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-07-31
 cost_usd: 15.4252
 needs_human_reason: ci_failed
