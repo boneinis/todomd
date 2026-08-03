@@ -47,6 +47,15 @@ const onPath = (bin) => {
   catch { return false; }
 };
 
+// `ps` prints the full command line, which often contains the repository path.
+// Matching a bare substring such as "todomd" therefore misidentifies any
+// process launched from a folder named TODOMD as the board server (and can
+// signal an unrelated recycled PID). Require an actual executable/script
+// token named `todomd` or `todomd.js`; a TODOMD directory segment followed by
+// another slash deliberately does not match.
+const isTodomdServerCommand = (cmdline) =>
+  /(?:^|[\\/\s])todomd(?:\.js)?(?=\s|$)/i.test(String(cmdline || ''));
+
 if (cmd === 'init') {
   if (!isGitRepo(process.cwd())) {
     console.error('⚠ not a git repo. todomd commits each board change to git — run `git init` first, then `todomd init`.');
@@ -111,7 +120,7 @@ if (cmd === 'stop') {
     try {
       cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     } catch { /* no ps on this platform — skip the check */ }
-    if (cmdline !== null && !cmdline.includes('todomd')) {
+    if (cmdline !== null && !isTodomdServerCommand(cmdline)) {
       console.error(`pid ${pid} is not a todomd server — stale pid file? remove ~/.todomd/server.pid`);
       process.exit(1);
     }
@@ -220,7 +229,7 @@ if (cmd === 'serve') {
     if (pid && pid !== process.pid) {
       process.kill(pid, 0); // throws if dead → stale pid file, fall through
       const cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      if (cmdline.includes('todomd')) {
+      if (isTodomdServerCommand(cmdline)) {
         const runningPort = Number(portStr) || port;
         console.error(`todomd is already running on port ${runningPort} — open http://127.0.0.1:${runningPort} or run \`todomd stop\``);
         process.exit(1);
