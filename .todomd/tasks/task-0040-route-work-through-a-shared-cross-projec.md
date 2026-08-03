@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Queue
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict:  }
-base_branch:
-cost_usd: 27.4388
-needs_human_reason:
+session_id: 019fc569-62c2-7ea3-bb5d-5c85e855427b
+worktree: todomd/task-0040
+verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
+base_branch: main
+cost_usd: 113.7378
+needs_human_reason: merge_conflict
 recovery_stage:
 ---
 
@@ -94,3 +94,33 @@ The first implementation failed independent review. The fresh build must address
 - 2026-08-02 22:02Z · Build attempt 2 · 88 turns · $14.932 · cancelled
   - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
 - 2026-08-02 22:27Z · Restart Build · preserved worktree unavailable; starting a fresh build (prior branch kept as todomd/task-0040-preserved-b54fbdf4)
+- 2026-08-02 22:58Z · Build attempt 1 · 101 turns · $11.604 · checkpoint 1: progress detected; continuing
+- 2026-08-02 23:26Z · Build attempt 1 · 101 turns · $17.016 · checkpoint 2: progress detected; continuing
+- 2026-08-02 23:51Z · Build attempt 1 · 81 turns · $17.082 · ok
+- 2026-08-02 23:56Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 2)
+  - retrying with findings (attempt 2/3)
+- 2026-08-03 00:19Z · Build attempt 2 · 85 turns · $19.852 · ok
+- 2026-08-03 00:27Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 4)
+  - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
+- 2026-08-03 00:32Z · Escalate attempt 2 · 32 turns · $3.403 · diagnosis complete
+- 2026-08-03 01:08Z · Build attempt 3 · 101 turns · $12.881 · checkpoint 1: progress detected; continuing
+- 2026-08-03 01:11Z · Build attempt 3 · 8 turns · $3.149 · cancelled
+  - orphaned_run: server stopped during Build — unmerged work is preserved in the worktree/branch
+- 2026-08-03 01:14Z · Resume Build · continuing attempt 3 in preserved worktree todomd/task-0040
+- 2026-08-03 01:18Z · Build attempt 3 · 3 turns · $1.313 · ok
+- 2026-08-03 01:23Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: 1. `src/scheduler.js:89-90` breaks backward compatibility for numeric-string concurrency values. A legacy `concurrency: "3"` reproducibly starts only one Build because `Number.isFinite("3")` is false. The previous comparison coerced the value and admitted three. Normalize with `Number(...)` and add a quoted-YAML regression test.
+
+2. `src/pipeline.js:1454-1455` claims to retain a bounded output tai
+- 2026-08-03 01:35Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The adversarial review found a reachable pending-claim leak in src/pipeline.js. The old processQueue(...).finally() always removed its exact pending entry, including abnormal terminal paths. That guarantee was replaced with cleanup only when sendState(..., 'idle') executes. However, buildChain returns directly when readCard() finds the card missing (line 1534), and pipelineError swallows a failed
+- 2026-08-03 01:50Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: Real cross-project governor bug in src/scheduler.js:107-118: combinedResourceThresholds() folds thresholds from every project, including projects with resources.enabled:false, then enables the shared governor if any project is enabled. Thus a disabled project's stricter thresholds can defer work globally. Reproduced with an enabled project using safe memory.defer=0.99 and a disabled project using
+- 2026-08-03 01:59Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed with local-socket permission: 529 unit/integration tests and 30 UI tests. However, adversarial review found two reachable ownership bugs:
+
+1. A queued/deferred initial Build is not claimed until scheduler admission. `humanMove(..., 'Review')` checks tracked/pending/trigger claims but not `scheduler.isQueued()`. Reproduced by pausing the queue, approving a Planned card, and re
+- 2026-08-03 02:13Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: Adversarial bug: cancelling or retriaging mid-flow work that is waiting for scheduler admission can hang indefinitely. In src/pipeline.js:699-705 and 1038-1054, a pending claim is marked cancelled but its scheduler entry is deliberately not dequeued. Cleanup only happens when the blocked entry is eventually admitted and reaches pendingCancelled(). If governor pressure never recovers, a column/glob
+- 2026-08-03 02:22Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
+  - merge_conflict: merge conflict
