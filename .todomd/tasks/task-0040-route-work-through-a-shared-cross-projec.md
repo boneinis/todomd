@@ -17,7 +17,7 @@ worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason: merge_conflict
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -124,3 +124,4 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: Adversarial bug: cancelling or retriaging mid-flow work that is waiting for scheduler admission can hang indefinitely. In src/pipeline.js:699-705 and 1038-1054, a pending claim is marked cancelled but its scheduler entry is deliberately not dequeued. Cleanup only happens when the blocked entry is eventually admitted and reaches pendingCancelled(). If governor pressure never recovers, a column/glob
 - 2026-08-03 02:22Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
   - merge_conflict: merge conflict
+- 2026-08-03 02:27Z · merge conflict resolved in preserved worktree; ready for Verify-only retry
