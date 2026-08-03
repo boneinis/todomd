@@ -17,8 +17,8 @@ branch_prefix: todomd/
 # Board-wide defaults — the bottom of the card → column → board override chain.
 # A card's own agent/model wins; else the stage column's (stages.<col>.agent|
 # model); else these. default_model is the fallback where a stage sets no model.
-default_agent: claude
-# default_model: sonnet
+default_agent: gemini
+# default_model: gemini-2.5-pro
 default_effort: high
 
 # Publish shared board Markdown to a dedicated GitHub branch. This never
@@ -42,6 +42,8 @@ build_continuation:
 models:
   claude: [fable, claude-fable-5, opus, claude-opus-5, sonnet, haiku]
   codex: [gpt-5.6-sol, gpt-5-codex, gpt-5, o3]
+  gemini: [gemini-3.6-pro, gemini-3.5-pro, gemini-2.5-pro, gemini-3.6-flash, gemini-2.5-flash]
+  kimi: [kimi-k1.5, moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k]
 
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
 # in-flight work (which card/files each worker is building), so several people
@@ -55,29 +57,29 @@ coordination:
 # Auto-triage: when a card arrives in Review (UI, API, or email push), an
 # agent annotates it with codebase insight + a proposed plan of action.
 # The card stays in Review — the human still decides. Set enabled: false
-# to turn off, or model: haiku to cut the per-card cost ~5x.
+# to turn off, or model: haiku/flash to cut the per-card cost.
 triage:
   enabled: true
-  model: sonnet
+  model: gemini-3.6-flash
   effort: low
   max_turns: 8
 
 # Each pipeline stage maps a column to the command it invokes, the model it
 # runs on, and its tool allowlist. A stage may also pin its own agent
-# (claude | codex) — the per-column tier of the override chain. A card's own
+# (claude | codex | gemini | kimi) — the per-column tier of the override chain. A card's own
 # agent/model still wins; an unset agent/model falls back to the board default.
 # Edit these per-column from the board (the gear on each stage column).
 stages:
   Plan:
     command: todomd-plan
-    model: claude-opus-5
+    model: gemini-3.6-pro
     effort: xhigh
     max_turns: 20
     allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
   Build:
     command: todomd-build
-    agent: claude
-    model: claude-sonnet-5
+    agent: gemini
+    model: gemini-3.6-pro
     effort: xhigh
     workflow: ultra_code
     max_turns: 100
@@ -96,16 +98,16 @@ stages:
       - "Bash(git diff:*)"
   Verify:
     command: todomd-verify
-    agent: codex
-    model: gpt-5.6-sol
+    agent: gemini
+    model: gemini-3.6-pro
     effort: high
     max_turns: 40
     allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(node --test:*)", "Bash(git diff:*)", "Bash(git log:*)"]
 
 # Repeated-failure escalation: after the second failed independent review,
-# Fable diagnoses, Opus repairs, then Codex performs the final merge gate.
+# Gemini 3.6 Pro diagnoses, repairs, and performs the final merge gate.
 escalation:
   enabled: true
   after_failed_reviews: 2
-  diagnosis: { agent: claude, model: claude-fable-5, effort: xhigh }
-  repair: { agent: claude, model: claude-opus-5, effort: xhigh }
+  diagnosis: { agent: gemini, model: gemini-3.6-pro, effort: xhigh }
+  repair: { agent: gemini, model: gemini-3.6-pro, effort: xhigh }
