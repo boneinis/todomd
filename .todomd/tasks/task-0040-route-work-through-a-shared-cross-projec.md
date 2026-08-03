@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc5a9-228a-78a0-a07c-42572f07faf1
+session_id: 019fc5b1-1454-7e01-bb24-8d6b5c1b45cd
 worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -139,3 +139,7 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: The full suite passed: 539 unit/integration tests and 30 UI tests. However, the adversarial review found a reachable manual-pause bypass. In src/pipeline.js:1011-1014, retryVerification() schedules a new Verify run without the manual-pause blocked gate used by enqueueBuild() at lines 1392-1395. A focused reproduction set the persistent Queue Pause, invoked Retry Verification on an idle Needs Human
 - 2026-08-03 03:32Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: `npm test` passed with localhost access: 540 unit/integration tests and 30 UI tests. However, a reachable live-state bug remains. `scheduleBuild`, `scheduleCi`, and `scheduleVerify` enqueue mid-flow work without broadcasting `queued`; `onDefer` only emits when the governor reason changes. When a stage waits on an ordinary global/column/project capacity limit—for example, CI is full when Build fini
+- 2026-08-03 03:43Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The unrestricted suite passed: 541 unit/integration tests and 30 UI tests. However, adversarial review found two reachable bugs:
+
+1. `src/pipeline.js:1552-1566` reconstructs a queued cancellation using the card's current verification attempt, then `src/pipeline.js:1581-1584` always decrements it. For a repair Build waiting for scheduler admission, or a direct Retry Verification that has not starte
