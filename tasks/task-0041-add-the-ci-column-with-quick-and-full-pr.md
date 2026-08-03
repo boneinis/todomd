@@ -1,7 +1,7 @@
 ---
 id: task-0041
 title: Add the CI column with quick and full profiles
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,11 +12,12 @@ source: chunk
 assignee: 
 agent: gemini
 triaged: n/a (chunk 3/4 of task-0021)
-session_id:
+session_id: 9d8353a7-41bd-4569-9c6d-caffbb0b1023
 worktree: todomd/task-0041
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 board_order: 4
 base_branch: main
+cost_usd: 15.6228
 ---
 
 ## Description
@@ -66,3 +67,5 @@ Risk: adding a required column changes the board's shape for every existing
 project — the migration path in step 1 is the load-bearing part of this chunk.
 
 ## Run Log
+- 2026-08-03 15:15Z · Build attempt 1 · 101 turns · $11.940 · checkpoint 1: progress detected; continuing
+- 2026-08-03 15:23Z · Build attempt 1 · 12 turns · $3.682 · ok
