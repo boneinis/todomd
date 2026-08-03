@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc54b-1957-7f80-b9e3-b1cbbcc7a753
+session_id: 019fc554-1565-7e00-ab7d-7a5f9be5b85f
 worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -116,3 +116,7 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: The adversarial review found a reachable pending-claim leak in src/pipeline.js. The old processQueue(...).finally() always removed its exact pending entry, including abnormal terminal paths. That guarantee was replaced with cleanup only when sendState(..., 'idle') executes. However, buildChain returns directly when readCard() finds the card missing (line 1534), and pipelineError swallows a failed 
 - 2026-08-03 01:50Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: Real cross-project governor bug in src/scheduler.js:107-118: combinedResourceThresholds() folds thresholds from every project, including projects with resources.enabled:false, then enables the shared governor if any project is enabled. Thus a disabled project's stricter thresholds can defer work globally. Reproduced with an enabled project using safe memory.defer=0.99 and a disabled project using 
+- 2026-08-03 01:59Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed with local-socket permission: 529 unit/integration tests and 30 UI tests. However, adversarial review found two reachable ownership bugs:
+
+1. A queued/deferred initial Build is not claimed until scheduler admission. `humanMove(..., 'Review')` checks tracked/pending/trigger claims but not `scheduler.isQueued()`. Reproduced by pausing the queue, approving a Planned card, and re
