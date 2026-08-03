@@ -203,7 +203,7 @@ test('a board whose config.yml has no CI column still runs Build then Verify wit
   }
 });
 
-test('critical resource pressure gracefully cancels a running CI job and requeues it, while a running Build entry is left alone', async () => {
+test('critical resource pressure gracefully cancels a running CI job (including its compound-command descendant) and requeues it as deferred-for-load, while a running Build entry is left alone', async () => {
   isolateHome();
   await sleep(300); // let earlier tests' releases drain before resetting (see pipeline.test.js's governor tests)
   scheduler.resetState();
@@ -212,11 +212,22 @@ test('critical resource pressure gracefully cancels a running CI job and requeue
   const repo = makeRepo();
   const startedDir = tmp('ci-critical');
   const started = path.join(startedDir, 'started');
+  writeScript(repo, 'ci-a.mjs', `process.exit(0);\n`);
+  // Writes its OWN pid (a real descendant of the shell `runVerifyCommand`
+  // spawns, NOT the shell itself — see below) then hangs. A THIRD command
+  // follows it in the chain (never reached, since this one never exits) so no
+  // shell can "exec"-optimize this into the last command of the list and
+  // collapse it onto the shell's own pid; the shell must fork a genuine child
+  // to run this step while it still has ci-c.mjs left to run afterward.
   writeScript(repo, 'ci-hang.mjs',
     `import fs from 'node:fs';\n` +
     `fs.writeFileSync(${JSON.stringify(started)}, String(process.pid));\n` +
     `setInterval(() => {}, 1000);\n`);
-  configureCi(repo, { profile: 'quick', quick: 'node ci-hang.mjs' });
+  writeScript(repo, 'ci-c.mjs', `process.exit(0);\n`);
+  // The default full profile's own shape (typecheck && test && e2e) — a
+  // compound command is exactly where killing only the top-level shell PID
+  // leaves an orphaned descendant running (the bug this test guards against).
+  configureCi(repo, { profile: 'full', full: 'node ci-a.mjs && node ci-hang.mjs && node ci-c.mjs' });
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
@@ -240,7 +251,7 @@ test('critical resource pressure gracefully cancels a running CI job and requeue
     await until(() => fs.existsSync(started) && pipeline.getRunStates(p.name)['task-0001']?.stage === 'CI'
       && pipeline.getRunStates(p.name)['task-0001']?.state === 'running', { timeout: BUDGET.chain });
     const pid = Number(fs.readFileSync(started, 'utf8').trim());
-    assert.doesNotThrow(() => process.kill(pid, 0), 'the CI child is alive before critical pressure hits');
+    assert.doesNotThrow(() => process.kill(pid, 0), 'the compound command\'s descendant node process is alive before critical pressure hits');
 
     sample = { cpuLoad: 1.5 }; // breaches critical
     scheduler.tick();
@@ -248,12 +259,17 @@ test('critical resource pressure gracefully cancels a running CI job and requeue
     await until(() => readCard(repo, 'task-0001').raw.includes('cancelled (critical resource pressure)'),
       { timeout: BUDGET.stage, label: 'the run log records a graceful load-cancel' });
     await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } },
-      { timeout: BUDGET.stage, label: 'the CI child process actually exits' });
+      { timeout: BUDGET.stage, label: 'the descendant node process (not just the top-level shell) actually exits' });
 
     assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
       'a load-cancel is not a failed attempt — nothing to roll back');
+    // Fresh snapshot reads (queuedEntries/getRunStates), not just the live
+    // broadcast — exercises the SAME path a client reconnecting/reloading
+    // mid-deferral would hit.
     const state = pipeline.getRunStates(p.name)['task-0001'];
     assert.equal(state?.stage, 'CI', 'the card is back in the CI column, not reverted to Build/Queue/Review');
+    assert.equal(state?.state, 'deferred-for-load',
+      'a snapshot read reports deferred-for-load, not the generic deferred, while critical pressure persists');
 
     await sleep(200); // give any (incorrect) signal to the Build entry time to land
     assert.equal(buildSettled, false,

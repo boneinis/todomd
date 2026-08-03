@@ -542,7 +542,7 @@ export async function cascadeEpicCleanup(project, epicId) {
       const ci = ciRuns.get(childKey);
       if (ci) {
         ci.cancelled = true;
-        killWithEscalation(ci.child);
+        killWithEscalation(ci.child, { processGroup: true });
       } else if (scheduler.dequeue(project.name, child.id)) {
         // A capacity/governor wait may never be admitted, so run the same
         // stage-aware unwind now instead of making epic cleanup wait forever.
@@ -728,7 +728,7 @@ export async function humanMove(project, id, to) {
       const ci = ciRuns.get(key);
       if (ci) {
         ci.cancelled = true;
-        killWithEscalation(ci.child);
+        killWithEscalation(ci.child, { processGroup: true });
       } else if (queued) {
         scheduler.dequeue(project.name, id);
         await unwindQueuedPending(project, id, pend);
@@ -1036,13 +1036,33 @@ export async function retryVerification(project, id) {
   return { ok: true };
 }
 
+// A CI command is spawned with `shell: true`, so `child` is the SHELL, not the
+// program it runs — for a compound command (`tsc && npm test && npm run e2e`)
+// signalling only that shell PID leaves whichever step is currently running as
+// an orphaned, still-consuming-CPU child once its parent shell exits or is
+// reaped. runVerifyCommand spawns CI children with `detached: true`, making
+// `child.pid` the leader of its own process group; signal the NEGATIVE pid to
+// reach the whole group (the shell plus every descendant it forked), same as
+// the `tree-kill` pattern. Falls back to signalling just the child if the
+// group send fails (already gone, or a platform where negative-pid kill isn't
+// meaningful) — erring toward "still try to stop the one process we know
+// about" rather than doing nothing.
+function sendSignal(child, signal, { processGroup = false } = {}) {
+  if (processGroup && child.pid) {
+    try { process.kill(-child.pid, signal); return; } catch { /* fall through */ }
+  }
+  try { child.kill(signal); } catch { /* already gone */ }
+}
+
 // SIGTERM a child with a SIGKILL backstop: a child that ignores TERM would
 // otherwise hold its concurrency slot (and keep billing) forever. The kill
 // timer is cleared when the child's close fires. (TODOMD_KILL_GRACE_MS is a
-// test steering knob, like TODOMD_CLAUDE_BIN.)
-function killWithEscalation(child, { graceMs = Number(process.env.TODOMD_KILL_GRACE_MS) || 10000 } = {}) {
-  try { child.kill('SIGTERM'); } catch { /* already gone */ }
-  const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, graceMs);
+// test steering knob, like TODOMD_CLAUDE_BIN.) `processGroup: true` (CI
+// children only — see sendSignal) signals the whole process group instead of
+// just this one PID.
+function killWithEscalation(child, { graceMs = Number(process.env.TODOMD_KILL_GRACE_MS) || 10000, processGroup = false } = {}) {
+  sendSignal(child, 'SIGTERM', { processGroup });
+  const killTimer = setTimeout(() => sendSignal(child, 'SIGKILL', { processGroup }), graceMs);
   killTimer.unref?.();
   child.once('close', () => clearTimeout(killTimer));
 }
@@ -1086,7 +1106,7 @@ export function cancel(project, id) {
       // cancelled card wait out a full test suite; its stage then unwinds
       // through the same pendingCancelled() checkpoint as everything else.
       const ci = ciRuns.get(key);
-      if (ci) { ci.cancelled = true; killWithEscalation(ci.child); }
+      if (ci) { ci.cancelled = true; killWithEscalation(ci.child, { processGroup: true }); }
       // A queued mid-flow stage may never be admitted (permanent pressure or
       // a hung capacity holder). Remove it and run the same worktree/attempt
       // unwind immediately instead of making cancellation depend on capacity.
@@ -1185,7 +1205,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
   // Its pending claim was just flagged above, so its stage unwinds normally.
   for (const ci of ciRuns.values()) {
     ci.cancelled = true;
-    try { ci.child.kill('SIGTERM'); } catch { /* already gone */ }
+    sendSignal(ci.child, 'SIGTERM', { processGroup: true });
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
@@ -1195,7 +1215,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
   };
   await waitForExit(graceMs);
   for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
-  for (const ci of ciRuns.values()) { try { ci.child.kill('SIGKILL'); } catch { /* already gone */ } }
+  for (const ci of ciRuns.values()) { sendSignal(ci.child, 'SIGKILL', { processGroup: true }); }
   await waitForExit(1000); // let the close handlers reap and drop tracking entries
 }
 
@@ -1597,7 +1617,7 @@ function cancelCiForLoad(state) {
   for (const entry of ciRuns.values()) {
     if (entry.cancelled || entry.loadCancelled) continue; // already being torn down some other way
     entry.loadCancelled = true;
-    killWithEscalation(entry.child);
+    killWithEscalation(entry.child, { processGroup: true });
   }
 }
 
@@ -1624,7 +1644,12 @@ function maybeStopCriticalWatch() {
 // edit can never arm a new command here.
 function runVerifyCommand(project, id, command, cwd, config) {
   const key = runKey(project.name, id);
-  const child = spawn(command, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  // `detached: true` makes the shell the leader of its OWN process group
+  // (POSIX setsid) rather than sharing this server's — required so a graceful
+  // cancel/critical-load kill (sendSignal's negative-pid send) can reach every
+  // descendant a compound command (`tsc && npm test && npm run e2e`) forked,
+  // not just the top-level shell.
+  const child = spawn(command, { cwd, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const entry = { project: project.name, card: id, child, cancelled: false, loadCancelled: false, timedOut: false };
   ciRuns.set(key, entry);
   ensureCriticalWatch();
@@ -2542,10 +2567,15 @@ export function getRunStates(projectName) {
   // Covers both a never-yet-admitted first entry AND a mid-flow retry/Verify
   // entry the scheduler is currently holding on admission — either shows
   // 'queued', or 'deferred' with the governor/capacity reason once one exists.
+  // A CI-column entry held at CRITICAL severity specifically reads as
+  // 'deferred-for-load' instead of the generic 'deferred' — entry.critical is
+  // a persisted snapshot field (see scheduler.js's setDeferred), not merely a
+  // live broadcast, so this is correct even for a client that just reconnected
+  // or reloaded mid-deferral, not only one that was live for the transition.
   for (const entry of scheduler.queuedEntries(projectName)) {
     if (states[entry.card]) continue;
     states[entry.card] = entry.deferredReason
-      ? { state: 'deferred', stage: entry.column, reason: entry.deferredReason }
+      ? { state: entry.column === 'CI' && entry.critical ? 'deferred-for-load' : 'deferred', stage: entry.column, reason: entry.deferredReason }
       : { state: 'queued', stage: entry.column };
   }
   // A chain claimed but between spawns (admit→spawn, build→verify handoff
@@ -2614,7 +2644,7 @@ export function forgetProject(projectName) {
   for (const [k, ci] of ciRuns) {
     if (ci.project !== projectName) continue;
     ci.cancelled = true;
-    killWithEscalation(ci.child);
+    killWithEscalation(ci.child, { processGroup: true });
     ciRuns.delete(k);
   }
   for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);

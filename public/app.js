@@ -451,9 +451,23 @@ function renderCard(card, color, i, nestedIds) {
     el.classList.add('deferred');
     runEl.textContent = `⏸ deferred${rs.reason ? `: ${rs.reason}` : ''}`;
     runEl.title = rs.reason || '';
+  } else if (rs?.state === 'deferred-for-load') {
+    // a CI job the machine's resource governor gracefully cancelled and
+    // requeued at CRITICAL pressure — distinct from an ordinary 'deferred'
+    // capacity/resource wait so it reads as "this was running, then paused
+    // for load", not "never got a chance to start"
+    el.classList.add('deferred-for-load');
+    runEl.textContent = `⚠ paused for load${rs.reason ? `: ${rs.reason}` : ''}`;
+    runEl.title = rs.reason || '';
   } else if (rs?.state === 'queued') {
     el.classList.add('queued');
     runEl.textContent = '◌ queued';
+  } else if (rs?.state === 'passed') {
+    el.classList.add('passed');
+    runEl.textContent = `✓ ${rs.stage} passed`;
+  } else if (rs?.state === 'failed') {
+    el.classList.add('failed');
+    runEl.textContent = `✕ ${rs.stage} failed`;
   }
   el.addEventListener('dragstart', (e) => {
     draggedCardId = card.id;

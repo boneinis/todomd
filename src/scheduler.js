@@ -194,6 +194,12 @@ function summarizeReasons(reasons) {
 }
 
 function setDeferred(entry, reason, critical) {
+  // `critical` is persisted on the entry (not just handed to onDefer) so a
+  // SNAPSHOT reader — queuedEntries(), which pipeline.js's getRunStates()
+  // polls on a fresh connection/reload — can also tell a CI entry deferred at
+  // CRITICAL severity from an ordinary defer-level wait, not only a caller that
+  // was subscribed to the live onDefer callback at the moment it changed.
+  entry.critical = !!critical;
   if (entry.deferredReason === reason) return;
   entry.deferredReason = reason;
   entry.onDefer?.(reason, critical);
@@ -325,7 +331,7 @@ export function isQueued(projectName, card) {
 export function queuedEntries(projectName) {
   return queue
     .filter((e) => e.project.name === projectName)
-    .map((e) => ({ card: e.card, column: e.column, deferredReason: e.deferredReason }));
+    .map((e) => ({ card: e.card, column: e.column, deferredReason: e.deferredReason, critical: !!e.critical }));
 }
 
 // Remove every queued (not yet admitted) entry for one card, settling its
