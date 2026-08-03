@@ -132,11 +132,15 @@ function pauseForQuota(project) {
   setBanner('quota', 'warn', 'usage limit reached — paused; resume when your usage resets');
 }
 
-async function parkForQuota(project, id, attempt, maxAttempts, findings) {
+async function parkForQuota(project, id, attempt, maxAttempts, findings, attemptOpened = true) {
   const card = readCard(project.path, id);
   const lastVerdict = card?.data?.verification?.last_verdict || '';
   await patchFrontmatter(project.path, id, {
-    verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict },
+    verification: {
+      attempts: attemptOpened ? Math.max(0, attempt - 1) : Math.max(0, attempt),
+      max_attempts: maxAttempts,
+      last_verdict: lastVerdict,
+    },
   });
   saveRetryFindings(project, id, findings);
   await orchMove(project, id, 'Queue', 'usage limit; will resume');
@@ -532,6 +536,15 @@ export async function cascadeEpicCleanup(project, epicId) {
       // claimed but between spawns — the chain's cancel checkpoint archives it
       childPend.cancelled = true;
       childPend.cascadeArchive = true;
+      const ci = ciRuns.get(childKey);
+      if (ci) {
+        ci.cancelled = true;
+        killWithEscalation(ci.child);
+      } else if (scheduler.dequeue(project.name, child.id)) {
+        // A capacity/governor wait may never be admitted, so run the same
+        // stage-aware unwind now instead of making epic cleanup wait forever.
+        await unwindQueuedPending(project, child.id, childPend);
+      }
     } else {
       await releaseCardResources(project, child.id);
       await setArchived(project.path, child.id, true);
@@ -993,6 +1006,7 @@ export async function retryVerification(project, id) {
     cancelled: false, revertTo: 'Queue', noRequeue: false,
     worktreeAbs, branch: card.data.worktree, attempt, maxAttempts,
     lastVerdict: verification.last_verdict || '',
+    attemptOpened: false,
   };
   // Unlike a one-shot custom trigger, Retry Verification can continue into a
   // repair Build. Use the same object as the persistent build-flow owner so
@@ -1390,6 +1404,7 @@ function enqueueBuild(project, id) {
     owner = {
       project: project.name, card: id, stage: 'Build',
       cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
+      attemptOpened: false,
     };
     pending.set(key, owner);
     return buildChain(project, id, null, recovery, owner);
@@ -1406,7 +1421,12 @@ function enqueueBuild(project, id) {
 // continuously from the card's first admission, so no re-claim here.
 function scheduleBuild(project, id, retry) {
   const owner = pending.get(runKey(project.name, id)) || null;
-  if (owner) owner.stage = 'Build';
+  if (owner) {
+    owner.stage = 'Build';
+    // The preceding Verify attempt is complete; this queued repair has not
+    // opened its next attempt until buildChain records it below.
+    owner.attemptOpened = false;
+  }
   sendState(project, id, 'queued', 'Build');
   scheduler.schedule(project, id, 'Build', () => buildChain(project, id, retry, null, owner), {
     onDefer: onDeferState(project, id, 'Build'),
@@ -1563,14 +1583,20 @@ async function unwindQueuedPending(project, id, pc) {
     attempt: Math.max(1, Number(verification.attempts) || 1),
     maxAttempts: Number(verification.max_attempts) || config.max_attempts || 3,
     lastVerdict: verification.last_verdict || '',
+    attemptOpened: pc.attemptOpened,
   });
+}
+
+function attemptsAfterAbort(attempt, attemptOpened) {
+  return attemptOpened === false ? Math.max(0, attempt) : Math.max(0, attempt - 1);
 }
 
 // Revert for a between-spawns cancel, mirroring the spawn-path cancel handlers:
 // abandon the worktree, roll the burned attempt back (a cancel is an abort,
 // not a failed try), honor cascadeArchive, and re-drive a Queue revert unless
 // shutdown (noRequeue) or budget mode opted out.
-async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict }) {
+async function revertPendingCancel(project, id, pc,
+  { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict, attemptOpened = pc.attemptOpened }) {
   if (pc.preserveWorktree) {
     const stage = readCard(project.path, id)?.data?.status === 'Verify' ? 'Verify' : 'Build';
     return toNeedsHuman(project, id, stage, 'orphaned_run',
@@ -1580,7 +1606,11 @@ async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, confi
   await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
   await patchFrontmatter(project.path, id, {
     worktree: '', base_branch: '',
-    verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict || '' },
+    verification: {
+      attempts: attemptsAfterAbort(attempt, attemptOpened),
+      max_attempts: maxAttempts,
+      last_verdict: lastVerdict || '',
+    },
   });
   if (pc.cascadeArchive) {
     await setArchived(project.path, id, true);
@@ -1682,6 +1712,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     ...(forkedFrom ? { base_branch: forkedFrom } : {}),
     verification: { attempts: attempt, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
   });
+  if (pendingOwner) pendingOwner.attemptOpened = true;
   await orchMove(project, id, 'Build', `attempt ${attempt}`);
 
   // multi-developer coordination: claim the files this card touches, surface
@@ -1796,7 +1827,11 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     // abort, not a failed try — it must not count toward attempts_exhausted
     await patchFrontmatter(project.path, id, {
       worktree: '', base_branch: '',
-      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
+      verification: {
+        attempts: attemptsAfterAbort(attempt, pendingOwner?.attemptOpened),
+        max_attempts: maxAttempts,
+        last_verdict: ver.last_verdict || '',
+      },
     });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
@@ -1899,7 +1934,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     await patchFrontmatter(project.path, id, {
       worktree: '', base_branch: '',
       verification: {
-        attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts,
+        attempts: attemptsAfterAbort(attempt, triggerClaim.attemptOpened), max_attempts: maxAttempts,
         last_verdict: triggerClaim.lastVerdict || '',
       },
     });
@@ -1945,7 +1980,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     // abort, not a failed try — it must not count toward attempts_exhausted
     await patchFrontmatter(project.path, id, {
       worktree: '', base_branch: '',
-      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: card?.data?.verification?.last_verdict || '' },
+      verification: {
+        attempts: attemptsAfterAbort(attempt, pendingOwner?.attemptOpened),
+        max_attempts: maxAttempts,
+        last_verdict: card?.data?.verification?.last_verdict || '',
+      },
     });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
@@ -1976,7 +2015,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
       // existing worktree is reused). Attempt rolled back so none is burned.
       if (infrastructure) await recordRun(project, id, 'Verify', attempt, result, `infrastructure: ${infrastructure}`);
       else await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
-      return parkForQuota(project, id, attempt, maxAttempts, priorFindings);
+      return parkForQuota(project, id, attempt, maxAttempts, priorFindings,
+        pendingOwner?.attemptOpened !== false);
     }
     if (!isRerun && failure.kind === 'agent') {
       if (infrastructure) await recordRun(project, id, 'Verify', attempt, result, `infrastructure: ${infrastructure}`);
@@ -2060,7 +2100,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (verdict.question) {
     await patchFrontmatter(project.path, id, {
       question: verdict.question,
-      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: verdict.verdict },
+      verification: {
+        attempts: attemptsAfterAbort(attempt, pendingOwner?.attemptOpened),
+        max_attempts: maxAttempts,
+        last_verdict: verdict.verdict,
+      },
     });
     await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · needs a human decision`);
     return toNeedsHuman(project, id, 'Verify', 'needs_answer', verdict.question);

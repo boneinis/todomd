@@ -1193,6 +1193,51 @@ test('cascadeEpicCleanup: live building child is archived (not Review) after cle
   clearFakeAgent();
 });
 
+test('cascadeEpicCleanup immediately archives a repair child waiting for Build admission', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'fail', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('concurrency: 1', 'concurrency: 2')
+    + 'scheduler:\n  columns:\n    Build: 1\n');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'configure occupied Build column']);
+  const p = project(repo);
+  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001]\n' });
+  const { worktree } = seedPreservedVerification(repo, 'chunk-001');
+  await patchFrontmatter(repo, 'chunk-001', { parent: 'epic-001' });
+  let releaseBlocker;
+  const blocker = scheduler.schedule(p, 'blocker', 'Build', () => new Promise((resolve) => {
+    releaseBlocker = resolve;
+  }));
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'chunk-001'), { ok: true });
+    await until(() => scheduler.queuedEntries(p.name)
+      .some((entry) => entry.card === 'chunk-001' && entry.column === 'Build'),
+    { timeout: BUDGET.stage });
+
+    await pipeline.cascadeEpicCleanup(p, 'epic-001');
+    const child = readCard(repo, 'chunk-001');
+    assert.ok(child.data.archived, 'cleanup does not wait for the occupied Build slot');
+    assert.equal(child.data.verification.attempts, 1,
+      'the queued repair never opened a second attempt to roll back');
+    assert.equal(pipeline.hasLiveRun(p.name, 'chunk-001'), false);
+    assert.equal(scheduler.isQueued(p.name, 'chunk-001'), false);
+    assert.equal(fs.existsSync(worktree), false, 'the archived child releases its worktree');
+  } finally {
+    releaseBlocker?.();
+    await blocker;
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
 test('killAllChildren stops a live agent child and reverts its card', async () => {
   isolateHome();
   const marker = path.join(tmp('killall'), 'started');
@@ -2002,6 +2047,9 @@ function seedPreservedVerification(repo, id) {
     status: 'Needs Human',
     extra: `needs_human_reason: bad_verdict\nsession_id: fake-session\nworktree: ${branch}\nbase_branch: ${base}\n`,
   });
+  const cardFile = path.join(repo, '.todomd/tasks', `${id}-card.md`);
+  fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8')
+    .replace('verification: { attempts: 0,', 'verification: { attempts: 1,'));
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', `seed preserved verification ${id}`]);
   fs.mkdirSync(path.dirname(worktree), { recursive: true });
@@ -2123,6 +2171,8 @@ test('a failed direct Retry Verification keeps ownership while its repair Build 
     await blocker;
     await until(() => status(repo, 'task-0001') === 'Review'
       && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
+      'cancelling the queued repair does not erase its completed failed attempt');
     assert.equal(fs.existsSync(worktree), false,
       'cancelling the owned repair flow unwinds its preserved worktree');
   } finally {
@@ -2194,6 +2244,8 @@ test('cancelling a queued Retry Verification unwinds through its claim instead o
     // is removed and its preserved mid-flow state unwinds immediately.
     await until(() => status(repo, 'task-0001') === 'Queue' && !pipeline.hasLiveRun(p.name, 'task-0001'),
       { timeout: BUDGET.stage });
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
+      'a queued re-verification has not opened an attempt to roll back');
     assert.equal(spawnedAnything(repo, 'task-0001'), false, 'the cancelled retry never spawned a verifier');
     assert.equal(fs.existsSync(worktree), false, 'the cancel released the preserved worktree');
     assert.ok(!readCard(repo, 'task-0001').data.worktree, 'the stale branch reference is cleared too');
