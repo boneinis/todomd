@@ -702,6 +702,10 @@ export async function humanMove(project, id, to) {
       // writer and the chain can't stomp this move by continuing.
       pend.cancelled = true;
       pend.revertTo = 'Review';
+      if (queued) {
+        scheduler.dequeue(project.name, id);
+        await unwindQueuedPending(project, id, pend);
+      }
       return { ok: true, cancelled: true };
     }
     if (triageClaim) {
@@ -1051,6 +1055,13 @@ export function cancel(project, id) {
       // through the same pendingCancelled() checkpoint as everything else.
       const ci = ciRuns.get(key);
       if (ci) { ci.cancelled = true; killWithEscalation(ci.child); }
+      // A queued mid-flow stage may never be admitted (permanent pressure or
+      // a hung capacity holder). Remove it and run the same worktree/attempt
+      // unwind immediately instead of making cancellation depend on capacity.
+      if (!ci && scheduler.dequeue(project.name, id)) {
+        withoutRepoLockContext(() => unwindQueuedPending(project, id, pend))
+          .catch((err) => pipelineError(project, id, err, pend));
+      }
       return { ok: true };
     }
     // not running — maybe just queued (never admitted at all, so nothing to unwind)
@@ -1508,6 +1519,23 @@ function pendingCancelled(project, id) {
   return p?.cancelled ? p : null;
 }
 
+async function unwindQueuedPending(project, id, pc) {
+  const card = readCard(project.path, id);
+  if (!card) return sendState(project, id, 'idle', undefined, undefined, pc);
+  const config = loadConfig(project.path);
+  const verification = card.data.verification || {};
+  const branch = card.data.worktree;
+  const worktreeAbs = path.join(project.path, config.worktree_dir || '.todomd/worktrees', id);
+  return revertPendingCancel(project, id, pc, {
+    worktreeAbs,
+    branch,
+    config,
+    attempt: Math.max(1, Number(verification.attempts) || 1),
+    maxAttempts: Number(verification.max_attempts) || config.max_attempts || 3,
+    lastVerdict: verification.last_verdict || '',
+  });
+}
+
 // Revert for a between-spawns cancel, mirroring the spawn-path cancel handlers:
 // abandon the worktree, roll the burned attempt back (a cancel is an abort,
 // not a failed try), honor cascadeArchive, and re-drive a Queue revert unless
@@ -1516,7 +1544,7 @@ async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, confi
   if (pc.preserveWorktree) {
     const stage = readCard(project.path, id)?.data?.status === 'Verify' ? 'Verify' : 'Build';
     return toNeedsHuman(project, id, stage, 'orphaned_run',
-      'server stopped during a run — unmerged work is preserved in the worktree/branch');
+      'server stopped during a run — unmerged work is preserved in the worktree/branch', pc);
   }
   await releaseCoordination(project, id);
   await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
@@ -1526,10 +1554,10 @@ async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, confi
   });
   if (pc.cascadeArchive) {
     await setArchived(project.path, id, true);
-    return sendState(project, id, 'idle');
+    return sendState(project, id, 'idle', undefined, undefined, pc);
   }
   await orchMove(project, id, pc.revertTo || 'Queue', 'cancelled');
-  sendState(project, id, 'idle');
+  sendState(project, id, 'idle', undefined, undefined, pc);
   if (pc.revertTo === 'Queue' && !pc.noRequeue && (config.mode || 'launcher') !== 'budget') {
     enqueueBuild(project, id);
   }

@@ -2053,10 +2053,8 @@ test('cancelling a queued Retry Verification unwinds through its claim instead o
     pipeline.pauseQueue(p);
     assert.deepEqual(pipeline.cancel(p, 'task-0001'), { ok: true }, 'a queued retry is cancellable');
 
-    sample = { cpuLoad: 0.05 };
-    scheduler.tick();
-    // admission finds the claim already cancelled and unwinds it: no verifier
-    // runs, the preserved worktree is released, and the card returns to Queue
+    // Cancellation does not wait for resource recovery: the queued admission
+    // is removed and its preserved mid-flow state unwinds immediately.
     await until(() => status(repo, 'task-0001') === 'Queue' && !pipeline.hasLiveRun(p.name, 'task-0001'),
       { timeout: BUDGET.stage });
     assert.equal(spawnedAnything(repo, 'task-0001'), false, 'the cancelled retry never spawned a verifier');

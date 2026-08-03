@@ -51,10 +51,14 @@ const onPath = (bin) => {
 // Matching a bare substring such as "todomd" therefore misidentifies any
 // process launched from a folder named TODOMD as the board server (and can
 // signal an unrelated recycled PID). Require an actual executable/script
-// token named `todomd` or `todomd.js`; a TODOMD directory segment followed by
-// another slash deliberately does not match.
-const isTodomdServerCommand = (cmdline) =>
-  /(?:^|[\\/\s])todomd(?:\.js)?(?=\s|$)/i.test(String(cmdline || ''));
+// installed `bin/todomd.js` entrypoint, or a real `todomd` executable in argv
+// position zero. A repository/worktree directory merely named TODOMD must
+// never qualify, even if process inspection truncates immediately after it.
+const isTodomdServerCommand = (cmdline) => {
+  const line = String(cmdline || '');
+  return /[\\/]bin[\\/]todomd\.js(?=\s|$)/i.test(line)
+    || /^\s*(?:\S*[\\/])?todomd(?=\s|$)/i.test(line);
+};
 
 if (cmd === 'init') {
   if (!isGitRepo(process.cwd())) {
@@ -122,7 +126,12 @@ if (cmd === 'stop') {
       // command can be cut immediately after a /TODOMD path segment and make
       // the token matcher misidentify an unrelated recycled PID as the server.
       cmdline = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch { /* no ps on this platform — skip the check */ }
+    } catch (err) {
+      // Preserve the legacy no-ps fallback (notably Windows), but fail closed
+      // when ps exists and inspection itself is denied or fails. Treating an
+      // EPERM/exit-1 as "no ps" would signal an identity we never verified.
+      if (err?.code !== 'ENOENT') cmdline = '';
+    }
     if (cmdline !== null && !isTodomdServerCommand(cmdline)) {
       console.error(`pid ${pid} is not a todomd server — stale pid file? remove ~/.todomd/server.pid`);
       process.exit(1);
