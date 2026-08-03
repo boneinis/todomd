@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc569-62c2-7ea3-bb5d-5c85e855427b
+session_id: 019fc59f-73cc-7fa2-9ad1-cb769f12062f
 worktree: todomd/task-0040
-verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason: merge_conflict
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -124,3 +124,16 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: Adversarial bug: cancelling or retriaging mid-flow work that is waiting for scheduler admission can hang indefinitely. In src/pipeline.js:699-705 and 1038-1054, a pending claim is marked cancelled but its scheduler entry is deliberately not dequeued. Cleanup only happens when the blocked entry is eventually admitted and reaches pendingCancelled(). If governor pressure never recovers, a column/glob
 - 2026-08-03 02:22Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
   - merge_conflict: merge conflict
+- 2026-08-03 02:27Z · merge conflict resolved in preserved worktree; ready for Verify-only retry
+- 2026-08-03 02:31Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The unrestricted full suite passed: 532 unit/integration tests and 30 UI tests. However, the adversarial review found a reachable CI-diagnostics bug. In src/pipeline.js, the capture function near line 1493 stops collecting after the buffer first exceeds CI_OUTPUT_MAX, so it retains the beginning of verbose output rather than the promised tail. ciStage then takes the last 2,000 characters of that s
+- 2026-08-03 02:43Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed with local-socket permission: 532 unit/integration tests and 30 UI tests. However, a reachable deletion race remains. `scheduleVerify` and `scheduleCi` can wait indefinitely for scheduler admission, but their admitted functions (`verify` and `ciStage`) do not re-check that the task card still exists. If a card is deleted externally after Build completes while CI/Verify is que
+- 2026-08-03 02:56Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: `npm test` passed with local-socket permission: 534 unit/integration tests and 30 UI tests. However, adversarial review found a reachable cross-project disk-pressure bug: `src/scheduler.js:140` samples resources using only `allKnownProjects()[0].path`, while `src/resources.js:119` measures disk space for that specific filesystem. Thresholds are combined from every enabled project, but a project on
+- 2026-08-03 03:04Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: All acceptance criteria are met and the unrestricted suite passed: 535 unit/integration tests and 30 UI tests. However, adversarial review found a reachable cancellation bug. In src/pipeline.js:706, humanMove(..., 'Review') handles a pending CI flow by merely marking the pending owner cancelled; unlike cancel() at lines 1063-1064, it never signals the live CI child in ciRuns. Reproduction with a 3
+- 2026-08-03 03:11Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed with local-socket access: 536 unit/integration tests and 30 UI tests. However, adversarial review found a reachable PID-safety regression in bin/todomd.js:59-60. The new isTodomdServerCommand matcher rejects a normal npm/symlink launch represented as `node /.../.npm-global/bin/todomd serve`, so `todomd stop` can refuse its own live server and a second serve may miss it. It is
+- 2026-08-03 03:23Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed: 539 unit/integration tests and 30 UI tests. However, the adversarial review found a reachable manual-pause bypass. In src/pipeline.js:1011-1014, retryVerification() schedules a new Verify run without the manual-pause blocked gate used by enqueueBuild() at lines 1392-1395. A focused reproduction set the persistent Queue Pause, invoked Retry Verification on an idle Needs Human
