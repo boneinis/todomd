@@ -1010,7 +1010,10 @@ export async function retryVerification(project, id) {
   // withoutRepoLockContext here: scheduler.admitEntry() already wraps run().
   scheduler.schedule(project, id, 'Verify',
     () => verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim),
-    { onDefer: onDeferState(project, id, 'Verify') })
+    {
+      blocked: () => quotaPaused.has(project.name) || isQueuePaused(project),
+      onDefer: onDeferState(project, id, 'Verify'),
+    })
     .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err), claim));
   return { ok: true };
 }

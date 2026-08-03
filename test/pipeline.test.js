@@ -2057,6 +2057,36 @@ test('Retry Verification is admitted through the scheduler: under pressure it st
   }
 });
 
+test('manual queue pause parks a direct Retry Verification until resume', async () => {
+  isolateHome();
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+
+  try {
+    pipeline.pauseQueue(p);
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    await sleep(150);
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'],
+      { state: 'queued', stage: 'Verify' });
+    assert.equal(spawnedAnything(repo, 'task-0001'), false,
+      'the paused retry does not start a verifier');
+    assert.equal(fs.existsSync(worktree), true,
+      'the paused retry keeps its preserved worktree');
+
+    assert.deepEqual(pipeline.resumeQueue(p), { ok: true, queue_paused: false });
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
 test('a failed direct Retry Verification keeps ownership while its repair Build waits for admission', async () => {
   isolateHome();
   await sleep(300);
