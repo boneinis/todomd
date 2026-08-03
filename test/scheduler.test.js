@@ -2,15 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmp } from './helpers.js';
+import { tmp, isolateHome } from './helpers.js';
 import { createGovernor, resourcesConfig } from '../src/resources.js';
+import { addProject } from '../src/registry.js';
 import * as scheduler from '../src/scheduler.js';
 
 // A minimal on-disk project scheduler.js can loadConfig() against — no git
-// repo needed, since scheduler.js only ever reads .todomd/config.yml.
+// repo needed, since scheduler.js only ever reads .todomd/config.yml. Also
+// creates .todomd/tasks so registry.listProjects() (which filters out any
+// path lacking one) still finds it if the test registers it with addProject().
 function makeProject(name, configYaml = '') {
   const dir = tmp(`sched-${name}`);
-  fs.mkdirSync(path.join(dir, '.todomd'), { recursive: true });
+  fs.mkdirSync(path.join(dir, '.todomd', 'tasks'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.todomd', 'config.yml'), configYaml);
   return { name, path: dir };
 }
@@ -23,7 +26,10 @@ function deferredRun() {
   return { run: () => promise, resolve };
 }
 
-test.beforeEach(() => scheduler.resetState());
+// isolateHome() also isolates the project registry (~/.todomd/projects.json)
+// that allKnownProjects() reads — without it these tests would read whatever
+// registry.json happens to exist on the machine actually running them.
+test.beforeEach(() => { isolateHome(); scheduler.resetState(); });
 
 test('global limit is one authoritative number across differently-configured projects, not read per entry', async () => {
   const a = makeProject('a', 'concurrency: 5\nscheduler:\n  global: 2\n');
@@ -74,6 +80,32 @@ test('a per-column limit caps that column alone, independent of the global cap',
   assert.equal(buildsStarted, 3, 'a saturated Verify column does not stall unrelated Build entries');
 });
 
+// CI is a fully real, independently-enforced admission column here — the
+// scheduler treats it identically to Build/Verify (nothing in this module
+// special-cases either name). No PRODUCTION code calls scheduler.schedule()
+// with 'CI' yet: that requires task-0041's board-schema work first (CI isn't
+// a valid card status until DEFAULT_COLUMNS/REQUIRED_COLUMNS in board.js
+// include it, which is explicitly task-0041's job, not task-0040's). This
+// proves the column mechanism itself is genuine infrastructure ready for
+// that wiring, not dead configuration.
+test('the CI column is enforced independently, exactly like Build/Verify — ready infrastructure for task-0041 to call', () => {
+  const p = makeProject('ci', 'concurrency: 10\nscheduler:\n  columns:\n    CI: 1\n');
+  scheduler.setGovernor(createGovernor({ thresholds: resourcesConfig({}), sample: () => ({}) }));
+
+  let ciStarted = 0;
+  let buildsStarted = 0;
+  for (let i = 0; i < 2; i++) {
+    const j = deferredRun();
+    scheduler.schedule(p, `ci-${i}`, 'CI', () => { ciStarted++; return j.run(); });
+  }
+  for (let i = 0; i < 3; i++) {
+    const j = deferredRun();
+    scheduler.schedule(p, `build-${i}`, 'Build', () => { buildsStarted++; return j.run(); });
+  }
+  assert.equal(ciStarted, 1, "CI's own column limit (1) caps CI alone");
+  assert.equal(buildsStarted, 3, "a saturated CI column does not stall Build, which has its own looser limit");
+});
+
 test('a board that only ever configured concurrency keeps that exact effective Build parallelism', () => {
   const p = makeProject('legacy', 'concurrency: 3\n'); // no scheduler: block at all
   scheduler.setGovernor(createGovernor({ thresholds: resourcesConfig({}), sample: () => ({}) }));
@@ -103,6 +135,39 @@ test('an unrelated project\'s default concurrency never throttles another projec
   scheduler.schedule(other, 'other-card', 'Build', () => { otherStarted = true; return Promise.resolve(); });
   assert.equal(otherStarted, true, "busy's in-flight Build must not throttle an unrelated project's Build column");
   busyJob.resolve();
+});
+
+test('a registered project with no queued work of its own still contributes its configured global limit', () => {
+  // Regression: the combined caps must come from the COMPLETE registered
+  // project set, not just projects that have scheduled something themselves —
+  // otherwise a stricter project sitting idle (or processed later during
+  // reconcileOnBoot's sequential per-project sweep) would silently have no
+  // say over another project's admissions.
+  const strict = makeProject('strict', 'scheduler:\n  global: 1\n');
+  addProject(strict.path); // registered, but never calls schedule() itself
+  const busy = makeProject('busy', ''); // no explicit global — unlimited on its own
+  scheduler.setGovernor(createGovernor({ thresholds: resourcesConfig({}), sample: () => ({}) }));
+
+  let started = 0;
+  for (let i = 0; i < 3; i++) {
+    const j = deferredRun();
+    scheduler.schedule(busy, `card-${i}`, 'Build', () => { started++; return j.run(); });
+  }
+  assert.equal(started, 1, "strict's registered-but-idle global cap of 1 still governs busy's admissions");
+});
+
+test('a rejected scheduled job releases its counters and settles without an unhandled rejection', async () => {
+  const p = makeProject('reject', 'concurrency: 1\n');
+  scheduler.setGovernor(createGovernor({ thresholds: resourcesConfig({}), sample: () => ({}) }));
+
+  const failing = scheduler.schedule(p, 'bad', 'Build', () => Promise.reject(new Error('boom')));
+  await assert.rejects(failing, /boom/);
+
+  // Counters released despite the rejection: under concurrency: 1, a
+  // follower can only start if `bad`'s slot was actually freed.
+  let followerRan = false;
+  await scheduler.schedule(p, 'ok', 'Build', () => { followerRan = true; return Promise.resolve(); });
+  assert.equal(followerRan, true, 'a rejected job frees its slot for the next one, same as a resolved job');
 });
 
 test('governor pressure defers admission with a reason and spawns nothing; a later tick resumes it once recovered', async () => {

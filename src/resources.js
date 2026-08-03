@@ -167,12 +167,18 @@ function evaluateMetric(state, value, { defer, resume, critical }, isWorse, isRe
 }
 
 // thresholds: the shape returned by resourcesConfig() — cpu/memory/disk
-// sub-objects plus recoverySamples. sample: () => sampleResources()-shaped
-// object (injected so tests can drive a fake sampler without touching the OS).
+// sub-objects plus recoverySamples — OR a function returning that shape,
+// re-evaluated on every check(). A live provider lets a caller whose
+// configured thresholds can change after construction (the scheduler's
+// governor is a long-lived singleton combining every registered project)
+// pick up a later project's enablement/thresholds/recovery-samples without
+// losing the metricState hysteresis below, which must survive unchanged
+// across threshold changes — that continuity is the whole point of a
+// singleton governor instead of a fresh one per check.
+// sample: () => sampleResources()-shaped object (injected so tests can drive
+// a fake sampler without touching the OS).
 export function createGovernor({ thresholds, sample }) {
-  const t = thresholds || DEFAULT_RESOURCES_CONFIG;
-  const recoverySamples = Number.isInteger(t.recoverySamples) && t.recoverySamples > 0
-    ? t.recoverySamples : DEFAULT_RESOURCES_CONFIG.recoverySamples;
+  const resolveThresholds = () => (typeof thresholds === 'function' ? thresholds() : thresholds) || DEFAULT_RESOURCES_CONFIG;
 
   const metricState = {
     cpu: { deferred: false, goodStreak: 0, lastReason: null },
@@ -183,6 +189,9 @@ export function createGovernor({ thresholds, sample }) {
   let last = { deferring: false, critical: false, reasons: [] };
 
   function check() {
+    const t = resolveThresholds();
+    const recoverySamples = Number.isInteger(t.recoverySamples) && t.recoverySamples > 0
+      ? t.recoverySamples : DEFAULT_RESOURCES_CONFIG.recoverySamples;
     // `enabled: false` turns the governor off entirely: no sampling at all (the
     // whole point is not paying for statfs/loadavg on a board that opted out),
     // and never a deferral. Compared against `=== false` so thresholds built by

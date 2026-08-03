@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { execFileSync } from 'node:child_process';
+import { WebSocket } from 'ws';
 import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
@@ -409,6 +410,44 @@ test('API DELETE epic with a building child returns 400', async () => {
     // cancel the hanging build to clean up
     await pipeline.humanMove(p, 'task-0002', 'Review');
   } finally {
+    srv.close();
+    clearFakeAgent();
+  }
+});
+
+test('WebSocket: a governor-deferred admission broadcasts run-state deferred + reason to a real connected client', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  // An impossible-to-satisfy defer threshold guarantees a real sample always
+  // breaches it, so the deferral (and the broadcast it drives) is
+  // deterministic rather than depending on this machine's actual load.
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('resources:\n  enabled: false\n',
+    'resources:\n  enabled: true\n  cpu:\n    defer: 0.001\n    resume: 0.0005\n    critical: 100\n'));
+  addProject(repo);
+  const name = path.basename(repo);
+  const srv = await startServer({ port: await freePort() });
+  const p = { name, path: repo };
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/?token=${srv.token}`);
+  await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+  const messages = [];
+  ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString())); } catch { /* ignore non-JSON frames */ } });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(
+      () => messages.some((m) => m.type === 'run-state' && m.card === 'task-0001' && m.state === 'deferred'),
+      { timeout: BUDGET.chain },
+    );
+    const deferred = messages.find((m) => m.type === 'run-state' && m.card === 'task-0001' && m.state === 'deferred');
+    assert.equal(deferred.project, name);
+    assert.match(deferred.reason, /cpu/, 'the real WS broadcast carries the deferral reason, not just an in-process callback');
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Queue', 'no child was ever spawned while deferred');
+  } finally {
+    ws.close();
     srv.close();
     clearFakeAgent();
   }

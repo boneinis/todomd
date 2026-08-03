@@ -1609,6 +1609,12 @@ async function buildChain(project, id, retry = null, recovery = null) {
   // Release this Build-column slot now — Verify is admitted independently
   // (its own scheduler entry) rather than inline, so the Build slot isn't
   // held for the rest of the chain and Verify's column limit is real.
+  // No CI admission is spliced in here: 'CI' isn't a valid card status yet
+  // (DEFAULT_COLUMNS/REQUIRED_COLUMNS in board.js don't include it — adding
+  // it, plus the actual command runner and quick/full profiles, is
+  // task-0041's job). scheduler.js's CI column accounting is already real,
+  // independently-enforced infrastructure (see scheduler.test.js) ready for
+  // task-0041 to call the same way Build/Verify do here.
   // thread the findings that drove this attempt so a verify-quota resume can
   // rebuild with them (the build code is in the worktree; this keeps context)
   scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);

@@ -1,49 +1,70 @@
 // Shared cross-project scheduler: ONE module-level queue of {project, card,
-// column} work spanning every project the running server has touched, with
-// running counts kept globally, per column (Build/CI/Verify) and per project.
-// pipeline.js owns WHAT to run (buildChain/verify) and WHEN a card is allowed
-// to leave a column at all (queue pause, quota pause); this module owns only
-// WHETHER capacity currently exists to start the next unit of that work.
+// column} work spanning every registered project, with running counts kept
+// globally, per column (Build/CI/Verify) and per project. pipeline.js owns
+// WHAT to run (buildChain/verify) and WHEN a card is allowed to leave a
+// column at all (queue pause, quota pause); this module owns only WHETHER
+// capacity currently exists to start the next unit of that work.
 //
 // Design notes that matter for review:
 //  - The authoritative global/column caps are recomputed ONCE per scan() from
-//    every project this scheduler currently knows about (see `knownProjects`,
-//    populated by schedule()) — never read off "whichever entry is being
-//    considered". Two differently-configured projects therefore admit against
-//    the exact same numbers in the same pass; the strictest configured value
-//    wins (Math.min), so no project can unilaterally loosen a shared cap.
-//  - `knownProjects` is discovered from real schedule() calls rather than
-//    read from src/registry.js on disk. Production always calls schedule()
-//    with registry-backed projects (see server.js), so this converges to the
-//    same set; tests that build ad-hoc {name, path} projects (never added to
-//    the registry) keep working without a registry.json to match against.
+//    the COMPLETE project set (see allKnownProjects() below) — never read off
+//    "whichever entry is being considered". Two differently-configured
+//    projects therefore admit against the exact same numbers in the same
+//    pass; the strictest configured value wins (Math.min), so no project can
+//    unilaterally loosen a shared cap. Reading the full registry fresh on
+//    every call (rather than caching a set built from schedule() calls) also
+//    means a project that has never queued any work of its own still
+//    contributes its configured caps, and reconcileOnBoot's sequential
+//    per-project processing at startup can't admit work before a
+//    later-processed project's stricter limit is known.
 //  - The governor is a persistent singleton (its hysteresis state must
-//    survive across ticks) built once, lazily, from the FIRST project known
-//    at that moment via resourcesConfig()'s normalized output — never a
-//    hard-coded default. Later-known projects fold into the combined
-//    global/column caps immediately (recomputed every scan), just not into
-//    the already-constructed governor's thresholds.
+//    survive across ticks — see resources.js) built once, lazily, but its
+//    THRESHOLDS are re-resolved from the complete project set on every
+//    check() (a live provider function, not a value captured at
+//    construction) — so a project registered or reconfigured after the
+//    governor already exists still affects enablement/thresholds/recovery
+//    samples/sampling interval, not just the combined global/column caps.
 //  - admit() only ever gates the START of an entry. Nothing here ever touches
 //    a `run()` that has already started — nothing to signal, nothing to kill.
 import { loadConfig, withoutRepoLockContext } from './board.js';
 import { createGovernor, sampleResources, resourcesConfig } from './resources.js';
+import { listProjects } from './registry.js';
 
 const queue = [];                    // [{project, card, column, run, resolveFn, rejectFn, deferredReason, onDefer}]
 const runningByColumn = new Map();   // column -> count
 const runningByProject = new Map();  // project name -> count
 let runningGlobal = 0;
-const knownProjects = new Map();     // project name -> {name, path}
+// project name -> {name, path}, for a project scheduled work has been
+// requested for but that isn't in the registry (every test in this repo's
+// own suite builds projects this way; production always registers first —
+// see server.js). Merged with the full registry below, registry wins on a
+// name collision since it's the authoritative production source.
+const adHocProjects = new Map();
 
 let governor = null;
 let tickTimer = null;
+let tickIntervalMs = null;
 
 function noteProject(project) {
-  if (project?.name) knownProjects.set(project.name, project);
+  if (project?.name) adHocProjects.set(project.name, project);
+}
+
+// The complete set of projects to combine limits/thresholds over. Read fresh
+// every call (registry.listProjects() re-reads projects.json, loadConfig()
+// re-reads config.yml) so a later registration, removal, or config edit is
+// picked up immediately — nothing here is cached across calls.
+function allKnownProjects() {
+  const byName = new Map();
+  try {
+    for (const p of listProjects()) byName.set(p.name, p);
+  } catch { /* an unreadable registry contributes no extra opinions */ }
+  for (const p of adHocProjects.values()) if (!byName.has(p.name)) byName.set(p.name, p);
+  return [...byName.values()];
 }
 
 function projectConfigs() {
   const out = [];
-  for (const p of knownProjects.values()) {
+  for (const p of allKnownProjects()) {
     try { out.push(loadConfig(p.path)); } catch { /* an unreadable project contributes no opinion */ }
   }
   return out;
@@ -96,21 +117,54 @@ function combinedResourceThresholds() {
   });
 }
 
+let lastCheckAt = 0;
+let lastCheckSignature = null;
+
+// The governor object itself (hysteresis state) is a persistent singleton,
+// but its thresholds and sample root are LIVE — resolved fresh on every
+// check()/sample() call from the CURRENT complete project set — so a project
+// registered, removed, or reconfigured after this first construction still
+// takes effect immediately, with no restart and no lost hysteresis history.
 function ensureGovernor() {
   if (governor) return governor;
-  const thresholds = combinedResourceThresholds();
-  const rootPath = knownProjects.values().next().value?.path || '.';
-  governor = createGovernor({ thresholds, sample: () => sampleResources(rootPath) });
-  governor.check(); // seed real state now rather than waiting a full interval
-  startTicking(thresholds.sampleIntervalSeconds);
+  governor = createGovernor({
+    thresholds: combinedResourceThresholds,
+    sample: () => sampleResources(allKnownProjects()[0]?.path || '.'),
+  });
   return governor;
 }
 
-function startTicking(intervalSeconds) {
+function doCheck() {
+  governor.check();
+  lastCheckAt = Date.now();
+  lastCheckSignature = JSON.stringify(combinedResourceThresholds());
+}
+
+// Re-sample only when it can actually matter: the configured sample interval
+// has elapsed, OR the combined thresholds changed since the last check (a
+// project registered/deregistered, or a config edit) — so a newly-registered
+// project's tighter thresholds are observed on the very next scan() instead
+// of waiting out however much of the OLD interval remains. Skips re-sampling
+// (the whole point of sample_interval_seconds) when neither is true.
+function maybeCheck() {
+  ensureGovernor();
+  const thresholds = combinedResourceThresholds();
+  const signature = JSON.stringify(thresholds);
+  const intervalMs = Math.max(1000, (Number(thresholds.sampleIntervalSeconds) || 30) * 1000);
+  if (signature !== lastCheckSignature || Date.now() - lastCheckAt >= intervalMs) doCheck();
+  scheduleTick(); // (re)arm the background timer at whatever interval is current now
+}
+
+// The background timer exists solely so a deferred entry resumes on its own
+// even with no new schedule()/release() event to trigger a scan() — e.g. the
+// queue is non-empty but idle, waiting purely on the governor to recover.
+function scheduleTick() {
+  const ms = Math.max(1000, (Number(combinedResourceThresholds().sampleIntervalSeconds) || 30) * 1000);
+  if (tickTimer && tickIntervalMs === ms) return; // already ticking at the right cadence
   if (tickTimer) clearInterval(tickTimer);
-  const ms = Math.max(1000, (Number(intervalSeconds) || 30) * 1000);
+  tickIntervalMs = ms;
   tickTimer = setInterval(() => {
-    try { governor.check(); scan(); } catch { /* a sampler hiccup must not kill the loop */ }
+    try { scan(); } catch { /* a sampler hiccup must not kill the loop */ }
   }, ms);
   tickTimer.unref?.();
 }
@@ -141,13 +195,11 @@ function setDeferred(entry, reason) {
 function scan() {
   // Nothing to admit — bail before touching the governor at all. A rescan can
   // fire with an empty queue (e.g. resumeQueues() runs unconditionally at
-  // boot); constructing the governor here would seed it from whatever
-  // projects happen to be known at that arbitrary moment — possibly none,
-  // which falls back to hard-coded defaults instead of any real board's
-  // configured (or disabled) resources. Deferring construction to the first
-  // actual schedule() call guarantees at least that caller's project is known.
+  // boot, or the periodic tick fires with nothing pending) — no reason to pay
+  // for a resource sample or (on a truly empty registry) fall back to
+  // hard-coded defaults when there is nothing to admit either way.
   if (!queue.length) return;
-  ensureGovernor();
+  maybeCheck();
   const g = governor.state();
   const globalLimit = combinedGlobalLimit();
   const columnLimitCache = new Map();
@@ -275,14 +327,14 @@ export function forgetProject(projectName) {
     }
   }
   runningByProject.delete(projectName);
-  knownProjects.delete(projectName);
+  adHocProjects.delete(projectName);
 }
 
 // Force a governor re-sample + rescan now, instead of waiting for the next
 // timer tick. Used by the interval itself, and directly by tests.
 export function tick() {
   ensureGovernor();
-  governor.check();
+  doCheck(); // unconditional — bypasses maybeCheck()'s throttle to force a real re-sample now
   scan();
 }
 
@@ -300,6 +352,11 @@ export function rescan() {
 // ensureGovernor() already constructed.
 export function setGovernor(g) {
   governor = g;
+  // Force the next scan()'s maybeCheck() to actually call check() on this
+  // (possibly brand new) governor rather than skipping it because the
+  // signature/interval bookkeeping looks fresh from a PRIOR governor.
+  lastCheckAt = 0;
+  lastCheckSignature = null;
 }
 
 // Test-only: drop every module-level scheduler state, including the tick
@@ -309,8 +366,11 @@ export function resetState() {
   runningByColumn.clear();
   runningByProject.clear();
   runningGlobal = 0;
-  knownProjects.clear();
+  adHocProjects.clear();
   governor = null;
   if (tickTimer) clearInterval(tickTimer);
   tickTimer = null;
+  tickIntervalMs = null;
+  lastCheckAt = 0;
+  lastCheckSignature = null;
 }
