@@ -1633,6 +1633,71 @@ test('a card removed externally while Build waits on admission releases its exac
   }
 });
 
+for (const column of ['CI', 'Verify']) {
+  test(`a card removed externally while ${column} waits on admission never spawns or merges`, async () => {
+    isolateHome();
+    await sleep(300);
+    scheduler.resetState();
+    useFakeAgent({ build: 'good', verdict: 'pass' });
+    const repo = makeRepo();
+    const blockerRepo = makeRepo();
+    const marker = path.join(tmp(`deleted-${column.toLowerCase()}`), 'ci-started');
+    for (const configuredRepo of [repo, blockerRepo]) {
+      const configured = path.join(configuredRepo, '.todomd/config.yml');
+      fs.writeFileSync(configured, fs.readFileSync(configured, 'utf8') +
+        `scheduler:\n  global: 2\n  columns:\n    ${column}: 1\n`);
+      git(configuredRepo, ['add', '-A']);
+      git(configuredRepo, ['commit', '-qm', `configure ${column} deletion race`]);
+    }
+    const cfg = path.join(repo, '.todomd/config.yml');
+    if (column === 'CI') {
+      fs.writeFileSync(path.join(repo, 'ci-deletion-marker.mjs'),
+        `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'started');\n`);
+      fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+        .replace('verify_command: node --version', 'verify_command: node ci-deletion-marker.mjs'));
+      git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'configure CI deletion marker']);
+    }
+    const p = project(repo);
+    const blocker = project(blockerRepo);
+    writeCard(repo, 'task-0001', { status: 'Planned' });
+
+    let releaseHolder;
+    const holder = scheduler.schedule(blocker, `${column.toLowerCase()}-holder`, column,
+      () => new Promise((resolve) => { releaseHolder = resolve; }));
+
+    try {
+      assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+      await until(() => {
+        const state = pipeline.getRunStates(p.name)['task-0001'];
+        return state?.stage === column && state.state === 'queued';
+      }, { timeout: BUDGET.chain, label: `${column} waits behind the synthetic holder` });
+
+      const card = readCard(repo, 'task-0001');
+      const worktree = path.join(repo, '.todomd/worktrees/task-0001');
+      assert.ok(fs.existsSync(worktree), 'Build work is preserved before the queued stage');
+      fs.unlinkSync(path.join(repo, '.todomd/tasks', card.file));
+      releaseHolder();
+      await holder;
+
+      await until(() => !pipeline.hasLiveRun(p.name, 'task-0001')
+        && !scheduler.isQueued(p.name, 'task-0001'), { timeout: BUDGET.stage });
+      assert.ok(fs.existsSync(worktree), 'external deletion does not discard the candidate worktree');
+      assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/verify-1.jsonl')), false,
+        'the deleted card never spawns Verify');
+      assert.equal(fs.existsSync(marker), false, 'the deleted card never starts its CI command');
+      assert.doesNotMatch(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/,
+        'the deleted card is never merged');
+    } finally {
+      releaseHolder?.();
+      pipeline.forgetProject(p.name);
+      pipeline.forgetProject(blocker.name);
+      await pipeline.killAllChildren({ graceMs: 1000 });
+      clearFakeAgent();
+      scheduler.resetState();
+    }
+  });
+}
+
 test('detached HEAD at fork stamps base_branch "unknown" and refuses the merge (base_branch_unknown)', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });

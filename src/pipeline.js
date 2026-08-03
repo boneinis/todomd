@@ -1412,7 +1412,8 @@ function scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktre
   const owner = pending.get(runKey(project.name, id)) || null;
   if (owner) owner.stage = 'Verify';
   scheduler.schedule(project, id, 'Verify',
-    () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings),
+    () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+      isRerun, priorFindings, null, owner),
     { onDefer: onDeferState(project, id, 'Verify') },
   ).catch((err) => pipelineError(project, id, err, owner));
 }
@@ -1435,12 +1436,18 @@ const CI_DETAIL_MAX = 2000;
 function scheduleCi(project, id, command, next) {
   const owner = pending.get(runKey(project.name, id)) || null;
   if (owner) owner.stage = 'CI';
-  scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next), {
+  scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next, owner), {
     onDefer: onDeferState(project, id, 'CI'),
   }).catch((err) => pipelineError(project, id, err, owner));
 }
 
-async function ciStage(project, id, command, next) {
+async function ciStage(project, id, command, next, pendingOwner = null) {
+  // The card can be removed outside the API while this stage waits for
+  // scheduler admission. Never spawn or merge work for a card that no longer
+  // exists; release only the flow owner captured when this entry was queued.
+  if (!readCard(project.path, id)) {
+    return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
+  }
   const { attempt, maxAttempts, buildSession, worktreeAbs, branch, findings, config, lastVerdict } = next;
   const revertArgs = { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict };
   // same between-spawns cancel checkpoint every other stage has
@@ -1861,9 +1868,13 @@ async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, e
   return { ok: true, findings: `${findings}\n\nFable diagnosis:\n${diagnosis.diagnosis}\n\nRequired repair strategy:\n${diagnosis.repair_strategy}` };
 }
 
-async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings, triggerClaim = null) {
-  const config = await execConfig(project.path);
+async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+  isRerun, priorFindings, triggerClaim = null, pendingOwner = triggerClaim) {
   const card = readCard(project.path, id);
+  // Like Build, revalidate at admission: the queue wait can be arbitrarily
+  // long, and an externally deleted card must never spawn Verify or merge.
+  if (!card) return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
+  const config = await execConfig(project.path);
   const stage = stageConfig(config, 'Verify', card);
   const vendor = cardVendor(config, card, 'Verify');
 
@@ -1959,7 +1970,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     if (!isRerun && failure.kind === 'agent') {
       if (infrastructure) await recordRun(project, id, 'Verify', attempt, result, `infrastructure: ${infrastructure}`);
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · malformed verdict, re-running once`);
-      return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, true, priorFindings);
+      return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+        true, priorFindings, triggerClaim, pendingOwner);
     }
     // a genuinely malformed verdict is bad_verdict; a spawn-level failure
     // (e.g. worktree_failed on a deleted cwd) keeps its own kind
