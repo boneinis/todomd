@@ -482,7 +482,14 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
     needs_human_reason: reason,
     recovery_stage: reason === 'orphaned_run' ? from : '',
   });
-  if (detail) await appendRunLog(project.path, id, `  - ${reason}: ${detail.slice(0, 400)}`);
+  if (detail) {
+    const text = String(detail);
+    // Preserve both the failure context and the newest diagnostic output. CI
+    // and test runners commonly print their actionable summary last.
+    const concise = text.length <= 400 ? text
+      : `${text.slice(0, 120).trimEnd()}\n…\n${text.slice(-275).trimStart()}`;
+    await appendRunLog(project.path, id, `  - ${reason}: ${concise}`);
+  }
   await orchMove(project, id, 'Needs Human', reason);
   sendState(project, id, 'idle', undefined, undefined, pendingOwner);
 }
@@ -1490,7 +1497,12 @@ function runVerifyCommand(project, id, command, cwd) {
   const entry = { project: project.name, card: id, child, cancelled: false, timedOut: false };
   ciRuns.set(key, entry);
   let output = '';
-  const capture = (chunk) => { if (output.length < CI_OUTPUT_MAX) output += chunk; };
+  const capture = (chunk) => {
+    output += chunk;
+    // Retain a rolling tail, not the first 64 KiB. The final failure summary
+    // is normally emitted after a test runner's verbose progress output.
+    if (output.length > CI_OUTPUT_MAX) output = output.slice(-CI_OUTPUT_MAX);
+  };
   for (const stream of [child.stdout, child.stderr]) {
     stream.setEncoding('utf8');
     stream.on('data', capture);

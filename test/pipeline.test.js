@@ -343,7 +343,9 @@ test('a failing CI stage stops the chain before Verify and carries its output to
   const repo = makeRepo();
   // Vendor-independent by construction: this is a plain child process, not a
   // claude Stop hook, so a codex build runs the same gate.
-  fs.writeFileSync(path.join(repo, 'ci-fail.mjs'), `console.log('CI_OUTPUT_MARKER: 2 tests failed');\nprocess.exit(1);\n`);
+  fs.writeFileSync(path.join(repo, 'ci-fail.mjs'),
+    `process.stdout.write('verbose progress '.repeat(5000));\n` +
+    `console.error('CI_OUTPUT_MARKER: 2 tests failed');\nprocess.exit(1);\n`);
   const cfg = path.join(repo, '.todomd/config.yml');
   fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('verify_command: node --version', 'verify_command: node ci-fail.mjs'));
   git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'failing ci']);
@@ -356,7 +358,10 @@ test('a failing CI stage stops the chain before Verify and carries its output to
 
     const card = readCard(repo, 'task-0001');
     assert.equal(card.data.needs_human_reason, 'ci_failed');
-    assert.match(card.raw, /CI_OUTPUT_MARKER: 2 tests failed/, "the command's own output reaches the card");
+    assert.match(card.raw, /CI_OUTPUT_MARKER: 2 tests failed/,
+      "the command's final failure summary survives output and card-history limits");
+    assert.match(card.raw, /`node ci-fail\.mjs` exited 1/,
+      'the concise card diagnostic keeps the command and exit result too');
     assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/verify-1.jsonl')), false,
       'a failing CI gate is never handed on to Verify');
     assert.doesNotMatch(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/,
