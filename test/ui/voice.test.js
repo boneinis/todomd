@@ -1042,21 +1042,26 @@ test('UI voice: removing the current project disarms before its replacement boar
   const replacementBoardUrl = `/api/board?project=${encodeURIComponent(name)}`;
   await page.eval(`(() => {
     window.__origRemoveFetch = window.fetch;
-    window.__replacementHeld = false;
+    window.__replacementHeld = 0;
+    window.__replacementDone = [];
     const gate = new Promise((resolve) => { window.__releaseReplacement = resolve; });
     window.fetch = (input, init) => {
       const url = String(typeof input === 'string' ? input : input.url);
-      if (!window.__replacementHeld && url.includes(${JSON.stringify(replacementBoardUrl)})) {
-        window.__replacementHeld = true;
-        window.__replacementDone = gate.then(() => window.__origRemoveFetch(input, init));
-        return window.__replacementDone;
+      if (url.includes(${JSON.stringify(replacementBoardUrl)})) {
+        // Both the removal flow and a simultaneous WebSocket refresh may ask
+        // for the replacement board. Hold every matching request: holding
+        // only the first lets the second redraw voice before this assertion.
+        window.__replacementHeld++;
+        const pending = gate.then(() => window.__origRemoveFetch(input, init));
+        window.__replacementDone.push(pending);
+        return pending;
       }
       return window.__origRemoveFetch(input, init);
     };
     document.querySelector('.proj-remove[data-name=${JSON.stringify(removableName)}]').click();
   })()`);
 
-  await until(async () => (await page.eval(`window.__replacementHeld`)) || null, { timeout: BUDGET.quick });
+  await until(async () => (await page.eval(`window.__replacementHeld > 0`)) || null, { timeout: BUDGET.quick });
   assert.deepEqual(await page.eval(`({
     hidden: document.getElementById('voice-widget').hidden,
     state: document.getElementById('voice-btn').dataset.voiceState,
@@ -1065,7 +1070,7 @@ test('UI voice: removing the current project disarms before its replacement boar
 
   await page.eval(`(async () => {
     window.__releaseReplacement();
-    await window.__replacementDone;
+    await Promise.all(window.__replacementDone);
     for (let i = 0; i < 3; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
     window.fetch = window.__origRemoveFetch;
   })()`);
