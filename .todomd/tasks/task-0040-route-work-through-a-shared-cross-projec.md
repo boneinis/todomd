@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Needs Human
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
