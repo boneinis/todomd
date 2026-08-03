@@ -1,7 +1,7 @@
 ---
 id: task-0041
 title: Add the CI column with quick and full profiles
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: gemini
 triaged: n/a (chunk 3/4 of task-0021)
-session_id: 019fc848-ac7d-7ff0-b081-3ce933856cca
+session_id: 9d8353a7-41bd-4569-9c6d-caffbb0b1023
 worktree: todomd/task-0041
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 board_order: 4
 base_branch: main
-cost_usd: 15.6228
+cost_usd: 28.9275
 ---
 
 ## Description
@@ -72,3 +72,4 @@ project — the migration path in step 1 is the load-bearing part of this chunk.
 - 2026-08-03 15:32Z · CI attempt 1 · 98.5s · `npm test` passed
 - 2026-08-03 15:44Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
+- 2026-08-03 15:59Z · Build attempt 2 · 73 turns · $13.305 · ok
