@@ -20,6 +20,7 @@ cost_usd: 14.7103
 needs_human_reason:
 base_branch: main
 recovery_stage:
+board_order: 1
 ---
 
 ## Description

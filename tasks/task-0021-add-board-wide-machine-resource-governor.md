@@ -9,7 +9,7 @@ dependencies: []
 created_date: 2026-07-31
 source: ui
 assignee:
-agent: claude
+agent: gemini
 session_id: 5e969255-c859-4215-89af-e42920e888d7
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
@@ -18,6 +18,7 @@ needs_human_reason:
 cost_usd: 0.8043
 epic: true
 children: [task-0039, task-0040, task-0041, task-0042]
+board_order: 2
 ---
 
 ## Description
