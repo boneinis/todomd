@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,11 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 51c962f5-4e4d-45fd-b2b4-e7ad4e287f4a
+session_id: 62af4aa0-fb1d-47a4-93fe-bed737932390
 worktree: todomd/task-0040
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-cost_usd: 92.993
+cost_usd: 96.3955
 needs_human_reason:
 recovery_stage:
 ---
@@ -100,3 +100,6 @@ The first implementation failed independent review. The fresh build must address
 - 2026-08-02 23:56Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
 - 2026-08-03 00:19Z · Build attempt 2 · 85 turns · $19.852 · ok
+- 2026-08-03 00:27Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 4)
+  - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
+- 2026-08-03 00:32Z · Escalate attempt 2 · 32 turns · $3.403 · diagnosis complete
