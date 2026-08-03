@@ -204,7 +204,7 @@ async function orchMove(project, id, to, reason) {
   return moveCard(project.path, id, to, { reason });
 }
 
-const SUPPORTED_VENDORS = new Set(['claude', 'codex']);
+const SUPPORTED_VENDORS = new Set(['claude', 'codex', 'gemini', 'kimi']);
 
 // Override precedence is normally card → column → board. Verify is the one
 // deliberate exception: an explicitly routed Verify column owns its provider
@@ -310,12 +310,12 @@ function escalationConfig(config) {
   return {
     afterFailedReviews: Number.isInteger(after) && after > 0 ? after : 2,
     diagnosis: {
-      agent: e.diagnosis?.agent === 'codex' ? 'codex' : 'claude',
+      agent: ['codex', 'gemini', 'kimi'].includes(e.diagnosis?.agent) ? e.diagnosis.agent : 'claude',
       model: e.diagnosis?.model || 'claude-fable-5',
       effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.diagnosis?.effort) ? e.diagnosis.effort : 'xhigh',
     },
     repair: {
-      agent: e.repair?.agent === 'codex' ? 'codex' : 'claude',
+      agent: ['codex', 'gemini', 'kimi'].includes(e.repair?.agent) ? e.repair.agent : 'claude',
       model: e.repair?.model || 'claude-opus-5',
       effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.repair?.effort) ? e.repair.effort : 'xhigh',
     },
@@ -370,8 +370,8 @@ async function execConfig(repoPath) {
   return out;
 }
 
-// claude invokes the repo's command file as a slash command; codex doesn't
-// read .claude/commands, so the command body is inlined with the id filled in.
+// claude invokes the repo's command file as a slash command; non-claude vendors
+// don't read .claude/commands, so the command body is inlined with the id filled in.
 function commandBody(project, command, id) {
   const file = path.join(project.path, '.claude', 'commands', `${command}.md`);
   const raw = fs.readFileSync(file, 'utf8');
@@ -383,13 +383,13 @@ function stagePrompt(project, vendor, stage, id) {
   // it can hold what the committed file must not (client names, internal URLs).
   const local = readLocalPrompt(project.path, stage.command);
   if (!local) {
-    // unchanged path: claude resolves the slash command itself, codex can't
-    return vendor === 'codex' ? commandBody(project, stage.command, id) : `/${stage.command} ${id}`;
+    // unchanged path: claude resolves the slash command itself, non-claude vendors can't
+    return vendor !== 'claude' ? commandBody(project, stage.command, id) : `/${stage.command} ${id}`;
   }
-  // With a local layer we inline the body for BOTH vendors rather than appending
+  // With a local layer we inline the body for ALL vendors rather than appending
   // after `/command id` — text trailing a slash command is the CLI's to
   // interpret, and a silently-dropped addendum is worse than none. Inlining is
-  // exactly what codex has always received, so the content is identical either
+  // exactly what non-claude vendors receive, so the content is identical either
   // way; only the delivery changes.
   return `${commandBody(project, stage.command, id)}\n\n` +
     `## Project conventions (local, not committed)\n\n` +
@@ -405,10 +405,10 @@ function skillPrompt(project, vendor, skill, id, card) {
     ` If the work produces findings or output worth keeping, append them under a "## Findings"` +
     ` section of the card file .todomd/tasks/${card.file} (create the section if needed).` +
     ` Never modify the YAML frontmatter or the "## Run Log" section.`;
-  if (vendor !== 'codex') return `/${safe} ${id}${ctx}`;
+  if (vendor === 'claude') return `/${safe} ${id}${ctx}`;
   const file = path.join(project.path, '.claude', 'commands', `${safe}.md`);
   if (!fs.existsSync(file)) {
-    throw new Error(`skill "${safe}" has no .claude/commands file — codex cards can only run repo commands`);
+    throw new Error(`skill "${safe}" has no .claude/commands file — ${vendor} cards can only run repo commands`);
   }
   const body = fs.readFileSync(file, 'utf8').replace(/^---[\s\S]*?---\s*/, '');
   return body.replaceAll('$ARGUMENTS', id) + ctx;
@@ -2009,7 +2009,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const verdict = result.envelope?.structured_output;
   if (!result.envelope || result.envelope.is_error || !verdict || !verdict.verdict) {
     const failure = classifyFailure(result, worktreeAbs);
-    const infrastructure = vendor === 'codex' ? codexVerifierDiagnostic(result) : '';
+    const infrastructure = vendor !== 'claude' ? codexVerifierDiagnostic(result) : '';
     if (failure.kind === 'quota') {
       // park back in Queue; resume re-enters the build→verify chain (the
       // existing worktree is reused). Attempt rolled back so none is burned.
@@ -2026,8 +2026,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     }
     // a genuinely malformed verdict is bad_verdict; a spawn-level failure
     // (e.g. worktree_failed on a deleted cwd) keeps its own kind
-    const codexUnavailable = vendor === 'codex' && failure.kind !== 'worktree_failed' && failure.kind !== 'hook_cancelled';
-    const reason = codexUnavailable || failure.kind === 'agent' ? 'bad_verdict' : failure.kind;
+    const nonClaudeUnavailable = vendor !== 'claude' && failure.kind !== 'worktree_failed' && failure.kind !== 'hook_cancelled';
+    const reason = nonClaudeUnavailable || failure.kind === 'agent' ? 'bad_verdict' : failure.kind;
     await recordRun(project, id, 'Verify', attempt, result,
       infrastructure ? `infrastructure: ${infrastructure}` : `failed: ${reason}`);
     return toNeedsHuman(project, id, 'Verify', reason, infrastructure || result.stderr);
@@ -2207,7 +2207,7 @@ async function runTriage(project, id, config, t, vendor, claim) {
   //    triage with the tasks dir as cwd: writes are confined to the cards
   //    themselves, and the inlined command's board-relative paths are rewritten
   //    to match the new cwd.
-  const codexTriage = vendor === 'codex';
+  const nonClaudeTriage = vendor !== 'claude';
   if (claim.cancelled) {
     await patchFrontmatter(project.path, id, { triaged: '' });
     return;
@@ -2215,8 +2215,8 @@ async function runTriage(project, id, config, t, vendor, claim) {
   const { result, run, finishTracking } = await spawnTracked(project, id, 'Triage', 'Review', 0, {
     retainUntilFinalized: true,
     vendor,
-    cwd: codexTriage ? path.join(project.path, '.todomd', 'tasks') : project.path,
-    prompt: codexTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
+    cwd: nonClaudeTriage ? path.join(project.path, '.todomd', 'tasks') : project.path,
+    prompt: nonClaudeTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
     model: card.data.model || t.model || config.default_model,
     effort: card.data.effort || t.effort || config.default_effort,
     maxTurns: t.max_turns || 15,
@@ -2416,7 +2416,7 @@ function processInfo(pid) {
 function isOurAgentProcess(pid, startedAtIso) {
   const info = processInfo(pid);
   if (!info) return false;
-  if (info.exe !== 'claude' && info.exe !== 'codex') return false;
+  if (!['claude', 'codex', 'gemini', 'kimi'].includes(info.exe)) return false;
   const ourStart = startedAtIso ? new Date(startedAtIso).getTime() : NaN;
   // lstart is second-resolution; a 2s margin still kills a genuine orphan
   // (started at/just-before our run) but spares a clearly-later PID reuse.

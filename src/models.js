@@ -8,9 +8,15 @@ import { execFileSync } from 'node:child_process';
 const FALLBACK = {
   claude: ['opus', 'sonnet', 'haiku'],
   codex: ['gpt-5-codex', 'gpt-5', 'o3'],
+  gemini: ['gemini-3.6-pro', 'gemini-3.5-pro', 'gemini-2.5-pro', 'gemini-3.6-flash', 'gemini-2.5-flash'],
+  kimi: ['kimi-k1.5', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
 };
-const bin = (vendor) =>
-  (vendor === 'codex' ? process.env.TODOMD_CODEX_BIN : process.env.TODOMD_CLAUDE_BIN) || vendor;
+const bin = (vendor) => {
+  if (vendor === 'codex') return process.env.TODOMD_CODEX_BIN || vendor;
+  if (vendor === 'gemini') return process.env.TODOMD_GEMINI_BIN || vendor;
+  if (vendor === 'kimi') return process.env.TODOMD_KIMI_BIN || vendor;
+  return process.env.TODOMD_CLAUDE_BIN || vendor;
+};
 
 // `<cli> --help` is a BLOCKING spawn (up to the 4s timeout) on the server's
 // event loop. Cache the answer either way — a missing/hanging CLI used to be

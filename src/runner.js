@@ -26,7 +26,10 @@ const MAX_BUF = 32 * 1024 * 1024;
 // { envelope: {subtype, is_error, total_cost_usd, num_turns, structured_output?},
 //   sessionId, exitCode, stderr } — regardless of which CLI did the work.
 export function runStage(opts) {
-  return opts.vendor === 'codex' ? runCodex(opts) : runClaude(opts);
+  if (opts.vendor === 'codex') return runCodex(opts);
+  if (opts.vendor === 'gemini') return runGemini(opts);
+  if (opts.vendor === 'kimi') return runKimi(opts);
+  return runClaude(opts);
 }
 
 // Spawn one headless claude run for a pipeline stage.
@@ -270,6 +273,252 @@ function runCodex({
     });
     child.on('close', (code, signal) => {
       if (lineBuf.trim()) handleLine(lineBuf); // flush trailing newline-less event
+      let structured;
+      let lastMessage = '';
+      if (outFile) {
+        try {
+          lastMessage = fs.readFileSync(outFile, 'utf8');
+          structured = JSON.parse(lastMessage);
+        } catch {}
+      }
+      finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
+    });
+  });
+
+  return { child, done };
+}
+
+function runGemini({
+  cwd,
+  prompt,
+  model,
+  effort,
+  jsonSchema,
+  resume,
+  logFile,
+  onEvent = () => {},
+}) {
+  const tmp = (name) =>
+    path.join(os.tmpdir(), `todomd-gemini-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const executable = process.env.TODOMD_GEMINI_BIN || 'agy';
+  const args = ['-p', prompt];
+  if (resume) args.push('--conversation', resume);
+
+  let schemaFile, outFile;
+  if (jsonSchema) {
+    schemaFile = tmp('schema.json');
+    outFile = tmp('out.json');
+    fs.writeFileSync(schemaFile, JSON.stringify(jsonSchema));
+  }
+
+  const log = logFile ? openLog(logFile) : null;
+  log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
+
+  const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+
+  const done = new Promise((resolve) => {
+    let sessionId = null;
+    let failed = null;
+    let turns = 0;
+    let lineBuf = '';
+    let stderr = '';
+    let settled = false;
+
+    const finish = ({ exitCode, signal = null, spawnError = null, lastMessage = '', structuredOutput }) => {
+      if (settled) return;
+      settled = true;
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode,
+        signal,
+        spawnError,
+        stderr,
+        finalMessage: lastMessage,
+        structuredOutput: structuredOutput ?? null,
+      };
+      const ok = exitCode === 0 && !signal && !spawnError && !failed;
+      const result = {
+        envelope: spawnError ? null : {
+          subtype: ok ? 'success' : 'error',
+          is_error: !ok,
+          total_cost_usd: 0,
+          num_turns: turns,
+          result: failed ? JSON.stringify(failed).slice(0, 500) : '',
+          structured_output: structuredOutput,
+        },
+        sessionId,
+        exitCode,
+        ...(spawnError ? { spawnError } : {}),
+        stderr: stderr.slice(0, 2000),
+        diagnostic,
+      };
+      const complete = () => {
+        for (const f of [schemaFile, outFile]) if (f) fs.rm(f, { force: true }, () => {});
+        resolve(result);
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+        log.end(complete);
+      } else {
+        complete();
+      }
+    };
+
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      log?.write(line + '\n');
+      try {
+        const event = JSON.parse(line);
+        sessionId ||= event.thread_id || event.session_id || event?.thread?.id || null;
+        if (event.type === 'turn.completed') turns++;
+        if (event.type === 'turn.failed' || event.type === 'error') failed = event;
+        onEvent({ vendor: 'gemini', ...event });
+      } catch { /* non-JSON line — skip */ }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      lineBuf += chunk;
+      let nl;
+      while ((nl = lineBuf.indexOf('\n')) >= 0) {
+        handleLine(lineBuf.slice(0, nl));
+        lineBuf = lineBuf.slice(nl + 1);
+      }
+      if (lineBuf.length > MAX_BUF) lineBuf = '';
+    });
+    child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
+
+    child.on('error', (err) => {
+      finish({ exitCode: -1, spawnError: err.code || String(err) });
+    });
+    child.on('close', (code, signal) => {
+      if (lineBuf.trim()) handleLine(lineBuf);
+      let structured;
+      let lastMessage = '';
+      if (outFile) {
+        try {
+          lastMessage = fs.readFileSync(outFile, 'utf8');
+          structured = JSON.parse(lastMessage);
+        } catch {}
+      }
+      finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
+    });
+  });
+
+  return { child, done };
+}
+
+function runKimi({
+  cwd,
+  prompt,
+  model,
+  effort,
+  jsonSchema,
+  resume,
+  logFile,
+  onEvent = () => {},
+}) {
+  const tmp = (name) =>
+    path.join(os.tmpdir(), `todomd-kimi-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const executable = process.env.TODOMD_KIMI_BIN || 'kimi';
+  const args = [];
+  if (resume) args.push('--resume', resume);
+  args.push('--json');
+  if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('-m', model);
+  if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);
+  let schemaFile, outFile;
+  if (jsonSchema) {
+    schemaFile = tmp('schema.json');
+    outFile = tmp('out.json');
+    fs.writeFileSync(schemaFile, JSON.stringify(jsonSchema));
+    args.push('--output-schema', schemaFile, '--output-last-message', outFile);
+  }
+  args.push(prompt);
+
+  const log = logFile ? openLog(logFile) : null;
+  log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
+
+  const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+
+  const done = new Promise((resolve) => {
+    let sessionId = null;
+    let failed = null;
+    let turns = 0;
+    let lineBuf = '';
+    let stderr = '';
+    let settled = false;
+
+    const finish = ({ exitCode, signal = null, spawnError = null, lastMessage = '', structuredOutput }) => {
+      if (settled) return;
+      settled = true;
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode,
+        signal,
+        spawnError,
+        stderr,
+        finalMessage: lastMessage,
+        structuredOutput: structuredOutput ?? null,
+      };
+      const ok = exitCode === 0 && !signal && !spawnError && !failed;
+      const result = {
+        envelope: spawnError ? null : {
+          subtype: ok ? 'success' : 'error',
+          is_error: !ok,
+          total_cost_usd: 0,
+          num_turns: turns,
+          result: failed ? JSON.stringify(failed).slice(0, 500) : '',
+          structured_output: structuredOutput,
+        },
+        sessionId,
+        exitCode,
+        ...(spawnError ? { spawnError } : {}),
+        stderr: stderr.slice(0, 2000),
+        diagnostic,
+      };
+      const complete = () => {
+        for (const f of [schemaFile, outFile]) if (f) fs.rm(f, { force: true }, () => {});
+        resolve(result);
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+        log.end(complete);
+      } else {
+        complete();
+      }
+    };
+
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      log?.write(line + '\n');
+      try {
+        const event = JSON.parse(line);
+        sessionId ||= event.thread_id || event.session_id || event?.thread?.id || null;
+        if (event.type === 'turn.completed') turns++;
+        if (event.type === 'turn.failed' || event.type === 'error') failed = event;
+        onEvent({ vendor: 'kimi', ...event });
+      } catch { /* non-JSON line — skip */ }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      lineBuf += chunk;
+      let nl;
+      while ((nl = lineBuf.indexOf('\n')) >= 0) {
+        handleLine(lineBuf.slice(0, nl));
+        lineBuf = lineBuf.slice(nl + 1);
+      }
+      if (lineBuf.length > MAX_BUF) lineBuf = '';
+    });
+    child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
+
+    child.on('error', (err) => {
+      finish({ exitCode: -1, spawnError: err.code || String(err) });
+    });
+    child.on('close', (code, signal) => {
+      if (lineBuf.trim()) handleLine(lineBuf);
       let structured;
       let lastMessage = '';
       if (outFile) {
