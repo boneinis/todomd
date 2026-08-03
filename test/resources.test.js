@@ -25,6 +25,32 @@ test('sampleResources: on win32, os.loadavg() always reads [0,0,0] — that is n
   assert.ok(sample.memoryPressure === null || typeof sample.memoryPressure === 'number');
 });
 
+test('sampleResources: macOS uses the native pressure reading instead of os.freemem', () => {
+  const repo = tmp('resources-sample-darwin');
+  const calls = [];
+  const sample = sampleResources(repo, {
+    platform: 'darwin',
+    memoryPressureCommand: (...args) => {
+      calls.push(args);
+      return 'System-wide memory free percentage: 44%\n';
+    },
+  });
+  assert.equal(sample.memoryPressure, 0.56);
+  assert.deepEqual(calls[0].slice(0, 2), ['/usr/bin/memory_pressure', ['-Q']]);
+});
+
+test('sampleResources: unavailable or malformed macOS pressure data is unknown, never a false breach', () => {
+  const repo = tmp('resources-sample-darwin-unknown');
+  assert.equal(sampleResources(repo, {
+    platform: 'darwin',
+    memoryPressureCommand: () => { throw new Error('unavailable'); },
+  }).memoryPressure, null);
+  assert.equal(sampleResources(repo, {
+    platform: 'darwin',
+    memoryPressureCommand: () => 'unexpected output',
+  }).memoryPressure, null);
+});
+
 test('resourcesConfig: a config with no resources key loads the documented defaults', () => {
   assert.deepEqual(resourcesConfig({}), DEFAULT_RESOURCES_CONFIG);
   assert.deepEqual(resourcesConfig({ mode: 'launcher' }), DEFAULT_RESOURCES_CONFIG);

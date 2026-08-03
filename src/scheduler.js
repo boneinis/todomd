@@ -104,13 +104,18 @@ function projectConcurrencyLimit(project) {
 // breaks the resume<defer<critical ordering falls back to the safe default
 // band for that metric instead of producing a broken hysteresis.
 function combinedResourceThresholds() {
-  const configs = projectConfigs().map((c) => c.resources).filter(Boolean);
-  if (!configs.length) return resourcesConfig({});
+  // `enabled: false` opts that project out of the shared host governor. It
+  // therefore contributes no threshold opinion when another project keeps
+  // monitoring enabled; otherwise an opted-out board could still throttle
+  // every enabled board with its dormant values.
+  const configs = projectConfigs().map((c) => c.resources)
+    .filter((c) => c && c.enabled !== false);
+  if (!configs.length) return resourcesConfig({ resources: { enabled: false } });
   const min = (get) => Math.min(...configs.map(get));
   const max = (get) => Math.max(...configs.map(get));
   return resourcesConfig({
     resources: {
-      enabled: configs.some((c) => c.enabled),
+      enabled: true,
       cpu: { defer: min((c) => c.cpu.defer), resume: min((c) => c.cpu.resume), critical: min((c) => c.cpu.critical) },
       memory: { defer: min((c) => c.memory.defer), resume: min((c) => c.memory.resume), critical: min((c) => c.memory.critical) },
       disk: { min_free_gb: max((c) => c.disk.minFreeGb), resume_free_gb: max((c) => c.disk.resumeFreeGb) },

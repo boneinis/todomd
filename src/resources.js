@@ -1,5 +1,6 @@
 import os from 'node:os';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 // Documented defaults for an existing board whose config.yml predates this
 // feature and has no `resources:` key at all — see CONFIG_YML in templates.js,
@@ -76,7 +77,10 @@ function validHysteresis(block, isOrdered, defaults) {
 // callers (createGovernor) must treat a null metric as "unknown", never a breach.
 // `platform` is injectable (defaulting to process.platform, same convention as
 // installLauncher in launcher.js) so this is testable without an actual Windows host.
-export function sampleResources(rootPath = '.', { platform = process.platform } = {}) {
+export function sampleResources(rootPath = '.', {
+  platform = process.platform,
+  memoryPressureCommand = execFileSync,
+} = {}) {
   let cpuLoad = null;
   try {
     // On Windows, os.loadavg() always returns [0, 0, 0] — load average isn't
@@ -89,8 +93,23 @@ export function sampleResources(rootPath = '.', { platform = process.platform } 
 
   let memoryPressure = null;
   try {
-    const total = os.totalmem();
-    if (total > 0) memoryPressure = (total - os.freemem()) / total;
+    if (platform === 'darwin') {
+      // os.freemem() excludes macOS's readily reclaimable cached/compressed
+      // memory and commonly reports >95% "used" on a healthy machine. Apple's
+      // own pressure tool exposes the system-wide free percentage used for
+      // admission decisions, so use that instead of permanently deferring.
+      const output = memoryPressureCommand('/usr/bin/memory_pressure', ['-Q'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const match = /System-wide memory free percentage:\s*([0-9]+(?:\.[0-9]+)?)%/i.exec(String(output));
+      const freePct = match ? Number(match[1]) : NaN;
+      if (Number.isFinite(freePct) && freePct >= 0 && freePct <= 100) {
+        memoryPressure = 1 - (freePct / 100);
+      }
+    } else {
+      const total = os.totalmem();
+      if (total > 0) memoryPressure = (total - os.freemem()) / total;
+    }
   } catch { /* unsupported platform */ }
 
   let diskFreeBytes = null;
