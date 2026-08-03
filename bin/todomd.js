@@ -47,14 +47,53 @@ const onPath = (bin) => {
   catch { return false; }
 };
 
-// `ps` prints the full command line, which often contains the repository path.
-// Matching a bare substring such as "todomd" therefore misidentifies any
-// process launched from a folder named TODOMD as the board server (and can
-// signal an unrelated recycled PID). Require an actual executable/script
-// token named `todomd` or `todomd.js`; a TODOMD directory segment followed by
-// another slash deliberately does not match.
-const isTodomdServerCommand = (cmdline) =>
-  /(?:^|[\\/\s])todomd(?:\.js)?(?=\s|$)/i.test(String(cmdline || ''));
+// `ps` prints a display command line rather than a safely delimited argv. Parse
+// only the executable/entrypoint positions: a later argument that merely names
+// bin/todomd.js must never make an unrelated process eligible for signalling.
+const isTodomdServerCommand = (cmdline) => {
+  const line = String(cmdline || '').trim();
+  const isEntrypoint = (value) => /(?:^|[\\/])todomd(?:\.js)?$/i.test(value);
+  const serverArgs = (value) => {
+    const tokens = String(value || '').trim().split(/\s+/).filter(Boolean);
+    const positionalArgs = [];
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === '--port') { i++; continue; }
+      if (!tokens[i].startsWith('-')) positionalArgs.push(tokens[i]);
+    }
+    return positionalArgs.length === 0 || positionalArgs[0] === 'serve';
+  };
+  const firstSpace = line.search(/\s/);
+  const executable = firstSpace < 0 ? line : line.slice(0, firstSpace);
+  let rest = firstSpace < 0 ? '' : line.slice(firstSpace).trim();
+
+  if (isEntrypoint(executable)) return serverArgs(rest);
+  if (!/^(?:.*[\\/])?node(?:js)?$/i.test(executable)) return false;
+
+  // A real project path may contain spaces, so prefer exact entrypoints known
+  // to this CLI before falling back to the first displayed argument (the
+  // normal no-space npm/symlink case).
+  let entrypoint = '';
+  for (const known of [TODOMD_BIN, process.argv[1]].filter(Boolean)
+    .sort((a, b) => b.length - a.length)) {
+    if (rest === known || rest.startsWith(`${known} `)) {
+      entrypoint = known;
+      rest = rest.slice(known.length).trim();
+      break;
+    }
+  }
+  if (!entrypoint) {
+    const quoted = /^(?:"([^"]+)"|'([^']+)')(?:\s+|$)/.exec(rest);
+    if (quoted) {
+      entrypoint = quoted[1] || quoted[2];
+      rest = rest.slice(quoted[0].length).trim();
+    } else {
+      const split = rest.search(/\s/);
+      entrypoint = split < 0 ? rest : rest.slice(0, split);
+      rest = split < 0 ? '' : rest.slice(split).trim();
+    }
+  }
+  return isEntrypoint(entrypoint) && serverArgs(rest);
+};
 
 if (cmd === 'init') {
   if (!isGitRepo(process.cwd())) {
@@ -118,8 +157,16 @@ if (cmd === 'stop') {
     // the old behavior and signal it, rather than refusing to stop the server.
     let cmdline = null;
     try {
-      cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch { /* no ps on this platform — skip the check */ }
+      // -ww prevents display-width truncation. Without it, a long worktree
+      // command can be cut immediately after a /TODOMD path segment and make
+      // the token matcher misidentify an unrelated recycled PID as the server.
+      cmdline = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (err) {
+      // Preserve the legacy no-ps fallback (notably Windows), but fail closed
+      // when ps exists and inspection itself is denied or fails. Treating an
+      // EPERM/exit-1 as "no ps" would signal an identity we never verified.
+      if (err?.code !== 'ENOENT') cmdline = '';
+    }
     if (cmdline !== null && !isTodomdServerCommand(cmdline)) {
       console.error(`pid ${pid} is not a todomd server — stale pid file? remove ~/.todomd/server.pid`);
       process.exit(1);
@@ -228,7 +275,7 @@ if (cmd === 'serve') {
     const pid = Number(pidStr);
     if (pid && pid !== process.pid) {
       process.kill(pid, 0); // throws if dead → stale pid file, fall through
-      const cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const cmdline = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
       if (isTodomdServerCommand(cmdline)) {
         const runningPort = Number(portStr) || port;
         console.error(`todomd is already running on port ${runningPort} — open http://127.0.0.1:${runningPort} or run \`todomd stop\``);

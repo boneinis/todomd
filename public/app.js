@@ -447,6 +447,10 @@ function renderCard(card, color, i, nestedIds) {
   if (rs?.state === 'running') {
     el.classList.add('running');
     runEl.textContent = `● ${rs.stage}`;
+  } else if (rs?.state === 'deferred') {
+    el.classList.add('deferred');
+    runEl.textContent = `⏸ deferred${rs.reason ? `: ${rs.reason}` : ''}`;
+    runEl.title = rs.reason || '';
   } else if (rs?.state === 'queued') {
     el.classList.add('queued');
     runEl.textContent = '◌ queued';
@@ -1082,7 +1086,7 @@ function connectWs() {
     if (msg.type === 'board-changed' && msg.project === currentProject) loadBoard();
     else if (msg.type === 'run-state' && msg.project === currentProject) {
       if (msg.state === 'idle') delete runStates[msg.card];
-      else runStates[msg.card] = { state: msg.state, stage: msg.stage };
+      else runStates[msg.card] = { state: msg.state, stage: msg.stage, reason: msg.reason };
       if (msg.card === drawerCard) {
         $('#drawer-cancel').hidden = msg.state === 'idle' || !runStates[msg.card];
         if (msg.state === 'running') $('#drawer-run').hidden = false;

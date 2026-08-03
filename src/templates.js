@@ -9,6 +9,11 @@ const CONFIG_YML = `columns: [Review, Plan, Planned, Queue, Build, Verify, Needs
 #   inside an interactive session (\`/loop 2m /todomd-dispatch\`), so work
 #   bills the interactive subscription pool instead.
 mode: launcher
+# The repo's own gate. It runs in the task worktree as the CI stage between
+# Build and Verify (for every vendor, admitted against the scheduler's CI
+# column below), and — for claude builds only — as the build agent's Stop
+# hook. A failing CI stage sends the card to Needs Human with its output; an
+# empty value skips the CI stage entirely.
 verify_command: npm test
 max_attempts: 3
 concurrency: 1
@@ -74,6 +79,27 @@ resources:
     resume_free_gb: 5
   recovery_samples: 3
   sample_interval_seconds: 30
+
+# Shared cross-project scheduler: one machine-wide admission gate that every
+# registered project's Build/CI/Verify work competes for, on top of (not
+# instead of) this board's own \`concurrency\`. 0 or omitted means unlimited —
+# a board that never sets this block sees no change in its own behavior:
+# this board's \`concurrency\` alone still caps its own effective parallelism,
+# exactly as before this key existed. \`global\` caps everything running at
+# once, across every project on this machine. \`columns\` caps each column
+# independently of \`global\` and of each other — a full Build column never
+# blocks a Verify slot that has room. Leave these at 0 unless you deliberately
+# want a machine-wide cap: setting one here also applies to every OTHER
+# registered project (the strictest configured value wins), not just this
+# board. When the resource monitor above reports pressure, new work is held
+# (deferredReason shows why) and resumes on its own once a later sample
+# recovers — a running job is never signalled.
+scheduler:
+  global: 0       # 0 = unlimited
+  columns:
+    Build: 0      # 0 = unlimited
+    CI: 0         # 0 = unlimited
+    Verify: 0     # 0 = unlimited
 
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
 # in-flight work (which card/files each worker is building), so several people

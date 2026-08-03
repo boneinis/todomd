@@ -29,6 +29,42 @@ function parseCard(raw) {
 // would become invisible/stuck, so union it back in (user order preserved).
 const REQUIRED_COLUMNS = ['Queue', 'Build', 'Verify', 'Needs Human', 'Done'];
 
+// The scheduler's own defaulting convention: 0 or unset means "unlimited",
+// mirroring spawnTracked's stage_timeout_min "0 disables the cap" pattern —
+// a board that never configures scheduler: must not have its cross-project
+// caps silently clamp it below what it already runs today.
+function unlimited(v) {
+  return Number.isFinite(v) && v > 0 ? v : Infinity;
+}
+
+// Every board gets a fully-defaulted scheduler block, including one whose
+// config.yml predates this key (or only ever set `concurrency`). `global` and
+// every column default to unlimited — nothing machine-wide constrains a
+// project until an operator explicitly opts in. Columns deliberately do NOT
+// default to this project's own `concurrency`: scheduler.js separately
+// combines every registered project's column setting via Math.min, so a
+// per-project default fed into that combinator would make ANY project
+// registered alongside this one (even one that never touches this board)
+// inherit its concurrency as a machine-wide Build cap — e.g. two unrelated
+// boards each left at the default concurrency: 1 would crush the shared
+// Build column to 1 even though neither ever asked for cross-project
+// throttling. The existing "boards that only set concurrency keep their
+// effective Build parallelism" guarantee is carried entirely by
+// scheduler.js's separate per-project concurrency cap, which is never
+// combined across projects.
+function schedulerConfig(cfg) {
+  const s = cfg.scheduler || {};
+  const cols = s.columns || {};
+  return {
+    global: unlimited(Number(s.global)),
+    columns: {
+      Build: unlimited(Number(cols.Build)),
+      CI: unlimited(Number(cols.CI)),
+      Verify: unlimited(Number(cols.Verify)),
+    },
+  };
+}
+
 // Shared by loadConfig (working tree) and the pipeline's execConfig (the
 // committed copy) so the column invariants hold for both, and neither has to
 // borrow the other's values to get them.
@@ -39,6 +75,7 @@ export function normalizeConfig(cfg) {
   // Every board gets a fully-defaulted resources block, including one whose
   // config.yml predates this key entirely — see resourcesConfig in resources.js.
   out.resources = resourcesConfig(out);
+  out.scheduler = schedulerConfig(out);
   return out;
 }
 

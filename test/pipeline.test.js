@@ -7,8 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
 import { readCard, loadBoard, setStageRouting, patchFrontmatter, withRepoLock } from '../src/board.js';
 import { addProject } from '../src/registry.js';
+import { createGovernor, resourcesConfig } from '../src/resources.js';
 import * as pipeline from '../src/pipeline.js';
 import * as voice from '../src/voice.js';
+import * as scheduler from '../src/scheduler.js';
 
 const noop = () => {};
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
@@ -137,6 +139,295 @@ test('manual queue resume never launches dispatcher-managed budget work', async 
   } finally {
     pipeline.forgetProject(p.name);
     await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('retriaging an initial Build while the queue is paused removes its scheduler entry', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  pipeline.pauseQueue(p);
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+    assert.equal(scheduler.isQueued(p.name, 'task-0001'), true);
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Review')).ok, true);
+    assert.equal(status(repo, 'task-0001'), 'Review');
+    assert.equal(scheduler.isQueued(p.name, 'task-0001'), false,
+      'the stale Build cannot admit after the human retriage');
+
+    pipeline.resumeQueue(p);
+    await sleep(150);
+    assert.equal(status(repo, 'task-0001'), 'Review');
+    assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')));
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('scheduler: one authoritative global cap governs two real projects with differing configured globals', async () => {
+  isolateHome();
+  useFakeAgent({ hang: 'build', verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repoA = makeRepo();
+  const repoB = makeRepo();
+  for (const [repo, global] of [[repoA, 1], [repoB, 5]]) {
+    const cfg = path.join(repo, '.todomd/config.yml');
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8') + `scheduler:\n  global: ${global}\n`);
+  }
+  const a = project(repoA);
+  const b = project(repoB);
+  writeCard(repoA, 'task-a1', { status: 'Planned' });
+  writeCard(repoB, 'task-b1', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(a, 'task-a1', 'Queue');
+    await until(() => status(repoA, 'task-a1') === 'Build', { timeout: BUDGET.stage });
+    await pipeline.humanMove(b, 'task-b1', 'Queue');
+    // project b's OWN configured global (5) would admit this alone — the
+    // authoritative cap is min(1, 5) = 1, computed fresh from BOTH known
+    // projects, never read off whichever entry happens to be checked.
+    await sleep(200);
+    assert.equal(status(repoB, 'task-b1'), 'Queue', "b's own looser global must not let it bypass the shared cap of 1");
+    // An ordinary capacity wait (global/column/project caps) reports plainly
+    // 'queued' — 'deferred' is reserved for governor/resource pressure.
+    assert.equal(pipeline.getRunStates(b.name)['task-b1']?.state, 'queued');
+  } finally {
+    pipeline.forgetProject(a.name);
+    pipeline.forgetProject(b.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('scheduler: the Build column slot releases before Verify starts — a full Build column does not hold Verify hostage', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', hang: 'verify' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+    .replace('concurrency: 1', 'concurrency: 2') + 'scheduler:\n  columns:\n    Build: 1\n');
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Verify', { timeout: BUDGET.stage });
+    // task-0001 is hung IN Verify. If Build's slot were still held for the
+    // whole chain (the bug this fixes), the Build column limit of 1 would
+    // keep task-0002 queued forever instead of admitting it.
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
+    await until(() => status(repo, 'task-0002') === 'Build', { timeout: BUDGET.stage });
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('scheduler: the governor is constructed from this board\'s OWN configured resource thresholds, not hard-coded defaults', async () => {
+  isolateHome();
+  // Give any straggling async settlement from an earlier test's killed
+  // children a moment to fully drain (they release scheduler counters and
+  // can trigger ensureGovernor() asynchronously) before resetState() below —
+  // otherwise a belated release() could reconstruct the governor from an
+  // empty project set (the real documented defaults) right after this reset,
+  // silently overriding the aggressive thresholds this test relies on.
+  await sleep(300);
+  scheduler.resetState(); // force a fresh governor built from THIS test's project config
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  const events = [];
+  pipeline.init({ broadcast: (m) => events.push(m) });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  // An impossible-to-satisfy defer threshold: only deferring proves the
+  // scheduler actually read and used THIS board's configured resources block
+  // — the documented defaults would never breach on a real test machine.
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('resources:\n  enabled: false\n',
+    'resources:\n  enabled: true\n  cpu:\n    defer: 0.001\n    resume: 0.0005\n    critical: 100\n'));
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.state === 'deferred', { timeout: BUDGET.quick });
+    const state = pipeline.getRunStates(p.name)['task-0001'];
+    assert.match(state.reason, /cpu/, 'the deferral reason names the configured metric that breached');
+    assert.equal(status(repo, 'task-0001'), 'Queue', 'no child was ever spawned while deferred');
+    const deferredEvent = events.find((e) => e.type === 'run-state' && e.card === 'task-0001' && e.state === 'deferred');
+    assert.ok(deferredEvent, 'the deferred state + reason is carried through the live run-state broadcast');
+    assert.match(deferredEvent.reason, /cpu/);
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState(); // this test's aggressive thresholds must not leak into later tests
+  }
+});
+
+// A committed script the CI stage runs inside the build worktree: it records
+// that it started (one line per run, so concurrent runs are countable) and
+// then waits for `release` to appear, so a test can hold the CI column open.
+function seedCiGate(repo, startedFile, releaseFile) {
+  fs.writeFileSync(path.join(repo, 'ci-gate.mjs'),
+    `import fs from 'node:fs';\n` +
+    `fs.appendFileSync(${JSON.stringify(startedFile)}, process.pid + '\\n');\n` +
+    `const t = setInterval(() => {\n` +
+    `  if (fs.existsSync(${JSON.stringify(releaseFile)})) { clearInterval(t); process.exit(0); }\n` +
+    `}, 50);\n`);
+}
+const ciStarts = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).length : 0);
+
+test('scheduler: the production Build → CI → Verify chain admits CI as its own column', async () => {
+  isolateHome();
+  await sleep(300); // let earlier tests' releases drain before resetting (see the governor test above)
+  scheduler.resetState();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const gate = tmp('ci-gate');
+  const started = path.join(gate, 'started');
+  const release = path.join(gate, 'release');
+  seedCiGate(repo, started, release);
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+    .replace('verify_command: node --version', 'verify_command: node ci-gate.mjs')
+    .replace('concurrency: 1', 'concurrency: 2') + 'scheduler:\n  columns:\n    CI: 1\n');
+  // verify_command is an EXEC_KEY — the pipeline reads it from HEAD, never the
+  // working tree — so both the command and its script must be committed.
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'ci gate']);
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.stage === 'CI', { timeout: BUDGET.chain });
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'CI' });
+    assert.equal(status(repo, 'task-0001'), 'Verify',
+      "the card's status stays Verify while CI runs — 'CI' is a scheduler column, not a board column");
+
+    // task-0002's Build is unaffected (its own column has room), but its CI
+    // must wait for the one CI slot task-0001 is holding.
+    await pipeline.humanMove(p, 'task-0002', 'Queue');
+    await until(() => {
+      const s = pipeline.getRunStates(p.name)['task-0002'];
+      return s?.stage === 'CI' && s.state === 'queued';
+    }, { timeout: BUDGET.chain, label: "task-0002 waits for the CI column" });
+    assert.equal(ciStarts(started), 1, 'a combined CI limit of 1 kept the second card out of the CI column');
+
+    fs.writeFileSync(release, 'go');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    await until(() => ciStarts(started) === 2, { timeout: BUDGET.chain, label: 'the queued CI ran once the slot freed' });
+    assert.match(readCard(repo, 'task-0001').raw, /CI attempt 1 · [\d.]+s · `node ci-gate\.mjs` passed/);
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
+test('a failing CI stage stops the chain before Verify and carries its output to Needs Human', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  // Vendor-independent by construction: this is a plain child process, not a
+  // claude Stop hook, so a codex build runs the same gate.
+  fs.writeFileSync(path.join(repo, 'ci-fail.mjs'),
+    `process.stdout.write('verbose progress '.repeat(5000));\n` +
+    `console.error('CI_OUTPUT_MARKER: 2 tests failed');\nprocess.exit(1);\n`);
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('verify_command: node --version', 'verify_command: node ci-fail.mjs'));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'failing ci']);
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.chain });
+
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'ci_failed');
+    assert.match(card.raw, /CI_OUTPUT_MARKER: 2 tests failed/,
+      "the command's final failure summary survives output and card-history limits");
+    assert.match(card.raw, /`node ci-fail\.mjs` exited 1/,
+      'the concise card diagnostic keeps the command and exit result too');
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/verify-1.jsonl')), false,
+      'a failing CI gate is never handed on to Verify');
+    assert.doesNotMatch(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/,
+      'nothing was merged');
+    assert.ok(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')),
+      'the worktree is preserved so a human can reproduce the failure');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('retriaging during a hanging CI stage promptly terminates CI and settles in Review', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const marker = path.join(tmp('ci-retriage'), 'started');
+  fs.writeFileSync(path.join(repo, 'ci-hang.mjs'),
+    `import fs from 'node:fs';\n` +
+    `fs.writeFileSync(${JSON.stringify(marker)}, 'started');\n` +
+    `setInterval(() => {}, 1000);\n`);
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+    .replace('verify_command: node --version', 'verify_command: node ci-hang.mjs'));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'hanging ci']);
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+    await until(() => fs.existsSync(marker)
+      && pipeline.getRunStates(p.name)['task-0001']?.stage === 'CI', { timeout: BUDGET.chain });
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'),
+      { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review'
+      && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), false,
+      'the cancelled CI flow performs its normal retriage cleanup');
+    assert.match(readCard(repo, 'task-0001').raw, /CI attempt 1 · cancelled/);
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
+test('a board with no verify_command records the skip and goes straight to Verify', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace(/^verify_command:.*\n/m, ''));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'no verify command']);
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    assert.match(readCard(repo, 'task-0001').raw, /CI: skipped \(no verify_command configured\)/);
+  } finally {
     clearFakeAgent();
   }
 });
@@ -902,6 +1193,51 @@ test('cascadeEpicCleanup: live building child is archived (not Review) after cle
   clearFakeAgent();
 });
 
+test('cascadeEpicCleanup immediately archives a repair child waiting for Build admission', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'fail', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('concurrency: 1', 'concurrency: 2')
+    + 'scheduler:\n  columns:\n    Build: 1\n');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'configure occupied Build column']);
+  const p = project(repo);
+  writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001]\n' });
+  const { worktree } = seedPreservedVerification(repo, 'chunk-001');
+  await patchFrontmatter(repo, 'chunk-001', { parent: 'epic-001' });
+  let releaseBlocker;
+  const blocker = scheduler.schedule(p, 'blocker', 'Build', () => new Promise((resolve) => {
+    releaseBlocker = resolve;
+  }));
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'chunk-001'), { ok: true });
+    await until(() => scheduler.queuedEntries(p.name)
+      .some((entry) => entry.card === 'chunk-001' && entry.column === 'Build'),
+    { timeout: BUDGET.stage });
+
+    await pipeline.cascadeEpicCleanup(p, 'epic-001');
+    const child = readCard(repo, 'chunk-001');
+    assert.ok(child.data.archived, 'cleanup does not wait for the occupied Build slot');
+    assert.equal(child.data.verification.attempts, 1,
+      'the queued repair never opened a second attempt to roll back');
+    assert.equal(pipeline.hasLiveRun(p.name, 'chunk-001'), false);
+    assert.equal(scheduler.isQueued(p.name, 'chunk-001'), false);
+    assert.equal(fs.existsSync(worktree), false, 'the archived child releases its worktree');
+  } finally {
+    releaseBlocker?.();
+    await blocker;
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
 test('killAllChildren stops a live agent child and reverts its card', async () => {
   isolateHome();
   const marker = path.join(tmp('killall'), 'started');
@@ -1278,6 +1614,11 @@ test('a verify spawn failing on a deleted worktree cwd is worktree_failed, not c
   useFakeAgent({ verdict: 'pass', build: 'good', rm_worktree: '1' }); // build deletes its own worktree
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
+  // no verify_command → no CI stage, so Verify is the first thing to enter the
+  // (now missing) worktree, which is what this test is about
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace(/^verify_command:.*\n/m, ''));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'no verify command']);
   const p = project(repo);
   writeCard(repo, 'task-0001', { status: 'Planned' });
 
@@ -1287,6 +1628,22 @@ test('a verify spawn failing on a deleted worktree cwd is worktree_failed, not c
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'worktree_failed',
     'ENOENT on the spawn cwd is a worktree failure, not a missing CLI');
+  clearFakeAgent();
+});
+
+test('a CI command failing on a deleted worktree cwd is worktree_failed, not a failing gate', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good', rm_worktree: '1' }); // build deletes its own worktree
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo(); // keeps the fixture's verify_command → CI runs first
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
+
+  assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'worktree_failed',
+    'a vanished worktree is an environment failure, not "your tests failed"');
   clearFakeAgent();
 });
 
@@ -1314,6 +1671,114 @@ test('pipeline error: an unexpected throw in buildChain lands in Needs Human (pi
     'an error banner is set instead of vanishing silently');
   clearFakeAgent();
 });
+
+test('a card removed externally while Build waits on admission releases its exact pending claim', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  const events = [];
+  pipeline.init({ broadcast: (event) => events.push(event) });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  let sample = { cpuLoad: 0.99 };
+  scheduler.setGovernor(createGovernor({
+    thresholds: resourcesConfig({ resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 } }),
+    sample: () => sample,
+  }));
+  scheduler.tick();
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.state === 'deferred',
+      { timeout: BUDGET.quick });
+
+    const card = readCard(repo, 'task-0001');
+    fs.unlinkSync(path.join(repo, '.todomd/tasks', card.file));
+    sample = { cpuLoad: 0.05 };
+    scheduler.tick();
+
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001')
+      && !scheduler.isQueued(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), false,
+      'a missing card never creates or recreates a worktree');
+    assert.ok(events.some((event) => event.type === 'run-state'
+      && event.card === 'task-0001' && event.state === 'idle'),
+    'the abandoned admission publishes a terminal idle state');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
+for (const column of ['CI', 'Verify']) {
+  test(`a card removed externally while ${column} waits on admission never spawns or merges`, async () => {
+    isolateHome();
+    await sleep(300);
+    scheduler.resetState();
+    useFakeAgent({ build: 'good', verdict: 'pass' });
+    const repo = makeRepo();
+    const blockerRepo = makeRepo();
+    const marker = path.join(tmp(`deleted-${column.toLowerCase()}`), 'ci-started');
+    for (const configuredRepo of [repo, blockerRepo]) {
+      const configured = path.join(configuredRepo, '.todomd/config.yml');
+      fs.writeFileSync(configured, fs.readFileSync(configured, 'utf8') +
+        `scheduler:\n  global: 2\n  columns:\n    ${column}: 1\n`);
+      git(configuredRepo, ['add', '-A']);
+      git(configuredRepo, ['commit', '-qm', `configure ${column} deletion race`]);
+    }
+    const cfg = path.join(repo, '.todomd/config.yml');
+    if (column === 'CI') {
+      fs.writeFileSync(path.join(repo, 'ci-deletion-marker.mjs'),
+        `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'started');\n`);
+      fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+        .replace('verify_command: node --version', 'verify_command: node ci-deletion-marker.mjs'));
+      git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'configure CI deletion marker']);
+    }
+    const p = project(repo);
+    const blocker = project(blockerRepo);
+    writeCard(repo, 'task-0001', { status: 'Planned' });
+
+    let releaseHolder;
+    const holder = scheduler.schedule(blocker, `${column.toLowerCase()}-holder`, column,
+      () => new Promise((resolve) => { releaseHolder = resolve; }));
+
+    try {
+      assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+      await until(() => {
+        const state = pipeline.getRunStates(p.name)['task-0001'];
+        return state?.stage === column && state.state === 'queued';
+      }, { timeout: BUDGET.chain, label: `${column} waits behind the synthetic holder` });
+
+      const card = readCard(repo, 'task-0001');
+      const worktree = path.join(repo, '.todomd/worktrees/task-0001');
+      assert.ok(fs.existsSync(worktree), 'Build work is preserved before the queued stage');
+      fs.unlinkSync(path.join(repo, '.todomd/tasks', card.file));
+      releaseHolder();
+      await holder;
+
+      await until(() => !pipeline.hasLiveRun(p.name, 'task-0001')
+        && !scheduler.isQueued(p.name, 'task-0001'), { timeout: BUDGET.stage });
+      assert.ok(fs.existsSync(worktree), 'external deletion does not discard the candidate worktree');
+      assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/verify-1.jsonl')), false,
+        'the deleted card never spawns Verify');
+      assert.equal(fs.existsSync(marker), false, 'the deleted card never starts its CI command');
+      assert.doesNotMatch(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/,
+        'the deleted card is never merged');
+    } finally {
+      releaseHolder?.();
+      pipeline.forgetProject(p.name);
+      pipeline.forgetProject(blocker.name);
+      await pipeline.killAllChildren({ graceMs: 1000 });
+      clearFakeAgent();
+      scheduler.resetState();
+    }
+  });
+}
 
 test('detached HEAD at fork stamps base_branch "unknown" and refuses the merge (base_branch_unknown)', async () => {
   isolateHome();
@@ -1569,6 +2034,228 @@ test('Retry Verification is claimed before its background spawn and refuses an i
     pipeline.cancel(p, 'task-0001');
     await pipeline.killAllChildren({ graceMs: 1000 });
     clearFakeAgent();
+  }
+});
+
+// A Needs Human card whose preserved worktree/branch make it eligible for the
+// direct Retry Verification action (the same seed the test above builds inline).
+function seedPreservedVerification(repo, id) {
+  const base = git(repo, ['branch', '--show-current']);
+  const branch = `todomd/${id}`;
+  const worktree = path.join(repo, '.todomd/worktrees', id);
+  writeCard(repo, id, {
+    status: 'Needs Human',
+    extra: `needs_human_reason: bad_verdict\nsession_id: fake-session\nworktree: ${branch}\nbase_branch: ${base}\n`,
+  });
+  const cardFile = path.join(repo, '.todomd/tasks', `${id}-card.md`);
+  fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8')
+    .replace('verification: { attempts: 0,', 'verification: { attempts: 1,'));
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', `seed preserved verification ${id}`]);
+  fs.mkdirSync(path.dirname(worktree), { recursive: true });
+  git(repo, ['worktree', 'add', '-q', worktree, '-b', branch]);
+  return { branch, worktree };
+}
+const spawnedAnything = (repo, id) => fs.existsSync(path.join(repo, '.todomd/runs', id));
+
+test('Retry Verification is admitted through the scheduler: under pressure it stays queued and spawns nothing', async () => {
+  isolateHome();
+  await sleep(300); // let earlier tests' releases drain before resetting (see the governor test above)
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  seedPreservedVerification(repo, 'task-0001');
+
+  let sample = { cpuLoad: 0.99 }; // breach — the governor defers
+  scheduler.setGovernor(createGovernor({
+    thresholds: resourcesConfig({ resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 } }),
+    sample: () => sample,
+  }));
+  scheduler.tick(); // seed the deferring state
+
+  try {
+    // A human pressing Retry Verification is not a bypass: it asks for a
+    // Verify-column admission like every other start point, so machine
+    // pressure holds it exactly the same way.
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    const deferred = pipeline.getRunStates(p.name)['task-0001'];
+    assert.equal(deferred?.state, 'deferred', 'the retry is held, not spawned');
+    assert.equal(deferred.stage, 'Verify');
+    assert.match(deferred.reason, /cpu/, 'the deferral carries the reason the governor gave');
+    assert.equal(spawnedAnything(repo, 'task-0001'), false, 'no child was started while deferred');
+    // the trigger claim spans the queued window, so the card still reads as live
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, false);
+    assert.equal(scheduler.queuedEntries(p.name).filter((e) => e.card === 'task-0001').length, 1,
+      'a second press cannot double-queue the card');
+
+    sample = { cpuLoad: 0.05 }; // recovered
+    scheduler.tick();
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.quick });
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false,
+      'the persistent retry claim is released after terminal finalization settles');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
+test('manual queue pause parks a direct Retry Verification until resume', async () => {
+  isolateHome();
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+
+  try {
+    pipeline.pauseQueue(p);
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    await sleep(150);
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'],
+      { state: 'queued', stage: 'Verify' });
+    assert.equal(spawnedAnything(repo, 'task-0001'), false,
+      'the paused retry does not start a verifier');
+    assert.equal(fs.existsSync(worktree), true,
+      'the paused retry keeps its preserved worktree');
+
+    assert.deepEqual(pipeline.resumeQueue(p), { ok: true, queue_paused: false });
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
+test('a failed direct Retry Verification keeps ownership while its repair Build waits for admission', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'fail', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const configPath = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(configPath,
+    fs.readFileSync(configPath, 'utf8').replace('concurrency: 1', 'concurrency: 2')
+    + 'scheduler:\n  columns:\n    Build: 1\n');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'configure occupied Build column']);
+  const p = project(repo);
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+  let releaseBlocker;
+  const blocker = scheduler.schedule(p, 'blocker', 'Build', () => new Promise((resolve) => {
+    releaseBlocker = resolve;
+  }));
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    await until(() => scheduler.queuedEntries(p.name)
+      .some((entry) => entry.card === 'task-0001' && entry.column === 'Build'),
+    { timeout: BUDGET.stage });
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true,
+      'the retry owns the card across Verify -> queued repair Build');
+    assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, false,
+      'a second recovery cannot overlap the queued repair');
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'),
+      { ok: true, cancelled: true });
+
+    releaseBlocker();
+    await blocker;
+    await until(() => status(repo, 'task-0001') === 'Review'
+      && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
+      'cancelling the queued repair does not erase its completed failed attempt');
+    assert.equal(fs.existsSync(worktree), false,
+      'cancelling the owned repair flow unwinds its preserved worktree');
+  } finally {
+    releaseBlocker?.();
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('Retry Verification waits its turn when the Verify column is full — plainly queued, not deferred', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', hang: 'verify' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  // concurrency 2 so the project cap is not what holds the retry back — the
+  // combined Verify column limit is.
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+    .replace('concurrency: 1', 'concurrency: 2') + 'scheduler:\n  columns:\n    Verify: 1\n');
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  seedPreservedVerification(repo, 'task-0002');
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.stage === 'Verify'
+      && pipeline.getRunStates(p.name)['task-0001']?.state === 'running', { timeout: BUDGET.chain });
+
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0002'), { ok: true });
+    await sleep(200);
+    // An ordinary capacity wait is 'queued' — 'deferred' stays reserved for
+    // resource pressure, so a board never shows a normal turn-wait as load.
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0002'], { state: 'queued', stage: 'Verify' });
+    assert.equal(spawnedAnything(repo, 'task-0002'), false, 'the retry spawned nothing while the column was full');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('cancelling a queued Retry Verification unwinds through its claim instead of running', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+
+  let sample = { cpuLoad: 0.99 };
+  scheduler.setGovernor(createGovernor({
+    thresholds: resourcesConfig({ resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 } }),
+    sample: () => sample,
+  }));
+  scheduler.tick();
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    assert.equal(pipeline.getRunStates(p.name)['task-0001']?.state, 'deferred');
+    // pause the queue first, so the cancel's Queue re-drive parks instead of
+    // starting a fresh Build we would then have to chase
+    pipeline.pauseQueue(p);
+    assert.deepEqual(pipeline.cancel(p, 'task-0001'), { ok: true }, 'a queued retry is cancellable');
+
+    // Cancellation does not wait for resource recovery: the queued admission
+    // is removed and its preserved mid-flow state unwinds immediately.
+    await until(() => status(repo, 'task-0001') === 'Queue' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+      { timeout: BUDGET.stage });
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
+      'a queued re-verification has not opened an attempt to roll back');
+    assert.equal(spawnedAnything(repo, 'task-0001'), false, 'the cancelled retry never spawned a verifier');
+    assert.equal(fs.existsSync(worktree), false, 'the cancel released the preserved worktree');
+    assert.ok(!readCard(repo, 'task-0001').data.worktree, 'the stale branch reference is cleared too');
+  } finally {
+    // deliberately NOT resumeQueue(): the pause marker lives in this test's own
+    // temp repo, and resuming here would start the very Build this test parked
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
   }
 });
 

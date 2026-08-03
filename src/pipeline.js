@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
@@ -8,6 +8,7 @@ import { isGitRepo, addWorktree, archiveBranchForRestart, removeWorktree, mergeB
 import { runStage, stopHookSettings } from './runner.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
+import * as scheduler from './scheduler.js';
 
 const VERDICT_SCHEMA = {
   // todomd.verdict/1
@@ -52,24 +53,28 @@ const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human'])
 
 let broadcast = () => {};
 const children = new Map();          // runKey → ChildProcess
+// runKey → { project, card, child, cancelled, timedOut } for a live CI stage
+// (the board's verify_command). Tracked separately from `children`, which is
+// specifically the agent-CLI children runstore.js persists and reconcileOnBoot
+// reaps by PID — a shell command has no session, envelope or transcript.
+const ciRuns = new Map();
 const finalizationWaiters = new WeakMap(); // retained trigger run → completion signal for direct human moves
-// runKey → { cancelled, revertTo, cascadeArchive, noRequeue } — a build chain
-// claimed by processQueue but not yet fully settled. Covers the windows where
-// `children` has no entry (queue shift → spawn, build done → verify spawn,
-// verify done → merge) so hasLiveRun/cancel/humanMove never see a false "idle".
+// runKey → { cancelled, revertTo, cascadeArchive, noRequeue } — a build flow
+// claimed at its first admission and held until it fully settles, spanning
+// every scheduler admission in between (admit → spawn, build done → verify
+// admission, verify fail → retry-build admission). Covers the windows where
+// `children` has no entry so hasLiveRun/cancel/humanMove never see a false "idle".
 const pending = new Map();
 // Plan/custom-stage work claimed synchronously after the card move but before
 // async config loading and child registration. Without this claim, voice can
 // authorize a conflicting move in the background-handoff window.
 const triggerClaims = new Map();      // runKey → exact pre-spawn stage claim
-const queues = new Map();            // project name → [cardId]
 // Exact identity of the latest run/queue claim for a card. This advances in
 // memory before work starts, so cancel-and-requeue cannot recreate an earlier
 // identity even when Git is temporarily unable to commit the card transitions.
 // Voice proposals use it only for stale detection; it grants no capability.
 const runGenerations = new Map();     // runKey → { project, card, generation }
 let nextRunGeneration = 0;
-const active = new Map();            // project name → running build/verify chains
 const banners = new Map();           // key → { level, text }
 const quotaPaused = new Set();        // project names paused on a usage limit
 
@@ -127,11 +132,15 @@ function pauseForQuota(project) {
   setBanner('quota', 'warn', 'usage limit reached — paused; resume when your usage resets');
 }
 
-async function parkForQuota(project, id, attempt, maxAttempts, findings) {
+async function parkForQuota(project, id, attempt, maxAttempts, findings, attemptOpened = true) {
   const card = readCard(project.path, id);
   const lastVerdict = card?.data?.verification?.last_verdict || '';
   await patchFrontmatter(project.path, id, {
-    verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict },
+    verification: {
+      attempts: attemptOpened ? Math.max(0, attempt - 1) : Math.max(0, attempt),
+      max_attempts: maxAttempts,
+      last_verdict: lastVerdict,
+    },
   });
   saveRetryFindings(project, id, findings);
   await orchMove(project, id, 'Queue', 'usage limit; will resume');
@@ -172,8 +181,23 @@ export function getBanners() {
   return [...banners.values()];
 }
 
-function sendState(project, cardId, state, stage) {
-  broadcast({ type: 'run-state', project: project.name, card: cardId, state, stage });
+// 'idle' is the single choke point where a card's build-flow claim (`pending`)
+// is released: every terminal exit (Done, Needs Human, cancelled, quota-park)
+// already calls sendState(..., 'idle') exactly once, and no in-flow
+// continuation (a retry, the Build→Verify handoff) ever does — so clearing
+// `pending` here, instead of at each of those call sites individually, can't
+// miss one and can't fire early.
+function sendState(project, cardId, state, stage, reason, pendingOwner) {
+  if (state === 'idle') {
+    const key = runKey(project.name, cardId);
+    const current = pending.get(key);
+    // Abnormal promise catches can settle after a replacement run has already
+    // claimed the same card. When a caller supplies the claim it owns, never
+    // clear or overwrite a newer claim's live UI state.
+    if (pendingOwner !== undefined && current && current !== pendingOwner) return;
+    if (pendingOwner === undefined || current === pendingOwner) pending.delete(key);
+  }
+  broadcast({ type: 'run-state', project: project.name, card: cardId, state, stage, ...(reason ? { reason } : {}) });
 }
 
 async function orchMove(project, id, to, reason) {
@@ -455,16 +479,23 @@ async function recordRun(project, id, stage, attempt, result, note) {
   );
 }
 
-async function toNeedsHuman(project, id, from, reason, detail = '') {
+async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner) {
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
   await patchFrontmatter(project.path, id, {
     needs_human_reason: reason,
     recovery_stage: reason === 'orphaned_run' ? from : '',
   });
-  if (detail) await appendRunLog(project.path, id, `  - ${reason}: ${detail.slice(0, 400)}`);
+  if (detail) {
+    const text = String(detail);
+    // Preserve both the failure context and the newest diagnostic output. CI
+    // and test runners commonly print their actionable summary last.
+    const concise = text.length <= 400 ? text
+      : `${text.slice(0, 120).trimEnd()}\n…\n${text.slice(-275).trimStart()}`;
+    await appendRunLog(project.path, id, `  - ${reason}: ${concise}`);
+  }
   await orchMove(project, id, 'Needs Human', reason);
-  sendState(project, id, 'idle');
+  sendState(project, id, 'idle', undefined, undefined, pendingOwner);
 }
 
 async function releaseCoordination(project, id) {
@@ -476,9 +507,7 @@ async function releaseCoordination(project, id) {
 // worktree) so it can be archived or deleted without leaking anything. The
 // caller must ensure there's no LIVE run first (cancel it).
 export async function releaseCardResources(project, id) {
-  const q = queues.get(project.name);
-  const qi = q ? q.indexOf(id) : -1;
-  if (qi >= 0) q.splice(qi, 1);
+  scheduler.dequeue(project.name, id);
   retryFindings.delete(runKey(project.name, id));
   recoveryBuilds.delete(runKey(project.name, id));
   await releaseCoordination(project, id);
@@ -507,6 +536,15 @@ export async function cascadeEpicCleanup(project, epicId) {
       // claimed but between spawns — the chain's cancel checkpoint archives it
       childPend.cancelled = true;
       childPend.cascadeArchive = true;
+      const ci = ciRuns.get(childKey);
+      if (ci) {
+        ci.cancelled = true;
+        killWithEscalation(ci.child);
+      } else if (scheduler.dequeue(project.name, child.id)) {
+        // A capacity/governor wait may never be admitted, so run the same
+        // stage-aware unwind now instead of making epic cleanup wait forever.
+        await unwindQueuedPending(project, child.id, childPend);
+      }
     } else {
       await releaseCardResources(project, child.id);
       await setArchived(project.path, child.id, true);
@@ -543,6 +581,17 @@ function runLogFile(project, id, stage, attempt) {
   // Direct Verify retries and the one-time malformed-verdict rerun reuse the
   // same attempt number. Never truncate the earlier attempt's raw diagnostic.
   return fs.existsSync(first) ? path.join(dir, `${stem}-${Date.now()}.jsonl`) : first;
+}
+
+// Wall-clock cap for one stage child, in minutes. 0 disables the cap; a
+// missing/non-numeric/negative value falls back to the 45m default; the value
+// is clamped under the setTimeout 32-bit ceiling (~24.8 days in minutes) so a
+// huge config value doesn't overflow into a ~1ms timer that would instantly
+// kill every run. Shared by the agent stages and the CI command.
+function stageTimeoutMinutes(project) {
+  const cfgTimeout = loadConfig(project.path).stage_timeout_min;
+  const n = cfgTimeout == null ? NaN : Number(cfgTimeout);
+  return n === 0 ? 0 : !Number.isFinite(n) || n < 0 ? 45 : Math.min(n, 35791);
 }
 
 function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
@@ -602,13 +651,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   // wall-clock cap: a hung agent must not hold a concurrency slot forever. On
   // expiry the child is killed (TERM → KILL backstop) and the stage's caller
   // routes the card to Needs Human (run.timedOut).
-  const cfgTimeout = loadConfig(project.path).stage_timeout_min;
-  const n = cfgTimeout == null ? NaN : Number(cfgTimeout);
-  // 0 disables the cap; a missing/non-numeric/negative value falls back to the
-  // 45m default; clamp under the setTimeout 32-bit ceiling (~24.8 days in
-  // minutes) so a huge value doesn't overflow into a ~1ms timer that would
-  // instantly kill every run
-  const timeoutMin = n === 0 ? 0 : !Number.isFinite(n) || n < 0 ? 45 : Math.min(n, 35791);
+  const timeoutMin = stageTimeoutMinutes(project);
   run.timeoutMin = timeoutMin;
   let stageTimer;
   if (timeoutMin > 0) {
@@ -648,6 +691,7 @@ export async function humanMove(project, id, to) {
   const tracked = runs.get(key);
   const triageClaim = triaging.get(key);
   const triggerClaim = triggerClaims.get(key);
+  const queued = scheduler.isQueued(project.name, id);
 
   // Preserve the long-standing "approve as soon as Planned appears" behavior:
   // a direct human move waits for the last trigger-stage commit to settle, then
@@ -660,7 +704,7 @@ export async function humanMove(project, id, to) {
       return humanMove(project, id, to);
     }
   }
-  if ((tracked || pend || triageClaim || triggerClaim) && to !== 'Review') {
+  if ((tracked || pend || triageClaim || triggerClaim || queued) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
@@ -673,11 +717,19 @@ export async function humanMove(project, id, to) {
       return { ok: true, cancelled: true };
     }
     if (pend) {
-      // chain claimed but between spawns — nothing to SIGTERM. Flag it and let
-      // the chain's cancel checkpoint do the revert, so there is a single
-      // writer and the chain can't stomp this move by continuing.
+      // A pending flow is normally between agent spawns, but the independently
+      // tracked CI command can be live in this state. Flag the owner first,
+      // then stop CI so its existing checkpoint performs the single revert.
       pend.cancelled = true;
       pend.revertTo = 'Review';
+      const ci = ciRuns.get(key);
+      if (ci) {
+        ci.cancelled = true;
+        killWithEscalation(ci.child);
+      } else if (queued) {
+        scheduler.dequeue(project.name, id);
+        await unwindQueuedPending(project, id, pend);
+      }
       return { ok: true, cancelled: true };
     }
     if (triageClaim) {
@@ -688,6 +740,14 @@ export async function humanMove(project, id, to) {
       triggerClaim.cancelled = true;
       triggerClaim.revertTo = 'Review';
       return { ok: true, cancelled: true };
+    }
+    // A first Build has no worktree/pending owner until admission. If it is
+    // still queued (manual pause, capacity, or governor pressure), remove that
+    // exact scheduler entry before moving the card so it cannot later wake up
+    // and overwrite this human retriage.
+    if (queued) {
+      scheduler.dequeue(project.name, id);
+      sendState(project, id, 'idle');
     }
     retryFindings.delete(key);
     recoveryBuilds.delete(key);
@@ -798,11 +858,7 @@ export async function reorder(project, id, beforeId = null) {
   const result = await reorderCards(project.path, id, beforeId);
   if (!result.ok || result.status !== 'Queue') return result;
 
-  const q = queues.get(project.name);
-  if (q?.length) {
-    const rank = new Map(result.order.map((cardId, i) => [cardId, i]));
-    q.sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER));
-  }
+  scheduler.reorderQueue(project.name, 'Build', result.order);
   return result;
 }
 
@@ -855,7 +911,7 @@ export async function resumeBuild(project, id) {
     return { ok: false, error: 'card is not an eligible orphaned Build run' };
   }
   const key = runKey(project.name, id);
-  if (hasLiveRun(project.name, id) || (queues.get(project.name) || []).includes(id)) {
+  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
     return { ok: false, error: 'run already in progress' };
   }
   const kept = await preservedWorktree(project, card);
@@ -893,7 +949,7 @@ export async function restartBuild(project, id) {
     return { ok: false, error: 'card is not an eligible orphaned Build run' };
   }
   const key = runKey(project.name, id);
-  if (hasLiveRun(project.name, id) || (queues.get(project.name) || []).includes(id)) {
+  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
     return { ok: false, error: 'run already in progress' };
   }
   if (await preservedWorktree(project, card)) {
@@ -935,7 +991,9 @@ export async function retryVerification(project, id) {
   const kept = await preservedWorktree(project, card);
   if (!kept) return { ok: false, error: 'the preserved worktree is unavailable or no longer valid' };
   const { config, worktreeAbs } = kept;
-  if (hasLiveRun(project.name, id)) return { ok: false, error: 'run already in progress' };
+  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
+    return { ok: false, error: 'run already in progress' };
+  }
   const verification = card.data.verification || {};
   const attempt = Math.max(1, Number(verification.attempts) || 1);
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
@@ -948,14 +1006,30 @@ export async function retryVerification(project, id) {
     cancelled: false, revertTo: 'Queue', noRequeue: false,
     worktreeAbs, branch: card.data.worktree, attempt, maxAttempts,
     lastVerdict: verification.last_verdict || '',
+    attemptOpened: false,
   };
-  triggerClaims.set(key, claim);
+  // Unlike a one-shot custom trigger, Retry Verification can continue into a
+  // repair Build. Use the same object as the persistent build-flow owner so
+  // the card remains live across Verify -> queued Build.
+  pending.set(key, claim);
   bumpRunGeneration(project.name, id);
-  withoutRepoLockContext(() => {
-    verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim)
-      .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)))
-      .finally(() => { if (triggerClaims.get(key) === claim) triggerClaims.delete(key); });
-  });
+  // A human-triggered retry is still a Verify: it asks the scheduler for a
+  // Verify-column admission like every other start point, so the global,
+  // column, per-project and governor gates all apply to it (a retry pressed
+  // under resource pressure stays queued with a deferredReason instead of
+  // spawning). The persistent claim above is set BEFORE scheduling and covers
+  // both this queued window and any repair Build that follows. A cancel()
+  // landing in that window flips claim.cancelled, which verify() unwinds at
+  // admission. No explicit
+  // withoutRepoLockContext here: scheduler.admitEntry() already wraps run().
+  sendState(project, id, 'queued', 'Verify');
+  scheduler.schedule(project, id, 'Verify',
+    () => verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim),
+    {
+      blocked: () => quotaPaused.has(project.name) || isQueuePaused(project),
+      onDefer: onDeferState(project, id, 'Verify'),
+    })
+    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err), claim));
   return { ok: true };
 }
 
@@ -994,23 +1068,33 @@ export function cancel(project, id) {
       triggerClaim.revertTo = triggerClaim.stage === 'Verify' ? 'Queue' : 'Review';
       return { ok: true };
     }
-    // chain claimed but between spawns (pre-spawn, or post-verify/pre-merge) —
-    // nothing to SIGTERM. Flag it so the chain reverts at its next checkpoint
-    // instead of proceeding, and drop any queued re-entry so the abort sticks.
+    // chain claimed but between spawns (pre-spawn, mid-retry-ladder waiting on
+    // scheduler admission, or post-verify/pre-merge) — nothing to SIGTERM yet.
+    // Flag it so the chain reverts at its next checkpoint (buildChain/verify's
+    // pendingCancelled() check) instead of proceeding. Do NOT dequeue here: a
+    // mid-flow entry may already have real worktree/coordination state that
+    // only that checkpoint's revertPendingCancel() knows how to unwind.
     const pend = pending.get(key);
     if (pend) {
       pend.cancelled = true;
       pend.revertTo = 'Queue';
-      const q = queues.get(project.name) || [];
-      const qi = q.indexOf(id);
-      if (qi >= 0) q.splice(qi, 1);
+      // The one thing that CAN actually be running in this "between agent
+      // spawns" window is the CI command. Stop it now instead of making a
+      // cancelled card wait out a full test suite; its stage then unwinds
+      // through the same pendingCancelled() checkpoint as everything else.
+      const ci = ciRuns.get(key);
+      if (ci) { ci.cancelled = true; killWithEscalation(ci.child); }
+      // A queued mid-flow stage may never be admitted (permanent pressure or
+      // a hung capacity holder). Remove it and run the same worktree/attempt
+      // unwind immediately instead of making cancellation depend on capacity.
+      if (!ci && scheduler.dequeue(project.name, id)) {
+        withoutRepoLockContext(() => unwindQueuedPending(project, id, pend))
+          .catch((err) => pipelineError(project, id, err, pend));
+      }
       return { ok: true };
     }
-    // not running — maybe just queued
-    const q = queues.get(project.name) || [];
-    const qi = q.indexOf(id);
-    if (qi >= 0) {
-      q.splice(qi, 1);
+    // not running — maybe just queued (never admitted at all, so nothing to unwind)
+    if (scheduler.dequeue(project.name, id)) {
       const recovery = recoveryBuilds.get(key);
       recoveryBuilds.delete(key);
       sendState(project, id, 'idle');
@@ -1093,14 +1177,22 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
     pend.revertTo = 'Queue';
     pend.noRequeue = true;
   }
+  // A CI command is a child of this process too — an exiting server must not
+  // leave a test suite running against a worktree it no longer supervises.
+  // Its pending claim was just flagged above, so its stage unwinds normally.
+  for (const ci of ciRuns.values()) {
+    ci.cancelled = true;
+    try { ci.child.kill('SIGTERM'); } catch { /* already gone */ }
+  }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
-    while ((children.size || runs.size || triaging.size || triggerClaims.size) && Date.now() < deadline) {
+    while ((children.size || runs.size || triaging.size || triggerClaims.size || ciRuns.size) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
   };
   await waitForExit(graceMs);
   for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  for (const ci of ciRuns.values()) { try { ci.child.kill('SIGKILL'); } catch { /* already gone */ } }
   await waitForExit(1000); // let the close handlers reap and drop tracking entries
 }
 
@@ -1281,55 +1373,193 @@ async function maybeAdvanceEpic(project, childId) {
 
 /* ── build/verify chain ── */
 
-function enqueueBuild(project, id) {
-  if (!queues.has(project.name)) queues.set(project.name, []);
-  const q = queues.get(project.name);
-  // dedupe: a concurrent double-approval or re-approval must not queue twice
-  if (q.includes(id) || children.has(runKey(project.name, id))) return;
-  bumpRunGeneration(project.name, id);
-  q.push(id);
-  sendState(project, id, 'queued', 'Build');
-  // Voice confirmation can enqueue while holding the repository transaction.
-  // The build chain outlives that call, so it must not inherit reentrant lock
-  // ownership from the confirmer.
-  withoutRepoLockContext(() => processQueue(project));
+// scheduler onDefer contract: a non-null reason means governor pressure is
+// holding this entry back (render 'deferred' + why); null means it cleared —
+// back to plain 'queued', whether that's because it just started (the next
+// sendState('running', ...) supersedes this) or it's merely waiting on
+// ordinary capacity again.
+function onDeferState(project, id, column) {
+  return (reason) => sendState(project, id, reason ? 'deferred' : 'queued', column, reason || undefined);
 }
 
-function processQueue(project) {
-  // Manual pause is deliberately a start gate only: an already-running
-  // Build→Verify chain finishes normally, while every follower stays queued.
-  if (quotaPaused.has(project.name) || isQueuePaused(project)) return;
-  const config = loadConfig(project.path);
-  const limit = config.concurrency || 1;
-  const q = queues.get(project.name) || [];
-  while (q.length && (active.get(project.name) || 0) < limit) {
-    const id = q.shift();
-    // claim the card synchronously (before any await) so the shift→spawn
-    // window still counts as a live run; cleared only when the WHOLE chain
-    // settles (the finally below — success: after merge + the Done move;
+// The card's very first admission into the build flow — the ONLY point that
+// creates its `pending` claim, and the only point manual/quota pause gates
+// (an already-running chain's own later stage transitions are start gates
+// scheduler.schedule() admits on their own merits, never re-gated by pause —
+// "an already-running Build→Verify chain finishes normally").
+function enqueueBuild(project, id) {
+  const key = runKey(project.name, id);
+  // dedupe: a concurrent double-approval or re-approval must not queue twice
+  if (scheduler.isQueued(project.name, id) || children.has(key)) return;
+  bumpRunGeneration(project.name, id);
+  sendState(project, id, 'queued', 'Build');
+  let owner = null;
+  scheduler.schedule(project, id, 'Build', () => {
+    // claim the card synchronously (before any await) so the admit→spawn
+    // window still counts as a live run; cleared only when the WHOLE flow
+    // settles (sendState(..., 'idle') — success: after merge + the Done move;
     // failure: after toNeedsHuman/revert completes)
-    const key = runKey(project.name, id);
-    // Keep structured ownership on the value. Project names may contain `:`,
-    // so consumers must not recover identity by splitting/prefix-matching the
-    // composite map key.
-    const entry = {
-      project: project.name, card: id,
-      cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
-    };
     const recovery = recoveryBuilds.get(key) || null;
     recoveryBuilds.delete(key);
-    pending.set(key, entry);
-    active.set(project.name, (active.get(project.name) || 0) + 1);
-    buildChain(project, id, null, recovery)
-      .catch((err) => pipelineError(project, id, err))
-      .finally(() => {
-        // a re-enqueue (e.g. a verify-cancel at concurrency>1) may already have
-        // shifted a FRESH entry for this card — don't clear that one
-        if (pending.get(key) === entry) pending.delete(key);
-        active.set(project.name, (active.get(project.name) || 0) - 1);
-        processQueue(project);
-      });
+    owner = {
+      project: project.name, card: id, stage: 'Build',
+      cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
+      attemptOpened: false,
+    };
+    pending.set(key, owner);
+    return buildChain(project, id, null, recovery, owner);
+  }, {
+    blocked: () => quotaPaused.has(project.name) || isQueuePaused(project),
+    onDefer: onDeferState(project, id, 'Build'),
+  }).catch((err) => pipelineError(project, id, err, owner));
+}
+
+// Fire-and-forget dispatch for a retry/escalation Build attempt: each attempt
+// is its own scheduler admission (its own Build-column slot), never inherited
+// from whichever slot ran the attempt before it — a long retry ladder must
+// not pin one Build slot for its whole lifetime. `pending` is already held
+// continuously from the card's first admission, so no re-claim here.
+function scheduleBuild(project, id, retry) {
+  const owner = pending.get(runKey(project.name, id)) || null;
+  if (owner) {
+    owner.stage = 'Build';
+    // The preceding Verify attempt is complete; this queued repair has not
+    // opened its next attempt until buildChain records it below.
+    owner.attemptOpened = false;
   }
+  sendState(project, id, 'queued', 'Build');
+  scheduler.schedule(project, id, 'Build', () => buildChain(project, id, retry, null, owner), {
+    onDefer: onDeferState(project, id, 'Build'),
+  }).catch((err) => pipelineError(project, id, err, owner));
+}
+
+// Fire-and-forget dispatch for a Verify attempt — its own admission against
+// the Verify column, requested only once Build has actually finished (see
+// buildChain's success path), so the Verify column limit is real instead of
+// inert and a Build slot is never held for the whole Build-to-Verify chain.
+function scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
+  const owner = pending.get(runKey(project.name, id)) || null;
+  if (owner) owner.stage = 'Verify';
+  sendState(project, id, 'queued', 'Verify');
+  scheduler.schedule(project, id, 'Verify',
+    () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+      isRerun, priorFindings, null, owner),
+    { onDefer: onDeferState(project, id, 'Verify') },
+  ).catch((err) => pipelineError(project, id, err, owner));
+}
+
+// Bound on the CI output kept in memory, and on the tail carried into the
+// card when it fails — a test suite can print megabytes.
+const CI_OUTPUT_MAX = 64 * 1024;
+const CI_DETAIL_MAX = 2000;
+
+// Fire-and-forget dispatch for the CI stage: the board's own verify_command,
+// admitted against the scheduler's CI column between Build and Verify. Two
+// real things this buys beyond accounting: the command used to run ONLY as a
+// claude Stop hook (runner.js), so codex builds never executed it at all, and
+// a machine hosting several boards can now cap how many test suites run at
+// once independently of how many agents may build or verify.
+//
+// The card's status stays 'Verify' throughout — 'CI' is the scheduler's
+// work-type key, not a board column (a visible CI column, plus quick/full
+// command profiles, is task-0041's scope).
+function scheduleCi(project, id, command, next) {
+  const owner = pending.get(runKey(project.name, id)) || null;
+  if (owner) owner.stage = 'CI';
+  sendState(project, id, 'queued', 'CI');
+  scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next, owner), {
+    onDefer: onDeferState(project, id, 'CI'),
+  }).catch((err) => pipelineError(project, id, err, owner));
+}
+
+async function ciStage(project, id, command, next, pendingOwner = null) {
+  // The card can be removed outside the API while this stage waits for
+  // scheduler admission. Never spawn or merge work for a card that no longer
+  // exists; release only the flow owner captured when this entry was queued.
+  if (!readCard(project.path, id)) {
+    return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
+  }
+  const { attempt, maxAttempts, buildSession, worktreeAbs, branch, findings, config, lastVerdict } = next;
+  const revertArgs = { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict };
+  // same between-spawns cancel checkpoint every other stage has
+  const pc = pendingCancelled(project, id);
+  if (pc) return revertPendingCancel(project, id, pc, revertArgs);
+
+  sendState(project, id, 'running', 'CI');
+  const startedAt = Date.now();
+  const outcome = await runVerifyCommand(project, id, command, worktreeAbs);
+  const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+
+  // A cancel/shutdown that landed while the command ran killed the child; the
+  // card unwinds through the same checkpoint the agent stages use.
+  const cancelled = pendingCancelled(project, id);
+  if (cancelled) {
+    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · cancelled`);
+    return revertPendingCancel(project, id, cancelled, revertArgs);
+  }
+  // killed with no claim left to unwind (the project was removed mid-run) —
+  // there is nothing to route, and nothing was merged
+  if (outcome.cancelled) return sendState(project, id, 'idle');
+
+  // recordRun() is shaped around an agent envelope (turns, cost, session); a
+  // shell command has none, so the card history gets the same run-log line
+  // without the meaningless columns.
+  if (outcome.ok) {
+    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` passed`);
+    return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, findings);
+  }
+  await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` failed`);
+  // CI is the first thing to enter the worktree after Build. A worktree the
+  // build deleted out from under itself is an environment failure, not a
+  // failing test suite — the same disambiguation classifyFailure() makes for
+  // an agent spawn's ENOENT.
+  if (!fs.existsSync(worktreeAbs)) {
+    return toNeedsHuman(project, id, 'CI', 'worktree_failed', `worktree is gone: ${worktreeAbs}`);
+  }
+  const why = outcome.timedOut ? `exceeded the ${outcome.timeoutMin}m stage timeout`
+    : outcome.spawnError ? `could not start: ${outcome.spawnError}`
+    : `exited ${outcome.signal || outcome.code}`;
+  return toNeedsHuman(project, id, 'CI', 'ci_failed',
+    `\`${command}\` ${why}\n${outcome.output.slice(-CI_DETAIL_MAX)}`);
+}
+
+// Run the board's verify_command as a captured child in the task worktree.
+// Deliberately much smaller than spawnTracked: there is no session, envelope
+// or jsonl transcript to collect — only the exit status, a bounded tail of the
+// output for the card, and the ability to stop it on cancel/shutdown.
+// `command` comes from execConfig (the COMMITTED config.yml), the same source
+// as the Stop hook, so a working-tree edit can never arm a new command here.
+function runVerifyCommand(project, id, command, cwd) {
+  const key = runKey(project.name, id);
+  const child = spawn(command, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const entry = { project: project.name, card: id, child, cancelled: false, timedOut: false };
+  ciRuns.set(key, entry);
+  let output = '';
+  const capture = (chunk) => {
+    output += chunk;
+    // Retain a rolling tail, not the first 64 KiB. The final failure summary
+    // is normally emitted after a test runner's verbose progress output.
+    if (output.length > CI_OUTPUT_MAX) output = output.slice(-CI_OUTPUT_MAX);
+  };
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.setEncoding('utf8');
+    stream.on('data', capture);
+  }
+  const timeoutMin = stageTimeoutMinutes(project);
+  let stageTimer;
+  if (timeoutMin > 0) {
+    stageTimer = setTimeout(() => { entry.timedOut = true; killWithEscalation(child); }, timeoutMin * 60_000);
+    stageTimer.unref?.();
+  }
+  return new Promise((resolve) => {
+    const settle = (result) => {
+      clearTimeout(stageTimer);
+      if (ciRuns.get(key) === entry) ciRuns.delete(key);
+      resolve({ ...result, cancelled: entry.cancelled, timedOut: entry.timedOut, timeoutMin, output });
+    };
+    child.on('error', (err) => settle({ ok: false, code: -1, signal: null, spawnError: String(err?.message || err) }));
+    child.on('close', (code, signal) => settle({ ok: code === 0 && !signal, code, signal, spawnError: null }));
+  });
 }
 
 // A cancel that landed while the chain was between spawns (no live child to
@@ -1339,28 +1569,55 @@ function pendingCancelled(project, id) {
   return p?.cancelled ? p : null;
 }
 
+async function unwindQueuedPending(project, id, pc) {
+  const card = readCard(project.path, id);
+  if (!card) return sendState(project, id, 'idle', undefined, undefined, pc);
+  const config = loadConfig(project.path);
+  const verification = card.data.verification || {};
+  const branch = card.data.worktree;
+  const worktreeAbs = path.join(project.path, config.worktree_dir || '.todomd/worktrees', id);
+  return revertPendingCancel(project, id, pc, {
+    worktreeAbs,
+    branch,
+    config,
+    attempt: Math.max(1, Number(verification.attempts) || 1),
+    maxAttempts: Number(verification.max_attempts) || config.max_attempts || 3,
+    lastVerdict: verification.last_verdict || '',
+    attemptOpened: pc.attemptOpened,
+  });
+}
+
+function attemptsAfterAbort(attempt, attemptOpened) {
+  return attemptOpened === false ? Math.max(0, attempt) : Math.max(0, attempt - 1);
+}
+
 // Revert for a between-spawns cancel, mirroring the spawn-path cancel handlers:
 // abandon the worktree, roll the burned attempt back (a cancel is an abort,
 // not a failed try), honor cascadeArchive, and re-drive a Queue revert unless
 // shutdown (noRequeue) or budget mode opted out.
-async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict }) {
+async function revertPendingCancel(project, id, pc,
+  { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict, attemptOpened = pc.attemptOpened }) {
   if (pc.preserveWorktree) {
     const stage = readCard(project.path, id)?.data?.status === 'Verify' ? 'Verify' : 'Build';
     return toNeedsHuman(project, id, stage, 'orphaned_run',
-      'server stopped during a run — unmerged work is preserved in the worktree/branch');
+      'server stopped during a run — unmerged work is preserved in the worktree/branch', pc);
   }
   await releaseCoordination(project, id);
   await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
   await patchFrontmatter(project.path, id, {
     worktree: '', base_branch: '',
-    verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: lastVerdict || '' },
+    verification: {
+      attempts: attemptsAfterAbort(attempt, attemptOpened),
+      max_attempts: maxAttempts,
+      last_verdict: lastVerdict || '',
+    },
   });
   if (pc.cascadeArchive) {
     await setArchived(project.path, id, true);
-    return sendState(project, id, 'idle');
+    return sendState(project, id, 'idle', undefined, undefined, pc);
   }
   await orchMove(project, id, pc.revertTo || 'Queue', 'cancelled');
-  sendState(project, id, 'idle');
+  sendState(project, id, 'idle', undefined, undefined, pc);
   if (pc.revertTo === 'Queue' && !pc.noRequeue && (config.mode || 'launcher') !== 'budget') {
     enqueueBuild(project, id);
   }
@@ -1368,12 +1625,17 @@ async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, confi
 
 // An unexpected throw anywhere in the build→verify chain would otherwise
 // strand the card in Build/Verify with no live run, no banner, and no log.
-async function pipelineError(project, id, err) {
+async function pipelineError(project, id, err, pendingOwner) {
   const detail = String(err?.stack || err || 'unknown error');
   setBanner(`pipeline:${project.name}:${id}`, 'error', `${id}: unexpected pipeline error — routed to Needs Human`);
   try {
-    await toNeedsHuman(project, id, 'Build', 'pipeline_error', detail);
+    await toNeedsHuman(project, id, 'Build', 'pipeline_error', detail, pendingOwner);
   } catch { /* a failed recovery must not rethrow into the same catch chain */ }
+  finally {
+    // toNeedsHuman normally settles the claim itself. If its Git/card recovery
+    // also failed, still release only the exact claim whose pipeline rejected.
+    sendState(project, id, 'idle', undefined, undefined, pendingOwner);
+  }
 }
 
 // A leftover worktree dir is reusable only if it's a live git worktree checked
@@ -1386,15 +1648,15 @@ async function worktreeValid(worktreeAbs, branch) {
   return head.ok && head.stdout === branch;
 }
 
-async function buildChain(project, id, retry = null, recovery = null) {
+async function buildChain(project, id, retry = null, recovery = null, pendingOwner = null) {
   const config = await execConfig(project.path);
   const card = readCard(project.path, id);
-  if (!card) return;
+  if (!card) return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
   const key = runKey(project.name, id);
   // a retry that arrives while the project is quota-paused (e.g. a concurrent
   // card's verify-fail at concurrency>1) must not spawn against the exhausted
-  // quota — defer it to resume. processQueue already gates first builds, so
-  // this only fires on the direct verify→retry path.
+  // quota — defer it to resume. enqueueBuild's `blocked` gate already covers
+  // first builds, so this only fires on the retry/escalation dispatch path.
   if (quotaPaused.has(project.name)) {
     if (retry?.findings) saveRetryFindings(project, id, retry.findings);
     await orchMove(project, id, 'Queue', 'paused; will resume');
@@ -1450,6 +1712,7 @@ async function buildChain(project, id, retry = null, recovery = null) {
     ...(forkedFrom ? { base_branch: forkedFrom } : {}),
     verification: { attempts: attempt, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
   });
+  if (pendingOwner) pendingOwner.attemptOpened = true;
   await orchMove(project, id, 'Build', `attempt ${attempt}`);
 
   // multi-developer coordination: claim the files this card touches, surface
@@ -1564,7 +1827,11 @@ async function buildChain(project, id, retry = null, recovery = null) {
     // abort, not a failed try — it must not count toward attempts_exhausted
     await patchFrontmatter(project.path, id, {
       worktree: '', base_branch: '',
-      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
+      verification: {
+        attempts: attemptsAfterAbort(attempt, pendingOwner?.attemptOpened),
+        max_attempts: maxAttempts,
+        last_verdict: ver.last_verdict || '',
+      },
     });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
@@ -1599,9 +1866,24 @@ async function buildChain(project, id, retry = null, recovery = null) {
   await recordRun(project, id, 'Build', attempt, result, repair ? 'ok (escalation repair)' : 'ok');
   const buildSession = result.sessionId;
   await orchMove(project, id, 'Verify', `attempt ${attempt}`);
+  // Release this Build-column slot now — CI and Verify are each admitted
+  // independently (their own scheduler entries) rather than inline, so the
+  // Build slot isn't held for the rest of the chain and neither the CI nor the
+  // Verify column limit is inert.
   // thread the findings that drove this attempt so a verify-quota resume can
   // rebuild with them (the build code is in the worktree; this keeps context)
-  return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);
+  const next = {
+    attempt, maxAttempts, buildSession, worktreeAbs, branch, config,
+    findings: retry?.findings, lastVerdict: ver.last_verdict,
+  };
+  const ciCommand = String(config.verify_command || '').trim();
+  if (!ciCommand) {
+    // Nothing configured to run — say so in the card history, so a missing CI
+    // line reads as "this board has no verify_command", not "CI was skipped".
+    await appendRunLog(project.path, id, `  - CI: skipped (no verify_command configured)`);
+    return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);
+  }
+  scheduleCi(project, id, ciCommand, next);
 }
 
 async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation) {
@@ -1632,9 +1914,13 @@ async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, e
   return { ok: true, findings: `${findings}\n\nFable diagnosis:\n${diagnosis.diagnosis}\n\nRequired repair strategy:\n${diagnosis.repair_strategy}` };
 }
 
-async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings, triggerClaim = null) {
-  const config = await execConfig(project.path);
+async function verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+  isRerun, priorFindings, triggerClaim = null, pendingOwner = triggerClaim) {
   const card = readCard(project.path, id);
+  // Like Build, revalidate at admission: the queue wait can be arbitrarily
+  // long, and an externally deleted card must never spawn Verify or merge.
+  if (!card) return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
+  const config = await execConfig(project.path);
   const stage = stageConfig(config, 'Verify', card);
   const vendor = cardVendor(config, card, 'Verify');
 
@@ -1648,7 +1934,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     await patchFrontmatter(project.path, id, {
       worktree: '', base_branch: '',
       verification: {
-        attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts,
+        attempts: attemptsAfterAbort(attempt, triggerClaim.attemptOpened), max_attempts: maxAttempts,
         last_verdict: triggerClaim.lastVerdict || '',
       },
     });
@@ -1694,7 +1980,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     // abort, not a failed try — it must not count toward attempts_exhausted
     await patchFrontmatter(project.path, id, {
       worktree: '', base_branch: '',
-      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: card?.data?.verification?.last_verdict || '' },
+      verification: {
+        attempts: attemptsAfterAbort(attempt, pendingOwner?.attemptOpened),
+        max_attempts: maxAttempts,
+        last_verdict: card?.data?.verification?.last_verdict || '',
+      },
     });
     if (run.cascadeArchive) {
       await setArchived(project.path, id, true);
@@ -1725,12 +2015,14 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
       // existing worktree is reused). Attempt rolled back so none is burned.
       if (infrastructure) await recordRun(project, id, 'Verify', attempt, result, `infrastructure: ${infrastructure}`);
       else await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · usage limit — will resume`);
-      return parkForQuota(project, id, attempt, maxAttempts, priorFindings);
+      return parkForQuota(project, id, attempt, maxAttempts, priorFindings,
+        pendingOwner?.attemptOpened !== false);
     }
     if (!isRerun && failure.kind === 'agent') {
       if (infrastructure) await recordRun(project, id, 'Verify', attempt, result, `infrastructure: ${infrastructure}`);
       await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · malformed verdict, re-running once`);
-      return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, true, priorFindings);
+      return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+        true, priorFindings, triggerClaim, pendingOwner);
     }
     // a genuinely malformed verdict is bad_verdict; a spawn-level failure
     // (e.g. worktree_failed on a deleted cwd) keeps its own kind
@@ -1808,7 +2100,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (verdict.question) {
     await patchFrontmatter(project.path, id, {
       question: verdict.question,
-      verification: { attempts: Math.max(0, attempt - 1), max_attempts: maxAttempts, last_verdict: verdict.verdict },
+      verification: {
+        attempts: attemptsAfterAbort(attempt, pendingOwner?.attemptOpened),
+        max_attempts: maxAttempts,
+        last_verdict: verdict.verdict,
+      },
     });
     await appendRunLog(project.path, id, `- ${now()} · Verify attempt ${attempt} · needs a human decision`);
     return toNeedsHuman(project, id, 'Verify', 'needs_answer', verdict.question);
@@ -1831,13 +2127,15 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     await appendRunLog(project.path, id, `  - escalating after ${attempt} failed reviews: Fable diagnosis → Opus repair → final Codex gate`);
     const diagnosis = await diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation);
     if (!diagnosis.ok) return toNeedsHuman(project, id, 'Escalate', diagnosis.reason, diagnosis.detail);
-    return buildChain(project, id, { findings: diagnosis.findings, escalation });
+    // This Verify slot is released now; the repair Build is its own fresh
+    // scheduler admission, same as any other retry attempt.
+    return scheduleBuild(project, id, { findings: diagnosis.findings, escalation });
   }
   if (attempt >= maxAttempts) {
     return toNeedsHuman(project, id, 'Verify', 'attempts_exhausted', findings);
   }
   await appendRunLog(project.path, id, `  - retrying with findings (attempt ${attempt + 1}/${maxAttempts})`);
-  return buildChain(project, id, { sessionId: buildSession, findings });
+  return scheduleBuild(project, id, { sessionId: buildSession, findings });
 }
 
 /* ── auto-triage: annotate incoming Review cards with insight + plan ── */
@@ -2133,17 +2431,31 @@ export function getRunStates(projectName) {
   for (const run of runs.values()) {
     if (run.project === projectName) states[run.card] = { state: 'running', stage: run.stage };
   }
-  for (const id of queues.get(projectName) || []) {
-    states[id] = { state: 'queued', stage: 'Build' };
+  // A live CI command has no `runs` entry (it isn't an agent child), so name it
+  // explicitly — otherwise the pending fallback below would report the whole
+  // stage as the generic 'in progress'.
+  for (const ci of ciRuns.values()) {
+    if (ci.project === projectName && !states[ci.card]) states[ci.card] = { state: 'running', stage: 'CI' };
   }
-  // A chain claimed by processQueue but between spawns (shift→spawn, build→
-  // verify, verify→merge) has no `runs` entry yet still counts as live for
-  // hasLiveRun/cancel/humanMove. Report it too, or callers that ask "what is
-  // running?" see a false idle in exactly the windows the pipeline treats as
-  // hands-off. The pending entry carries no stage, so the label is generic.
+  // Covers both a never-yet-admitted first entry AND a mid-flow retry/Verify
+  // entry the scheduler is currently holding on admission — either shows
+  // 'queued', or 'deferred' with the governor/capacity reason once one exists.
+  for (const entry of scheduler.queuedEntries(projectName)) {
+    if (states[entry.card]) continue;
+    states[entry.card] = entry.deferredReason
+      ? { state: 'deferred', stage: entry.column, reason: entry.deferredReason }
+      : { state: 'queued', stage: entry.column };
+  }
+  // A chain claimed but between spawns (admit→spawn, build→verify handoff
+  // before the Verify entry above exists yet, verify→merge) has no `runs`
+  // entry yet still counts as live for hasLiveRun/cancel/humanMove. Report it
+  // too, or callers that ask "what is running?" see a false idle in exactly
+  // the windows the pipeline treats as hands-off. Owners created by the shared
+  // scheduler carry their latest stage; legacy/custom owners keep the generic
+  // fallback.
   for (const entry of pending.values()) {
     if (entry.project !== projectName) continue;
-    if (!states[entry.card]) states[entry.card] = { state: 'running', stage: 'in progress' };
+    if (!states[entry.card]) states[entry.card] = { state: 'running', stage: entry.stage || 'in progress' };
   }
   for (const claim of triaging.values()) {
     if (claim.project === projectName && !states[claim.card]) {
@@ -2162,7 +2474,10 @@ export function hasLiveRun(projectName, id) {
   const key = runKey(projectName, id);
   // runs also covers a trigger-stage child that exited while its final Git/card
   // writes are still settling. That window remains hands-off until finalization.
-  return runs.has(key) || pending.has(key) || triaging.has(key) || triggerClaims.has(key);
+  // ciRuns is inside the same chain's `pending` window today; it is named here
+  // so a live CI command is self-evidently a live run rather than one that
+  // depends on another map's bookkeeping.
+  return runs.has(key) || pending.has(key) || ciRuns.has(key) || triaging.has(key) || triggerClaims.has(key);
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -2179,6 +2494,7 @@ export function projectHasLiveRun(projectName) {
   // contain `:`, so composite-key prefix matching is not safe here.
   for (const run of runs.values()) if (run.project === projectName) return true;
   for (const entry of pending.values()) if (entry.project === projectName) return true;
+  for (const ci of ciRuns.values()) if (ci.project === projectName) return true;
   for (const claim of triaging.values()) if (claim.project === projectName) return true;
   for (const claim of triggerClaims.values()) if (claim.project === projectName) return true;
   return false;
@@ -2186,12 +2502,19 @@ export function projectHasLiveRun(projectName) {
 
 // Drop all in-memory state for a removed project so a same-named re-add starts clean.
 export function forgetProject(projectName) {
-  queues.delete(projectName);
-  active.delete(projectName);
+  scheduler.forgetProject(projectName);
   quotaPaused.delete(projectName);
   for (const [k, entry] of retryFindings) if (entry.project === projectName) retryFindings.delete(k);
   for (const [k, entry] of recoveryBuilds) if (entry.project === projectName) recoveryBuilds.delete(k);
   for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
+  // its board is gone — stop the CI command instead of letting it run on
+  // against a worktree nothing is watching any more
+  for (const [k, ci] of ciRuns) {
+    if (ci.project !== projectName) continue;
+    ci.cancelled = true;
+    killWithEscalation(ci.child);
+    ciRuns.delete(k);
+  }
   for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);
   for (const [k, claim] of triggerClaims) if (claim.project === projectName) triggerClaims.delete(k);
   for (const [k, entry] of runGenerations) if (entry.project === projectName) runGenerations.delete(k);
@@ -2219,7 +2542,7 @@ export function resumeQueue(project) {
   // Rehydrate cards that were parked across a restart as well as entries still
   // present in the in-memory queue; both helpers dedupe before starting work.
   enqueueQueue(project);
-  processQueue(project);
+  scheduler.rescan(); // entries only held back by the (now-lifted) pause gate start now
   return { ok: true, queue_paused: false };
 }
 
@@ -2228,7 +2551,7 @@ export function resumeQueues(projects) {
     if (!quotaPaused.has(p.name)) continue;
     quotaPaused.delete(p.name);
     enqueueQueue(p); // re-enqueue parked cards through the normal queue
-    processQueue(p);
   }
+  scheduler.rescan();
   if (quotaPaused.size === 0) setBanner('quota', null, null);
 }

@@ -1,5 +1,6 @@
 import os from 'node:os';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 // Documented defaults for an existing board whose config.yml predates this
 // feature and has no `resources:` key at all — see CONFIG_YML in templates.js,
@@ -76,7 +77,10 @@ function validHysteresis(block, isOrdered, defaults) {
 // callers (createGovernor) must treat a null metric as "unknown", never a breach.
 // `platform` is injectable (defaulting to process.platform, same convention as
 // installLauncher in launcher.js) so this is testable without an actual Windows host.
-export function sampleResources(rootPath = '.', { platform = process.platform } = {}) {
+export function sampleResources(rootPath = '.', {
+  platform = process.platform,
+  memoryPressureCommand = execFileSync,
+} = {}) {
   let cpuLoad = null;
   try {
     // On Windows, os.loadavg() always returns [0, 0, 0] — load average isn't
@@ -89,8 +93,23 @@ export function sampleResources(rootPath = '.', { platform = process.platform } 
 
   let memoryPressure = null;
   try {
-    const total = os.totalmem();
-    if (total > 0) memoryPressure = (total - os.freemem()) / total;
+    if (platform === 'darwin') {
+      // os.freemem() excludes macOS's readily reclaimable cached/compressed
+      // memory and commonly reports >95% "used" on a healthy machine. Apple's
+      // own pressure tool exposes the system-wide free percentage used for
+      // admission decisions, so use that instead of permanently deferring.
+      const output = memoryPressureCommand('/usr/bin/memory_pressure', ['-Q'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const match = /System-wide memory free percentage:\s*([0-9]+(?:\.[0-9]+)?)%/i.exec(String(output));
+      const freePct = match ? Number(match[1]) : NaN;
+      if (Number.isFinite(freePct) && freePct >= 0 && freePct <= 100) {
+        memoryPressure = 1 - (freePct / 100);
+      }
+    } else {
+      const total = os.totalmem();
+      if (total > 0) memoryPressure = (total - os.freemem()) / total;
+    }
   } catch { /* unsupported platform */ }
 
   let diskFreeBytes = null;
@@ -105,6 +124,39 @@ export function sampleResources(rootPath = '.', { platform = process.platform } 
   } catch { /* Node < 18.15 (no statfsSync), or an fs that doesn't support it */ }
 
   return { cpuLoad, memoryPressure, diskFreeBytes, diskFreePct, sampledAt: Date.now() };
+}
+
+// CPU and memory are host-wide, but disk capacity is filesystem-specific.
+// Sample every distinct filesystem hosting an enabled project and retain the
+// lowest free-space reading so one nearly-full volume cannot be hidden by a
+// healthy project that happens to appear first in the registry.
+export function sampleProjectResources(rootPaths, {
+  sample = sampleResources,
+  deviceForPath = (rootPath) => fs.statSync(rootPath).dev,
+} = {}) {
+  const unique = [];
+  const devices = new Set();
+  for (const rootPath of rootPaths || []) {
+    let device;
+    try { device = `device:${String(deviceForPath(rootPath))}`; }
+    catch { device = `path:${rootPath}`; }
+    if (devices.has(device)) continue;
+    devices.add(device);
+    unique.push(rootPath);
+  }
+
+  const snapshots = unique.map((rootPath) => sample(rootPath));
+  if (!snapshots.length) return sample('.');
+  const first = snapshots[0];
+  const diskSamples = snapshots.filter((snapshot) => Number.isFinite(snapshot?.diskFreeBytes));
+  const lowest = diskSamples.reduce((worst, snapshot) =>
+    (!worst || snapshot.diskFreeBytes < worst.diskFreeBytes) ? snapshot : worst, null);
+  return {
+    ...first,
+    diskFreeBytes: lowest?.diskFreeBytes ?? null,
+    diskFreePct: lowest?.diskFreePct ?? null,
+    sampledAt: Math.max(...snapshots.map((snapshot) => Number(snapshot?.sampledAt) || 0)),
+  };
 }
 
 const BYTES_PER_GB = 1024 ** 3;
@@ -167,12 +219,18 @@ function evaluateMetric(state, value, { defer, resume, critical }, isWorse, isRe
 }
 
 // thresholds: the shape returned by resourcesConfig() — cpu/memory/disk
-// sub-objects plus recoverySamples. sample: () => sampleResources()-shaped
-// object (injected so tests can drive a fake sampler without touching the OS).
+// sub-objects plus recoverySamples — OR a function returning that shape,
+// re-evaluated on every check(). A live provider lets a caller whose
+// configured thresholds can change after construction (the scheduler's
+// governor is a long-lived singleton combining every registered project)
+// pick up a later project's enablement/thresholds/recovery-samples without
+// losing the metricState hysteresis below, which must survive unchanged
+// across threshold changes — that continuity is the whole point of a
+// singleton governor instead of a fresh one per check.
+// sample: () => sampleResources()-shaped object (injected so tests can drive
+// a fake sampler without touching the OS).
 export function createGovernor({ thresholds, sample }) {
-  const t = thresholds || DEFAULT_RESOURCES_CONFIG;
-  const recoverySamples = Number.isInteger(t.recoverySamples) && t.recoverySamples > 0
-    ? t.recoverySamples : DEFAULT_RESOURCES_CONFIG.recoverySamples;
+  const resolveThresholds = () => (typeof thresholds === 'function' ? thresholds() : thresholds) || DEFAULT_RESOURCES_CONFIG;
 
   const metricState = {
     cpu: { deferred: false, goodStreak: 0, lastReason: null },
@@ -183,6 +241,9 @@ export function createGovernor({ thresholds, sample }) {
   let last = { deferring: false, critical: false, reasons: [] };
 
   function check() {
+    const t = resolveThresholds();
+    const recoverySamples = Number.isInteger(t.recoverySamples) && t.recoverySamples > 0
+      ? t.recoverySamples : DEFAULT_RESOURCES_CONFIG.recoverySamples;
     // `enabled: false` turns the governor off entirely: no sampling at all (the
     // whole point is not paying for statfs/loadavg on a board that opted out),
     // and never a deferral. Compared against `=== false` so thresholds built by

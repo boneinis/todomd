@@ -535,6 +535,11 @@ body.viewer .col-edit { display: none; }
 .card.queued { box-shadow: inset 3px 0 0 var(--faint), var(--shadow-card); }
 .card.queued:hover { box-shadow: inset 3px 0 0 var(--faint), var(--shadow-lift); }
 .card.queued .card-run { color: var(--faint); }
+/* deferred: queued but currently held back by resource (CPU/memory/disk)
+   pressure, distinct from an ordinary queued card just waiting its turn */
+.card.deferred { box-shadow: inset 3px 0 0 var(--red), var(--shadow-card); }
+.card.deferred:hover { box-shadow: inset 3px 0 0 var(--red), var(--shadow-lift); }
+.card.deferred .card-run { color: var(--red); }
 
 .drawer-cancel { color: var(--red); border-color: var(--red); }
 .drawer-run { margin-top: 22px; }

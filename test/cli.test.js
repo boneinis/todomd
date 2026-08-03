@@ -100,3 +100,93 @@ test('stop: with no `ps` on PATH, still stops the recorded (live) pid', async ()
     victim.kill();
   }
 });
+
+test('stop: a present but failing ps command fails closed instead of signalling an unknown pid', () => {
+  const home = isolateHome();
+  const fakeBin = path.join(home, 'failing-ps');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const ps = path.join(fakeBin, 'ps');
+  fs.writeFileSync(ps, '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(ps, 0o755);
+  const decoy = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'ignore' });
+  try {
+    fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.todomd', 'server.pid'), `${decoy.pid} 7337`);
+    const result = spawnSync(process.execPath, [BIN, 'stop'], {
+      env: { ...process.env, PATH: fakeBin },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /not a todomd server/);
+    assert.doesNotThrow(() => process.kill(decoy.pid, 0));
+  } finally {
+    decoy.kill();
+  }
+});
+
+test('stop: accepts a node-launched npm todomd symlink as the recorded server', async () => {
+  const home = isolateHome();
+  const fakeBin = path.join(home, 'npm-style-ps');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const ps = path.join(fakeBin, 'ps');
+  fs.writeFileSync(ps, '#!/bin/sh\nprintf "%s\\n" "node /Users/example/.npm-global/bin/todomd serve --port 7337"\n');
+  fs.chmodSync(ps, 0o755);
+  const victim = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+  const exited = new Promise((resolve) => victim.on('exit', resolve));
+  try {
+    fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.todomd', 'server.pid'), `${victim.pid} 7337`);
+    const result = spawnSync(process.execPath, [BIN, 'stop'], {
+      env: { ...process.env, PATH: fakeBin }, encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /stopped todomd/);
+    await exited;
+  } finally {
+    victim.kill();
+  }
+});
+
+test('stop: accepts the known todomd entrypoint when its project path contains spaces', async () => {
+  const home = isolateHome();
+  const fakeBin = path.join(home, 'space-path-ps');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const ps = path.join(fakeBin, 'ps');
+  fs.writeFileSync(ps, `#!/bin/sh\nprintf "%s\\n" "node ${BIN} serve --no-open"\n`);
+  fs.chmodSync(ps, 0o755);
+  const victim = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+  const exited = new Promise((resolve) => victim.on('exit', resolve));
+  try {
+    fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.todomd', 'server.pid'), `${victim.pid} 7337`);
+    const result = spawnSync(process.execPath, [BIN, 'stop'], {
+      env: { ...process.env, PATH: fakeBin }, encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    await exited;
+  } finally {
+    victim.kill();
+  }
+});
+
+test('stop: rejects a later todomd.js argument owned by an unrelated executable', () => {
+  const home = isolateHome();
+  const fakeBin = path.join(home, 'editor-style-ps');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const ps = path.join(fakeBin, 'ps');
+  fs.writeFileSync(ps, '#!/bin/sh\nprintf "%s\\n" "vim /tmp/bin/todomd.js"\n');
+  fs.chmodSync(ps, 0o755);
+  const victim = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'ignore' });
+  try {
+    fs.mkdirSync(path.join(home, '.todomd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.todomd', 'server.pid'), `${victim.pid} 7337`);
+    const result = spawnSync(process.execPath, [BIN, 'stop'], {
+      env: { ...process.env, PATH: fakeBin }, encoding: 'utf8',
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /not a todomd server/);
+    assert.doesNotThrow(() => process.kill(victim.pid, 0));
+  } finally {
+    victim.kill();
+  }
+});

@@ -797,14 +797,25 @@ test('loadConfig re-adds pipeline-required columns a config edit dropped', () =>
   assert.deepEqual(cfg.columns.slice(0, 4), ['Review', 'Plan', 'Planned', 'Build'], 'user order preserved');
 });
 
+// The shared makeRepo() fixture disables the resource monitor (other tests
+// exercise the pipeline itself and must not depend on the real host's live
+// CPU/memory/disk) — strip that override here so these tests see the
+// legacy-board case they're actually named for: no resources: key at all.
+function stripResourcesOverride(repo) {
+  const file = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('resources:\n  enabled: false\n', ''));
+}
+
 test('loadConfig fills the documented resources defaults for a legacy board with no resources key', () => {
-  const repo = makeRepo(); // fixture config.yml has no `resources:` block at all
+  const repo = makeRepo();
+  stripResourcesOverride(repo); // fixture config.yml has no `resources:` block at all
   const cfg = loadConfig(repo);
   assert.deepEqual(cfg.resources, DEFAULT_RESOURCES_CONFIG);
 });
 
 test('loadConfig merges a partial resources override with the documented defaults', () => {
   const repo = makeRepo();
+  stripResourcesOverride(repo);
   const file = path.join(repo, '.todomd/config.yml');
   // 0.75 still sits above the default resume of 0.65, so the merged band stays
   // a valid hysteresis pair (resourcesConfig discards inverted ones wholesale)
