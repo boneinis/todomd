@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc570-ae11-7151-af3e-eff283bbf8eb
+session_id: 019fc57a-7578-75c1-9b2d-881e02bb3a25
 worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -127,3 +127,5 @@ The first implementation failed independent review. The fresh build must address
 - 2026-08-03 02:27Z · merge conflict resolved in preserved worktree; ready for Verify-only retry
 - 2026-08-03 02:31Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: The unrestricted full suite passed: 532 unit/integration tests and 30 UI tests. However, the adversarial review found a reachable CI-diagnostics bug. In src/pipeline.js, the capture function near line 1493 stops collecting after the buffer first exceeds CI_OUTPUT_MAX, so it retains the beginning of verbose output rather than the promised tail. ciStage then takes the last 2,000 characters of that s
+- 2026-08-03 02:43Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed with local-socket permission: 532 unit/integration tests and 30 UI tests. However, a reachable deletion race remains. `scheduleVerify` and `scheduleCi` can wait indefinitely for scheduler admission, but their admitted functions (`verify` and `ciStage`) do not re-check that the task card still exists. If a card is deleted externally after Build completes while CI/Verify is que
