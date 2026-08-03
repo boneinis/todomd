@@ -236,12 +236,39 @@ test('governor pressure defers admission with a reason and spawns nothing; a lat
 
   assert.equal(started, false, 'no child is spawned while the governor reports pressure');
   assert.ok(reasons.length && reasons[reasons.length - 1], 'a deferredReason is recorded');
-  assert.deepEqual(scheduler.queuedEntries(p.name), [{ card: 'card-1', column: 'Build', deferredReason: reasons.at(-1) }]);
+  assert.deepEqual(scheduler.queuedEntries(p.name),
+    [{ card: 'card-1', column: 'Build', deferredReason: reasons.at(-1), critical: false }]);
 
   sample = { cpuLoad: 0.1 }; // a later sample recovers
   scheduler.tick();
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(started, true, 'the deferred entry starts on its own once a later tick observes recovery — no human action');
+});
+
+// pipeline.js's getRunStates() reads queuedEntries() as a SNAPSHOT (e.g. for a
+// client that just reconnected or reloaded mid-deferral) to tell a CI entry
+// held at CRITICAL severity apart from an ordinary defer-level wait. That
+// distinction has to survive on the entry itself, not just as an argument
+// passed to a live onDefer callback at the moment severity changed.
+test('queuedEntries reports critical severity as a persisted snapshot field, not only via the live onDefer callback', async () => {
+  const p = makeProject('crit', '');
+  let sample = { cpuLoad: 0.9 }; // breaches defer (0.8) but not critical (1.5) yet
+  const thresholds = resourcesConfig({ resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 } });
+  scheduler.setGovernor(createGovernor({ thresholds, sample: () => sample }));
+  scheduler.tick();
+
+  const criticalArgs = [];
+  scheduler.schedule(p, 'ci-card', 'CI', () => new Promise(() => {}),
+    { onDefer: (reason, critical) => criticalArgs.push(critical) });
+  assert.deepEqual(scheduler.queuedEntries(p.name).map((e) => e.critical), [false],
+    'defer-level pressure alone is not critical');
+  assert.deepEqual(criticalArgs.at(-1), false, 'the live callback agrees');
+
+  sample = { cpuLoad: 1.6 }; // now breaches critical
+  scheduler.tick();
+  assert.deepEqual(scheduler.queuedEntries(p.name).map((e) => e.critical), [true],
+    'a fresh snapshot read reflects critical severity, independent of the onDefer callback');
+  assert.deepEqual(criticalArgs.at(-1), true);
 });
 
 test('a job that already started is never signalled or suspended when pressure appears afterward', async () => {

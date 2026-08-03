@@ -193,10 +193,29 @@ function summarizeReasons(reasons) {
   return reasons.map((r) => `${r.metric} ${r.level}`).join(', ');
 }
 
-function setDeferred(entry, reason) {
+function setDeferred(entry, reason, critical) {
+  // `critical` is persisted on the entry (not just handed to onDefer) so a
+  // SNAPSHOT reader — queuedEntries(), which pipeline.js's getRunStates()
+  // polls on a fresh connection/reload — can also tell a CI entry deferred at
+  // CRITICAL severity from an ordinary defer-level wait, not only a caller that
+  // was subscribed to the live onDefer callback at the moment it changed.
+  entry.critical = !!critical;
   if (entry.deferredReason === reason) return;
   entry.deferredReason = reason;
-  entry.onDefer?.(reason);
+  entry.onDefer?.(reason, critical);
+}
+
+// Subscribers notified with the governor's fresh state on every scan() — used
+// by pipeline.js to gracefully cancel an already-RUNNING CI child at critical
+// pressure. This is intentionally separate from admission: scan()/admitEntry()
+// above never touch a run() that has already started (see the module note at
+// the top of this file) — a subscriber here is the one place outside that
+// invariant, and it only ever affects work its OWN caller tracks (pipeline.js's
+// ciRuns), never anything this module schedules or signals itself.
+const criticalListeners = new Set();
+export function onCriticalTick(fn) {
+  criticalListeners.add(fn);
+  return () => criticalListeners.delete(fn);
 }
 
 // Re-evaluate the whole queue against the current caps. An entry blocked by
@@ -212,14 +231,22 @@ function setDeferred(entry, reason) {
 // has, so board/API consumers don't see a card's normal wait for its turn
 // relabeled as if the machine were under load.
 function scan() {
-  // Nothing to admit — bail before touching the governor at all. A rescan can
+  // Nothing to admit AND nobody watching for critical pressure on already-
+  // running work — bail before touching the governor at all. A rescan can
   // fire with an empty queue (e.g. resumeQueues() runs unconditionally at
   // boot, or the periodic tick fires with nothing pending) — no reason to pay
   // for a resource sample or (on a truly empty registry) fall back to
-  // hard-coded defaults when there is nothing to admit either way.
-  if (!queue.length) return;
+  // hard-coded defaults when there is nothing to admit either way. A live CI
+  // child with an otherwise-empty queue is the one case that still needs the
+  // periodic resample (see onCriticalTick's caller — it subscribes only while
+  // at least one such child is running).
+  if (!queue.length && !criticalListeners.size) return;
   maybeCheck();
   const g = governor.state();
+  for (const fn of criticalListeners) {
+    try { fn(g); } catch { /* a listener's own error must not break scheduling */ }
+  }
+  if (!queue.length) return;
   const globalLimit = combinedGlobalLimit();
   const columnLimitCache = new Map();
   for (const entry of [...queue]) {
@@ -228,9 +255,9 @@ function scan() {
     // stays plainly 'queued' rather than 'deferred', and — unlike governor
     // pressure — never applies to an in-flight chain's own later stages (only
     // schedule()'s enqueueBuild call ever sets this).
-    if (entry.blocked?.()) { setDeferred(entry, null); continue; }
-    if (g.deferring) { setDeferred(entry, summarizeReasons(g.reasons)); continue; }
-    setDeferred(entry, null); // no longer governor-blocked — clear a stale reason before the capacity checks
+    if (entry.blocked?.()) { setDeferred(entry, null, false); continue; }
+    if (g.deferring) { setDeferred(entry, summarizeReasons(g.reasons), g.critical); continue; }
+    setDeferred(entry, null, false); // no longer governor-blocked — clear a stale reason before the capacity checks
     if (!columnLimitCache.has(entry.column)) columnLimitCache.set(entry.column, combinedColumnLimit(entry.column));
     const columnLimit = columnLimitCache.get(entry.column);
     const projectLimit = projectConcurrencyLimit(entry.project);
@@ -304,7 +331,7 @@ export function isQueued(projectName, card) {
 export function queuedEntries(projectName) {
   return queue
     .filter((e) => e.project.name === projectName)
-    .map((e) => ({ card: e.card, column: e.column, deferredReason: e.deferredReason }));
+    .map((e) => ({ card: e.card, column: e.column, deferredReason: e.deferredReason, critical: !!e.critical }));
 }
 
 // Remove every queued (not yet admitted) entry for one card, settling its
@@ -392,4 +419,5 @@ export function resetState() {
   tickIntervalMs = null;
   lastCheckAt = 0;
   lastCheckSignature = null;
+  criticalListeners.clear();
 }

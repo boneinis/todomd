@@ -172,6 +172,42 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
   }
 });
 
+// The CI column (task-0041) added three run-state values — 'deferred-for-load',
+// 'passed', 'failed' — alongside the existing 'queued'/'running'/'deferred'.
+// renderBoard() only ever sees these via runStates, which a WebSocket
+// 'run-state' message assigns verbatim (see connectWs) — so writing directly
+// into runStates and re-rendering exercises the exact same code path a live
+// event would, without needing a real CI run.
+test('UI smoke: all five CI job states render their own card class and visible text', async (t) => {
+  if (!page) return t.skip(SKIP);
+  {
+    page.errors.length = 0;
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+    await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+
+    const cases = [
+      { state: 'queued', stage: 'CI' },
+      { state: 'running', stage: 'CI' },
+      { state: 'deferred-for-load', stage: 'CI', reason: 'cpu critical' },
+      { state: 'passed', stage: 'CI' },
+      { state: 'failed', stage: 'CI' },
+    ];
+    for (const rs of cases) {
+      const result = await page.eval(`(() => {
+        runStates['task-0001'] = ${JSON.stringify(rs)};
+        renderBoard();
+        const el = document.querySelector('[data-id="task-0001"]');
+        return { classes: [...el.classList], text: el.querySelector('.card-run').textContent };
+      })()`);
+      assert.ok(result.classes.includes(rs.state), `${rs.state} sets the .${rs.state} card class (got: ${result.classes.join(' ')})`);
+      assert.ok(result.text.trim().length > 0, `${rs.state} renders non-empty run-status text`);
+    }
+
+    await page.eval(`(() => { delete runStates['task-0001']; renderBoard(); })()`); // leave no state behind for later tests
+    assert.deepEqual(page.errors, [], 'no uncaught exception or console error rendering any of the five states');
+  }
+});
+
 test('UI smoke: a viewer is not told its session expired when it opens a card', async (t) => {
   if (!page) return t.skip(SKIP);
   {

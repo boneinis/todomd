@@ -541,6 +541,20 @@ body.viewer .col-edit { display: none; }
 .card.deferred { box-shadow: inset 3px 0 0 var(--red), var(--shadow-card); }
 .card.deferred:hover { box-shadow: inset 3px 0 0 var(--red), var(--shadow-lift); }
 .card.deferred .card-run { color: var(--red); }
+/* deferred-for-load: a CI job the resource governor gracefully cancelled at
+   CRITICAL pressure and requeued — an amber (not red) stripe, since this is a
+   graceful pause the pipeline will resume on its own, not a stuck/failing wait */
+.card.deferred-for-load { box-shadow: inset 3px 0 0 var(--amber), var(--shadow-card); }
+.card.deferred-for-load:hover { box-shadow: inset 3px 0 0 var(--amber), var(--shadow-lift); }
+.card.deferred-for-load .card-run { color: var(--amber); }
+/* passed/failed: the CI gate's own momentary result, shown just before the
+   card moves on to Verify (passed) or a repair build / Needs Human (failed) */
+.card.passed { box-shadow: inset 3px 0 0 var(--green), var(--shadow-card); }
+.card.passed:hover { box-shadow: inset 3px 0 0 var(--green), var(--shadow-lift); }
+.card.passed .card-run { color: var(--green); }
+.card.failed { box-shadow: inset 3px 0 0 var(--red), var(--shadow-card); }
+.card.failed:hover { box-shadow: inset 3px 0 0 var(--red), var(--shadow-lift); }
+.card.failed .card-run { color: var(--red); }
 
 .drawer-cancel { color: var(--red); border-color: var(--red); }
 .drawer-run { margin-top: 22px; }

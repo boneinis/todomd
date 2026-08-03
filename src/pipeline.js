@@ -46,10 +46,10 @@ const ESCALATION_SCHEMA = {
   },
 };
 
-const IN_FLIGHT = new Set(['Plan', 'Build', 'Verify', 'Escalate']);
+const IN_FLIGHT = new Set(['Plan', 'Build', 'CI', 'Verify', 'Escalate']);
 // statuses where a coordination claim is legitimately held (assigned-and-parked, or building)
-const BUILD_FLOW = new Set(['Queue', 'Build', 'Verify']);
-const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human']);
+const BUILD_FLOW = new Set(['Queue', 'Build', 'CI', 'Verify']);
+const ORCH_ONLY = new Set(['Planned', 'Build', 'CI', 'Verify', 'Done', 'Needs Human']);
 
 let broadcast = () => {};
 const children = new Map();          // runKey → ChildProcess
@@ -341,7 +341,10 @@ function ultraCodeInstructions() {
 // ALONE — including when it omits them, in which case the caller's own default
 // applies and NOT the working-tree value. Add any new key here that can execute
 // something or loosen a guard.
-const EXEC_KEYS = ['verify_command', 'stages', 'default_agent', 'worktree_link', 'escalation', 'build_continuation'];
+// ci: carries the same shell-command-execution risk as verify_command (its
+// quick/full profiles run in the worktree exactly like verify_command does),
+// so it needs the identical COMMITTED-config-only treatment.
+const EXEC_KEYS = ['verify_command', 'ci', 'stages', 'default_agent', 'worktree_link', 'escalation', 'build_continuation'];
 
 async function execConfig(repoPath) {
   const workingTree = loadConfig(repoPath);
@@ -539,7 +542,7 @@ export async function cascadeEpicCleanup(project, epicId) {
       const ci = ciRuns.get(childKey);
       if (ci) {
         ci.cancelled = true;
-        killWithEscalation(ci.child);
+        killWithEscalation(ci.child, { processGroup: true });
       } else if (scheduler.dequeue(project.name, child.id)) {
         // A capacity/governor wait may never be admitted, so run the same
         // stage-aware unwind now instead of making epic cleanup wait forever.
@@ -725,7 +728,7 @@ export async function humanMove(project, id, to) {
       const ci = ciRuns.get(key);
       if (ci) {
         ci.cancelled = true;
-        killWithEscalation(ci.child);
+        killWithEscalation(ci.child, { processGroup: true });
       } else if (queued) {
         scheduler.dequeue(project.name, id);
         await unwindQueuedPending(project, id, pend);
@@ -1033,13 +1036,33 @@ export async function retryVerification(project, id) {
   return { ok: true };
 }
 
+// A CI command is spawned with `shell: true`, so `child` is the SHELL, not the
+// program it runs — for a compound command (`tsc && npm test && npm run e2e`)
+// signalling only that shell PID leaves whichever step is currently running as
+// an orphaned, still-consuming-CPU child once its parent shell exits or is
+// reaped. runVerifyCommand spawns CI children with `detached: true`, making
+// `child.pid` the leader of its own process group; signal the NEGATIVE pid to
+// reach the whole group (the shell plus every descendant it forked), same as
+// the `tree-kill` pattern. Falls back to signalling just the child if the
+// group send fails (already gone, or a platform where negative-pid kill isn't
+// meaningful) — erring toward "still try to stop the one process we know
+// about" rather than doing nothing.
+function sendSignal(child, signal, { processGroup = false } = {}) {
+  if (processGroup && child.pid) {
+    try { process.kill(-child.pid, signal); return; } catch { /* fall through */ }
+  }
+  try { child.kill(signal); } catch { /* already gone */ }
+}
+
 // SIGTERM a child with a SIGKILL backstop: a child that ignores TERM would
 // otherwise hold its concurrency slot (and keep billing) forever. The kill
 // timer is cleared when the child's close fires. (TODOMD_KILL_GRACE_MS is a
-// test steering knob, like TODOMD_CLAUDE_BIN.)
-function killWithEscalation(child, { graceMs = Number(process.env.TODOMD_KILL_GRACE_MS) || 10000 } = {}) {
-  try { child.kill('SIGTERM'); } catch { /* already gone */ }
-  const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, graceMs);
+// test steering knob, like TODOMD_CLAUDE_BIN.) `processGroup: true` (CI
+// children only — see sendSignal) signals the whole process group instead of
+// just this one PID.
+function killWithEscalation(child, { graceMs = Number(process.env.TODOMD_KILL_GRACE_MS) || 10000, processGroup = false } = {}) {
+  sendSignal(child, 'SIGTERM', { processGroup });
+  const killTimer = setTimeout(() => sendSignal(child, 'SIGKILL', { processGroup }), graceMs);
   killTimer.unref?.();
   child.once('close', () => clearTimeout(killTimer));
 }
@@ -1083,7 +1106,7 @@ export function cancel(project, id) {
       // cancelled card wait out a full test suite; its stage then unwinds
       // through the same pendingCancelled() checkpoint as everything else.
       const ci = ciRuns.get(key);
-      if (ci) { ci.cancelled = true; killWithEscalation(ci.child); }
+      if (ci) { ci.cancelled = true; killWithEscalation(ci.child, { processGroup: true }); }
       // A queued mid-flow stage may never be admitted (permanent pressure or
       // a hung capacity holder). Remove it and run the same worktree/attempt
       // unwind immediately instead of making cancellation depend on capacity.
@@ -1182,7 +1205,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
   // Its pending claim was just flagged above, so its stage unwinds normally.
   for (const ci of ciRuns.values()) {
     ci.cancelled = true;
-    try { ci.child.kill('SIGTERM'); } catch { /* already gone */ }
+    sendSignal(ci.child, 'SIGTERM', { processGroup: true });
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
@@ -1192,7 +1215,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
   };
   await waitForExit(graceMs);
   for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
-  for (const ci of ciRuns.values()) { try { ci.child.kill('SIGKILL'); } catch { /* already gone */ } }
+  for (const ci of ciRuns.values()) { sendSignal(ci.child, 'SIGKILL', { processGroup: true }); }
   await waitForExit(1000); // let the close handlers reap and drop tracking entries
 }
 
@@ -1377,9 +1400,17 @@ async function maybeAdvanceEpic(project, childId) {
 // holding this entry back (render 'deferred' + why); null means it cleared —
 // back to plain 'queued', whether that's because it just started (the next
 // sendState('running', ...) supersedes this) or it's merely waiting on
-// ordinary capacity again.
+// ordinary capacity again. `critical` (governor.state().critical) additionally
+// distinguishes the CI column's own 'deferred-for-load' job state from plain
+// 'deferred' — a CI entry held back by CRITICAL resource pressure specifically
+// (whether freshly queued, or requeued after a running job was gracefully
+// cancelled for load — see cancelCiForLoad) reads distinctly from an ordinary
+// defer-level wait. Build/Verify keep the existing generic 'deferred' label at
+// any severity — only CI's admission/cancellation policy changes in this task.
 function onDeferState(project, id, column) {
-  return (reason) => sendState(project, id, reason ? 'deferred' : 'queued', column, reason || undefined);
+  return (reason, critical) => sendState(project, id,
+    reason ? (column === 'CI' && critical ? 'deferred-for-load' : 'deferred') : 'queued',
+    column, reason || undefined);
 }
 
 // The card's very first admission into the build flow — the ONLY point that
@@ -1453,16 +1484,39 @@ function scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktre
 const CI_OUTPUT_MAX = 64 * 1024;
 const CI_DETAIL_MAX = 2000;
 
-// Fire-and-forget dispatch for the CI stage: the board's own verify_command,
-// admitted against the scheduler's CI column between Build and Verify. Two
-// real things this buys beyond accounting: the command used to run ONLY as a
-// claude Stop hook (runner.js), so codex builds never executed it at all, and
-// a machine hosting several boards can now cap how many test suites run at
-// once independently of how many agents may build or verify.
+// Which shell command the CI stage runs for THIS attempt: the ci: block's
+// quick/full profile when the board has opted into the CI column, else the
+// legacy single verify_command (see ciBoardColumn below — same config object,
+// two different sources of truth so an opted-out board's exact command never
+// changes just because normalizeConfig now always fills in a `ci` key).
+function ciCommandForProfile(config) {
+  const profile = config.ci?.profile === 'full' ? 'full' : 'quick';
+  return String(config.ci?.[profile] || '').trim();
+}
+
+// Whether this board has opted into the visible CI column (and its quick/full
+// profiles, bounded-retry-on-fail, and critical-pressure cancellation) rather
+// than the legacy scheduler-only CI admission that leaves the card's status at
+// 'Verify' and escalates to Needs Human on the very first failure. Column
+// presence is the primary switch (a board whose columns: predates/omits CI
+// keeps today's behavior verbatim); ci.enabled is the explicit opt-out for a
+// board that wants the column visible without running it.
+function ciBoardColumn(config) {
+  return config.columns.includes('CI') && config.ci.enabled;
+}
+
+// Fire-and-forget dispatch for the CI stage between Build and Verify, admitted
+// against the scheduler's CI column. Two real things this buys beyond
+// accounting: the command runs ONLY as a claude Stop hook (runner.js) for
+// claude builds, so codex builds never executed it at all, and a machine
+// hosting several boards can cap how many test suites run at once
+// independently of how many agents may build or verify.
 //
-// The card's status stays 'Verify' throughout — 'CI' is the scheduler's
-// work-type key, not a board column (a visible CI column, plus quick/full
-// command profiles, is task-0041's scope).
+// A board with the CI column in its columns: (see ciBoardColumn) has the
+// card's status track 'CI' for real, with a bounded fail->retry loop just like
+// Verify; a legacy board (no CI column) keeps its status at 'Verify' the whole
+// time and escalates to Needs Human on the very first failure, exactly as
+// before this task.
 function scheduleCi(project, id, command, next) {
   const owner = pending.get(runKey(project.name, id)) || null;
   if (owner) owner.stage = 'CI';
@@ -1487,7 +1541,7 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
 
   sendState(project, id, 'running', 'CI');
   const startedAt = Date.now();
-  const outcome = await runVerifyCommand(project, id, command, worktreeAbs);
+  const outcome = await runVerifyCommand(project, id, command, worktreeAbs, config);
   const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
 
   // A cancel/shutdown that landed while the command ran killed the child; the
@@ -1496,6 +1550,17 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   if (cancelled) {
     await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · cancelled`);
     return revertPendingCancel(project, id, cancelled, revertArgs);
+  }
+  // Critical resource pressure gracefully cancelled this SPECIFIC job (see
+  // cancelCiForLoad) — no human/system cancel is involved, no worktree/attempt
+  // state to unwind, nothing was merged. Requeue the exact same attempt into
+  // the CI column; scan() marks it 'deferred-for-load' on its own while the
+  // pressure persists (see onDeferState), then it runs again once it clears.
+  if (outcome.loadCancelled) {
+    await appendRunLog(project.path, id,
+      `- ${now()} · CI attempt ${attempt} · cancelled (critical resource pressure) — requeued`);
+    sendState(project, id, 'deferred-for-load', 'CI', 'critical resource pressure');
+    return scheduleCi(project, id, command, next);
   }
   // killed with no claim left to unwind (the project was removed mid-run) —
   // there is nothing to route, and nothing was merged
@@ -1506,9 +1571,12 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   // without the meaningless columns.
   if (outcome.ok) {
     await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` passed`);
+    sendState(project, id, 'passed', 'CI');
+    await orchMove(project, id, 'Verify', `attempt ${attempt}`); // no-op if already 'Verify' (the legacy path)
     return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, findings);
   }
   await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` failed`);
+  sendState(project, id, 'failed', 'CI');
   // CI is the first thing to enter the worktree after Build. A worktree the
   // build deleted out from under itself is an environment failure, not a
   // failing test suite — the same disambiguation classifyFailure() makes for
@@ -1519,21 +1587,72 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   const why = outcome.timedOut ? `exceeded the ${outcome.timeoutMin}m stage timeout`
     : outcome.spawnError ? `could not start: ${outcome.spawnError}`
     : `exited ${outcome.signal || outcome.code}`;
-  return toNeedsHuman(project, id, 'CI', 'ci_failed',
-    `\`${command}\` ${why}\n${outcome.output.slice(-CI_DETAIL_MAX)}`);
+  const detail = `\`${command}\` ${why}\n${outcome.output.slice(-CI_DETAIL_MAX)}`;
+
+  // Legacy path (no CI column): unchanged — a failing CI gate always escalates
+  // directly to Needs Human, with no retry.
+  if (!ciBoardColumn(config)) {
+    return toNeedsHuman(project, id, 'CI', 'ci_failed', detail);
+  }
+  // CI board-column path: bounded retry through a repair Build, exactly like a
+  // failed independent Verify — attempts_exhausted at the cap, else re-drive
+  // buildChain with this failure's output as the next build's findings.
+  if (attempt >= maxAttempts) {
+    return toNeedsHuman(project, id, 'CI', 'ci_attempts_exhausted', detail);
+  }
+  await appendRunLog(project.path, id, `  - retrying after a failed CI gate (attempt ${attempt + 1}/${maxAttempts})`);
+  return scheduleBuild(project, id, { sessionId: buildSession, findings: detail });
 }
 
-// Run the board's verify_command as a captured child in the task worktree.
-// Deliberately much smaller than spawnTracked: there is no session, envelope
-// or jsonl transcript to collect — only the exit status, a bounded tail of the
-// output for the card, and the ability to stop it on cancel/shutdown.
-// `command` comes from execConfig (the COMMITTED config.yml), the same source
-// as the Stop hook, so a working-tree edit can never arm a new command here.
-function runVerifyCommand(project, id, command, cwd) {
+// Gracefully stop every currently-RUNNING CI child when the shared governor
+// reports CRITICAL pressure — a CI test suite is exactly the kind of heavy,
+// interruptible work the governor exists to shed first. Deliberately narrower
+// than a cancel: only ciRuns is ever touched here, never `children`/`runs`
+// (Build/Verify/Plan agent processes), so a running Build is always left
+// alone. `entry.loadCancelled` (distinct from `entry.cancelled`, which means a
+// human/system asked to abort the whole card) tells ciStage to requeue the
+// same attempt instead of reverting anything.
+function cancelCiForLoad(state) {
+  if (!state?.critical) return;
+  for (const entry of ciRuns.values()) {
+    if (entry.cancelled || entry.loadCancelled) continue; // already being torn down some other way
+    entry.loadCancelled = true;
+    killWithEscalation(entry.child, { processGroup: true });
+  }
+}
+
+// Subscribed to the scheduler's governor tick only while at least one CI child
+// is actually running — an idle board (or one that never uses CI) must not pay
+// for a periodic resource resample it has no use for. Reference-counted via
+// ciRuns.size rather than a plain boolean so concurrent CI runs share one
+// subscription and it only tears down once the last of them settles.
+let criticalUnsub = null;
+function ensureCriticalWatch() {
+  if (criticalUnsub) return;
+  criticalUnsub = scheduler.onCriticalTick(cancelCiForLoad);
+}
+function maybeStopCriticalWatch() {
+  if (ciRuns.size === 0 && criticalUnsub) { criticalUnsub(); criticalUnsub = null; }
+}
+
+// Run the CI command (verify_command, or a ci: profile) as a captured child in
+// the task worktree. Deliberately much smaller than spawnTracked: there is no
+// session, envelope or jsonl transcript to collect — only the exit status, a
+// bounded tail of the output for the card, and the ability to stop it on
+// cancel/shutdown/critical-load. `command` comes from execConfig (the
+// COMMITTED config.yml), the same source as the Stop hook, so a working-tree
+// edit can never arm a new command here.
+function runVerifyCommand(project, id, command, cwd, config) {
   const key = runKey(project.name, id);
-  const child = spawn(command, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  const entry = { project: project.name, card: id, child, cancelled: false, timedOut: false };
+  // `detached: true` makes the shell the leader of its OWN process group
+  // (POSIX setsid) rather than sharing this server's — required so a graceful
+  // cancel/critical-load kill (sendSignal's negative-pid send) can reach every
+  // descendant a compound command (`tsc && npm test && npm run e2e`) forked,
+  // not just the top-level shell.
+  const child = spawn(command, { cwd, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const entry = { project: project.name, card: id, child, cancelled: false, loadCancelled: false, timedOut: false };
   ciRuns.set(key, entry);
+  ensureCriticalWatch();
   let output = '';
   const capture = (chunk) => {
     output += chunk;
@@ -1545,7 +1664,10 @@ function runVerifyCommand(project, id, command, cwd) {
     stream.setEncoding('utf8');
     stream.on('data', capture);
   }
-  const timeoutMin = stageTimeoutMinutes(project);
+  // ci.timeout_seconds overrides the board's general stage timeout for this
+  // command specifically; 0/unset falls back to the shared stage_timeout_min.
+  const ciTimeoutSecs = Number(config?.ci?.timeoutSeconds) || 0;
+  const timeoutMin = ciTimeoutSecs > 0 ? ciTimeoutSecs / 60 : stageTimeoutMinutes(project);
   let stageTimer;
   if (timeoutMin > 0) {
     stageTimer = setTimeout(() => { entry.timedOut = true; killWithEscalation(child); }, timeoutMin * 60_000);
@@ -1555,7 +1677,8 @@ function runVerifyCommand(project, id, command, cwd) {
     const settle = (result) => {
       clearTimeout(stageTimer);
       if (ciRuns.get(key) === entry) ciRuns.delete(key);
-      resolve({ ...result, cancelled: entry.cancelled, timedOut: entry.timedOut, timeoutMin, output });
+      maybeStopCriticalWatch();
+      resolve({ ...result, cancelled: entry.cancelled, loadCancelled: entry.loadCancelled, timedOut: entry.timedOut, timeoutMin, output });
     };
     child.on('error', (err) => settle({ ok: false, code: -1, signal: null, spawnError: String(err?.message || err) }));
     child.on('close', (code, signal) => settle({ ok: code === 0 && !signal, code, signal, spawnError: null }));
@@ -1865,7 +1988,6 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
 
   await recordRun(project, id, 'Build', attempt, result, repair ? 'ok (escalation repair)' : 'ok');
   const buildSession = result.sessionId;
-  await orchMove(project, id, 'Verify', `attempt ${attempt}`);
   // Release this Build-column slot now — CI and Verify are each admitted
   // independently (their own scheduler entries) rather than inline, so the
   // Build slot isn't held for the rest of the chain and neither the CI nor the
@@ -1876,11 +1998,16 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     attempt, maxAttempts, buildSession, worktreeAbs, branch, config,
     findings: retry?.findings, lastVerdict: ver.last_verdict,
   };
-  const ciCommand = String(config.verify_command || '').trim();
+  const boardColumn = ciBoardColumn(config);
+  const ciCommand = boardColumn ? ciCommandForProfile(config) : String(config.verify_command || '').trim();
+  await orchMove(project, id, boardColumn ? 'CI' : 'Verify', `attempt ${attempt}`);
   if (!ciCommand) {
     // Nothing configured to run — say so in the card history, so a missing CI
-    // line reads as "this board has no verify_command", not "CI was skipped".
-    await appendRunLog(project.path, id, `  - CI: skipped (no verify_command configured)`);
+    // line reads as "nothing to run", not "CI was skipped silently".
+    await appendRunLog(project.path, id, boardColumn
+      ? `  - CI: skipped (no command configured for profile '${config.ci.profile}')`
+      : `  - CI: skipped (no verify_command configured)`);
+    if (boardColumn) await orchMove(project, id, 'Verify', `attempt ${attempt}`);
     return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);
   }
   scheduleCi(project, id, ciCommand, next);
@@ -2333,7 +2460,7 @@ export async function reconcileOnBoot() {
           // straight to Done and the leftovers are cleaned up.
           const branch = card.worktree || `${branchPrefix}${card.id}`;
           const wtAbs = path.join(project.path, wtDir, card.id);
-          const buildish = card.status === 'Build' || card.status === 'Verify';
+          const buildish = card.status === 'Build' || card.status === 'CI' || card.status === 'Verify';
           // The branch tip being on HEAD is not enough: an interrupted agent
           // may have valuable uncommitted or untracked work in its worktree.
           // Any dirty (or unreadable) preserved worktree makes this unlanded.
@@ -2440,10 +2567,15 @@ export function getRunStates(projectName) {
   // Covers both a never-yet-admitted first entry AND a mid-flow retry/Verify
   // entry the scheduler is currently holding on admission — either shows
   // 'queued', or 'deferred' with the governor/capacity reason once one exists.
+  // A CI-column entry held at CRITICAL severity specifically reads as
+  // 'deferred-for-load' instead of the generic 'deferred' — entry.critical is
+  // a persisted snapshot field (see scheduler.js's setDeferred), not merely a
+  // live broadcast, so this is correct even for a client that just reconnected
+  // or reloaded mid-deferral, not only one that was live for the transition.
   for (const entry of scheduler.queuedEntries(projectName)) {
     if (states[entry.card]) continue;
     states[entry.card] = entry.deferredReason
-      ? { state: 'deferred', stage: entry.column, reason: entry.deferredReason }
+      ? { state: entry.column === 'CI' && entry.critical ? 'deferred-for-load' : 'deferred', stage: entry.column, reason: entry.deferredReason }
       : { state: 'queued', stage: entry.column };
   }
   // A chain claimed but between spawns (admit→spawn, build→verify handoff
@@ -2512,7 +2644,7 @@ export function forgetProject(projectName) {
   for (const [k, ci] of ciRuns) {
     if (ci.project !== projectName) continue;
     ci.cancelled = true;
-    killWithEscalation(ci.child);
+    killWithEscalation(ci.child, { processGroup: true });
     ciRuns.delete(k);
   }
   for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);
