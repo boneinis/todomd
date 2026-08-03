@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Build
+status: Needs Human
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -12,12 +12,12 @@ assignee:
 agent: gemini
 model:
 effort:
-session_id:
+session_id: a5e9fec7-f856-4bfb-b1fa-ed792c962ed5
 worktree: todomd/task-0034
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
 cost_usd: 15.4252
-needs_human_reason: ci_failed
+needs_human_reason: success
 base_branch: main
 recovery_stage:
 board_order: 1
@@ -98,4 +98,4 @@ ok 28 - UI voice: a viewer link never shows the mic control
 # skipped 0
 # todo 0
 # duration_ms 58484.260708
-
+- 2026-08-03 18:15Z · Build attempt 1 · 1 turns · $0.000 · failed: agent
