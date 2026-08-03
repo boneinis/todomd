@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmp } from './helpers.js';
-import { sampleResources, resourcesConfig, createGovernor, DEFAULT_RESOURCES_CONFIG } from '../src/resources.js';
+import { sampleResources, sampleProjectResources, resourcesConfig, createGovernor, DEFAULT_RESOURCES_CONFIG } from '../src/resources.js';
 
 const BYTES_PER_GB = 1024 ** 3;
 
@@ -49,6 +49,26 @@ test('sampleResources: unavailable or malformed macOS pressure data is unknown, 
     platform: 'darwin',
     memoryPressureCommand: () => 'unexpected output',
   }).memoryPressure, null);
+});
+
+test('sampleProjectResources uses the lowest free space across distinct project filesystems', () => {
+  const calls = [];
+  const snapshots = {
+    '/volume-a/one': { cpuLoad: 0.2, memoryPressure: 0.3, diskFreeBytes: 20 * BYTES_PER_GB, diskFreePct: 0.5, sampledAt: 1 },
+    '/volume-b/project': { cpuLoad: 0.2, memoryPressure: 0.3, diskFreeBytes: 1 * BYTES_PER_GB, diskFreePct: 0.01, sampledAt: 2 },
+  };
+  const result = sampleProjectResources(['/volume-a/one', '/volume-a/two', '/volume-b/project'], {
+    deviceForPath: (rootPath) => rootPath.startsWith('/volume-a/') ? 10 : 20,
+    sample: (rootPath) => { calls.push(rootPath); return snapshots[rootPath]; },
+  });
+
+  assert.deepEqual(calls, ['/volume-a/one', '/volume-b/project'],
+    'projects on the same filesystem are sampled only once');
+  assert.equal(result.diskFreeBytes, 1 * BYTES_PER_GB,
+    'the nearly-full secondary filesystem governs admission');
+  assert.equal(result.diskFreePct, 0.01);
+  assert.equal(result.cpuLoad, 0.2, 'host-wide metrics remain available');
+  assert.equal(result.sampledAt, 2, 'the aggregate records the newest component sample');
 });
 
 test('resourcesConfig: a config with no resources key loads the documented defaults', () => {

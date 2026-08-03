@@ -126,6 +126,39 @@ export function sampleResources(rootPath = '.', {
   return { cpuLoad, memoryPressure, diskFreeBytes, diskFreePct, sampledAt: Date.now() };
 }
 
+// CPU and memory are host-wide, but disk capacity is filesystem-specific.
+// Sample every distinct filesystem hosting an enabled project and retain the
+// lowest free-space reading so one nearly-full volume cannot be hidden by a
+// healthy project that happens to appear first in the registry.
+export function sampleProjectResources(rootPaths, {
+  sample = sampleResources,
+  deviceForPath = (rootPath) => fs.statSync(rootPath).dev,
+} = {}) {
+  const unique = [];
+  const devices = new Set();
+  for (const rootPath of rootPaths || []) {
+    let device;
+    try { device = `device:${String(deviceForPath(rootPath))}`; }
+    catch { device = `path:${rootPath}`; }
+    if (devices.has(device)) continue;
+    devices.add(device);
+    unique.push(rootPath);
+  }
+
+  const snapshots = unique.map((rootPath) => sample(rootPath));
+  if (!snapshots.length) return sample('.');
+  const first = snapshots[0];
+  const diskSamples = snapshots.filter((snapshot) => Number.isFinite(snapshot?.diskFreeBytes));
+  const lowest = diskSamples.reduce((worst, snapshot) =>
+    (!worst || snapshot.diskFreeBytes < worst.diskFreeBytes) ? snapshot : worst, null);
+  return {
+    ...first,
+    diskFreeBytes: lowest?.diskFreeBytes ?? null,
+    diskFreePct: lowest?.diskFreePct ?? null,
+    sampledAt: Math.max(...snapshots.map((snapshot) => Number(snapshot?.sampledAt) || 0)),
+  };
+}
+
 const BYTES_PER_GB = 1024 ** 3;
 
 // A metric whose sticky `deferred` flag only clears after `recoverySamples`

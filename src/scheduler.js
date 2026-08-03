@@ -27,7 +27,7 @@
 //  - admit() only ever gates the START of an entry. Nothing here ever touches
 //    a `run()` that has already started — nothing to signal, nothing to kill.
 import { loadConfig, withoutRepoLockContext } from './board.js';
-import { createGovernor, sampleResources, resourcesConfig } from './resources.js';
+import { createGovernor, sampleProjectResources, resourcesConfig } from './resources.js';
 import { listProjects } from './registry.js';
 
 const queue = [];                    // [{project, card, column, run, resolveFn, rejectFn, deferredReason, onDefer}]
@@ -70,6 +70,17 @@ function projectConfigs() {
   return out;
 }
 
+function enabledResourceProjects() {
+  const out = [];
+  for (const project of allKnownProjects()) {
+    try {
+      const resources = loadConfig(project.path).resources;
+      if (resources?.enabled !== false) out.push({ project, resources });
+    } catch { /* an unreadable project contributes no sample or threshold */ }
+  }
+  return out;
+}
+
 // Math.min/max across every known project's opinion — see the module-level
 // note above on why this must be recomputed from the whole set, not per entry.
 function combinedGlobalLimit() {
@@ -108,8 +119,7 @@ function combinedResourceThresholds() {
   // therefore contributes no threshold opinion when another project keeps
   // monitoring enabled; otherwise an opted-out board could still throttle
   // every enabled board with its dormant values.
-  const configs = projectConfigs().map((c) => c.resources)
-    .filter((c) => c && c.enabled !== false);
+  const configs = enabledResourceProjects().map(({ resources }) => resources);
   if (!configs.length) return resourcesConfig({ resources: { enabled: false } });
   const min = (get) => Math.min(...configs.map(get));
   const max = (get) => Math.max(...configs.map(get));
@@ -137,7 +147,8 @@ function ensureGovernor() {
   if (governor) return governor;
   governor = createGovernor({
     thresholds: combinedResourceThresholds,
-    sample: () => sampleResources(allKnownProjects()[0]?.path || '.'),
+    sample: () => sampleProjectResources(
+      enabledResourceProjects().map(({ project }) => project.path)),
   });
   return governor;
 }
