@@ -1,7 +1,7 @@
 ---
 id: task-0041
 title: Add the CI column with quick and full profiles
-status: Needs Human
+status: Done
 type: module
 priority: medium
 labels: []
