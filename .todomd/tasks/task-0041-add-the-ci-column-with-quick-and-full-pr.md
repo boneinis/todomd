@@ -10,11 +10,12 @@ parent: task-0021
 created_date: 2026-08-02
 source: chunk
 assignee: 
-agent: claude
+agent: gemini
 triaged: n/a (chunk 3/4 of task-0021)
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
+board_order: 4
 ---
 
 ## Description
