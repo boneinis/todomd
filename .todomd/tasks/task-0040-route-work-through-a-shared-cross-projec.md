@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Done
 type: improvement
 priority: medium
 labels: []
@@ -12,10 +12,10 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc5bd-4f38-7ad1-996f-691d06c4a675
-worktree: todomd/task-0040
+session_id: 019fc5c4-9468-7362-a4f1-6ff3dfba675c
+worktree:
 verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
-base_branch: main
+base_branch:
 cost_usd: 113.7378
 needs_human_reason:
 recovery_stage:
@@ -146,3 +146,4 @@ The first implementation failed independent review. The fresh build must address
 - 2026-08-03 03:55Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
   - board_tampering: task branch modifies .todomd/
 - 2026-08-03 03:56Z · board metadata aligned with main; preserved worktree ready for Verify-only retry
+- 2026-08-03 04:02Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
