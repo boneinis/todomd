@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Needs Human
+status: Queue
 type: improvement
 priority: medium
 labels: []
@@ -10,11 +10,12 @@ parent: task-0027
 created_date: 2026-07-31
 source: chunk
 assignee:
-agent: claude
-triaged: n/a (chunk 1/2 of task-0027)
-session_id: 019fc321-4aa4-79b2-9639-e369f0ea3b4b
+agent: gemini
+model:
+effort:
+session_id:
 worktree: todomd/task-0031
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 0, max_attempts: 3, last_verdict: }
 base_branch: main
 cost_usd: 11.4863
 needs_human_reason: attempts_exhausted
