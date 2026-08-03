@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc58f-be7e-7dd0-b0e8-39e47f512d98
+session_id: 019fc597-01f3-7170-bd6c-f22d6c42c9b2
 worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -133,3 +133,5 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: `npm test` passed with local-socket permission: 534 unit/integration tests and 30 UI tests. However, adversarial review found a reachable cross-project disk-pressure bug: `src/scheduler.js:140` samples resources using only `allKnownProjects()[0].path`, while `src/resources.js:119` measures disk space for that specific filesystem. Thresholds are combined from every enabled project, but a project on
 - 2026-08-03 03:04Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: All acceptance criteria are met and the unrestricted suite passed: 535 unit/integration tests and 30 UI tests. However, adversarial review found a reachable cancellation bug. In src/pipeline.js:706, humanMove(..., 'Review') handles a pending CI flow by merely marking the pending owner cancelled; unlike cancel() at lines 1063-1064, it never signals the live CI child in ciRuns. Reproduction with a 3
+- 2026-08-03 03:11Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed with local-socket access: 536 unit/integration tests and 30 UI tests. However, adversarial review found a reachable PID-safety regression in bin/todomd.js:59-60. The new isTodomdServerCommand matcher rejects a normal npm/symlink launch represented as `node /.../.npm-global/bin/todomd serve`, so `todomd stop` can refuse its own live server and a second serve may miss it. It is
