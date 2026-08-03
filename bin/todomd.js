@@ -47,17 +47,52 @@ const onPath = (bin) => {
   catch { return false; }
 };
 
-// `ps` prints the full command line, which often contains the repository path.
-// Matching a bare substring such as "todomd" therefore misidentifies any
-// process launched from a folder named TODOMD as the board server (and can
-// signal an unrelated recycled PID). Require an actual executable/script
-// installed `bin/todomd.js` entrypoint, or a real `todomd` executable in argv
-// position zero. A repository/worktree directory merely named TODOMD must
-// never qualify, even if process inspection truncates immediately after it.
+// `ps` prints a display command line rather than a safely delimited argv. Parse
+// only the executable/entrypoint positions: a later argument that merely names
+// bin/todomd.js must never make an unrelated process eligible for signalling.
 const isTodomdServerCommand = (cmdline) => {
-  const line = String(cmdline || '');
-  return /[\\/]bin[\\/]todomd\.js(?=\s|$)/i.test(line)
-    || /^\s*(?:\S*[\\/])?todomd(?=\s|$)/i.test(line);
+  const line = String(cmdline || '').trim();
+  const isEntrypoint = (value) => /(?:^|[\\/])todomd(?:\.js)?$/i.test(value);
+  const serverArgs = (value) => {
+    const tokens = String(value || '').trim().split(/\s+/).filter(Boolean);
+    const positionalArgs = [];
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === '--port') { i++; continue; }
+      if (!tokens[i].startsWith('-')) positionalArgs.push(tokens[i]);
+    }
+    return positionalArgs.length === 0 || positionalArgs[0] === 'serve';
+  };
+  const firstSpace = line.search(/\s/);
+  const executable = firstSpace < 0 ? line : line.slice(0, firstSpace);
+  let rest = firstSpace < 0 ? '' : line.slice(firstSpace).trim();
+
+  if (isEntrypoint(executable)) return serverArgs(rest);
+  if (!/^(?:.*[\\/])?node(?:js)?$/i.test(executable)) return false;
+
+  // A real project path may contain spaces, so prefer exact entrypoints known
+  // to this CLI before falling back to the first displayed argument (the
+  // normal no-space npm/symlink case).
+  let entrypoint = '';
+  for (const known of [TODOMD_BIN, process.argv[1]].filter(Boolean)
+    .sort((a, b) => b.length - a.length)) {
+    if (rest === known || rest.startsWith(`${known} `)) {
+      entrypoint = known;
+      rest = rest.slice(known.length).trim();
+      break;
+    }
+  }
+  if (!entrypoint) {
+    const quoted = /^(?:"([^"]+)"|'([^']+)')(?:\s+|$)/.exec(rest);
+    if (quoted) {
+      entrypoint = quoted[1] || quoted[2];
+      rest = rest.slice(quoted[0].length).trim();
+    } else {
+      const split = rest.search(/\s/);
+      entrypoint = split < 0 ? rest : rest.slice(0, split);
+      rest = split < 0 ? '' : rest.slice(split).trim();
+    }
+  }
+  return isEntrypoint(entrypoint) && serverArgs(rest);
 };
 
 if (cmd === 'init') {
