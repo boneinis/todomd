@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc597-01f3-7170-bd6c-f22d6c42c9b2
+session_id: 019fc59f-73cc-7fa2-9ad1-cb769f12062f
 worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -135,3 +135,5 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: All acceptance criteria are met and the unrestricted suite passed: 535 unit/integration tests and 30 UI tests. However, adversarial review found a reachable cancellation bug. In src/pipeline.js:706, humanMove(..., 'Review') handles a pending CI flow by merely marking the pending owner cancelled; unlike cancel() at lines 1063-1064, it never signals the live CI child in ciRuns. Reproduction with a 3
 - 2026-08-03 03:11Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: The full suite passed with local-socket access: 536 unit/integration tests and 30 UI tests. However, adversarial review found a reachable PID-safety regression in bin/todomd.js:59-60. The new isTodomdServerCommand matcher rejects a normal npm/symlink launch represented as `node /.../.npm-global/bin/todomd serve`, so `todomd stop` can refuse its own live server and a second serve may miss it. It is
+- 2026-08-03 03:23Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The full suite passed: 539 unit/integration tests and 30 UI tests. However, the adversarial review found a reachable manual-pause bypass. In src/pipeline.js:1011-1014, retryVerification() schedules a new Verify run without the manual-pause blocked gate used by enqueueBuild() at lines 1392-1395. A focused reproduction set the persistent Queue Pause, invoked Retry Verification on an idle Needs Human
