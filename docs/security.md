@@ -56,7 +56,8 @@ that runs without a human in the loop is confined:
   the *main checkout* with `--permission-mode acceptEdits`, so the shipped
   default is `allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]`.
   Unscoped, an email-injected plan could rewrite `.todomd/config.yml`'s
-  `verify_command` — which runs as a shell hook on the next build.
+  `verify_command` — which todomd runs as a shell command on the next build
+  (the CI stage, and the claude Stop hook).
   **Existing repos:** update your `.todomd/config.yml` Plan `allowed_tools`
   likewise (and re-`init` won't clobber an existing config).
 - **No broad Bash rules in Build.** The shipped Build allowlist drops
@@ -79,8 +80,9 @@ that runs without a human in the loop is confined:
   machine) and deleted when the run ends — it's written owner-only so no other
   user can read, or on a lax umask rewrite, a command this process runs.
 - **Executable config comes from `HEAD:`, not the working tree.** The keys that
-  can make something run or widen what a run may do — `verify_command` (a shell
-  hook), `stages` (per-column command/model/`allowed_tools`), `default_agent`
+  can make something run or widen what a run may do — `verify_command` (the CI
+  stage command, and the claude Stop hook), `stages` (per-column
+  command/model/`allowed_tools`), `default_agent`
   (codex ignores the allowlist), `worktree_link` (what gets linked into the
   worktree an agent reads) — are resolved via
   `git show HEAD:.todomd/config.yml`. A `git pull` or a mid-run agent edit

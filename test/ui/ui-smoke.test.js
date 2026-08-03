@@ -281,25 +281,40 @@ test('UI smoke: queue pause control persists across reload and resumes explicitl
   {
     page.errors.length = 0;
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}`);
-    await until(async () => (await page.eval(`document.getElementById('queue-pause').textContent`)) === 'pause queue' || null,
-      { timeout: BUDGET.stage });
+    // The button ships with textContent 'pause queue' in index.html, so its
+    // label says nothing about whether the board has loaded yet — and its
+    // click handler no-ops until `boardData` exists with full access. Wait for
+    // the loaded board itself, or a click can land on the static markup and
+    // silently do nothing.
+    const boardLoaded = async () => (await page.eval(`boardData?.access`)) === 'full' || null;
+    await until(boardLoaded, { timeout: BUDGET.stage, label: 'the board is loaded with full access' });
+
+    // Poll the WHOLE end state, never a partial one: the button flips straight
+    // from the POST response (applyQueuePause), while #usage is only rewritten
+    // by the loadBoard() round-trip that follows it. Waiting on aria-pressed
+    // and then hard-asserting #usage samples that gap — which widens with
+    // server latency — and fails intermittently under load.
+    const pauseState = `({
+      pressed: document.getElementById('queue-pause').getAttribute('aria-pressed'),
+      label: document.getElementById('queue-pause').textContent,
+      usage: document.getElementById('usage').textContent,
+    })`;
+    const pausedEverywhere = (s) => s.pressed === 'true' && s.label === 'resume queue' && /queue paused/.test(s.usage);
 
     await page.eval(`document.getElementById('queue-pause').click()`);
-    await until(async () => (await page.eval(`document.getElementById('queue-pause').getAttribute('aria-pressed')`)) === 'true' || null,
-      { timeout: BUDGET.quick });
-    assert.equal(await page.eval(`document.getElementById('queue-pause').textContent`), 'resume queue');
-    assert.match(await page.eval(`document.getElementById('usage').textContent`), /queue paused/);
+    await until(async () => pausedEverywhere(await page.eval(pauseState)) || null,
+      { timeout: BUDGET.stage, label: 'pause reflected in the button and the usage line' });
 
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}`);
-    await until(async () => (await page.eval(`document.getElementById('queue-pause').getAttribute('aria-pressed')`)) === 'true' || null,
-      { timeout: BUDGET.stage });
-    assert.equal(await page.eval(`document.getElementById('queue-pause').textContent`), 'resume queue',
-      'the server-backed pause survives a page and board reload');
+    await until(async () => pausedEverywhere(await page.eval(pauseState)) || null,
+      { timeout: BUDGET.stage, label: 'the server-backed pause survives a page and board reload' });
 
+    await until(boardLoaded, { timeout: BUDGET.stage, label: 'the reloaded board is ready for the resume click' });
     await page.eval(`document.getElementById('queue-pause').click()`);
-    await until(async () => (await page.eval(`document.getElementById('queue-pause').getAttribute('aria-pressed')`)) === 'false' || null,
-      { timeout: BUDGET.quick });
-    assert.equal(await page.eval(`document.getElementById('queue-pause').textContent`), 'pause queue');
+    await until(async () => {
+      const s = await page.eval(pauseState);
+      return (s.pressed === 'false' && s.label === 'pause queue' && !/queue paused/.test(s.usage)) || null;
+    }, { timeout: BUDGET.stage, label: 'resume clears the button and the usage line' });
     assert.deepEqual(page.errors, [], 'pause/resume produces no browser errors');
   }
 });

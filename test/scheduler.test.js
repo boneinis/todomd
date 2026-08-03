@@ -80,15 +80,12 @@ test('a per-column limit caps that column alone, independent of the global cap',
   assert.equal(buildsStarted, 3, 'a saturated Verify column does not stall unrelated Build entries');
 });
 
-// CI is a fully real, independently-enforced admission column here — the
-// scheduler treats it identically to Build/Verify (nothing in this module
-// special-cases either name). No PRODUCTION code calls scheduler.schedule()
-// with 'CI' yet: that requires task-0041's board-schema work first (CI isn't
-// a valid card status until DEFAULT_COLUMNS/REQUIRED_COLUMNS in board.js
-// include it, which is explicitly task-0041's job, not task-0040's). This
-// proves the column mechanism itself is genuine infrastructure ready for
-// that wiring, not dead configuration.
-test('the CI column is enforced independently, exactly like Build/Verify — ready infrastructure for task-0041 to call', () => {
+// CI is a fully real, independently-enforced admission column — the scheduler
+// treats it identically to Build/Verify (nothing here special-cases any of the
+// names). pipeline.js's buildChain requests a 'CI' admission for the board's
+// verify_command between Build and Verify; the end-to-end chain is covered in
+// pipeline.test.js. This is the unit-level proof of the column itself.
+test('the CI column is enforced independently, exactly like Build/Verify', () => {
   const p = makeProject('ci', 'concurrency: 10\nscheduler:\n  columns:\n    CI: 1\n');
   scheduler.setGovernor(createGovernor({ thresholds: resourcesConfig({}), sample: () => ({}) }));
 

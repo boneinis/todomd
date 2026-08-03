@@ -9,6 +9,11 @@ const CONFIG_YML = `columns: [Review, Plan, Planned, Queue, Build, Verify, Needs
 #   inside an interactive session (\`/loop 2m /todomd-dispatch\`), so work
 #   bills the interactive subscription pool instead.
 mode: launcher
+# The repo's own gate. It runs in the task worktree as the CI stage between
+# Build and Verify (for every vendor, admitted against the scheduler's CI
+# column below), and — for claude builds only — as the build agent's Stop
+# hook. A failing CI stage sends the card to Needs Human with its output; an
+# empty value skips the CI stage entirely.
 verify_command: npm test
 max_attempts: 3
 concurrency: 1

@@ -45,7 +45,13 @@ export function makeRepo({ triage = false } = {}) {
   fs.mkdirSync(path.join(repo, '.todomd/tasks'), { recursive: true });
   fs.writeFileSync(path.join(repo, '.todomd/config.yml'),
     `columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]\n` +
-    `mode: launcher\nverify_command: npm test\nmax_attempts: 3\nconcurrency: 1\n` +
+    // verify_command is now a REAL stage (the CI admission between Build and
+    // Verify runs it in the task worktree), so the fixture needs a command
+    // that is cheap and always passes — `npm test` here would run the fixture
+    // repo's own empty `node --test` on every build in this suite. Tests that
+    // care about a failing/slow CI stage commit their own command (it is an
+    // EXEC_KEY, so it is read from HEAD, not the working tree).
+    `mode: launcher\nverify_command: node --version\nmax_attempts: 3\nconcurrency: 1\n` +
     `default_agent: claude\n` +
     // These fixtures exercise the pipeline itself, not the resource governor
     // (that's resources.test.js/scheduler.test.js, both driven by injected

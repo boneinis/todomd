@@ -1034,13 +1034,19 @@ test('UI voice: removing the current project disarms before its replacement boar
   await until(async () => (await page.eval(
     `Boolean(document.querySelector('.proj-remove[data-name=${JSON.stringify(removableName)}]'))`,
   )) || null, { timeout: BUDGET.quick });
+  // Gate the REPLACEMENT board specifically — any board fetch, not just this
+  // one, would otherwise consume the gate: the SSE/refresh loop can issue one
+  // for the still-current (about to be removed) project between installing
+  // this hook and the removal, letting the real replacement through ungated
+  // so the widget re-renders before the assertion below.
+  const replacementBoardUrl = `/api/board?project=${encodeURIComponent(name)}`;
   await page.eval(`(() => {
     window.__origRemoveFetch = window.fetch;
     window.__replacementHeld = false;
     const gate = new Promise((resolve) => { window.__releaseReplacement = resolve; });
     window.fetch = (input, init) => {
       const url = String(typeof input === 'string' ? input : input.url);
-      if (!window.__replacementHeld && url.includes('/api/board?project=')) {
+      if (!window.__replacementHeld && url.includes(${JSON.stringify(replacementBoardUrl)})) {
         window.__replacementHeld = true;
         window.__replacementDone = gate.then(() => window.__origRemoveFetch(input, init));
         return window.__replacementDone;

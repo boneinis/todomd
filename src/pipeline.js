@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
@@ -53,6 +53,11 @@ const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human'])
 
 let broadcast = () => {};
 const children = new Map();          // runKey → ChildProcess
+// runKey → { project, card, child, cancelled, timedOut } for a live CI stage
+// (the board's verify_command). Tracked separately from `children`, which is
+// specifically the agent-CLI children runstore.js persists and reconcileOnBoot
+// reaps by PID — a shell command has no session, envelope or transcript.
+const ciRuns = new Map();
 const finalizationWaiters = new WeakMap(); // retained trigger run → completion signal for direct human moves
 // runKey → { cancelled, revertTo, cascadeArchive, noRequeue } — a build flow
 // claimed at its first admission and held until it fully settles, spanning
@@ -550,6 +555,17 @@ function runLogFile(project, id, stage, attempt) {
   return fs.existsSync(first) ? path.join(dir, `${stem}-${Date.now()}.jsonl`) : first;
 }
 
+// Wall-clock cap for one stage child, in minutes. 0 disables the cap; a
+// missing/non-numeric/negative value falls back to the 45m default; the value
+// is clamped under the setTimeout 32-bit ceiling (~24.8 days in minutes) so a
+// huge config value doesn't overflow into a ~1ms timer that would instantly
+// kill every run. Shared by the agent stages and the CI command.
+function stageTimeoutMinutes(project) {
+  const cfgTimeout = loadConfig(project.path).stage_timeout_min;
+  const n = cfgTimeout == null ? NaN : Number(cfgTimeout);
+  return n === 0 ? 0 : !Number.isFinite(n) || n < 0 ? 45 : Math.min(n, 35791);
+}
+
 function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   const key = runKey(project.name, id);
   if (children.has(key)) {
@@ -607,13 +623,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   // wall-clock cap: a hung agent must not hold a concurrency slot forever. On
   // expiry the child is killed (TERM → KILL backstop) and the stage's caller
   // routes the card to Needs Human (run.timedOut).
-  const cfgTimeout = loadConfig(project.path).stage_timeout_min;
-  const n = cfgTimeout == null ? NaN : Number(cfgTimeout);
-  // 0 disables the cap; a missing/non-numeric/negative value falls back to the
-  // 45m default; clamp under the setTimeout 32-bit ceiling (~24.8 days in
-  // minutes) so a huge value doesn't overflow into a ~1ms timer that would
-  // instantly kill every run
-  const timeoutMin = n === 0 ? 0 : !Number.isFinite(n) || n < 0 ? 45 : Math.min(n, 35791);
+  const timeoutMin = stageTimeoutMinutes(project);
   run.timeoutMin = timeoutMin;
   let stageTimer;
   if (timeoutMin > 0) {
@@ -936,7 +946,9 @@ export async function retryVerification(project, id) {
   const kept = await preservedWorktree(project, card);
   if (!kept) return { ok: false, error: 'the preserved worktree is unavailable or no longer valid' };
   const { config, worktreeAbs } = kept;
-  if (hasLiveRun(project.name, id)) return { ok: false, error: 'run already in progress' };
+  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
+    return { ok: false, error: 'run already in progress' };
+  }
   const verification = card.data.verification || {};
   const attempt = Math.max(1, Number(verification.attempts) || 1);
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
@@ -952,11 +964,20 @@ export async function retryVerification(project, id) {
   };
   triggerClaims.set(key, claim);
   bumpRunGeneration(project.name, id);
-  withoutRepoLockContext(() => {
-    verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim)
-      .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)))
-      .finally(() => { if (triggerClaims.get(key) === claim) triggerClaims.delete(key); });
-  });
+  // A human-triggered retry is still a Verify: it asks the scheduler for a
+  // Verify-column admission like every other start point, so the global,
+  // column, per-project and governor gates all apply to it (a retry pressed
+  // under resource pressure stays queued with a deferredReason instead of
+  // spawning). The claim above is set BEFORE scheduling and covers the whole
+  // queued window — hasLiveRun() reads triggerClaims, so the dedupe guard
+  // still holds while the entry waits, and a cancel() landing in that window
+  // flips claim.cancelled, which verify() unwinds at admission. No explicit
+  // withoutRepoLockContext here: scheduler.admitEntry() already wraps run().
+  scheduler.schedule(project, id, 'Verify',
+    () => verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim),
+    { onDefer: onDeferState(project, id, 'Verify') })
+    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)))
+    .finally(() => { if (triggerClaims.get(key) === claim) triggerClaims.delete(key); });
   return { ok: true };
 }
 
@@ -1005,6 +1026,12 @@ export function cancel(project, id) {
     if (pend) {
       pend.cancelled = true;
       pend.revertTo = 'Queue';
+      // The one thing that CAN actually be running in this "between agent
+      // spawns" window is the CI command. Stop it now instead of making a
+      // cancelled card wait out a full test suite; its stage then unwinds
+      // through the same pendingCancelled() checkpoint as everything else.
+      const ci = ciRuns.get(key);
+      if (ci) { ci.cancelled = true; killWithEscalation(ci.child); }
       return { ok: true };
     }
     // not running — maybe just queued (never admitted at all, so nothing to unwind)
@@ -1091,14 +1118,22 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
     pend.revertTo = 'Queue';
     pend.noRequeue = true;
   }
+  // A CI command is a child of this process too — an exiting server must not
+  // leave a test suite running against a worktree it no longer supervises.
+  // Its pending claim was just flagged above, so its stage unwinds normally.
+  for (const ci of ciRuns.values()) {
+    ci.cancelled = true;
+    try { ci.child.kill('SIGTERM'); } catch { /* already gone */ }
+  }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
-    while ((children.size || runs.size || triaging.size || triggerClaims.size) && Date.now() < deadline) {
+    while ((children.size || runs.size || triaging.size || triggerClaims.size || ciRuns.size) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
   };
   await waitForExit(graceMs);
   for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  for (const ci of ciRuns.values()) { try { ci.child.kill('SIGKILL'); } catch { /* already gone */ } }
   await waitForExit(1000); // let the close handlers reap and drop tracking entries
 }
 
@@ -1337,6 +1372,106 @@ function scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktre
     () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings),
     { onDefer: onDeferState(project, id, 'Verify') },
   ).catch((err) => pipelineError(project, id, err));
+}
+
+// Bound on the CI output kept in memory, and on the tail carried into the
+// card when it fails — a test suite can print megabytes.
+const CI_OUTPUT_MAX = 64 * 1024;
+const CI_DETAIL_MAX = 2000;
+
+// Fire-and-forget dispatch for the CI stage: the board's own verify_command,
+// admitted against the scheduler's CI column between Build and Verify. Two
+// real things this buys beyond accounting: the command used to run ONLY as a
+// claude Stop hook (runner.js), so codex builds never executed it at all, and
+// a machine hosting several boards can now cap how many test suites run at
+// once independently of how many agents may build or verify.
+//
+// The card's status stays 'Verify' throughout — 'CI' is the scheduler's
+// work-type key, not a board column (a visible CI column, plus quick/full
+// command profiles, is task-0041's scope).
+function scheduleCi(project, id, command, next) {
+  scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next), {
+    onDefer: onDeferState(project, id, 'CI'),
+  }).catch((err) => pipelineError(project, id, err));
+}
+
+async function ciStage(project, id, command, next) {
+  const { attempt, maxAttempts, buildSession, worktreeAbs, branch, findings, config, lastVerdict } = next;
+  const revertArgs = { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict };
+  // same between-spawns cancel checkpoint every other stage has
+  const pc = pendingCancelled(project, id);
+  if (pc) return revertPendingCancel(project, id, pc, revertArgs);
+
+  sendState(project, id, 'running', 'CI');
+  const startedAt = Date.now();
+  const outcome = await runVerifyCommand(project, id, command, worktreeAbs);
+  const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+
+  // A cancel/shutdown that landed while the command ran killed the child; the
+  // card unwinds through the same checkpoint the agent stages use.
+  const cancelled = pendingCancelled(project, id);
+  if (cancelled) {
+    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · cancelled`);
+    return revertPendingCancel(project, id, cancelled, revertArgs);
+  }
+  // killed with no claim left to unwind (the project was removed mid-run) —
+  // there is nothing to route, and nothing was merged
+  if (outcome.cancelled) return sendState(project, id, 'idle');
+
+  // recordRun() is shaped around an agent envelope (turns, cost, session); a
+  // shell command has none, so the card history gets the same run-log line
+  // without the meaningless columns.
+  if (outcome.ok) {
+    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` passed`);
+    return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, findings);
+  }
+  await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` failed`);
+  // CI is the first thing to enter the worktree after Build. A worktree the
+  // build deleted out from under itself is an environment failure, not a
+  // failing test suite — the same disambiguation classifyFailure() makes for
+  // an agent spawn's ENOENT.
+  if (!fs.existsSync(worktreeAbs)) {
+    return toNeedsHuman(project, id, 'CI', 'worktree_failed', `worktree is gone: ${worktreeAbs}`);
+  }
+  const why = outcome.timedOut ? `exceeded the ${outcome.timeoutMin}m stage timeout`
+    : outcome.spawnError ? `could not start: ${outcome.spawnError}`
+    : `exited ${outcome.signal || outcome.code}`;
+  return toNeedsHuman(project, id, 'CI', 'ci_failed',
+    `\`${command}\` ${why}\n${outcome.output.slice(-CI_DETAIL_MAX)}`);
+}
+
+// Run the board's verify_command as a captured child in the task worktree.
+// Deliberately much smaller than spawnTracked: there is no session, envelope
+// or jsonl transcript to collect — only the exit status, a bounded tail of the
+// output for the card, and the ability to stop it on cancel/shutdown.
+// `command` comes from execConfig (the COMMITTED config.yml), the same source
+// as the Stop hook, so a working-tree edit can never arm a new command here.
+function runVerifyCommand(project, id, command, cwd) {
+  const key = runKey(project.name, id);
+  const child = spawn(command, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const entry = { project: project.name, card: id, child, cancelled: false, timedOut: false };
+  ciRuns.set(key, entry);
+  let output = '';
+  const capture = (chunk) => { if (output.length < CI_OUTPUT_MAX) output += chunk; };
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.setEncoding('utf8');
+    stream.on('data', capture);
+  }
+  const timeoutMin = stageTimeoutMinutes(project);
+  let stageTimer;
+  if (timeoutMin > 0) {
+    stageTimer = setTimeout(() => { entry.timedOut = true; killWithEscalation(child); }, timeoutMin * 60_000);
+    stageTimer.unref?.();
+  }
+  return new Promise((resolve) => {
+    const settle = (result) => {
+      clearTimeout(stageTimer);
+      if (ciRuns.get(key) === entry) ciRuns.delete(key);
+      resolve({ ...result, cancelled: entry.cancelled, timedOut: entry.timedOut, timeoutMin, output });
+    };
+    child.on('error', (err) => settle({ ok: false, code: -1, signal: null, spawnError: String(err?.message || err) }));
+    child.on('close', (code, signal) => settle({ ok: code === 0 && !signal, code, signal, spawnError: null }));
+  });
 }
 
 // A cancel that landed while the chain was between spawns (no live child to
@@ -1606,18 +1741,24 @@ async function buildChain(project, id, retry = null, recovery = null) {
   await recordRun(project, id, 'Build', attempt, result, repair ? 'ok (escalation repair)' : 'ok');
   const buildSession = result.sessionId;
   await orchMove(project, id, 'Verify', `attempt ${attempt}`);
-  // Release this Build-column slot now — Verify is admitted independently
-  // (its own scheduler entry) rather than inline, so the Build slot isn't
-  // held for the rest of the chain and Verify's column limit is real.
-  // No CI admission is spliced in here: 'CI' isn't a valid card status yet
-  // (DEFAULT_COLUMNS/REQUIRED_COLUMNS in board.js don't include it — adding
-  // it, plus the actual command runner and quick/full profiles, is
-  // task-0041's job). scheduler.js's CI column accounting is already real,
-  // independently-enforced infrastructure (see scheduler.test.js) ready for
-  // task-0041 to call the same way Build/Verify do here.
+  // Release this Build-column slot now — CI and Verify are each admitted
+  // independently (their own scheduler entries) rather than inline, so the
+  // Build slot isn't held for the rest of the chain and neither the CI nor the
+  // Verify column limit is inert.
   // thread the findings that drove this attempt so a verify-quota resume can
   // rebuild with them (the build code is in the worktree; this keeps context)
-  scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);
+  const next = {
+    attempt, maxAttempts, buildSession, worktreeAbs, branch, config,
+    findings: retry?.findings, lastVerdict: ver.last_verdict,
+  };
+  const ciCommand = String(config.verify_command || '').trim();
+  if (!ciCommand) {
+    // Nothing configured to run — say so in the card history, so a missing CI
+    // line reads as "this board has no verify_command", not "CI was skipped".
+    await appendRunLog(project.path, id, `  - CI: skipped (no verify_command configured)`);
+    return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, retry?.findings);
+  }
+  scheduleCi(project, id, ciCommand, next);
 }
 
 async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation) {
@@ -2151,6 +2292,12 @@ export function getRunStates(projectName) {
   for (const run of runs.values()) {
     if (run.project === projectName) states[run.card] = { state: 'running', stage: run.stage };
   }
+  // A live CI command has no `runs` entry (it isn't an agent child), so name it
+  // explicitly — otherwise the pending fallback below would report the whole
+  // stage as the generic 'in progress'.
+  for (const ci of ciRuns.values()) {
+    if (ci.project === projectName && !states[ci.card]) states[ci.card] = { state: 'running', stage: 'CI' };
+  }
   // Covers both a never-yet-admitted first entry AND a mid-flow retry/Verify
   // entry the scheduler is currently holding on admission — either shows
   // 'queued', or 'deferred' with the governor/capacity reason once one exists.
@@ -2187,7 +2334,10 @@ export function hasLiveRun(projectName, id) {
   const key = runKey(projectName, id);
   // runs also covers a trigger-stage child that exited while its final Git/card
   // writes are still settling. That window remains hands-off until finalization.
-  return runs.has(key) || pending.has(key) || triaging.has(key) || triggerClaims.has(key);
+  // ciRuns is inside the same chain's `pending` window today; it is named here
+  // so a live CI command is self-evidently a live run rather than one that
+  // depends on another map's bookkeeping.
+  return runs.has(key) || pending.has(key) || ciRuns.has(key) || triaging.has(key) || triggerClaims.has(key);
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -2204,6 +2354,7 @@ export function projectHasLiveRun(projectName) {
   // contain `:`, so composite-key prefix matching is not safe here.
   for (const run of runs.values()) if (run.project === projectName) return true;
   for (const entry of pending.values()) if (entry.project === projectName) return true;
+  for (const ci of ciRuns.values()) if (ci.project === projectName) return true;
   for (const claim of triaging.values()) if (claim.project === projectName) return true;
   for (const claim of triggerClaims.values()) if (claim.project === projectName) return true;
   return false;
@@ -2216,6 +2367,14 @@ export function forgetProject(projectName) {
   for (const [k, entry] of retryFindings) if (entry.project === projectName) retryFindings.delete(k);
   for (const [k, entry] of recoveryBuilds) if (entry.project === projectName) recoveryBuilds.delete(k);
   for (const [k, entry] of pending) if (entry.project === projectName) pending.delete(k);
+  // its board is gone — stop the CI command instead of letting it run on
+  // against a worktree nothing is watching any more
+  for (const [k, ci] of ciRuns) {
+    if (ci.project !== projectName) continue;
+    ci.cancelled = true;
+    killWithEscalation(ci.child);
+    ciRuns.delete(k);
+  }
   for (const [k, claim] of triaging) if (claim.project === projectName) triaging.delete(k);
   for (const [k, claim] of triggerClaims) if (claim.project === projectName) triggerClaims.delete(k);
   for (const [k, entry] of runGenerations) if (entry.project === projectName) runGenerations.delete(k);
