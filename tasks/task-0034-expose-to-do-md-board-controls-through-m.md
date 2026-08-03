@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Verify
+status: Needs Human
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -17,7 +17,7 @@ worktree: todomd/task-0034
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
 cost_usd: 15.4252
-needs_human_reason:
+needs_human_reason: ci_failed
 base_branch: main
 recovery_stage:
 board_order: 1
@@ -78,3 +78,24 @@ Risks:
 
 1. Reachable opaque-error defect: [src/mcp-server.js](</Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0034/src/mcp-server.js:126>) only propagates HTTP errors where `status >= 400`. A connection failure returns `status: 0` and a useful message, but 
 - 2026-08-03 15:26Z · Build attempt 1 · 23 turns · $0.715 · ok
+- 2026-08-03 15:34Z · CI attempt 1 · 124.1s · `npm test` failed
+  - ci_failed: `npm test` exited 1
+eals push-to-talk; the board stays usable
+ok 24 - UI voice: missing provider configuration after wak
+…
+UI voice: a viewer link never shows the mic control
+ok 28 - UI voice: a viewer link never shows the mic control
+  ---
+  duration_ms: 100.094625
+  type: 'test'
+  ...
+1..28
+# tests 28
+# suites 0
+# pass 26
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 58484.260708
+
