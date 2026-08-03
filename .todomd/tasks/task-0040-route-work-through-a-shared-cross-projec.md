@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 9d7e7b5a-7505-4e76-af3c-80d4f1a1e73c
+session_id: 019fc533-15d7-7f43-b201-67117f8d301d
 worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -108,3 +108,7 @@ The first implementation failed independent review. The fresh build must address
   - orphaned_run: server stopped during Build — unmerged work is preserved in the worktree/branch
 - 2026-08-03 01:14Z · Resume Build · continuing attempt 3 in preserved worktree todomd/task-0040
 - 2026-08-03 01:18Z · Build attempt 3 · 3 turns · $1.313 · ok
+- 2026-08-03 01:23Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
+  - attempts_exhausted: 1. `src/scheduler.js:89-90` breaks backward compatibility for numeric-string concurrency values. A legacy `concurrency: "3"` reproducibly starts only one Build because `Number.isFinite("3")` is false. The previous comparison coerced the value and admitted three. Normalize with `Number(...)` and add a quoted-YAML regression test.
+
+2. `src/pipeline.js:1454-1455` claims to retain a bounded output tai
