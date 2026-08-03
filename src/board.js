@@ -8,7 +8,7 @@ import { commitCard, commitPaths } from './git.js';
 import { withFileLock } from './lockfile.js';
 import { resourcesConfig } from './resources.js';
 
-const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'Verify', 'Needs Human', 'Done'];
+const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'];
 
 // gray-matter (v4) caches parse results keyed by the input string — AND caches
 // an empty result even after the first parse THREW. So once loadBoard hits a
@@ -52,6 +52,32 @@ function unlimited(v) {
 // effective Build parallelism" guarantee is carried entirely by
 // scheduler.js's separate per-project concurrency cap, which is never
 // combined across projects.
+// The CI column is deliberately NOT in REQUIRED_COLUMNS: unlike Queue/Build/
+// Verify/Needs Human/Done (whose absence would strand a card with nowhere to
+// go), nothing ever has to land in CI. A board whose columns: list predates
+// this feature (or was hand-customized without it) simply never routes a card
+// through CI — pipeline.js's buildChain reads this same `columns` array to
+// decide Build -> CI -> Verify vs. the legacy Build -> Verify directly, so
+// "no CI column" degrades to exactly today's behavior instead of failing.
+//
+// ci.enabled defaults true so a board that never touches this key at all (and
+// DOES have the CI column, e.g. any board created after this feature shipped)
+// gets CI for free; ci.enabled: false is the escape hatch for a board that
+// wants to keep the column visible without actually running it.
+function ciConfig(cfg) {
+  const c = cfg.ci || {};
+  return {
+    enabled: c.enabled !== false,
+    profile: c.profile === 'full' ? 'full' : 'quick',
+    quick: typeof c.quick === 'string' && c.quick.trim() ? c.quick.trim() : 'npm run typecheck',
+    full: typeof c.full === 'string' && c.full.trim() ? c.full.trim() : 'npm run typecheck && npm test && npm run e2e',
+    // 0 (or unset) falls back to the board's general stage_timeout_min, same
+    // "0/unset means unlimited-or-inherit" convention as the rest of this file.
+    timeoutSeconds: Number.isFinite(Number(c.timeout_seconds)) && Number(c.timeout_seconds) > 0
+      ? Number(c.timeout_seconds) : 0,
+  };
+}
+
 function schedulerConfig(cfg) {
   const s = cfg.scheduler || {};
   const cols = s.columns || {};
@@ -76,6 +102,7 @@ export function normalizeConfig(cfg) {
   // config.yml predates this key entirely — see resourcesConfig in resources.js.
   out.resources = resourcesConfig(out);
   out.scheduler = schedulerConfig(out);
+  out.ci = ciConfig(out);
   return out;
 }
 

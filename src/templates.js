@@ -2,19 +2,39 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const CONFIG_YML = `columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]
+const CONFIG_YML = `columns: [Review, Plan, Planned, Queue, Build, CI, Verify, Needs Human, Done]
 # mode: launcher — the todomd server spawns headless agent runs (instant,
 #   bills the included headless credit pool).
 # mode: budget — the server only manages the board; you run a dispatcher
 #   inside an interactive session (\`/loop 2m /todomd-dispatch\`), so work
 #   bills the interactive subscription pool instead.
 mode: launcher
-# The repo's own gate. It runs in the task worktree as the CI stage between
-# Build and Verify (for every vendor, admitted against the scheduler's CI
-# column below), and — for claude builds only — as the build agent's Stop
-# hook. A failing CI stage sends the card to Needs Human with its output; an
-# empty value skips the CI stage entirely.
+# The repo's own gate: the legacy single-command form. It runs in the task
+# worktree as the CI stage between Build and Verify (for every vendor, admitted
+# against the scheduler's CI column below), and — for claude builds only — as
+# the build agent's Stop hook. A failing CI stage sends the card to Needs Human
+# with its output; an empty value skips the CI stage entirely. Superseded by
+# the \`ci:\` block below when the CI column is present: remove 'CI' from
+# columns above (or set ci.enabled: false) to go back to legacy behavior —
+# verify_command then still runs as today, unconditionally, with no retry.
 verify_command: npm test
+# The CI column's quick/full profiles (used only while 'CI' is in columns
+# above and ci.enabled is true). full is meant as the merge gate — a thorough
+# pass covering typechecking, the whole test suite, and end-to-end tests;
+# quick is a fast subset for iteration. Unlike verify_command's immediate Needs
+# Human, a failing CI gate here retries the build (like a failed Verify) up to
+# max_attempts before giving up. At critical resource pressure (see resources:
+# below) a running CI job is gracefully cancelled and requeued rather than
+# left to fight the rest of the machine for CPU/memory — Build and Verify runs
+# are never touched by this. Off by default: quick/full below are placeholder
+# commands (most projects don't have a typecheck/e2e script yet) — trim them to
+# what this project actually runs, then set enabled: true.
+ci:
+  enabled: false
+  profile: quick
+  quick: npm run typecheck
+  full: npm run typecheck && npm test && npm run e2e
+  timeout_seconds: 0   # 0 = use stage_timeout_min below
 max_attempts: 3
 concurrency: 1
 merge: merge            # merge | pr (pr lands in a later phase)
