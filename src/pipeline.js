@@ -704,12 +704,16 @@ export async function humanMove(project, id, to) {
       return { ok: true, cancelled: true };
     }
     if (pend) {
-      // chain claimed but between spawns — nothing to SIGTERM. Flag it and let
-      // the chain's cancel checkpoint do the revert, so there is a single
-      // writer and the chain can't stomp this move by continuing.
+      // A pending flow is normally between agent spawns, but the independently
+      // tracked CI command can be live in this state. Flag the owner first,
+      // then stop CI so its existing checkpoint performs the single revert.
       pend.cancelled = true;
       pend.revertTo = 'Review';
-      if (queued) {
+      const ci = ciRuns.get(key);
+      if (ci) {
+        ci.cancelled = true;
+        killWithEscalation(ci.child);
+      } else if (queued) {
         scheduler.dequeue(project.name, id);
         await unwindQueuedPending(project, id, pend);
       }

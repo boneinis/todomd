@@ -375,6 +375,43 @@ test('a failing CI stage stops the chain before Verify and carries its output to
   }
 });
 
+test('retriaging during a hanging CI stage promptly terminates CI and settles in Review', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const marker = path.join(tmp('ci-retriage'), 'started');
+  fs.writeFileSync(path.join(repo, 'ci-hang.mjs'),
+    `import fs from 'node:fs';\n` +
+    `fs.writeFileSync(${JSON.stringify(marker)}, 'started');\n` +
+    `setInterval(() => {}, 1000);\n`);
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8')
+    .replace('verify_command: node --version', 'verify_command: node ci-hang.mjs'));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'hanging ci']);
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+    await until(() => fs.existsSync(marker)
+      && pipeline.getRunStates(p.name)['task-0001']?.stage === 'CI', { timeout: BUDGET.chain });
+
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'),
+      { ok: true, cancelled: true });
+    await until(() => status(repo, 'task-0001') === 'Review'
+      && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), false,
+      'the cancelled CI flow performs its normal retriage cleanup');
+    assert.match(readCard(repo, 'task-0001').raw, /CI attempt 1 · cancelled/);
+  } finally {
+    pipeline.cancel(p, 'task-0001');
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
 test('a board with no verify_command records the skip and goes straight to Verify', async () => {
   isolateHome();
   useFakeAgent({ build: 'good', verdict: 'pass' });
