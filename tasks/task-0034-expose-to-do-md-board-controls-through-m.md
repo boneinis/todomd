@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Queue
+status: Build
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -14,7 +14,7 @@ model:
 effort:
 session_id:
 worktree: todomd/task-0034
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
 cost_usd: 15.4252
 needs_human_reason: ci_failed
