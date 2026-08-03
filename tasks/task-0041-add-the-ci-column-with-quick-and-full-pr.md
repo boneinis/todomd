@@ -1,7 +1,7 @@
 ---
 id: task-0041
 title: Add the CI column with quick and full profiles
-status: Queue
+status: Build
 type: module
 priority: medium
 labels: []
@@ -13,9 +13,10 @@ assignee:
 agent: gemini
 triaged: n/a (chunk 3/4 of task-0021)
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0041
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 board_order: 4
+base_branch: main
 ---
 
 ## Description
