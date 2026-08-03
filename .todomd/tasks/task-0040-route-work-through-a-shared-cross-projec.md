@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc5b1-1454-7e01-bb24-8d6b5c1b45cd
+session_id: 019fc5bd-4f38-7ad1-996f-691d06c4a675
 worktree: todomd/task-0040
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: board_tampering
 recovery_stage:
 ---
 
@@ -143,3 +143,5 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: The unrestricted suite passed: 541 unit/integration tests and 30 UI tests. However, adversarial review found two reachable bugs:
 
 1. `src/pipeline.js:1552-1566` reconstructs a queued cancellation using the card's current verification attempt, then `src/pipeline.js:1581-1584` always decrements it. For a repair Build waiting for scheduler admission, or a direct Retry Verification that has not starte
+- 2026-08-03 03:55Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
+  - board_tampering: task branch modifies .todomd/
