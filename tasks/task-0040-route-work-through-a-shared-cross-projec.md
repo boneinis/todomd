@@ -1,7 +1,7 @@
 ---
 id: task-0040
 title: Route work through a shared cross-project scheduler
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: claude
 triaged: n/a (chunk 2/4 of task-0021)
-session_id: 019fc533-15d7-7f43-b201-67117f8d301d
+session_id: 019fc53d-24fa-7f30-b52f-462870fbc223
 worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -112,3 +112,5 @@ The first implementation failed independent review. The fresh build must address
   - attempts_exhausted: 1. `src/scheduler.js:89-90` breaks backward compatibility for numeric-string concurrency values. A legacy `concurrency: "3"` reproducibly starts only one Build because `Number.isFinite("3")` is false. The previous comparison coerced the value and admitted three. Normalize with `Number(...)` and add a quoted-YAML regression test.
 
 2. `src/pipeline.js:1454-1455` claims to retain a bounded output tai
+- 2026-08-03 01:35Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
+  - attempts_exhausted: The adversarial review found a reachable pending-claim leak in src/pipeline.js. The old processQueue(...).finally() always removed its exact pending entry, including abnormal terminal paths. That guarantee was replaced with cleanup only when sendState(..., 'idle') executes. However, buildChain returns directly when readCard() finds the card missing (line 1534), and pipelineError swallows a failed 
