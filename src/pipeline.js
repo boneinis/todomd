@@ -183,8 +183,16 @@ export function getBanners() {
 // continuation (a retry, the Build→Verify handoff) ever does — so clearing
 // `pending` here, instead of at each of those call sites individually, can't
 // miss one and can't fire early.
-function sendState(project, cardId, state, stage, reason) {
-  if (state === 'idle') pending.delete(runKey(project.name, cardId));
+function sendState(project, cardId, state, stage, reason, pendingOwner) {
+  if (state === 'idle') {
+    const key = runKey(project.name, cardId);
+    const current = pending.get(key);
+    // Abnormal promise catches can settle after a replacement run has already
+    // claimed the same card. When a caller supplies the claim it owns, never
+    // clear or overwrite a newer claim's live UI state.
+    if (pendingOwner !== undefined && current && current !== pendingOwner) return;
+    if (pendingOwner === undefined || current === pendingOwner) pending.delete(key);
+  }
   broadcast({ type: 'run-state', project: project.name, card: cardId, state, stage, ...(reason ? { reason } : {}) });
 }
 
@@ -467,7 +475,7 @@ async function recordRun(project, id, stage, attempt, result, note) {
   );
 }
 
-async function toNeedsHuman(project, id, from, reason, detail = '') {
+async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner) {
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
   await patchFrontmatter(project.path, id, {
@@ -476,7 +484,7 @@ async function toNeedsHuman(project, id, from, reason, detail = '') {
   });
   if (detail) await appendRunLog(project.path, id, `  - ${reason}: ${detail.slice(0, 400)}`);
   await orchMove(project, id, 'Needs Human', reason);
-  sendState(project, id, 'idle');
+  sendState(project, id, 'idle', undefined, undefined, pendingOwner);
 }
 
 async function releaseCoordination(project, id) {
@@ -1334,6 +1342,7 @@ function enqueueBuild(project, id) {
   if (scheduler.isQueued(project.name, id) || children.has(key)) return;
   bumpRunGeneration(project.name, id);
   sendState(project, id, 'queued', 'Build');
+  let owner = null;
   scheduler.schedule(project, id, 'Build', () => {
     // claim the card synchronously (before any await) so the admit→spawn
     // window still counts as a live run; cleared only when the WHOLE flow
@@ -1341,15 +1350,16 @@ function enqueueBuild(project, id) {
     // failure: after toNeedsHuman/revert completes)
     const recovery = recoveryBuilds.get(key) || null;
     recoveryBuilds.delete(key);
-    pending.set(key, {
+    owner = {
       project: project.name, card: id,
       cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
-    });
-    return buildChain(project, id, null, recovery);
+    };
+    pending.set(key, owner);
+    return buildChain(project, id, null, recovery, owner);
   }, {
     blocked: () => quotaPaused.has(project.name) || isQueuePaused(project),
     onDefer: onDeferState(project, id, 'Build'),
-  }).catch((err) => pipelineError(project, id, err));
+  }).catch((err) => pipelineError(project, id, err, owner));
 }
 
 // Fire-and-forget dispatch for a retry/escalation Build attempt: each attempt
@@ -1358,9 +1368,10 @@ function enqueueBuild(project, id) {
 // not pin one Build slot for its whole lifetime. `pending` is already held
 // continuously from the card's first admission, so no re-claim here.
 function scheduleBuild(project, id, retry) {
-  scheduler.schedule(project, id, 'Build', () => buildChain(project, id, retry, null), {
+  const owner = pending.get(runKey(project.name, id)) || null;
+  scheduler.schedule(project, id, 'Build', () => buildChain(project, id, retry, null, owner), {
     onDefer: onDeferState(project, id, 'Build'),
-  }).catch((err) => pipelineError(project, id, err));
+  }).catch((err) => pipelineError(project, id, err, owner));
 }
 
 // Fire-and-forget dispatch for a Verify attempt — its own admission against
@@ -1368,10 +1379,11 @@ function scheduleBuild(project, id, retry) {
 // buildChain's success path), so the Verify column limit is real instead of
 // inert and a Build slot is never held for the whole Build-to-Verify chain.
 function scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
+  const owner = pending.get(runKey(project.name, id)) || null;
   scheduler.schedule(project, id, 'Verify',
     () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings),
     { onDefer: onDeferState(project, id, 'Verify') },
-  ).catch((err) => pipelineError(project, id, err));
+  ).catch((err) => pipelineError(project, id, err, owner));
 }
 
 // Bound on the CI output kept in memory, and on the tail carried into the
@@ -1390,9 +1402,10 @@ const CI_DETAIL_MAX = 2000;
 // work-type key, not a board column (a visible CI column, plus quick/full
 // command profiles, is task-0041's scope).
 function scheduleCi(project, id, command, next) {
+  const owner = pending.get(runKey(project.name, id)) || null;
   scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next), {
     onDefer: onDeferState(project, id, 'CI'),
-  }).catch((err) => pipelineError(project, id, err));
+  }).catch((err) => pipelineError(project, id, err, owner));
 }
 
 async function ciStage(project, id, command, next) {
@@ -1510,12 +1523,17 @@ async function revertPendingCancel(project, id, pc, { worktreeAbs, branch, confi
 
 // An unexpected throw anywhere in the build→verify chain would otherwise
 // strand the card in Build/Verify with no live run, no banner, and no log.
-async function pipelineError(project, id, err) {
+async function pipelineError(project, id, err, pendingOwner) {
   const detail = String(err?.stack || err || 'unknown error');
   setBanner(`pipeline:${project.name}:${id}`, 'error', `${id}: unexpected pipeline error — routed to Needs Human`);
   try {
-    await toNeedsHuman(project, id, 'Build', 'pipeline_error', detail);
+    await toNeedsHuman(project, id, 'Build', 'pipeline_error', detail, pendingOwner);
   } catch { /* a failed recovery must not rethrow into the same catch chain */ }
+  finally {
+    // toNeedsHuman normally settles the claim itself. If its Git/card recovery
+    // also failed, still release only the exact claim whose pipeline rejected.
+    sendState(project, id, 'idle', undefined, undefined, pendingOwner);
+  }
 }
 
 // A leftover worktree dir is reusable only if it's a live git worktree checked
@@ -1528,10 +1546,10 @@ async function worktreeValid(worktreeAbs, branch) {
   return head.ok && head.stdout === branch;
 }
 
-async function buildChain(project, id, retry = null, recovery = null) {
+async function buildChain(project, id, retry = null, recovery = null, pendingOwner = null) {
   const config = await execConfig(project.path);
   const card = readCard(project.path, id);
-  if (!card) return;
+  if (!card) return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
   const key = runKey(project.name, id);
   // a retry that arrives while the project is quota-paused (e.g. a concurrent
   // card's verify-fail at concurrency>1) must not spawn against the exhausted

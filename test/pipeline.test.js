@@ -1557,6 +1557,49 @@ test('pipeline error: an unexpected throw in buildChain lands in Needs Human (pi
   clearFakeAgent();
 });
 
+test('a card removed externally while Build waits on admission releases its exact pending claim', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  const events = [];
+  pipeline.init({ broadcast: (event) => events.push(event) });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  let sample = { cpuLoad: 0.99 };
+  scheduler.setGovernor(createGovernor({
+    thresholds: resourcesConfig({ resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 } }),
+    sample: () => sample,
+  }));
+  scheduler.tick();
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.state === 'deferred',
+      { timeout: BUDGET.quick });
+
+    const card = readCard(repo, 'task-0001');
+    fs.unlinkSync(path.join(repo, '.todomd/tasks', card.file));
+    sample = { cpuLoad: 0.05 };
+    scheduler.tick();
+
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001')
+      && !scheduler.isQueued(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), false,
+      'a missing card never creates or recreates a worktree');
+    assert.ok(events.some((event) => event.type === 'run-state'
+      && event.card === 'task-0001' && event.state === 'idle'),
+    'the abandoned admission publishes a terminal idle state');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
 test('detached HEAD at fork stamps base_branch "unknown" and refuses the merge (base_branch_unknown)', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });
