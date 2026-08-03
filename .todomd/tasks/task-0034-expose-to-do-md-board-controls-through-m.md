@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Build
+status: Verify
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -12,11 +12,11 @@ assignee:
 agent: gemini
 model:
 effort:
-session_id:
+session_id: 489d4d1d-0bf0-49cb-a617-6161674727d9
 worktree: todomd/task-0034
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
-cost_usd: 14.7103
+cost_usd: 15.4252
 needs_human_reason:
 base_branch: main
 recovery_stage:
@@ -77,3 +77,4 @@ Risks:
   - attempts_exhausted: `npm test` passed with 468 core/API tests and 28 UI tests. `git diff --check main...HEAD` passed and the candidate worktree remained clean.
 
 1. Reachable opaque-error defect: [src/mcp-server.js](</Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0034/src/mcp-server.js:126>) only propagates HTTP errors where `status >= 400`. A connection failure returns `status: 0` and a useful message, but 
+- 2026-08-03 15:26Z · Build attempt 1 · 23 turns · $0.715 · ok
