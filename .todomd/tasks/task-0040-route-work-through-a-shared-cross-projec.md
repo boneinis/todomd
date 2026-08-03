@@ -17,7 +17,7 @@ worktree: todomd/task-0040
 verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
 base_branch: main
 cost_usd: 113.7378
-needs_human_reason: board_tampering
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -145,3 +145,4 @@ The first implementation failed independent review. The fresh build must address
 1. `src/pipeline.js:1552-1566` reconstructs a queued cancellation using the card's current verification attempt, then `src/pipeline.js:1581-1584` always decrements it. For a repair Build waiting for scheduler admission, or a direct Retry Verification that has not starte
 - 2026-08-03 03:55Z · Verify attempt 3 · 1 turns · $0.000 · verdict: pass
   - board_tampering: task branch modifies .todomd/
+- 2026-08-03 03:56Z · board metadata aligned with main; preserved worktree ready for Verify-only retry
