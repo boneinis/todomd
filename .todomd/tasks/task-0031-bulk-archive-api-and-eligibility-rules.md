@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Queue
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -15,7 +15,7 @@ model:
 effort:
 session_id:
 worktree: todomd/task-0031
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 11.4863
 needs_human_reason: attempts_exhausted
