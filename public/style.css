@@ -148,6 +148,7 @@ body {
 }
 
 .column.drag-over { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.column.drag-invalid { outline: 2px dashed var(--err, #ef4444); outline-offset: -4px; cursor: not-allowed; }
 
 .col-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -373,12 +374,12 @@ body.viewer .col-edit { display: none; }
 /* trello-style two-column layout: content + action rail. The rail is sticky
    and scrolls on its own so it stays reachable while the (now potentially
    long, with the Subtasks/Planner content) details column scrolls independently. */
-.drawer-cols { display: flex; gap: 22px; align-items: flex-start; flex: 1; min-height: 0; }
-.drawer-main { flex: 1; min-width: 0; align-self: stretch; height: 100%; overflow-y: auto; }
+.drawer-cols { display: flex; gap: 22px; align-items: stretch; flex: 1; min-height: 0; overflow: hidden; }
+.drawer-main { flex: 1; min-width: 0; overflow-y: auto; max-height: calc(88dvh - 110px); padding-right: 6px; }
 .drawer-rail {
   flex: 0 0 172px; display: flex; flex-direction: column; gap: 6px;
   position: sticky; top: 0; align-self: start;
-  max-height: 100%; overflow-y: auto;
+  max-height: calc(88dvh - 110px); overflow-y: auto;
 }
 .rail-label {
   color: var(--faint); font-size: 9.5px; font-weight: 600;

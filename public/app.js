@@ -81,7 +81,12 @@ function fillModels(list) {
 async function setModelOptions(vendor) {
   vendor = vendor || 'claude';
   if (modelCache[vendor]) { fillModels(modelCache[vendor]); return; }
-  fillModels(vendor === 'codex' ? ['gpt-5-codex', 'gpt-5'] : ['opus', 'sonnet', 'haiku']); // instant default
+  fillModels(
+    vendor === 'codex' ? ['gpt-5-codex', 'gpt-5'] :
+    vendor === 'gemini' ? ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3.6-flash'] :
+    vendor === 'kimi' ? ['kimi-k1.5', 'moonshot-v1-8k', 'moonshot-v1-32k'] :
+    ['opus', 'sonnet', 'haiku']
+  ); // instant default
   if (!currentProject) return;
   try {
     const { models } = await api(`models?agent=${encodeURIComponent(vendor)}&project=${encodeURIComponent(currentProject)}`);
@@ -144,8 +149,12 @@ async function loadBoard() {
   $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag + pausedTag + (viewer ? ' · monitor' : '');
   document.body.classList.toggle('viewer', viewer);
   applyQueuePause(usage.queue_paused === true);
-  setSkillOptions();
   renderBoard();
+  const targetHash = (location.hash || '').slice(1);
+  if (targetHash && /^task-[\w-]+$/.test(targetHash) && !drawerCard) {
+    const cardExists = (boardData.cards || []).some((c) => c.id === targetHash);
+    if (cardExists) openDrawer(targetHash);
+  }
   // voice/main.js is a separate ES module (see index.html) with no access to
   // this classic script's top-level scope — this is the only bridge it needs.
   publishVoiceContext({ project: requestedProject, access: boardData.access, primary: boardData.primary === true });
@@ -470,8 +479,28 @@ function renderCard(card, color, i, nestedIds) {
   return el;
 }
 
+const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human']);
+
+function isHumanMoveAllowed(from, to, card, boardData) {
+  if (!from || !to || from === to) return false;
+  if (to === 'Review') return true;
+  if (to === 'Planned' && from === 'Needs Human') return true;
+  if (to === 'Queue' && from === 'Planned') return true;
+
+  const stages = boardData?.config?.stages || {};
+  const isStageCol = stages[to] && !['Build', 'Verify'].includes(to);
+  if (isStageCol) {
+    if (to === 'Plan' && ['Review', 'Planned', 'Needs Human'].includes(from)) return true;
+  }
+
+  if (!ORCH_ONLY.has(to) && to !== 'Queue' && !stages[to]) return true;
+
+  return false;
+}
+
 function clearDropIndicators() {
   document.querySelectorAll('.column.drag-over').forEach((el) => el.classList.remove('drag-over'));
+  document.querySelectorAll('.column.drag-invalid').forEach((el) => el.classList.remove('drag-invalid'));
   document.querySelectorAll('.card.drop-before').forEach((el) => el.classList.remove('drop-before'));
   document.querySelectorAll('.col-cards.drop-at-end').forEach((el) => el.classList.remove('drop-at-end'));
   document.querySelectorAll('.col-cards[data-drop-before]').forEach((el) => delete el.dataset.dropBefore);
@@ -480,10 +509,24 @@ function clearDropIndicators() {
 function wireDrop(colEl, listEl) {
   colEl.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
     const source = findBoardCard(draggedCardId);
     clearDropIndicators();
-    if (source?.status !== colEl.dataset.status) {
+    if (!source) return;
+
+    const targetCol = colEl.dataset.status;
+    const sameColumn = source.status === targetCol;
+    const allowed = sameColumn || isHumanMoveAllowed(source.status, targetCol, source, boardData);
+
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = allowed ? 'move' : 'none';
+    }
+
+    if (!allowed) {
+      colEl.classList.add('drag-invalid');
+      return;
+    }
+
+    if (!sameColumn) {
       colEl.classList.add('drag-over');
       return;
     }
@@ -506,16 +549,23 @@ function wireDrop(colEl, listEl) {
     e.preventDefault();
     const id = e.dataTransfer.getData('text/todomd-id');
     const source = findBoardCard(id);
-    const sameColumn = source?.status === colEl.dataset.status;
+    const targetCol = colEl.dataset.status;
+    const sameColumn = source?.status === targetCol;
     const beforeId = listEl.dataset.dropBefore || null;
     clearDropIndicators();
     if (!id) return;
+
+    if (!sameColumn && !isHumanMoveAllowed(source?.status, targetCol, source, boardData)) {
+      toast(`${targetCol} is set by the orchestrator`);
+      return;
+    }
+
     try {
       const action = sameColumn ? 'reorder' : 'move';
       const res = await fetch(`/api/cards/${id}/${action}?project=${encodeURIComponent(currentProject)}`, {
         method: 'POST',
         headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify(sameColumn ? { beforeId } : { status: colEl.dataset.status }),
+        body: JSON.stringify(sameColumn ? { beforeId } : { status: targetCol }),
       });
       const out = await res.json();
       if (!res.ok) toast(out.error || 'move failed');
@@ -600,6 +650,9 @@ function closeDrawer() {
   drawerBackground.forEach((el) => { el.inert = false; });
   drawerOpenSeq++; // a pending open must not re-show the modal after this close
   drawerCard = null;
+  if (location.hash) {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
   const target = drawerReturnFocus;
   drawerReturnFocus = null;
   if (target?.isConnected) target.focus();
@@ -629,6 +682,9 @@ async function openDrawer(id) {
   // to replace the currently rendered card. During a slow child fetch the old
   // card remains visible, so its controls must continue to target that old ID.
   drawerCard = id;
+  if (location.hash !== '#' + id) {
+    history.replaceState(null, '', '#' + id);
+  }
   $('#run-log').textContent = '';
   $('#drawer-run').hidden = true;
   $('#drawer-cancel').hidden = !runStates[id];
@@ -704,9 +760,15 @@ async function openDrawer(id) {
   $('#route-skill').value = card.data.skill || '';
   $('#route-assignee').value = card.data.assignee || '';
   const cols = boardData?.config?.columns || [];
-  $('#move-select').innerHTML = cols
+  const optionsHtml = cols
     .filter((c) => c !== card.data.status)
-    .map((c) => `<option>${esc(c)}</option>`).join('');
+    .map((c) => {
+      const allowed = isHumanMoveAllowed(card.data.status, c, card, boardData);
+      return `<option value="${esc(c)}"${allowed ? '' : ' disabled'}>${esc(c)}${allowed ? '' : ' (orchestrator only)'}</option>`;
+    }).join('');
+  $('#move-select').innerHTML = optionsHtml;
+  const firstAllowed = cols.find((c) => c !== card.data.status && isHumanMoveAllowed(card.data.status, c, card, boardData));
+  if (firstAllowed) $('#move-select').value = firstAllowed;
   // archive / delete controls
   drawerArchived = !!card.data.archived;
   $('#drawer-archive').textContent = drawerArchived ? 'restore' : 'archive';
@@ -943,7 +1005,7 @@ async function backfillRunLog(id) {
     const { agent, events } = await api(`cards/${id}/runlog?project=${encodeURIComponent(currentProject)}`);
     if (id !== drawerCard) return; // the drawer moved on while we were fetching
     $('#run-log').textContent = '';
-    for (const ev of events) appendRunEvent(agent === 'codex' ? { vendor: 'codex', ...ev } : ev);
+    for (const ev of events) appendRunEvent(agent !== 'claude' ? { vendor: agent, ...ev } : ev);
     $('#drawer-run').hidden = !(running || events.length);
     $('#drawer-run .run-title').textContent = running ? 'live run' : 'last run';
   } catch {
@@ -962,29 +1024,47 @@ function logLine(cls, text) {
 }
 
 function appendRunEvent(event) {
-  if (event.vendor === 'codex') {
-    if (event.type === 'runner-diagnostic') {
-      const exit = event.spawnError ? `start error ${event.spawnError}`
-        : event.signal ? `signal ${event.signal}` : `exit ${event.exitCode}`;
-      const output = event.structuredOutput != null
-        ? JSON.stringify(event.structuredOutput)
-        : event.finalMessage || '(none)';
-      logLine('log-sys',
-        `Codex executable: ${event.executable}\nworking directory: ${event.cwd}\nresult: ${exit}` +
-        `\nstandard error: ${event.stderr || '(empty)'}\nfinal result: ${output}`);
-      return;
+  if (event.type === 'rate_limit_event') return;
+  if (event.type === 'system') {
+    if (event.subtype === 'init') {
+      logLine('log-sys', `· session ${event.session_id}`);
     }
-    const text = event.item?.text || event.item?.command || event.message || '';
-    logLine('log-tool', `▸ ${event.type}${text ? `: ${String(text).slice(0, 200)}` : ''}`);
     return;
   }
-  if (event.type === 'system' && event.subtype === 'init') {
-    logLine('log-sys', `· session ${event.session_id}`);
-  } else if (event.type === 'assistant') {
-    for (const block of event.message?.content || []) {
-      if (block.type === 'text' && block.text) logLine('log-text', block.text);
-      else if (block.type === 'tool_use') logLine('log-tool', `▸ ${block.name}`);
+  if (event.type === 'runner-diagnostic') {
+    const exit = event.spawnError ? `start error ${event.spawnError}`
+      : event.signal ? `signal ${event.signal}` : `exit ${event.exitCode}`;
+    const output = event.structuredOutput != null
+      ? JSON.stringify(event.structuredOutput)
+      : event.finalMessage || '(none)';
+    logLine('log-sys',
+      `${event.vendor || 'agent'} executable: ${event.executable}\nworking directory: ${event.cwd}\nresult: ${exit}` +
+      `\nstandard error: ${event.stderr || '(empty)'}\nfinal result: ${output}`);
+    return;
+  }
+  if (event.type === 'assistant' || event.message?.content) {
+    const content = event.message?.content || (Array.isArray(event.content) ? event.content : []);
+    for (const block of content) {
+      if (block.type === 'text' && block.text) {
+        logLine('log-text', block.text);
+      } else if (block.type === 'thinking' && block.thinking) {
+        const snippet = block.thinking.trim();
+        if (snippet) logLine('log-sys', `🧠 ${snippet.slice(0, 300)}${snippet.length > 300 ? '…' : ''}`);
+      } else if (block.type === 'tool_use') {
+        const detail = block.input?.path || block.input?.command || block.input?.pattern || '';
+        logLine('log-tool', `▸ ${block.name}${detail ? `: ${detail}` : ''}`);
+      }
     }
+    return;
+  }
+  if (event.text || event.item?.text) {
+    logLine('log-text', event.text || event.item?.text);
+    return;
+  }
+  if (['codex', 'gemini', 'kimi'].includes(event.vendor)) {
+    const text = event.item?.command || event.message || '';
+    if (text) logLine('log-tool', `▸ ${event.type}: ${String(text).slice(0, 200)}`);
+    return;
   }
 }
 
@@ -1444,8 +1524,13 @@ $('#welcome-close').addEventListener('click', () => {
   $('#welcome-backdrop').hidden = true;
   localStorage.setItem('todomd-guided', '1');
 });
-$('#welcome-backdrop').addEventListener('click', (e) => {
-  if (e.target.id === 'welcome-backdrop') { $('#welcome-backdrop').hidden = true; localStorage.setItem('todomd-guided', '1'); }
+window.addEventListener('hashchange', () => {
+  const hash = (location.hash || '').slice(1);
+  if (hash && /^task-[\w-]+$/.test(hash)) {
+    if (drawerCard !== hash) openDrawer(hash);
+  } else if (drawerCard) {
+    closeDrawer();
+  }
 });
 
 loadProjects().then(loadBoard).then(connectWs).then(() => {
