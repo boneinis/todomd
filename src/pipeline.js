@@ -1008,6 +1008,7 @@ export async function retryVerification(project, id) {
   // landing in that window flips claim.cancelled, which verify() unwinds at
   // admission. No explicit
   // withoutRepoLockContext here: scheduler.admitEntry() already wraps run().
+  sendState(project, id, 'queued', 'Verify');
   scheduler.schedule(project, id, 'Verify',
     () => verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim),
     {
@@ -1406,6 +1407,7 @@ function enqueueBuild(project, id) {
 function scheduleBuild(project, id, retry) {
   const owner = pending.get(runKey(project.name, id)) || null;
   if (owner) owner.stage = 'Build';
+  sendState(project, id, 'queued', 'Build');
   scheduler.schedule(project, id, 'Build', () => buildChain(project, id, retry, null, owner), {
     onDefer: onDeferState(project, id, 'Build'),
   }).catch((err) => pipelineError(project, id, err, owner));
@@ -1418,6 +1420,7 @@ function scheduleBuild(project, id, retry) {
 function scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
   const owner = pending.get(runKey(project.name, id)) || null;
   if (owner) owner.stage = 'Verify';
+  sendState(project, id, 'queued', 'Verify');
   scheduler.schedule(project, id, 'Verify',
     () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
       isRerun, priorFindings, null, owner),
@@ -1443,6 +1446,7 @@ const CI_DETAIL_MAX = 2000;
 function scheduleCi(project, id, command, next) {
   const owner = pending.get(runKey(project.name, id)) || null;
   if (owner) owner.stage = 'CI';
+  sendState(project, id, 'queued', 'CI');
   scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next, owner), {
     onDefer: onDeferState(project, id, 'CI'),
   }).catch((err) => pipelineError(project, id, err, owner));
