@@ -113,9 +113,9 @@ The first implementation failed independent review. The fresh build must address
 
 2. `src/pipeline.js:1454-1455` claims to retain a bounded output tai
 - 2026-08-03 01:35Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
-  - attempts_exhausted: The adversarial review found a reachable pending-claim leak in src/pipeline.js. The old processQueue(...).finally() always removed its exact pending entry, including abnormal terminal paths. That guarantee was replaced with cleanup only when sendState(..., 'idle') executes. However, buildChain returns directly when readCard() finds the card missing (line 1534), and pipelineError swallows a failed
+  - attempts_exhausted: The adversarial review found a reachable pending-claim leak in src/pipeline.js. The old processQueue(...).finally() always removed its exact pending entry, including abnormal terminal paths. That guarantee was replaced with cleanup only when sendState(..., 'idle') executes. However, buildChain returns directly when readCard() finds the card missing (line 1534), and pipelineError swallows a failed 
 - 2026-08-03 01:50Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
-  - attempts_exhausted: Real cross-project governor bug in src/scheduler.js:107-118: combinedResourceThresholds() folds thresholds from every project, including projects with resources.enabled:false, then enables the shared governor if any project is enabled. Thus a disabled project's stricter thresholds can defer work globally. Reproduced with an enabled project using safe memory.defer=0.99 and a disabled project using
+  - attempts_exhausted: Real cross-project governor bug in src/scheduler.js:107-118: combinedResourceThresholds() folds thresholds from every project, including projects with resources.enabled:false, then enables the shared governor if any project is enabled. Thus a disabled project's stricter thresholds can defer work globally. Reproduced with an enabled project using safe memory.defer=0.99 and a disabled project using 
 - 2026-08-03 01:59Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: The full suite passed with local-socket permission: 529 unit/integration tests and 30 UI tests. However, adversarial review found two reachable ownership bugs:
 
