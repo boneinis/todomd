@@ -1,7 +1,7 @@
 ---
 id: task-0042
 title: Surface resource state and deferral reasons on the board
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
@@ -10,7 +10,7 @@ parent: task-0021
 created_date: 2026-08-02
 source: chunk
 assignee: 
-agent: claude
+agent: gemini
 triaged: n/a (chunk 4/4 of task-0021)
 session_id:
 worktree:
