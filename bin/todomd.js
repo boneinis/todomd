@@ -118,7 +118,10 @@ if (cmd === 'stop') {
     // the old behavior and signal it, rather than refusing to stop the server.
     let cmdline = null;
     try {
-      cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      // -ww prevents display-width truncation. Without it, a long worktree
+      // command can be cut immediately after a /TODOMD path segment and make
+      // the token matcher misidentify an unrelated recycled PID as the server.
+      cmdline = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     } catch { /* no ps on this platform — skip the check */ }
     if (cmdline !== null && !isTodomdServerCommand(cmdline)) {
       console.error(`pid ${pid} is not a todomd server — stale pid file? remove ~/.todomd/server.pid`);
@@ -228,7 +231,7 @@ if (cmd === 'serve') {
     const pid = Number(pidStr);
     if (pid && pid !== process.pid) {
       process.kill(pid, 0); // throws if dead → stale pid file, fall through
-      const cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const cmdline = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
       if (isTodomdServerCommand(cmdline)) {
         const runningPort = Number(portStr) || port;
         console.error(`todomd is already running on port ${runningPort} — open http://127.0.0.1:${runningPort} or run \`todomd stop\``);

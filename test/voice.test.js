@@ -671,12 +671,12 @@ test('a chain claimed between spawns counts as live everywhere: summary, cancel,
 
     assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
     assert.equal(fs.existsSync(marker), false, 'no agent child yet — this is the pending-only window');
-    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'in progress' });
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'Build' });
 
     const s = voice.buildVoiceSummary(p);
     assert.equal(s.activeRuns.length, 1, 'a claimed chain is an active run');
     assert.doesNotMatch(s.text, /Nothing building/, 'the summary must not report an idle board');
-    assert.match((await voice.buildCardStatus(p, 'task-0001')).text, /running in progress/);
+    assert.match((await voice.buildCardStatus(p, 'task-0001')).text, /running Build/);
 
     // the false idle used to let a "Yes To-do" retriage cancel this chain
     const r = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
@@ -687,7 +687,7 @@ test('a chain claimed between spawns counts as live everywhere: summary, cancel,
     const c = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'cancel' });
     assert.equal(c.status, 200);
     assert.equal(c.confirmation.tier, 'visible');
-    assert.equal(c.readback, 'cancel the active run for task-0001');
+    assert.equal(c.readback, 'cancel the running build for task-0001');
     // This fixture deliberately holds the repository transaction open. A real
     // reject must wait for that transaction to revalidate atomically, so clear
     // the test-only proposal synchronously instead of deadlocking the fixture.

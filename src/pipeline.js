@@ -671,6 +671,7 @@ export async function humanMove(project, id, to) {
   const tracked = runs.get(key);
   const triageClaim = triaging.get(key);
   const triggerClaim = triggerClaims.get(key);
+  const queued = scheduler.isQueued(project.name, id);
 
   // Preserve the long-standing "approve as soon as Planned appears" behavior:
   // a direct human move waits for the last trigger-stage commit to settle, then
@@ -683,7 +684,7 @@ export async function humanMove(project, id, to) {
       return humanMove(project, id, to);
     }
   }
-  if ((tracked || pend || triageClaim || triggerClaim) && to !== 'Review') {
+  if ((tracked || pend || triageClaim || triggerClaim || queued) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
@@ -711,6 +712,14 @@ export async function humanMove(project, id, to) {
       triggerClaim.cancelled = true;
       triggerClaim.revertTo = 'Review';
       return { ok: true, cancelled: true };
+    }
+    // A first Build has no worktree/pending owner until admission. If it is
+    // still queued (manual pause, capacity, or governor pressure), remove that
+    // exact scheduler entry before moving the card so it cannot later wake up
+    // and overwrite this human retriage.
+    if (queued) {
+      scheduler.dequeue(project.name, id);
+      sendState(project, id, 'idle');
     }
     retryFindings.delete(key);
     recoveryBuilds.delete(key);
@@ -970,22 +979,24 @@ export async function retryVerification(project, id) {
     worktreeAbs, branch: card.data.worktree, attempt, maxAttempts,
     lastVerdict: verification.last_verdict || '',
   };
-  triggerClaims.set(key, claim);
+  // Unlike a one-shot custom trigger, Retry Verification can continue into a
+  // repair Build. Use the same object as the persistent build-flow owner so
+  // the card remains live across Verify -> queued Build.
+  pending.set(key, claim);
   bumpRunGeneration(project.name, id);
   // A human-triggered retry is still a Verify: it asks the scheduler for a
   // Verify-column admission like every other start point, so the global,
   // column, per-project and governor gates all apply to it (a retry pressed
   // under resource pressure stays queued with a deferredReason instead of
-  // spawning). The claim above is set BEFORE scheduling and covers the whole
-  // queued window — hasLiveRun() reads triggerClaims, so the dedupe guard
-  // still holds while the entry waits, and a cancel() landing in that window
-  // flips claim.cancelled, which verify() unwinds at admission. No explicit
+  // spawning). The persistent claim above is set BEFORE scheduling and covers
+  // both this queued window and any repair Build that follows. A cancel()
+  // landing in that window flips claim.cancelled, which verify() unwinds at
+  // admission. No explicit
   // withoutRepoLockContext here: scheduler.admitEntry() already wraps run().
   scheduler.schedule(project, id, 'Verify',
     () => verify(project, id, attempt, maxAttempts, card.data.session_id || '', worktreeAbs, card.data.worktree, false, '', claim),
     { onDefer: onDeferState(project, id, 'Verify') })
-    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err)))
-    .finally(() => { if (triggerClaims.get(key) === claim) triggerClaims.delete(key); });
+    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err), claim));
   return { ok: true };
 }
 
@@ -1351,7 +1362,7 @@ function enqueueBuild(project, id) {
     const recovery = recoveryBuilds.get(key) || null;
     recoveryBuilds.delete(key);
     owner = {
-      project: project.name, card: id,
+      project: project.name, card: id, stage: 'Build',
       cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
     };
     pending.set(key, owner);
@@ -1369,6 +1380,7 @@ function enqueueBuild(project, id) {
 // continuously from the card's first admission, so no re-claim here.
 function scheduleBuild(project, id, retry) {
   const owner = pending.get(runKey(project.name, id)) || null;
+  if (owner) owner.stage = 'Build';
   scheduler.schedule(project, id, 'Build', () => buildChain(project, id, retry, null, owner), {
     onDefer: onDeferState(project, id, 'Build'),
   }).catch((err) => pipelineError(project, id, err, owner));
@@ -1380,6 +1392,7 @@ function scheduleBuild(project, id, retry) {
 // inert and a Build slot is never held for the whole Build-to-Verify chain.
 function scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings) {
   const owner = pending.get(runKey(project.name, id)) || null;
+  if (owner) owner.stage = 'Verify';
   scheduler.schedule(project, id, 'Verify',
     () => verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, isRerun, priorFindings),
     { onDefer: onDeferState(project, id, 'Verify') },
@@ -1403,6 +1416,7 @@ const CI_DETAIL_MAX = 2000;
 // command profiles, is task-0041's scope).
 function scheduleCi(project, id, command, next) {
   const owner = pending.get(runKey(project.name, id)) || null;
+  if (owner) owner.stage = 'CI';
   scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next), {
     onDefer: onDeferState(project, id, 'CI'),
   }).catch((err) => pipelineError(project, id, err, owner));
@@ -2329,11 +2343,12 @@ export function getRunStates(projectName) {
   // before the Verify entry above exists yet, verify→merge) has no `runs`
   // entry yet still counts as live for hasLiveRun/cancel/humanMove. Report it
   // too, or callers that ask "what is running?" see a false idle in exactly
-  // the windows the pipeline treats as hands-off. The pending entry carries
-  // no stage, so the label is generic.
+  // the windows the pipeline treats as hands-off. Owners created by the shared
+  // scheduler carry their latest stage; legacy/custom owners keep the generic
+  // fallback.
   for (const entry of pending.values()) {
     if (entry.project !== projectName) continue;
-    if (!states[entry.card]) states[entry.card] = { state: 'running', stage: 'in progress' };
+    if (!states[entry.card]) states[entry.card] = { state: 'running', stage: entry.stage || 'in progress' };
   }
   for (const claim of triaging.values()) {
     if (claim.project === projectName && !states[claim.card]) {

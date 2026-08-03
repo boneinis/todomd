@@ -143,6 +143,34 @@ test('manual queue resume never launches dispatcher-managed budget work', async 
   }
 });
 
+test('retriaging an initial Build while the queue is paused removes its scheduler entry', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  pipeline.pauseQueue(p);
+
+  try {
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Queue')).ok, true);
+    assert.equal(scheduler.isQueued(p.name, 'task-0001'), true);
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Review')).ok, true);
+    assert.equal(status(repo, 'task-0001'), 'Review');
+    assert.equal(scheduler.isQueued(p.name, 'task-0001'), false,
+      'the stale Build cannot admit after the human retriage');
+
+    pipeline.resumeQueue(p);
+    await sleep(150);
+    assert.equal(status(repo, 'task-0001'), 'Review');
+    assert.ok(!fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')));
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('scheduler: one authoritative global cap governs two real projects with differing configured globals', async () => {
   isolateHome();
   useFakeAgent({ hang: 'build', verdict: 'pass', build: 'good' });
@@ -1911,12 +1939,60 @@ test('Retry Verification is admitted through the scheduler: under pressure it st
     sample = { cpuLoad: 0.05 }; // recovered
     scheduler.tick();
     await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
-    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false, 'the trigger claim is released when the run settles');
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.quick });
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false,
+      'the persistent retry claim is released after terminal finalization settles');
   } finally {
     pipeline.forgetProject(p.name);
     await pipeline.killAllChildren({ graceMs: 1000 });
     clearFakeAgent();
     scheduler.resetState();
+  }
+});
+
+test('a failed direct Retry Verification keeps ownership while its repair Build waits for admission', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  useFakeAgent({ verdict: 'fail', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const configPath = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(configPath,
+    fs.readFileSync(configPath, 'utf8').replace('concurrency: 1', 'concurrency: 2')
+    + 'scheduler:\n  columns:\n    Build: 1\n');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'configure occupied Build column']);
+  const p = project(repo);
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+  let releaseBlocker;
+  const blocker = scheduler.schedule(p, 'blocker', 'Build', () => new Promise((resolve) => {
+    releaseBlocker = resolve;
+  }));
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    await until(() => scheduler.queuedEntries(p.name)
+      .some((entry) => entry.card === 'task-0001' && entry.column === 'Build'),
+    { timeout: BUDGET.stage });
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true,
+      'the retry owns the card across Verify -> queued repair Build');
+    assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, false,
+      'a second recovery cannot overlap the queued repair');
+    assert.deepEqual(await pipeline.humanMove(p, 'task-0001', 'Review'),
+      { ok: true, cancelled: true });
+
+    releaseBlocker();
+    await blocker;
+    await until(() => status(repo, 'task-0001') === 'Review'
+      && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+    assert.equal(fs.existsSync(worktree), false,
+      'cancelling the owned repair flow unwinds its preserved worktree');
+  } finally {
+    releaseBlocker?.();
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
   }
 });
 
