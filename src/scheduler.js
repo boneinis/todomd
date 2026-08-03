@@ -86,7 +86,10 @@ function combinedColumnLimit(column) {
 
 function projectConcurrencyLimit(project) {
   try {
-    const c = loadConfig(project.path).concurrency;
+    // The legacy queue compared `active < concurrency`, so JavaScript's
+    // numeric coercion accepted a quoted YAML value such as `"3"`. Preserve
+    // that behavior when routing the same setting through the scheduler.
+    const c = Number(loadConfig(project.path).concurrency);
     return Number.isFinite(c) && c > 0 ? c : 1;
   } catch {
     return 1;

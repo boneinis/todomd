@@ -115,6 +115,18 @@ test('a board that only ever configured concurrency keeps that exact effective B
   assert.equal(started, 3, 'exactly `concurrency` cards start, unchanged from before the scheduler existed');
 });
 
+test('a quoted legacy concurrency value keeps its previous numeric coercion', () => {
+  const p = makeProject('legacy-quoted', 'concurrency: "3"\n');
+  scheduler.setGovernor(createGovernor({ thresholds: resourcesConfig({}), sample: () => ({}) }));
+
+  let started = 0;
+  for (let i = 0; i < 5; i++) {
+    const j = deferredRun();
+    scheduler.schedule(p, `card-${i}`, 'Build', () => { started++; return j.run(); });
+  }
+  assert.equal(started, 3, 'quoted YAML concurrency retains the old queue\'s numeric coercion');
+});
+
 test('an unrelated project\'s default concurrency never throttles another project\'s Build column', () => {
   // Regression: columns.Build must NOT default to a project's own
   // `concurrency` — that value is combined via Math.min across every known
