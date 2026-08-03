@@ -1,7 +1,7 @@
 ---
 id: task-0041
 title: Add the CI column with quick and full profiles
-status: Verify
+status: Build
 type: module
 priority: medium
 labels: []
@@ -12,12 +12,12 @@ source: chunk
 assignee: 
 agent: gemini
 triaged: n/a (chunk 3/4 of task-0021)
-session_id: 9d8353a7-41bd-4569-9c6d-caffbb0b1023
+session_id: 5e7ab1a5-37eb-470a-bf20-8c28ba658518
 worktree: todomd/task-0041
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 board_order: 4
 base_branch: main
-cost_usd: 28.9275
+cost_usd: 30.6869
 ---
 
 ## Description
@@ -73,3 +73,7 @@ project — the migration path in step 1 is the load-bearing part of this chunk.
 - 2026-08-03 15:44Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
 - 2026-08-03 15:59Z · Build attempt 2 · 73 turns · $13.305 · ok
+- 2026-08-03 16:02Z · CI attempt 2 · 129.0s · `npm test` passed
+- 2026-08-03 16:10Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail
+  - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
+- 2026-08-03 16:12Z · Escalate attempt 2 · 16 turns · $1.759 · diagnosis complete
