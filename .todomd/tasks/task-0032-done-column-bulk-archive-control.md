@@ -1,7 +1,7 @@
 ---
 id: task-0032
 title: Done column bulk archive control
-status: Done
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -16,6 +16,7 @@ session_id:
 worktree:
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch:
+cost_usd: 0
 ---
 
 ## Description
@@ -87,3 +88,4 @@ Third risk: `releaseCardResources` / `cascadeEpicCleanup` run per card — an
 epic in Done cascades to its children exactly as a single archive would.
 
 ## Run Log
+- 2026-08-04 22:32Z · Build attempt 1 · 0 turns · $0.000 · ok
