@@ -1,7 +1,7 @@
 ---
 id: task-0043
 title: Fetch and merge remote board metadata safely
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -17,6 +17,7 @@ session_id:
 worktree: todomd/task-0043
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 0
 ---
 
 ## Description
@@ -53,3 +54,4 @@ Fetch and merge remote board metadata safely
    conflict when local and remote both changed the same file since the last sync.
 
 ## Run Log
+- 2026-08-04 15:55Z · Build attempt 1 · 0 turns · $0.000 · ok
