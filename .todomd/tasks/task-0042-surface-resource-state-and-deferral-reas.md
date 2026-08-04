@@ -1,7 +1,7 @@
 ---
 id: task-0042
 title: Surface resource state and deferral reasons on the board
-status: Queue
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -13,8 +13,9 @@ assignee:
 agent: gemini
 triaged: n/a (chunk 4/4 of task-0021)
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0042
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+base_branch: main
 ---
 
 ## Description
