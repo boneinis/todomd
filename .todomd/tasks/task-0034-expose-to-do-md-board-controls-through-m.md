@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Build
+status: Verify
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -99,3 +99,4 @@ ok 28 - UI voice: a viewer link never shows the mic control
 # todo 0
 # duration_ms 58484.260708
 - 2026-08-03 18:15Z · Build attempt 1 · 1 turns · $0.000 · failed: agent
+- 2026-08-04 22:32Z · Build attempt 1 · 0 turns · $0.000 · ok
