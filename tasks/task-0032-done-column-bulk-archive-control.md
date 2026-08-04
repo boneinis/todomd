@@ -1,7 +1,7 @@
 ---
 id: task-0032
 title: Done column bulk archive control
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
@@ -10,7 +10,7 @@ parent: task-0027
 created_date: 2026-07-31
 source: chunk
 assignee:
-agent: claude
+agent: gemini
 triaged: n/a (chunk 2/2 of task-0027)
 session_id:
 worktree:
