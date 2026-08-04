@@ -1,7 +1,7 @@
 ---
 id: task-0043
 title: Fetch and merge remote board metadata safely
-status: Planned
+status: Queue
 type: module
 priority: medium
 labels: []
@@ -10,7 +10,7 @@ parent: task-0033
 created_date: 2026-08-02
 source: chunk
 assignee: 
-agent: claude
+agent: gemini
 model: claude-sonnet-5
 triaged: n/a (chunk 1/2 of task-0033)
 session_id:
