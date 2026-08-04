@@ -1,7 +1,7 @@
 ---
 id: task-0043
 title: Fetch and merge remote board metadata safely
-status: Build
+status: Verify
 type: module
 priority: medium
 labels: []
@@ -77,4 +77,4 @@ ok 551 - invalidateProject drops every pending proposal for a removed repository
 # skipped 0
 # todo 0
 # duration_ms 56053.693875
-
+- 2026-08-04 17:07Z · Build attempt 1 · 0 turns · $0.000 · ok
