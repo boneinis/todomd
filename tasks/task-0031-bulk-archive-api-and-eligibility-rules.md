@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -95,3 +95,4 @@ Bulk archive API and eligibility rules
 - 2026-08-02 15:47Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - attempts_exhausted: Reachable identity-binding bug: src/pipeline.js validates eligibility using loadBoard entries keyed by frontmatter `id`, but then readCard/setArchived resolve the target by filename. Reproduced with `task-0002-card.md` in Queue and a later `task-0003-card.md` whose frontmatter ID was edited to `task-0002` and status was Done. Requesting `task-0002` returned `{archived:["task-0002"],failed:[]}` whi
 - 2026-08-03 18:15Z · Build attempt 1 · 1 turns · $0.000 · failed: agent
+- 2026-08-04 15:56Z · Build attempt 1 · 0 turns · $0.000 · ok
