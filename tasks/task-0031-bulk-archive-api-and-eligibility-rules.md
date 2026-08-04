@@ -1,7 +1,7 @@
 ---
 id: task-0031
 title: Bulk archive API and eligibility rules
-status: Needs Human
+status: Planned
 type: improvement
 priority: medium
 labels: []
@@ -14,11 +14,11 @@ agent: gemini
 model:
 effort:
 session_id: 2a1925e5-0804-49ff-b9fd-e4c618adca2e
-worktree: todomd/task-0031
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
-base_branch: main
+worktree:
+verification: { attempts: 0, max_attempts: 3, last_verdict:  }
+base_branch:
 cost_usd: 11.4863
-needs_human_reason: success
+needs_human_reason:
 recovery_stage:
 ---
 
