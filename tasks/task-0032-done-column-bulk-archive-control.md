@@ -1,7 +1,7 @@
 ---
 id: task-0032
 title: Done column bulk archive control
-status: Needs Human
+status: Queue
 type: improvement
 priority: medium
 labels: []
@@ -14,10 +14,10 @@ agent: gemini
 triaged: n/a (chunk 2/2 of task-0027)
 session_id:
 worktree:
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 0, max_attempts: 3, last_verdict:  }
 base_branch:
 cost_usd: 0
-needs_human_reason: worktree_failed
+needs_human_reason:
 recovery_stage:
 ---
 
