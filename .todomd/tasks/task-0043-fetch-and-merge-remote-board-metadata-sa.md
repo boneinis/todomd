@@ -1,7 +1,7 @@
 ---
 id: task-0043
 title: Fetch and merge remote board metadata safely
-status: Needs Human
+status: Queue
 type: module
 priority: medium
 labels: []
@@ -15,10 +15,10 @@ model: claude-sonnet-5
 triaged: n/a (chunk 1/2 of task-0033)
 session_id:
 worktree: todomd/task-0043
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 0, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 0
-needs_human_reason: ci_failed
+needs_human_reason:
 recovery_stage:
 ---
 
