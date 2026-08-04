@@ -1,7 +1,7 @@
 ---
 id: task-0043
 title: Fetch and merge remote board metadata safely
-status: Verify
+status: Needs Human
 type: module
 priority: medium
 labels: []
@@ -18,6 +18,8 @@ worktree: todomd/task-0043
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 cost_usd: 0
+needs_human_reason: ci_failed
+recovery_stage:
 ---
 
 ## Description
@@ -55,3 +57,24 @@ Fetch and merge remote board metadata safely
 
 ## Run Log
 - 2026-08-04 15:55Z · Build attempt 1 · 0 turns · $0.000 · ok
+- 2026-08-04 15:56Z · CI attempt 1 · 56.2s · `npm test` failed
+  - ci_failed: `npm test` exited 1
+ze and bound user-controlled card text
+ok 544 - voice summaries and card status sanitize and bound u
+…
+osal for a removed repository
+ok 551 - invalidateProject drops every pending proposal for a removed repository
+  ---
+  duration_ms: 95.243625
+  type: 'test'
+  ...
+1..551
+# tests 551
+# suites 0
+# pass 550
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 56053.693875
+
