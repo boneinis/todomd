@@ -1,7 +1,7 @@
 ---
 id: task-0042
 title: Surface resource state and deferral reasons on the board
-status: Verify
+status: Done
 type: improvement
 priority: medium
 labels: []
@@ -13,9 +13,9 @@ assignee:
 agent: gemini
 triaged: n/a (chunk 4/4 of task-0021)
 session_id:
-worktree: todomd/task-0042
+worktree:
 verification: { attempts: 2, max_attempts: 3, last_verdict:  }
-base_branch: main
+base_branch:
 cost_usd: 0
 ---
 
@@ -52,3 +52,5 @@ remote CI. Only local job state is displayed.
 
 ## Run Log
 - 2026-08-04 22:32Z · Build attempt 2 · 0 turns · $0.000 · ok
+- 2026-08-04 22:32Z · Build attempt 1 · 0 turns · $0.000 · ok
+- 2026-08-04 22:33Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
