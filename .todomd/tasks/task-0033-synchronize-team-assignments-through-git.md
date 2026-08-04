@@ -1,7 +1,7 @@
 ---
 id: task-0033
 title: Synchronize team assignments through GitHub
-status: Planned
+status: Queue
 type: improvement
 priority: high
 labels: [sync, github, team]
@@ -9,7 +9,7 @@ dependencies: []
 created_date: 2026-07-31
 source: ui
 assignee:
-agent: claude
+agent: gemini
 model: claude-sonnet-5
 effort: low
 session_id: 8ee5e756-4988-4ee5-b4d1-5249b2b3b92e
