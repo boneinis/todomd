@@ -1,7 +1,7 @@
 ---
 id: task-0032
 title: Done column bulk archive control
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -17,6 +17,8 @@ worktree:
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch:
 cost_usd: 0
+needs_human_reason: worktree_failed
+recovery_stage:
 ---
 
 ## Description
@@ -89,3 +91,5 @@ epic in Done cascades to its children exactly as a single archive would.
 
 ## Run Log
 - 2026-08-04 22:32Z · Build attempt 1 · 0 turns · $0.000 · ok
+- 2026-08-04 22:32Z · CI attempt 1 · 0.0s · `npm test` failed
+  - worktree_failed: worktree is gone: /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0032
