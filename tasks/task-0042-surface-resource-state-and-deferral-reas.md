@@ -1,7 +1,7 @@
 ---
 id: task-0042
 title: Surface resource state and deferral reasons on the board
-status: Build
+status: Verify
 type: improvement
 priority: medium
 labels: []
@@ -14,8 +14,9 @@ agent: gemini
 triaged: n/a (chunk 4/4 of task-0021)
 session_id:
 worktree: todomd/task-0042
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict:  }
 base_branch: main
+cost_usd: 0
 ---
 
 ## Description
@@ -50,3 +51,4 @@ Note: GitHub Actions stays the external safety net — this chunk adds no new
 remote CI. Only local job state is displayed.
 
 ## Run Log
+- 2026-08-04 22:32Z · Build attempt 2 · 0 turns · $0.000 · ok
