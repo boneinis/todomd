@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Build
+status: Needs Human
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -17,7 +17,7 @@ worktree: todomd/task-0034
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
 cost_usd: 15.4252
-needs_human_reason:
+needs_human_reason: error
 base_branch: main
 recovery_stage:
 board_order: 1
@@ -123,4 +123,6 @@ ok 551 - invalidateProject drops every pending proposal for a removed repository
 # skipped 0
 # todo 0
 # duration_ms 54173.493834
+- 2026-08-05 01:12Z · Build attempt 1 · 0 turns · $0.000 · failed: agent
+  - error: Error: timeout waiting for response
 
