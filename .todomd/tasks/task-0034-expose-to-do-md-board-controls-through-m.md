@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Verify
+status: Needs Human
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -17,7 +17,7 @@ worktree: todomd/task-0034
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
 cost_usd: 15.4252
-needs_human_reason:
+needs_human_reason: ci_failed
 base_branch: main
 recovery_stage:
 board_order: 1
@@ -103,3 +103,24 @@ ok 28 - UI voice: a viewer link never shows the mic control
 - 2026-08-04 22:32Z · CI attempt 1 · 0.0s · `npm test` failed
   - worktree_failed: worktree is gone: /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0034
 - 2026-08-05 00:52Z · Build attempt 1 · 0 turns · $0.000 · ok
+- 2026-08-05 00:53Z · CI attempt 1 · 54.4s · `npm test` failed
+  - ci_failed: `npm test` exited 1
+ize and bound user-controlled card text
+ok 544 - voice summaries and card status sanitize and bound
+…
+osal for a removed repository
+ok 551 - invalidateProject drops every pending proposal for a removed repository
+  ---
+  duration_ms: 95.230334
+  type: 'test'
+  ...
+1..551
+# tests 551
+# suites 0
+# pass 550
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 54173.493834
+
