@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Build
+status: Verify
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -102,3 +102,4 @@ ok 28 - UI voice: a viewer link never shows the mic control
 - 2026-08-04 22:32Z · Build attempt 1 · 0 turns · $0.000 · ok
 - 2026-08-04 22:32Z · CI attempt 1 · 0.0s · `npm test` failed
   - worktree_failed: worktree is gone: /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0034
+- 2026-08-05 00:52Z · Build attempt 1 · 0 turns · $0.000 · ok
