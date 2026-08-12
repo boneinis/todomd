@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Needs Human
+status: Verify
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -17,9 +17,9 @@ worktree: todomd/task-0034
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
 cost_usd: 15.4252
-needs_human_reason: bad_verdict
+needs_human_reason:
 base_branch: main
-recovery_stage: Verify
+recovery_stage:
 board_order: 1
 ---
 
