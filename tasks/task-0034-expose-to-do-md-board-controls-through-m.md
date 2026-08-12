@@ -12,14 +12,14 @@ assignee:
 agent: gemini
 model:
 effort:
-session_id: a5e9fec7-f856-4bfb-b1fa-ed792c962ed5
+session_id: b19d265e-05ab-4e53-8654-011fe973b93f
 worktree: todomd/task-0034
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-07-31
 cost_usd: 15.4252
-needs_human_reason: agent_error
+needs_human_reason: bad_verdict
 base_branch: main
-recovery_stage: Build
+recovery_stage: Verify
 board_order: 1
 ---
 
@@ -129,4 +129,26 @@ ok 551 - invalidateProject drops every pending proposal for a removed repository
 - 2026-08-12 23:13Z · Resume Build · continuing attempt 1 after agent_error in preserved worktree todomd/task-0034
 - 2026-08-12 23:13Z · Build attempt 1 · 0 turns · $0.000 · failed: agent
   - agent_error: warning: conversation "a5e9fec7-f856-4bfb-b1fa-ed792c962ed5" not found
-
+- 2026-08-12 23:19Z · Resume Build · continuing attempt 1 after agent_error in preserved worktree todomd/task-0034
+- 2026-08-12 23:19Z · Build attempt 1 · 0 turns · $0.000 · ok
+- 2026-08-12 23:20Z · CI attempt 1 · 102.1s · `npm test` failed
+  - ci_failed: `npm test` exited 1
+itize and bound user-controlled card text
+ok 548 - voice summaries and card status sanitize and boun
+…
+posal for a removed repository
+ok 555 - invalidateProject drops every pending proposal for a removed repository
+  ---
+  duration_ms: 249.362
+  type: 'test'
+  ...
+1..555
+# tests 555
+# suites 0
+# pass 554
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 101881.153167
+- 2026-08-12 23:28Z · CI recovery · preserved worktree repaired; focused MCP tests passed (9/9) and full `npm test` passed (560 core/API, 31 UI); ready for Verify-only retry
