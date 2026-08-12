@@ -178,7 +178,7 @@ test('Gemini Build is sandboxed, headless, routed, and never skips permissions g
   const events = [];
   const result = await runStage({
     vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build',
-    model: 'gemini-3.6-pro', effort: 'xhigh', onEvent: (e) => events.push(e),
+    model: 'gemini-3.1-pro-high', effort: 'xhigh', onEvent: (e) => events.push(e),
   }).done;
   delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_ARGV_LOG;
 
@@ -186,8 +186,8 @@ test('Gemini Build is sandboxed, headless, routed, and never skips permissions g
   assert.ok(argv.includes('--sandbox'));
   assert.deepEqual(argv.slice(argv.indexOf('--mode'), argv.indexOf('--mode') + 2), ['--mode', 'accept-edits']);
   assert.deepEqual(argv.slice(argv.indexOf('--output-format'), argv.indexOf('--output-format') + 2), ['--output-format', 'stream-json']);
-  assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'gemini-3.6-pro']);
-  assert.deepEqual(argv.slice(argv.indexOf('--effort'), argv.indexOf('--effort') + 2), ['--effort', 'high']);
+  assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'gemini-3.1-pro-high']);
+  assert.equal(argv.includes('--effort'), false, 'agy model ids with an effort suffix reject a second effort flag');
   assert.equal(argv.includes('--dangerously-skip-permissions'), false);
   assert.equal(result.sessionId, 'fake-gemini-session');
   assert.equal(result.envelope.subtype, 'success');
@@ -246,4 +246,27 @@ test('Gemini Verify preserves unsuccessful exit, stderr, and final message', asy
   assert.equal(result.diagnostic.stderr, 'permission profile unavailable\n');
   assert.equal(result.diagnostic.finalMessage, 'transport returned no verdict');
   assert.equal(result.diagnostic.structuredOutput, null);
+});
+
+test('Gemini real stream result preserves the primary infrastructure error', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  process.env.FAKE_GEMINI_REAL_STREAM = '1';
+  process.env.FAKE_GEMINI_NO_SESSION = '1';
+  process.env.FAKE_GEMINI_LAST_MESSAGE = 'invalid model selection: effort is not supported';
+  process.env.FAKE_GEMINI_STDERR = 'warning: conversation not found\n';
+  process.env.FAKE_GEMINI_EXIT = '1';
+  const dir = tmp('gemini-real-stream');
+  const result = await runStage({
+    vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build',
+    model: 'gemini-3.1-pro-high', effort: 'xhigh', logFile: path.join(dir, 'build.jsonl'),
+  }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_REAL_STREAM;
+  delete process.env.FAKE_GEMINI_NO_SESSION; delete process.env.FAKE_GEMINI_LAST_MESSAGE;
+  delete process.env.FAKE_GEMINI_STDERR; delete process.env.FAKE_GEMINI_EXIT;
+
+  assert.equal(result.envelope.is_error, true);
+  assert.match(result.envelope.result, /invalid model selection/);
+  assert.equal(result.diagnostic.finalMessage, 'invalid model selection: effort is not supported');
+  assert.equal(result.diagnostic.stderr, 'warning: conversation not found\n');
+  assert.equal(result.sessionId, null);
 });

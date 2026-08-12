@@ -316,7 +316,10 @@ function runGemini({
   // clamping xhigh/max to the highest enforceable value instead of silently
   // dropping effort altogether.
   const effectiveEffort = ['xhigh', 'max'].includes(effort) ? 'high' : effort;
-  if (['low', 'medium', 'high'].includes(effectiveEffort)) args.push('--effort', effectiveEffort);
+  // Current agy model ids may encode their effort (`...-high`). Passing a
+  // second --effort for those ids is rejected before a conversation starts.
+  const modelHasEffort = /-(?:low|medium|high)$/i.test(model || '');
+  if (!modelHasEffort && ['low', 'medium', 'high'].includes(effectiveEffort)) args.push('--effort', effectiveEffort);
 
   let schemaFile;
   if (jsonSchema) {
@@ -362,7 +365,7 @@ function runGemini({
           is_error: !ok,
           total_cost_usd: 0,
           num_turns: turns,
-          result: failed ? JSON.stringify(failed).slice(0, 500) : '',
+          result: lastMessage || (failed ? JSON.stringify(failed).slice(0, 500) : ''),
           structured_output: structuredOutput,
         },
         sessionId,
@@ -389,10 +392,13 @@ function runGemini({
       log?.write(line + '\n');
       try {
         const event = JSON.parse(line);
-        sessionId ||= event.thread_id || event.session_id || event?.thread?.id || null;
-        if (event.type === 'turn.completed') turns++;
-        if (event.type === 'turn.failed' || event.type === 'error') failed = event;
-        if (event.type === 'result') finalEvent = event;
+        const kind = event.type || event.event;
+        const body = kind === 'result' && event.result && typeof event.result === 'object'
+          ? event.result : event;
+        sessionId ||= body.thread_id || body.session_id || body.conversation_id || body?.thread?.id || null;
+        if (kind === 'turn.completed') turns++;
+        if (kind === 'turn.failed' || kind === 'error' || body.status === 'ERROR') failed = body;
+        if (kind === 'result') finalEvent = event;
         onEvent({ vendor: 'gemini', ...event });
       } catch { /* non-JSON line — skip */ }
     };
@@ -427,16 +433,21 @@ function runGemini({
       let structured;
       let lastMessage = lineBuf.trim();
       if (payload) {
-        sessionId ||= payload.thread_id || payload.session_id || payload.conversation_id || payload?.thread?.id || null;
-        structured = payload.structured_output ?? payload.structuredOutput ?? null;
-        const candidate = payload.result ?? payload.response ?? payload.message;
+        const kind = payload.type || payload.event;
+        const body = kind === 'result' && payload.result && typeof payload.result === 'object'
+          ? payload.result : payload;
+        sessionId ||= body.thread_id || body.session_id || body.conversation_id || body?.thread?.id || null;
+        structured = body.structured_output ?? body.structuredOutput ?? null;
+        const candidate = body.response ?? body.message ?? (typeof body.result === 'string' ? body.result : undefined);
         if (!structured && candidate && typeof candidate === 'object') structured = candidate;
         if (!structured && typeof candidate === 'string') {
           try { structured = JSON.parse(candidate); } catch {}
         }
-        if (typeof candidate === 'string') lastMessage = candidate;
+        if (body.status === 'ERROR') failed ||= body;
+        if (body.error) lastMessage = String(body.error);
+        else if (typeof candidate === 'string') lastMessage = candidate;
         else if (candidate !== undefined) lastMessage = JSON.stringify(candidate);
-        else lastMessage = JSON.stringify(payload);
+        else lastMessage = JSON.stringify(body);
       }
       finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
     });

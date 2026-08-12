@@ -439,7 +439,7 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr, diagnostic },
     if (cwd && !fs.existsSync(cwd)) return { kind: 'worktree_failed', detail: `worktree is gone: ${cwd}` };
     return { kind: 'cli_missing', detail: `${providerLabel(vendor, { diagnostic })} CLI not found on PATH` };
   }
-  const text = `${envelope?.result || ''} ${envelope?.subtype || ''} ${stderr || ''}`;
+  const text = `${envelope?.result || ''} ${envelope?.subtype || ''} ${stderr || ''} ${diagnostic?.finalMessage || ''}`;
   if (/hook.*cancelled|cancelled.*hook/i.test(text)) {
     return { kind: 'hook_cancelled', detail: 'the provider cancelled a lifecycle hook before it returned a verdict' };
   }
@@ -450,7 +450,8 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr, diagnostic },
     return { kind: 'auth', detail: `${providerLabel(vendor, { diagnostic })} CLI is not authenticated` };
   }
   if (envelope?.subtype === 'error_max_turns') return { kind: 'agent', detail: 'max turns reached' };
-  return { kind: 'agent', detail: envelope?.subtype || `exit ${exitCode}` };
+  return { kind: 'agent', detail: diagnosticSnippet(diagnostic?.finalMessage || envelope?.result)
+    || envelope?.subtype || `exit ${exitCode}` };
 }
 
 function diagnosticSnippet(value, max = 220) {
@@ -1388,7 +1389,7 @@ async function handleRunFailure(project, id, stageName, result, revertTo, vendor
     pauseForQuota(project);
     await orchMove(project, id, revertTo, 'usage limit');
   } else {
-    await toNeedsHuman(project, id, stageName, 'agent_error', result.stderr || failure.detail);
+    await toNeedsHuman(project, id, stageName, 'agent_error', failure.detail || result.stderr);
     return;
   }
   sendState(project, id, 'idle');
@@ -2012,7 +2013,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
       return parkForQuota(project, id, attempt, maxAttempts, retry?.findings);
     }
     return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? 'agent_error' : failure.kind,
-      result.stderr || failure.detail);
+      failure.detail || result.stderr);
   }
 
   await recordRun(project, id, 'Build', attempt, result, repair ? 'ok (escalation repair)' : 'ok');

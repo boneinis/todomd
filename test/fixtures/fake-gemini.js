@@ -21,10 +21,18 @@ const exitCode = Number(process.env.FAKE_GEMINI_EXIT || 0);
 const format = args[args.indexOf('--output-format') + 1];
 
 if (format === 'stream-json') {
-  process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fake-gemini-session' }) + '\n');
-  process.stdout.write(JSON.stringify({ type: 'turn.completed', session_id: 'fake-gemini-session' }) + '\n');
-  process.stdout.write(JSON.stringify({ type: 'result', subtype: exitCode ? 'error' : 'success', is_error: !!exitCode,
-    session_id: 'fake-gemini-session', result: process.env.FAKE_GEMINI_LAST_MESSAGE || 'done' }));
+  if (process.env.FAKE_GEMINI_REAL_STREAM) {
+    process.stdout.write(JSON.stringify({ event: 'result', result: {
+      conversation_id: process.env.FAKE_GEMINI_NO_SESSION ? '' : 'fake-gemini-session',
+      status: exitCode ? 'ERROR' : 'SUCCESS', response: exitCode ? '' : 'done',
+      error: exitCode ? (process.env.FAKE_GEMINI_LAST_MESSAGE || 'model selection failed') : '',
+    } }));
+  } else {
+    process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fake-gemini-session' }) + '\n');
+    process.stdout.write(JSON.stringify({ type: 'turn.completed', session_id: 'fake-gemini-session' }) + '\n');
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: exitCode ? 'error' : 'success', is_error: !!exitCode,
+      session_id: 'fake-gemini-session', result: process.env.FAKE_GEMINI_LAST_MESSAGE || 'done' }));
+  }
 } else {
   const body = process.env.FAKE_GEMINI_NO_VERDICT
     ? { session_id: 'fake-gemini-session', response: process.env.FAKE_GEMINI_LAST_MESSAGE || 'no verdict' }
