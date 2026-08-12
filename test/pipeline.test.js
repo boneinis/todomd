@@ -477,12 +477,12 @@ test('stage routing precedence: a column agent gates the queue; a card agent ove
 
   // column-level Build agent is an unsupported vendor — proves the gate reads the
   // column tier (the board default_agent is the supported `claude`, yet it fails)
-  await setStageRouting(repo, 'Build', { agent: 'gemini' });
+  await setStageRouting(repo, 'Build', { agent: 'unknown-agent' });
   writeCard(repo, 'task-0001', { status: 'Planned' });
   await patchFrontmatter(repo, 'task-0001', { agent: '' }); // clear card override → column tier applies
   let r = await pipeline.humanMove(p, 'task-0001', 'Queue');
   assert.equal(r.ok, false);
-  assert.match(r.error, /gemini.*not supported/);
+  assert.match(r.error, /unknown-agent.*not supported/);
   assert.equal(status(repo, 'task-0001'), 'Planned'); // didn't move
 
   // a card-level agent overrides the column → gate passes → chain runs to Done
