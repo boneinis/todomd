@@ -143,6 +143,34 @@ test('manual queue resume never launches dispatcher-managed budget work', async 
   }
 });
 
+test('Run Queue is project-scoped and idempotent', async () => {
+  isolateHome();
+  const marker = path.join(tmp('queue-kick'), 'started');
+  useFakeAgent({ build: 'good', verdict: 'pass', hang: 'build', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repoA = makeRepo();
+  const repoB = makeRepo();
+  const a = project(repoA);
+  const b = project(repoB);
+  writeCard(repoA, 'task-kick-a', { status: 'Queue' });
+  writeCard(repoB, 'task-kick-b', { status: 'Queue' });
+
+  try {
+    assert.deepEqual(await pipeline.kickQueue(a), { ok: true, enqueued: 1 });
+    assert.deepEqual(await pipeline.kickQueue(a), { ok: true, enqueued: 0 },
+      'a repeated click cannot enqueue the same card twice');
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+    assert.equal(status(repoB, 'task-kick-b'), 'Queue', 'another registered project is untouched');
+    assert.equal(fs.existsSync(path.join(repoB, '.todomd/worktrees/task-kick-b')), false,
+      'another project never gets a worktree from this action');
+  } finally {
+    pipeline.forgetProject(a.name);
+    pipeline.forgetProject(b.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('retriaging an initial Build while the queue is paused removes its scheduler entry', async () => {
   isolateHome();
   useFakeAgent({ build: 'good', verdict: 'pass' });
@@ -468,14 +496,14 @@ test('repeated no-progress Build checkpoints pause safely for a human', async ()
   clearFakeAgent();
 });
 
-test('stage routing precedence: a column agent gates the queue; a card agent overrides it', async () => {
+test('stage routing precedence: an unknown column agent is gated; a supported card agent overrides it', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good' });
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = project(repo);
 
-  // column-level Build agent is an unsupported vendor — proves the gate reads the
+  // column-level Build agent is an unknown vendor — proves the gate reads the
   // column tier (the board default_agent is the supported `claude`, yet it fails)
   await setStageRouting(repo, 'Build', { agent: 'unknown-agent' });
   writeCard(repo, 'task-0001', { status: 'Planned' });
@@ -665,7 +693,16 @@ test('agent error → Needs Human (agent_error)', async () => {
 
   await pipeline.humanMove(p, 'task-0004', 'Plan');
   await until(() => status(repo, 'task-0004') === 'Needs Human', { timeout: BUDGET.quick });
+  assert.equal(readCard(repo, 'task-0004').data.needs_human_reason, 'agent_error');
   clearFakeAgent();
+});
+
+test('persisted agent process matching recognizes configured agy and interpreter wrappers', () => {
+  assert.equal(pipeline.agentCommandMatches('/Users/me/.local/bin/agy -p task', '/Users/me/.local/bin/agy'), true);
+  assert.equal(pipeline.agentCommandMatches('/usr/bin/node /Users/me/bin/codex exec', '/Users/me/bin/codex'), true);
+  assert.equal(pipeline.agentCommandMatches('/usr/bin/node /tmp/unrelated.js', '/Users/me/bin/codex'), false);
+  assert.equal(pipeline.agentCommandMatches('/Applications/agy-helper task'), false,
+    'substrings do not qualify as an owned agent process');
 });
 
 test('transition table: humans cannot drop into orchestrator-only columns', async () => {
@@ -1371,7 +1408,20 @@ test('stage timeout: a hung build is killed and the card lands in Needs Human (r
 
   const card = readCard(repo, 'task-0001');
   assert.equal(card.data.needs_human_reason, 'run_timeout');
+  assert.equal(card.data.recovery_stage, 'Build');
+  const preservedWorktree = path.join(repo, '.todomd/worktrees/task-0001');
+  assert.equal(fs.existsSync(preservedWorktree), true, 'the timed-out Build worktree is preserved');
   await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+  assert.equal((await pipeline.recoveryActions(p, 'task-0001')).resume_build, true,
+    'a Build timeout is eligible for the guarded continuation');
+
+  clearFakeAgent();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  const resumed = await pipeline.resumeBuild(p, 'task-0001');
+  assert.equal(resumed.ok, true);
+  assert.equal(resumed.worktree, card.data.worktree, 'Resume Build keeps the exact task branch');
+  assert.equal(fs.existsSync(preservedWorktree), true, 'Resume Build keeps the exact worktree directory');
+  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   clearFakeAgent();
 });
 

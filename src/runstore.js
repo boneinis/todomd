@@ -8,7 +8,7 @@ const RUNS_FILE = () => path.join(dir(), 'runs.json');
 const LEDGER_FILE = () => path.join(dir(), 'ledger.json');
 
 // key `${project}:${cardId}` → { project, card, stage, pid, sessionId,
-//   startedAt, prevStatus, attempt }
+//   startedAt, prevStatus, attempt, vendor, executable }
 export const runs = new Map();
 
 export function runKey(project, cardId) {

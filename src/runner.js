@@ -293,6 +293,7 @@ function runGemini({
   prompt,
   model,
   effort,
+  stage,
   jsonSchema,
   resume,
   logFile,
@@ -301,14 +302,27 @@ function runGemini({
   const tmp = (name) =>
     path.join(os.tmpdir(), `todomd-gemini-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const executable = process.env.TODOMD_GEMINI_BIN || 'agy';
-  const args = ['-p', prompt];
+  const streaming = !jsonSchema;
+  // agy print mode is headless, but it still needs an explicit execution mode
+  // to avoid permission dialogs. Sandbox is always on. Build may edit only its
+  // cwd; every read/review stage uses plan mode. Never use agy's global
+  // --dangerously-skip-permissions escape hatch.
+  const mode = stage === 'Build' ? 'accept-edits' : 'plan';
+  const args = ['-p', prompt, '--output-format', streaming ? 'stream-json' : 'json',
+    '--sandbox', '--mode', mode, '--disable-slash-commands'];
   if (resume) args.push('--conversation', resume);
+  if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('--model', model);
+  // agy 1.1 supports low|medium|high. Preserve the board's stronger intent by
+  // clamping xhigh/max to the highest enforceable value instead of silently
+  // dropping effort altogether.
+  const effectiveEffort = ['xhigh', 'max'].includes(effort) ? 'high' : effort;
+  if (['low', 'medium', 'high'].includes(effectiveEffort)) args.push('--effort', effectiveEffort);
 
-  let schemaFile, outFile;
+  let schemaFile;
   if (jsonSchema) {
     schemaFile = tmp('schema.json');
-    outFile = tmp('out.json');
-    fs.writeFileSync(schemaFile, JSON.stringify(jsonSchema));
+    fs.writeFileSync(schemaFile, JSON.stringify(jsonSchema), { mode: 0o600 });
+    args.push('--json-schema', schemaFile);
   }
 
   const log = logFile ? openLog(logFile) : null;
@@ -336,6 +350,10 @@ function runGemini({
         stderr,
         finalMessage: lastMessage,
         structuredOutput: structuredOutput ?? null,
+        requestedEffort: effort || null,
+        effectiveEffort: effectiveEffort || null,
+        mode,
+        sandbox: true,
       };
       const ok = exitCode === 0 && !signal && !spawnError && !failed;
       const result = {
@@ -354,7 +372,7 @@ function runGemini({
         diagnostic,
       };
       const complete = () => {
-        for (const f of [schemaFile, outFile]) if (f) fs.rm(f, { force: true }, () => {});
+        if (schemaFile) fs.rm(schemaFile, { force: true }, () => {});
         resolve(result);
       };
       if (log) {
@@ -365,6 +383,7 @@ function runGemini({
       }
     };
 
+    let finalEvent = null;
     const handleLine = (line) => {
       if (!line.trim()) return;
       log?.write(line + '\n');
@@ -373,6 +392,7 @@ function runGemini({
         sessionId ||= event.thread_id || event.session_id || event?.thread?.id || null;
         if (event.type === 'turn.completed') turns++;
         if (event.type === 'turn.failed' || event.type === 'error') failed = event;
+        if (event.type === 'result') finalEvent = event;
         onEvent({ vendor: 'gemini', ...event });
       } catch { /* non-JSON line — skip */ }
     };
@@ -380,6 +400,10 @@ function runGemini({
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => {
       lineBuf += chunk;
+      if (!streaming) {
+        if (lineBuf.length > MAX_BUF) lineBuf = '';
+        return;
+      }
       let nl;
       while ((nl = lineBuf.indexOf('\n')) >= 0) {
         handleLine(lineBuf.slice(0, nl));
@@ -393,14 +417,26 @@ function runGemini({
       finish({ exitCode: -1, spawnError: err.code || String(err) });
     });
     child.on('close', (code, signal) => {
-      if (lineBuf.trim()) handleLine(lineBuf);
+      let payload = null;
+      if (streaming) {
+        if (lineBuf.trim()) handleLine(lineBuf);
+        payload = finalEvent;
+      } else {
+        try { payload = JSON.parse(lineBuf); } catch { /* retained as final message below */ }
+      }
       let structured;
-      let lastMessage = '';
-      if (outFile) {
-        try {
-          lastMessage = fs.readFileSync(outFile, 'utf8');
-          structured = JSON.parse(lastMessage);
-        } catch {}
+      let lastMessage = lineBuf.trim();
+      if (payload) {
+        sessionId ||= payload.thread_id || payload.session_id || payload.conversation_id || payload?.thread?.id || null;
+        structured = payload.structured_output ?? payload.structuredOutput ?? null;
+        const candidate = payload.result ?? payload.response ?? payload.message;
+        if (!structured && candidate && typeof candidate === 'object') structured = candidate;
+        if (!structured && typeof candidate === 'string') {
+          try { structured = JSON.parse(candidate); } catch {}
+        }
+        if (typeof candidate === 'string') lastMessage = candidate;
+        else if (candidate !== undefined) lastMessage = JSON.stringify(candidate);
+        else lastMessage = JSON.stringify(payload);
       }
       finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
     });

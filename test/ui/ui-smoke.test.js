@@ -340,6 +340,8 @@ test('UI smoke: queue pause control persists across reload and resumes explicitl
     await page.eval(`document.getElementById('queue-pause').click()`);
     await until(async () => pausedEverywhere(await page.eval(pauseState)) || null,
       { timeout: BUDGET.stage, label: 'pause reflected in the button and the usage line' });
+    assert.equal(await page.eval(`document.getElementById('queue-run').disabled`), true,
+      'run queue is guarded while this project is paused');
 
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}`);
     await until(async () => pausedEverywhere(await page.eval(pauseState)) || null,
@@ -353,6 +355,21 @@ test('UI smoke: queue pause control persists across reload and resumes explicitl
     }, { timeout: BUDGET.stage, label: 'resume clears the button and the usage line' });
     assert.deepEqual(page.errors, [], 'pause/resume produces no browser errors');
   }
+});
+
+test('UI smoke: token scrubbing preserves the explicit project and card hash', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.eval(`localStorage.setItem('todomd-project', 'stale-project')`);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}#task-0001`);
+  await until(async () => (await page.eval(`currentProject`)) === name || null,
+    { timeout: BUDGET.stage, label: 'explicit project selected' });
+  const locationState = await page.eval(`({ search: location.search, hash: location.hash, project: currentProject,
+    stored: localStorage.getItem('todomd-project') })`);
+  assert.equal(locationState.project, name);
+  assert.equal(locationState.stored, name);
+  assert.match(locationState.search, /project=/);
+  assert.doesNotMatch(locationState.search, /token=/);
+  assert.equal(locationState.hash, '#task-0001');
 });
 
 // task-0045: a scrollbar-consuming column and border-left status stripes both

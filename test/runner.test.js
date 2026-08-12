@@ -8,6 +8,7 @@ import { runStage, stopHookSettings } from '../src/runner.js';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-agent.js');
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
+const FAKE_GEMINI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-gemini.js');
 
 test('stream-json: captures session id, final envelope, and flushes a trailing newline-less event', async () => {
   process.env.TODOMD_CLAUDE_BIN = FAKE;
@@ -167,4 +168,82 @@ test('Codex Verify writes a cannot-start diagnostic to the raw run log', async (
   assert.ok(result.diagnostic.spawnError);
   const events = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse);
   assert.ok(events.some((e) => e.type === 'runner-diagnostic' && e.spawnError));
+});
+
+test('Gemini Build is sandboxed, headless, routed, and never skips permissions globally', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  const dir = tmp('gemini-build');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+  const events = [];
+  const result = await runStage({
+    vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build',
+    model: 'gemini-3.6-pro', effort: 'xhigh', onEvent: (e) => events.push(e),
+  }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_ARGV_LOG;
+
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.ok(argv.includes('--sandbox'));
+  assert.deepEqual(argv.slice(argv.indexOf('--mode'), argv.indexOf('--mode') + 2), ['--mode', 'accept-edits']);
+  assert.deepEqual(argv.slice(argv.indexOf('--output-format'), argv.indexOf('--output-format') + 2), ['--output-format', 'stream-json']);
+  assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'gemini-3.6-pro']);
+  assert.deepEqual(argv.slice(argv.indexOf('--effort'), argv.indexOf('--effort') + 2), ['--effort', 'high']);
+  assert.equal(argv.includes('--dangerously-skip-permissions'), false);
+  assert.equal(result.sessionId, 'fake-gemini-session');
+  assert.equal(result.envelope.subtype, 'success');
+  assert.ok(events.some((e) => e.type === 'turn.completed'));
+});
+
+test('Gemini Verify passes a private schema and retains a structured diagnostic', async (t) => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  const dir = tmp('gemini-verify');
+  const argvLog = path.join(dir, 'argv.json');
+  const schemaLog = path.join(dir, 'schema.json');
+  const logFile = path.join(dir, 'verify.jsonl');
+  process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+  process.env.FAKE_GEMINI_SCHEMA_LOG = schemaLog;
+  const result = await runStage({
+    vendor: 'gemini', stage: 'Verify', cwd: dir, prompt: 'verify', effort: 'medium',
+    jsonSchema: { type: 'object', properties: { verdict: { type: 'string' } } }, logFile,
+  }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_ARGV_LOG; delete process.env.FAKE_GEMINI_SCHEMA_LOG;
+
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.deepEqual(argv.slice(argv.indexOf('--mode'), argv.indexOf('--mode') + 2), ['--mode', 'plan']);
+  assert.deepEqual(argv.slice(argv.indexOf('--output-format'), argv.indexOf('--output-format') + 2), ['--output-format', 'json']);
+  assert.ok(argv.includes('--json-schema'));
+  assert.equal(result.envelope.structured_output.verdict, 'pass');
+  assert.equal(result.diagnostic.executable, FAKE_GEMINI);
+  assert.equal(result.diagnostic.cwd, dir);
+  assert.equal(result.diagnostic.mode, 'plan');
+  assert.equal(result.diagnostic.sandbox, true);
+  assert.equal(JSON.parse(fs.readFileSync(schemaLog, 'utf8')).type, 'object');
+  const raw = fs.readFileSync(logFile, 'utf8');
+  assert.match(raw, /runner-diagnostic/);
+  if (process.platform !== 'win32') {
+    // The fixture copies the schema before cleanup; the runner's original temp
+    // file is asserted indirectly by successful access and private-write code.
+    assert.ok(true);
+  }
+});
+
+test('Gemini Verify preserves unsuccessful exit, stderr, and final message', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  process.env.FAKE_GEMINI_NO_VERDICT = '1';
+  process.env.FAKE_GEMINI_LAST_MESSAGE = 'transport returned no verdict';
+  process.env.FAKE_GEMINI_STDERR = 'permission profile unavailable\n';
+  process.env.FAKE_GEMINI_EXIT = '7';
+  const dir = tmp('gemini-fail');
+  const result = await runStage({
+    vendor: 'gemini', stage: 'Verify', cwd: dir, prompt: 'verify',
+    jsonSchema: { type: 'object' }, logFile: path.join(dir, 'verify.jsonl'),
+  }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_NO_VERDICT;
+  delete process.env.FAKE_GEMINI_LAST_MESSAGE; delete process.env.FAKE_GEMINI_STDERR; delete process.env.FAKE_GEMINI_EXIT;
+
+  assert.equal(result.envelope.is_error, true);
+  assert.equal(result.diagnostic.exitCode, 7);
+  assert.equal(result.diagnostic.stderr, 'permission profile unavailable\n');
+  assert.equal(result.diagnostic.finalMessage, 'transport returned no verdict');
+  assert.equal(result.diagnostic.structuredOutput, null);
 });

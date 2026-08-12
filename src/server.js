@@ -378,8 +378,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (!(cfg.stages || {})[col]) return json(res, 400, { error: `unknown stage column: ${col}` });
       const updates = {};
       if ('agent' in fields) {
-        if (fields.agent && !['claude', 'codex'].includes(fields.agent)) return json(res, 400, { error: 'agent must be claude or codex' });
-        updates.agent = fields.agent || '';
+        const agent = pipeline.normalizeVendor(fields.agent);
+        if (fields.agent && !['claude', 'codex', 'gemini', 'kimi'].includes(agent)) return json(res, 400, { error: 'agent must be claude, codex, gemini, or kimi' });
+        updates.agent = fields.agent ? agent : '';
       }
       if ('model' in fields) updates.model = String(fields.model || '');
       if ('effort' in fields) updates.effort = String(fields.effort || '');
@@ -619,8 +620,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
       }
       const updates = {};
       if ('agent' in fields) {
-        if (!['claude', 'codex'].includes(fields.agent)) return json(res, 400, { error: 'agent must be claude or codex' });
-        updates.agent = fields.agent;
+        const agent = pipeline.normalizeVendor(fields.agent);
+        if (!['claude', 'codex', 'gemini', 'kimi'].includes(agent)) return json(res, 400, { error: 'agent must be claude, codex, gemini, or kimi' });
+        updates.agent = agent;
       }
       if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
@@ -681,6 +683,10 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     if (url.pathname === '/api/queue/resume' && req.method === 'POST') {
       return json(res, 200, pipeline.resumeQueue(project));
+    }
+    if (url.pathname === '/api/queue/kick' && req.method === 'POST') {
+      const result = await pipeline.kickQueue(project);
+      return json(res, result.ok ? 200 : 400, result);
     }
     return json(res, 404, { error: 'not found' });
   }

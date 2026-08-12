@@ -232,6 +232,9 @@ test('API attachments + /api/file containment, projects, commands, queue control
     r = await fetch(`${base}/api/queue/pause${q}`, { method: 'POST', headers: h });
     assert.equal(r.status, 200);
     assert.equal((await r.json()).queue_paused, true);
+    r = await fetch(`${base}/api/queue/kick${q}`, { method: 'POST', headers: h });
+    assert.equal(r.status, 400, 'an explicit queue run respects the project pause');
+    assert.match((await r.json()).error, /queue is paused/);
     r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': tok } });
     assert.equal((await r.json()).usage.queue_paused, true);
     assert.equal(fs.existsSync(path.join(repo, '.todomd/local/queue-paused')), true);
@@ -239,6 +242,9 @@ test('API attachments + /api/file containment, projects, commands, queue control
     r = await fetch(`${base}/api/queue/resume${q}`, { method: 'POST', headers: h });
     assert.equal(r.status, 200);
     assert.equal((await r.json()).queue_paused, false);
+    r = await fetch(`${base}/api/queue/kick${q}`, { method: 'POST', headers: h });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /budget-mode work/, 'the endpoint cannot bypass dispatcher mode');
     r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': tok } });
     assert.equal((await r.json()).usage.queue_paused, false);
 
@@ -279,10 +285,17 @@ test('API per-column routing: /api/commands carries stage routing; /api/stages s
     r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
     assert.equal((await r.json()).commands.find((c) => c.column === 'Build').agent, '');
 
-    // unknown column → 400; bad agent → 400
+    // Gemini and Kimi are first-class choices; aliases normalize. Unknown
+    // columns and unknown providers remain rejected.
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'gemini' }) });
+    assert.equal(r.status, 200);
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'agy' }) });
+    assert.equal(r.status, 200);
+    r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
+    assert.equal((await r.json()).commands.find((c) => c.column === 'Build').agent, 'gemini');
     r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Nope', agent: 'codex' }) });
     assert.equal(r.status, 400);
-    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'gemini' }) });
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'unknown-agent' }) });
     assert.equal(r.status, 400);
 
     // viewer cannot write routing → 403

@@ -151,15 +151,17 @@ async function parkForQuota(project, id, attempt, maxAttempts, findings, attempt
 // Re-enqueue every Queue card that has no live run (used by resume and boot).
 // enqueueBuild dedupes, so this is safe to call repeatedly.
 function enqueueQueue(project) {
+  let enqueued = 0;
   try {
     for (const card of sortCardsByBoardOrder(loadBoard(project.path).cards.filter((c) => c.status === 'Queue'))) {
       // epics sit in Queue as trackers — they never build (their chunks do)
       if (card.id && !card.epic &&
           !children.has(runKey(project.name, card.id)) && !pending.has(runKey(project.name, card.id))) {
-        enqueueBuild(project, card.id);
+        if (enqueueBuild(project, card.id)) enqueued++;
       }
     }
   } catch { /* never fatal */ }
+  return enqueued;
 }
 
 export function init(opts) {
@@ -206,13 +208,19 @@ async function orchMove(project, id, to, reason) {
 
 const SUPPORTED_VENDORS = new Set(['claude', 'codex', 'gemini', 'kimi']);
 
+export function normalizeVendor(value) {
+  const vendor = String(value || '').trim().toLowerCase();
+  const aliases = { anthropic: 'claude', openai: 'codex', google: 'gemini', agy: 'gemini', moonshot: 'kimi' };
+  return aliases[vendor] || vendor;
+}
+
 // Override precedence is normally card → column → board. Verify is the one
 // deliberate exception: an explicitly routed Verify column owns its provider
 // so a card's Build agent cannot silently replace independent quality control.
 function cardVendor(config, card, stageName) {
   const stageAgent = stageName && (config.stages || {})[stageName]?.agent;
-  if (stageName === 'Verify' && stageAgent) return stageAgent;
-  return card?.data?.agent || stageAgent || config.default_agent || 'claude';
+  if (stageName === 'Verify' && stageAgent) return normalizeVendor(stageAgent);
+  return normalizeVendor(card?.data?.agent || stageAgent || config.default_agent || 'claude');
 }
 
 // The complete state-independent approval gate shared by the board UI and
@@ -417,14 +425,19 @@ function skillPrompt(project, vendor, skill, id, card) {
   return body.replaceAll('$ARGUMENTS', id) + ctx;
 }
 
-function classifyFailure({ envelope, exitCode, spawnError, stderr }, cwd) {
+function providerLabel(vendor, result) {
+  const labels = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini (agy)', kimi: 'Kimi' };
+  return labels[normalizeVendor(vendor)] || path.basename(result?.diagnostic?.executable || vendor || 'agent');
+}
+
+function classifyFailure({ envelope, exitCode, spawnError, stderr, diagnostic }, cwd, vendor) {
   if (spawnError === 'ENOENT') {
     // spawn ENOENT is ambiguous: the CLI binary is missing, OR the cwd (the
     // worktree) was deleted out from under the run — the runner only forwards
     // err.code, so disambiguate here. Only a missing binary means the CLI is
     // gone; a vanished worktree is an environment failure, not a banner.
     if (cwd && !fs.existsSync(cwd)) return { kind: 'worktree_failed', detail: `worktree is gone: ${cwd}` };
-    return { kind: 'cli_missing', detail: 'claude CLI not found on PATH' };
+    return { kind: 'cli_missing', detail: `${providerLabel(vendor, { diagnostic })} CLI not found on PATH` };
   }
   const text = `${envelope?.result || ''} ${envelope?.subtype || ''} ${stderr || ''}`;
   if (/hook.*cancelled|cancelled.*hook/i.test(text)) {
@@ -434,7 +447,7 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr }, cwd) {
     return { kind: 'quota', detail: 'usage limit reached' };
   }
   if (/logged.?in|log in|authentication|unauthorized|invalid api key/i.test(text)) {
-    return { kind: 'auth', detail: 'claude CLI is not authenticated' };
+    return { kind: 'auth', detail: `${providerLabel(vendor, { diagnostic })} CLI is not authenticated` };
   }
   if (envelope?.subtype === 'error_max_turns') return { kind: 'agent', detail: 'max turns reached' };
   return { kind: 'agent', detail: envelope?.subtype || `exit ${exitCode}` };
@@ -448,9 +461,9 @@ function diagnosticSnippet(value, max = 220) {
 
 // Card history gets a concise, explicitly infrastructural explanation. The
 // complete bounded fields remain in runner-diagnostic inside the private jsonl.
-function codexVerifierDiagnostic(result) {
+function providerVerifierDiagnostic(vendor, result) {
   const d = result?.diagnostic || {};
-  const executable = d.executable || 'codex';
+  const executable = d.executable || vendor || 'agent';
   const cwd = d.cwd || '(unknown working directory)';
   const exit = d.spawnError
     ? `could not start (${d.spawnError})`
@@ -463,7 +476,8 @@ function codexVerifierDiagnostic(result) {
     : d.finalMessage
       ? `final message: ${diagnosticSnippet(d.finalMessage)}`
       : 'no final message or structured output';
-  return `Codex verification infrastructure: ${executable} in ${cwd} ${exit}; ` +
+  const label = providerLabel(vendor, result);
+  return `${label} verification infrastructure: ${executable} in ${cwd} ${exit}; ` +
     `${stderr ? `stderr: ${stderr}; ` : 'stderr: (empty); '}${output}; no valid verdict`;
 }
 
@@ -485,9 +499,12 @@ async function recordRun(project, id, stage, attempt, result, note) {
 async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner) {
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
+  const recoverableStage = reason === 'orphaned_run'
+    || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
+    || (reason === 'agent_error' && from === 'Build');
   await patchFrontmatter(project.path, id, {
     needs_human_reason: reason,
-    recovery_stage: reason === 'orphaned_run' ? from : '',
+    recovery_stage: recoverableStage ? from : '',
   });
   if (detail) {
     const text = String(detail);
@@ -625,6 +642,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   const { retainUntilFinalized = false, triggerClaim = null, ...stageOpts } = opts;
   const { child, done } = runStage({
     ...stageOpts,
+    stage,
     onEvent: (event) => {
       saveSession(event.session_id || event.thread_id || event?.thread?.id);
       if (event.type === 'assistant' || event.type === 'rate_limit_event' ||
@@ -636,6 +654,8 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   run = {
     project: project.name, card: id, stage, pid: child.pid,
     startedAt: new Date().toISOString(), prevStatus, attempt,
+    vendor: stageOpts.vendor || 'claude',
+    executable: child.spawnfile || '',
     ...(observedSession ? { sessionId: observedSession } : {}),
   };
   if (triggerClaim) {
@@ -881,6 +901,7 @@ function canRetryVerification(card) {
   const reason = card?.data?.needs_human_reason;
   return ['bad_verdict', 'hook_cancelled', 'attempts_exhausted'].includes(reason)
     || (reason === 'orphaned_run' && card?.data?.recovery_stage === 'Verify')
+    || (reason === 'run_timeout' && card?.data?.recovery_stage === 'Verify')
     // A real fail followed by an infrastructure error in the repair Build can
     // be fixed manually in the preserved worktree, then re-verified in place.
     || (['error', 'retry_failed'].includes(reason) && card?.data?.verification?.last_verdict === 'fail');
@@ -894,10 +915,14 @@ export async function recoveryActions(project, id) {
   const kept = await preservedWorktree(project, card);
   // Older orphan records predate recovery_stage. orphaned_run was only emitted
   // for Build at that point, so keep those cards recoverable too.
-  const orphanedBuild = card.data.needs_human_reason === 'orphaned_run'
+  const reason = card.data.needs_human_reason;
+  const resumableBuild = (reason === 'orphaned_run'
+      && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
+    || (['run_timeout', 'agent_error'].includes(reason) && card.data.recovery_stage === 'Build');
+  const orphanedBuild = reason === 'orphaned_run'
     && (!card.data.recovery_stage || card.data.recovery_stage === 'Build');
   return {
-    resume_build: !!kept && orphanedBuild,
+    resume_build: !!kept && resumableBuild,
     restart_build: !kept && orphanedBuild,
     retry_verification: !!kept && canRetryVerification(card),
   };
@@ -909,9 +934,11 @@ export async function recoveryActions(project, id) {
 export async function resumeBuild(project, id) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
-  if (card.data.status !== 'Needs Human' || card.data.needs_human_reason !== 'orphaned_run'
-      || (card.data.recovery_stage && card.data.recovery_stage !== 'Build')) {
-    return { ok: false, error: 'card is not an eligible orphaned Build run' };
+  const reason = card.data.needs_human_reason;
+  const eligible = (reason === 'orphaned_run' && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
+    || (['run_timeout', 'agent_error'].includes(reason) && card.data.recovery_stage === 'Build');
+  if (card.data.status !== 'Needs Human' || !eligible) {
+    return { ok: false, error: 'card is not an eligible preserved Build run' };
   }
   const key = runKey(project.name, id);
   if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
@@ -924,8 +951,8 @@ export async function resumeBuild(project, id) {
   const maxAttempts = Number(verification.max_attempts) || kept.config.max_attempts || 3;
   await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
   await appendRunLog(project.path, id,
-    `- ${now()} · Resume Build · continuing attempt ${attempt} in preserved worktree ${kept.branch}`);
-  const moved = await orchMove(project, id, 'Build', 'resuming orphaned run in preserved worktree');
+    `- ${now()} · Resume Build · continuing attempt ${attempt} after ${reason} in preserved worktree ${kept.branch}`);
+  const moved = await orchMove(project, id, 'Build', 'resuming preserved Build worktree');
   if (!moved.ok) return moved;
   recoveryBuilds.set(key, {
     project: project.name,
@@ -1337,7 +1364,7 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
       sendState(project, id, 'idle');
       return;
     }
-    await handleRunFailure(project, id, stageName, result, run?.prevStatus || 'Review');
+    await handleRunFailure(project, id, stageName, result, run?.prevStatus || 'Review', vendor);
     if (await finishCancellation()) return;
     releaseTracking();
   } finally {
@@ -1349,8 +1376,8 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   }
 }
 
-async function handleRunFailure(project, id, stageName, result, revertTo) {
-  const failure = classifyFailure(result);
+async function handleRunFailure(project, id, stageName, result, revertTo, vendor) {
+  const failure = classifyFailure(result, project.path, vendor);
   await recordRun(project, id, stageName, 0, result, `failed: ${failure.kind}`);
   if (failure.kind === 'cli_missing' || failure.kind === 'auth') {
     setBanner(failure.kind, 'error', failure.detail);
@@ -1361,7 +1388,7 @@ async function handleRunFailure(project, id, stageName, result, revertTo) {
     pauseForQuota(project);
     await orchMove(project, id, revertTo, 'usage limit');
   } else {
-    await toNeedsHuman(project, id, stageName, failure.kind === 'agent' ? failure.detail : 'agent_error', result.stderr);
+    await toNeedsHuman(project, id, stageName, 'agent_error', result.stderr || failure.detail);
     return;
   }
   sendState(project, id, 'idle');
@@ -1421,7 +1448,7 @@ function onDeferState(project, id, column) {
 function enqueueBuild(project, id) {
   const key = runKey(project.name, id);
   // dedupe: a concurrent double-approval or re-approval must not queue twice
-  if (scheduler.isQueued(project.name, id) || children.has(key)) return;
+  if (scheduler.isQueued(project.name, id) || children.has(key) || pending.has(key)) return false;
   bumpRunGeneration(project.name, id);
   sendState(project, id, 'queued', 'Build');
   let owner = null;
@@ -1443,6 +1470,7 @@ function enqueueBuild(project, id) {
     blocked: () => quotaPaused.has(project.name) || isQueuePaused(project),
     onDefer: onDeferState(project, id, 'Build'),
   }).catch((err) => pipelineError(project, id, err, owner));
+  return true;
 }
 
 // Fire-and-forget dispatch for a retry/escalation Build attempt: each attempt
@@ -1911,7 +1939,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   // normal checkpoint into Needs Human. This is intentionally a Build-only
   // policy: Plan and Verify should remain short, bounded reviews.
   while (!run?.cancelled && !run?.timedOut &&
-         continuation.enabled && classifyFailure(result, worktreeAbs).detail === 'max turns reached') {
+         continuation.enabled && classifyFailure(result, worktreeAbs, vendor).detail === 'max turns reached') {
     const after = await progressSnapshot(worktreeAbs);
     const progressed = hasProgress(before, after);
     await recordRun(project, id, 'Build', attempt, result,
@@ -1977,13 +2005,14 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   }
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (!ok) {
-    const failure = classifyFailure(result, worktreeAbs);
+    const failure = classifyFailure(result, worktreeAbs, vendor);
     await recordRun(project, id, 'Build', attempt, result, `failed: ${failure.kind}`);
     if (failure.kind === 'quota') {
       // park back in Queue (attempt rolled back); resume re-enqueues it
       return parkForQuota(project, id, attempt, maxAttempts, retry?.findings);
     }
-    return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? failure.detail : failure.kind, result.stderr);
+    return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? 'agent_error' : failure.kind,
+      result.stderr || failure.detail);
   }
 
   await recordRun(project, id, 'Build', attempt, result, repair ? 'ok (escalation repair)' : 'ok');
@@ -2135,8 +2164,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
   const verdict = result.envelope?.structured_output;
   if (!result.envelope || result.envelope.is_error || !verdict || !verdict.verdict) {
-    const failure = classifyFailure(result, worktreeAbs);
-    const infrastructure = vendor !== 'claude' ? codexVerifierDiagnostic(result) : '';
+    const failure = classifyFailure(result, worktreeAbs, vendor);
+    const infrastructure = result?.diagnostic ? providerVerifierDiagnostic(vendor, result) : '';
     if (failure.kind === 'quota') {
       // park back in Queue; resume re-enters the build→verify chain (the
       // existing worktree is reused). Attempt rolled back so none is burned.
@@ -2370,7 +2399,7 @@ async function runTriage(project, id, config, t, vendor, claim) {
       await recordRun(project, id, 'Triage', 0, result, 'ok');
       await patchFrontmatter(project.path, id, { triaged: new Date().toISOString().slice(0, 10) });
     } else {
-      const failure = classifyFailure(result);
+      const failure = classifyFailure(result, undefined, vendor);
       // a failed triage never blocks the card — it just stays unannotated
       await patchFrontmatter(project.path, id, { triaged: `failed (${failure.kind})` });
       if (failure.kind === 'quota' || failure.kind === 'cli_missing' || failure.kind === 'auth') {
@@ -2423,7 +2452,7 @@ export async function reconcileOnBoot() {
   // editing worktrees behind our back. Kill any still-alive PIDs, but only if
   // the PID is still one of OUR agent CLIs (guard against PID reuse).
   for (const prev of readPriorRuns()) {
-    if (prev.pid && isOurAgentProcess(prev.pid, prev.startedAt)) {
+    if (prev.pid && isOurAgentProcess(prev.pid, prev.startedAt, prev.executable)) {
       try { process.kill(prev.pid, 'SIGKILL'); } catch { /* gone already */ }
     }
   }
@@ -2526,8 +2555,9 @@ function processInfo(pid) {
     const out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart=,command='], { encoding: 'utf8' });
     const line = out.replace(/\n+$/, '');
     if (!line.trim()) return null;
-    const exe = path.basename((line.slice(24).trim().split(/\s+/)[0] || ''));
-    return { exe, startMs: new Date(line.slice(0, 24)).getTime() };
+    const command = line.slice(24).trim();
+    const exe = path.basename((command.split(/\s+/)[0] || '').replace(/^['"]|['"]$/g, ''));
+    return { exe, command, startMs: new Date(line.slice(0, 24)).getTime() };
   } catch {
     return null; // no such process, or ps unavailable
   }
@@ -2540,10 +2570,18 @@ function processInfo(pid) {
 //    later process (e.g. the user's own interactive `claude`), so we spare it.
 // Erring toward not-killing is safe: an un-killed orphan is still caught by the
 // card → Needs Human sweep on this same boot.
-function isOurAgentProcess(pid, startedAtIso) {
+export function agentCommandMatches(command, expectedExecutable = '') {
+  const tokens = String(command || '').split(/\s+/).slice(0, 3)
+    .map((token) => path.basename(token.replace(/^['"]|['"]$/g, '')));
+  const expected = expectedExecutable ? path.basename(expectedExecutable) : '';
+  if (expected) return tokens.includes(expected);
+  return tokens.some((token) => ['claude', 'codex', 'agy', 'gemini', 'kimi'].includes(token));
+}
+
+function isOurAgentProcess(pid, startedAtIso, expectedExecutable = '') {
   const info = processInfo(pid);
   if (!info) return false;
-  if (!['claude', 'codex', 'gemini', 'kimi'].includes(info.exe)) return false;
+  if (!agentCommandMatches(info.command, expectedExecutable)) return false;
   const ourStart = startedAtIso ? new Date(startedAtIso).getTime() : NaN;
   // lstart is second-resolution; a 2s margin still kills a genuine orphan
   // (started at/just-before our run) but spares a clearly-later PID reuse.
@@ -2676,6 +2714,27 @@ export function resumeQueue(project) {
   enqueueQueue(project);
   scheduler.rescan(); // entries only held back by the (now-lifted) pause gate start now
   return { ok: true, queue_paused: false };
+}
+
+// Explicitly wake only this project's already-approved Queue cards. Unlike
+// reconcileOnBoot this never inspects/kills prior PIDs, sweeps orphaned runs,
+// mutates another registered project, or clears a pause. It is safe to call
+// repeatedly because enqueueBuild and the scheduler both dedupe by project/card.
+export async function kickQueue(project) {
+  const config = loadConfig(project.path);
+  if (isQueuePaused(project)) return { ok: false, error: 'queue is paused — resume it first' };
+  if (quotaPaused.has(project.name)) return { ok: false, error: 'usage limit is paused — resume usage first' };
+  if ((config.mode || 'launcher') === 'budget') {
+    return { ok: false, error: 'budget-mode work is started by its dispatcher' };
+  }
+
+  const board = loadBoard(project.path);
+  for (const card of board.cards) {
+    if (card.epic && card.status === 'Queue') await advanceChildren(project, card.id);
+  }
+  const enqueued = enqueueQueue(project);
+  scheduler.rescan();
+  return { ok: true, enqueued };
 }
 
 export function resumeQueues(projects) {

@@ -13,7 +13,7 @@ const FALLBACK = {
 };
 const bin = (vendor) => {
   if (vendor === 'codex') return process.env.TODOMD_CODEX_BIN || vendor;
-  if (vendor === 'gemini') return process.env.TODOMD_GEMINI_BIN || vendor;
+  if (vendor === 'gemini') return process.env.TODOMD_GEMINI_BIN || 'agy';
   if (vendor === 'kimi') return process.env.TODOMD_KIMI_BIN || vendor;
   return process.env.TODOMD_CLAUDE_BIN || vendor;
 };

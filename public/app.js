@@ -1,9 +1,15 @@
-// keep the token out of the visible URL/history; sessionStorage survives reloads
-const token = new URLSearchParams(location.search).get('token')
+// Keep the token out of the visible URL/history while preserving the selected
+// project and card hash. The project query is intentionally shareable; the
+// capability token is not.
+const initialParams = new URLSearchParams(location.search);
+const initialProject = initialParams.get('project') || '';
+const token = initialParams.get('token')
   || sessionStorage.getItem('todomd-token') || '';
-if (location.search.includes('token')) {
+if (initialParams.has('token')) {
   sessionStorage.setItem('todomd-token', token);
-  history.replaceState(null, '', location.pathname);
+  initialParams.delete('token');
+  const query = initialParams.toString();
+  history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
 }
 const headers = { 'x-todomd-token': token };
 
@@ -26,7 +32,7 @@ const $ = (sel) => document.querySelector(sel);
 const boardEl = $('#board');
 const projectSel = $('#project');
 const filterInput = $('#filter');
-let currentProject = null;
+let currentProject = initialProject || localStorage.getItem('todomd-project') || null;
 let boardData = null;
 let boardLoadGeneration = 0;
 let runStates = {};
@@ -51,6 +57,13 @@ function setCurrentProject(nextProject) {
   const next = nextProject || null;
   if (next === currentProject) {
     projectSel.value = next || '';
+    if (next) localStorage.setItem('todomd-project', next);
+    const params = new URLSearchParams(location.search);
+    params.delete('token');
+    if (next) params.set('project', next);
+    else params.delete('project');
+    const query = params.toString();
+    history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
     return false;
   }
   // Revoke capture before changing project identity. Callers may still need to
@@ -59,6 +72,14 @@ function setCurrentProject(nextProject) {
   publishVoiceContext({ project: '', access: 'none', primary: false });
   currentProject = next;
   projectSel.value = next || '';
+  if (next) localStorage.setItem('todomd-project', next);
+  else localStorage.removeItem('todomd-project');
+  const params = new URLSearchParams(location.search);
+  params.delete('token');
+  if (next) params.set('project', next);
+  else params.delete('project');
+  const query = params.toString();
+  history.replaceState(null, '', `${location.pathname}${query ? `?${query}` : ''}${location.hash}`);
   return true;
 }
 document.addEventListener('todomd:voice-ready', () => {
@@ -162,9 +183,16 @@ async function loadBoard() {
 
 function applyQueuePause(paused) {
   const btn = $('#queue-pause');
+  const run = $('#queue-run');
+  const readOnly = !boardData || boardData.access !== 'full';
   btn.textContent = paused ? 'resume queue' : 'pause queue';
   btn.classList.toggle('active', paused);
   btn.setAttribute('aria-pressed', String(paused));
+  btn.disabled = readOnly;
+  run.disabled = readOnly || boardData.mode === 'budget' || paused;
+  run.title = paused
+    ? 'resume this project queue before running it'
+    : 'wake this project\'s already-approved Queue cards';
   btn.title = paused
     ? 'resume starting parked Queue cards'
     : 'let active work finish, then hold new starts';
@@ -183,6 +211,24 @@ $('#queue-pause').addEventListener('click', async () => {
     boardData.usage = { ...(boardData.usage || {}), queue_paused: out.queue_paused === true };
     applyQueuePause(out.queue_paused === true);
     toast(out.queue_paused ? 'queue paused — active work will finish' : 'queue resumed');
+    await loadBoard();
+  } catch {
+    toast('server unreachable');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#queue-run').addEventListener('click', async () => {
+  if (!currentProject || !boardData || boardData.access !== 'full') return;
+  const btn = $('#queue-run');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/queue/kick?project=${encodeURIComponent(currentProject)}`,
+      { method: 'POST', headers });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'could not run queue');
+    toast(out.enqueued ? `queued ${out.enqueued} card${out.enqueued === 1 ? '' : 's'}` : 'queue already up to date');
     await loadBoard();
   } catch {
     toast('server unreachable');
