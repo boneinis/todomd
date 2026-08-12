@@ -79,7 +79,7 @@ stages:
   Build:
     command: todomd-build
     agent: gemini
-    model: gemini-3.6-pro
+    model: gemini-3.1-pro-high
     effort: xhigh
     workflow: ultra_code
     max_turns: 100
