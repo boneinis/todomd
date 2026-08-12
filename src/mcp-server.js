@@ -125,7 +125,10 @@ const TOOLS = [
     },
     call: async (ctx, args) => {
       const { status, json } = await apiCall(ctx, 'GET', '/api/board', { query: { project: args.project } });
-      if (status >= 400) return { status, json };
+      // Transport failures use status 0. Preserve that diagnostic envelope;
+      // destructuring it as a successful board response would replace the
+      // useful connection error with an opaque empty object.
+      if (status === 0 || status >= 400) return { status, json };
       const { runStates, banners, usage } = json;
       return { status, json: { runStates, banners, usage } };
     },

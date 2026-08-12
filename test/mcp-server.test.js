@@ -77,6 +77,18 @@ test('initialize/tools/list JSON-RPC round trip', async () => {
   assert.equal(notified, null);
 });
 
+test('get_run_state preserves the board transport diagnostic when the server is unreachable', async () => {
+  isolateHome();
+  const { full } = tokens();
+  const server = createMcpServer({ token: full, baseUrl: 'http://127.0.0.1:1' });
+
+  const result = await server.callTool('get_run_state', { project: 'missing-server' });
+
+  assert.equal(result.isError, true);
+  const diagnostic = JSON.parse(result.content[0].text);
+  assert.match(diagnostic.error, /connect|fetch|refused|failed/i);
+});
+
 test('viewer tier: read tools work against the running server, write tools are hidden and refused', async () => {
   isolateHome();
   tokens();

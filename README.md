@@ -119,20 +119,20 @@ TODOMD_MCP_TOKEN=$(cat ~/.todomd/token) todomd-mcp
 
 **Read tools** (either token): `list_projects`, `get_board`, `get_run_state`, `get_card`, `get_card_file`. **Full-access-only tools**: `list_commands` (reads stage routing) and every write tool — `create_card`, `move_card`, `assign_card`, `retry_verify`, `cancel_card`, `archive_card`. A viewer-token session simply doesn't see the full-access tools listed, and the running server enforces the same tier on every request regardless — a bad or mismatched token is a 401/403 from the real API, not a client-side guess. Every card/project id a tool touches goes through the HTTP API's own validation (registered-project lookup, the `task-NNNN` id format, live-run/triage guards), so an MCP call can't do anything the web UI couldn't.
 
-**Connecting a client.** Point an MCP-capable agent at the stdio command, e.g. for Claude Code (`.mcp.json` or `claude mcp add`):
+**Connecting a client.** Point an MCP-capable agent at the stdio command. Keep the token in your shell environment or a private user/local MCP scope; never paste a full-control token into a project-scoped `.mcp.json` or commit it. For a client that expands environment variables:
 
 ```json
 {
   "mcpServers": {
     "todomd": {
       "command": "todomd-mcp",
-      "env": { "TODOMD_MCP_TOKEN": "<value from ~/.todomd/token>" }
+      "env": { "TODOMD_MCP_TOKEN": "${TODOMD_MCP_TOKEN}" }
     }
   }
 }
 ```
 
-From a git clone, use `"command": "node", "args": ["/path/to/todomd/bin/todomd-mcp.js"]` instead. Use the viewer token for a read-only connection.
+Export `TODOMD_MCP_TOKEN="$(cat ~/.todomd/token)"` before starting the client. From a git clone, use `"command": "node", "args": ["/path/to/todomd/bin/todomd-mcp.js"]` instead. Use the viewer token for a read-only connection.
 
 **Argument validation.** Each tool's advertised `inputSchema` is enforced before anything is dispatched: unknown properties, missing required ones, and wrong types are all refused with a message naming the offending property (no coercion — `archived: "false"` is an error, not `true`). That matters because the HTTP API underneath is a *trusted-caller* interface: `POST /api/cards` deliberately honours internal orchestrator fields (`status`, `triaged`, `plan`, …) so the Plan stage can mint chunk cards. `create_card` forwards an explicit allowlist (`title`, `description`, `type`, `priority`, `labels`, `criteria`) and nothing else, so an MCP caller can't create a card born `status: "Done"` and skip the Review → triage → build → verify flow.
 
