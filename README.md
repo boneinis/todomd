@@ -103,6 +103,39 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 
 > **Network exposure:** the server's main listener is **always loopback-only** (`127.0.0.1`). Mobile/QR access runs on a **separate LAN listener you toggle from the board** (the ▦ button → "enable network access") or start with `todomd --lan` — turning it off closes that listener entirely. It serves plain **HTTP** for the QR links: a read-only **monitor** link and an opt-in full-control link (clearly marked). Enabling/disabling requires the desktop session (a phone can't). Use only on trusted networks; for remote access put it behind a VPN/Tailscale. Revoke device links with `todomd revoke`.
 
+## MCP server (agent tool access)
+
+`bin/todomd-mcp.js` exposes the board over the [Model Context Protocol](https://modelcontextprotocol.io) as a stdio server, so Claude, Codex, or any MCP-capable agent can read and drive the board through reliable tools instead of shelling out to `curl`. It's a thin HTTP client of the *running* `todomd serve` process — every tool calls the same routes the web UI does — rather than a second importer of `board.js`/`pipeline.js`. That's not just style: run/queue state only exists in the memory of the one process that's actually driving the pipeline, so **`todomd serve` must already be running** for these tools to see or change anything real.
+
+**Auth.** The server is started with one token (`~/.todomd/token` for full access, `~/.todomd/token-viewer` for read-only — the same files `todomd serve` writes) and refuses to start with anything else. Pass it as `--token <value>` or `TODOMD_MCP_TOKEN`:
+
+```bash
+TODOMD_MCP_TOKEN=$(cat ~/.todomd/token) todomd-mcp
+```
+
+`npm i -g github:boneinis/todomd` (see [Install](#install)) puts `todomd-mcp` on your PATH alongside `todomd`. From a git clone instead, run `node /path/to/todomd/bin/todomd-mcp.js` — there's no published npm package, so `npx todomd-mcp` will not resolve.
+
+**Finding the running server.** By default it reads the port `todomd serve` recorded in `~/.todomd/server.pid`. Override with `--url <http://host:port>`/`TODOMD_MCP_URL`, or just `--port <port>`/`TODOMD_MCP_PORT` if it's local.
+
+**Read tools** (either token): `list_projects`, `get_board`, `get_run_state`, `get_card`, `get_card_file`. **Full-access-only tools**: `list_commands` (reads stage routing) and every write tool — `create_card`, `move_card`, `assign_card`, `retry_verify`, `cancel_card`, `archive_card`. A viewer-token session simply doesn't see the full-access tools listed, and the running server enforces the same tier on every request regardless — a bad or mismatched token is a 401/403 from the real API, not a client-side guess. Every card/project id a tool touches goes through the HTTP API's own validation (registered-project lookup, the `task-NNNN` id format, live-run/triage guards), so an MCP call can't do anything the web UI couldn't.
+
+**Connecting a client.** Point an MCP-capable agent at the stdio command. Keep the token in your shell environment or a private user/local MCP scope; never paste a full-control token into a project-scoped `.mcp.json` or commit it. For a client that expands environment variables:
+
+```json
+{
+  "mcpServers": {
+    "todomd": {
+      "command": "todomd-mcp",
+      "env": { "TODOMD_MCP_TOKEN": "${TODOMD_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+Export `TODOMD_MCP_TOKEN="$(cat ~/.todomd/token)"` before starting the client. From a git clone, use `"command": "node", "args": ["/path/to/todomd/bin/todomd-mcp.js"]` instead. Use the viewer token for a read-only connection.
+
+**Argument validation.** Each tool's advertised `inputSchema` is enforced before anything is dispatched: unknown properties, missing required ones, and wrong types are all refused with a message naming the offending property (no coercion — `archived: "false"` is an error, not `true`). That matters because the HTTP API underneath is a *trusted-caller* interface: `POST /api/cards` deliberately honours internal orchestrator fields (`status`, `triaged`, `plan`, …) so the Plan stage can mint chunk cards. `create_card` forwards an explicit allowlist (`title`, `description`, `type`, `priority`, `labels`, `criteria`) and nothing else, so an MCP caller can't create a card born `status: "Done"` and skip the Review → triage → build → verify flow.
+
 ## Development
 
 `npm test` runs the suite (Node's built-in runner, no deps): unit tests for the board/frontmatter, git, registry, intake, and run-output parsing layers, plus an integration test that drives a card through the real state machine (happy path, verification-retry loop, attempt-cap escalation, transition-table guards, quota park/resume) using a deterministic fake agent — no LLM or network. Tests isolate to a temp `TODOMD_HOME` and temp git repos; they never touch your real boards. `test/ui/` adds a headless-Chrome smoke test of the board render (driven over the DevTools protocol with the `ws` dep — no Playwright); it skips itself where no Chrome is installed.

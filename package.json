@@ -4,7 +4,8 @@
   "description": "Markdown-native kanban board for git repos that drives subscription coding agents through a Review → Plan → Build → Verify pipeline.",
   "type": "module",
   "bin": {
-    "todomd": "bin/todomd.js"
+    "todomd": "bin/todomd.js",
+    "todomd-mcp": "bin/todomd-mcp.js"
   },
   "files": [
     "bin",
