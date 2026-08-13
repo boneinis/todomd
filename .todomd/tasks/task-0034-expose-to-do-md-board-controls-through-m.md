@@ -1,7 +1,7 @@
 ---
 id: task-0034
 title: Expose To-do MD board controls through MCP
-status: Verify
+status: Done
 type: feature
 priority: high
 labels: [mcp, agents, integration]
@@ -12,13 +12,13 @@ assignee:
 agent: gemini
 model:
 effort:
-session_id: b19d265e-05ab-4e53-8654-011fe973b93f
-worktree: todomd/task-0034
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+session_id: 019ff876-ae4c-7ed1-84cd-b2b928d15edd
+worktree:
+verification: { attempts: 2, max_attempts: 3, last_verdict: pass }
 triaged: 2026-07-31
 cost_usd: 15.4252
 needs_human_reason:
-base_branch: main
+base_branch:
 recovery_stage:
 board_order: 1
 ---
@@ -155,3 +155,5 @@ ok 555 - invalidateProject drops every pending proposal for a removed repository
 - 2026-08-12 23:47Z · Verify attempt 1 · 1 turns · $0.000 · verdict: fail (unmet: 3)
   - retrying with findings (attempt 2/3)
 - 2026-08-13 00:06Z · Build attempt 2 · 0 turns · $0.000 · ok
+- 2026-08-13 00:08Z · CI attempt 2 · 90.3s · `npm test` passed
+- 2026-08-13 00:16Z · Verify attempt 2 · 1 turns · $0.000 · verdict: pass
