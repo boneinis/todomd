@@ -1,17 +1,16 @@
 # todomd
 
-Markdown-native kanban for git repos that **drives coding agents through a verified pipeline** — on the subscriptions you already pay for. No SDK, no API keys: the server spawns the same `claude -p` commands you'd type in a terminal.
+Markdown-native kanban for git repos that **drives coding agents through a verified pipeline** — using the authenticated provider CLIs you already run. The server invokes Claude, Codex, or the configured Gemini gateway without embedding provider credentials.
 
 Each card is a markdown file in `.todomd/tasks/`; the board is just a view. Two human drags take a card from idea to merged code:
 
 ```
-Review ──drag──▶ Plan ──auto──▶ Planned ──drag──▶ Queue ──auto──▶ Build ──▶ Verify ──▶ Done
+Review ──drag──▶ Plan ──auto──▶ Planned ──drag──▶ Queue ──auto──▶ Build ──▶ CI ──▶ Verify ──▶ Done
                  (plan agent      (human            (worktree, build agent,   independent   merge,
-                  writes plan)     approves)         Stop-hook test gate)     verdict       prune
-                                                                              (cheap model) worktree
-                                                          ▲                        │
-                                                          └── retry w/ findings ◀──┘ fail (≤ max_attempts,
-                                                                                      then → Needs Human)
+                  writes plan)     approves)         preserved checkpoints)   test gate +   verdict/prune
+                                                          ▲                    review
+                                                          └──── retry w/ findings ◀── fail (≤ max_attempts,
+                                                                                         then → Needs Human)
 ```
 
 Every transition is a path-scoped git commit — board history is `git log`. Run logs stream live to the browser; per-card and monthly costs are tracked from the CLI's own envelopes.
@@ -21,7 +20,7 @@ Every transition is a path-scoped git commit — board history is `git log`. Run
 - **Node ≥ 20** and **git** (each board change is a git commit — run `todomd init` inside a git repo).
 - A logged-in **agent CLI** — **`claude`** (the default) and/or **`codex`**; install whichever you'll use and run it once to sign in (`claude`, or `codex login`). Set the default with `default_agent` in `.todomd/config.yml`, or choose per card. todomd never sees your credentials; it spawns the CLIs you've already authenticated.
 
-> **Vendor support is uneven.** `claude` is the primary, fully-featured path (the Stop-hook build quality-gate is claude-only). `codex` works, but its build stage has no Stop-hook gate — the independent **Verify** stage is the only gate, and its reported cost shows as $0. Other vendors (Copilot, Antigravity) aren't implemented yet. Set a card's Build vendor with `agent:` frontmatter or a column's `stages:` config. An explicitly configured Verify column remains authoritative so card-level Build routing cannot replace the independent verifier.
+> **Provider routes are explicit.** `claude`, `codex`, and `gemini` are supported; unsupported or cross-provider model selections fail closed before a run starts. Every Build provider reaches the same independent **CI** and **Verify** stages. Set a card's Build provider with `agent:` frontmatter or a column's `stages:` config; the Verify column remains authoritative so a card-level Build override cannot replace the independent verifier.
 
 ## Install
 
@@ -54,7 +53,7 @@ On first open the board shows a **Getting Started** guide (the flow, the two hum
 - **Attach files** to a card (＋ file in the drawer, or drag-drop): images render inline, docs become links. Stored in `.todomd/attachments/<id>/` and committed — so a screenshot or spec travels with the card, and plan/build agents can **read** it (e.g. attach a bug screenshot and the agent sees it).
 - One server, many repos: add/remove projects from the **⊕** button next to the project switcher (paste a repo's path — it's scaffolded and registered), or from the CLI with `todomd init` inside the repo.
 - Per-column **model/skill routing** in `.todomd/config.yml` (`stages:` block): which command each column invokes, on which model, with which tools. Per-card overrides via `agent:` / `model:` frontmatter.
-- Safety: localhost-only + token; humans can't drop cards into orchestrator-only columns; agents can't touch the board from worktrees (tampering guard); failing tests block agent completion (generated Stop hook); attempt cap then **Needs Human** with a recorded reason; reconcile-on-boot catches orphaned runs.
+- Safety: localhost-only + token; humans can't drop cards into orchestrator-only columns; agents can't touch the board from worktrees (tampering guard); an independent CI stage blocks completion when tests fail; attempt cap then **Needs Human** with a recorded reason; reconcile-on-boot catches orphaned runs.
 - Email → board: built-in **IMAP polling** (`~/.todomd/intake.json` + `todomd intake-test`) turns inbox mail into Review cards with attachments; or a zero-infra cloud-routine recipe. Inbound mail is **screened** first — marketing/automated mail never makes a card, ambiguous mail (bounces, out-of-office, a body too thin to act on) is held in **Needs Human** rather than dropped, and every decision is logged to `.todomd/intake-audit.jsonl`. See `docs/email-intake.md`.
 
 ## Task file
@@ -86,10 +85,10 @@ cost_usd: 0
 Everything is in the repo's `.todomd/config.yml` (generated by `init`, with inline comments):
 
 - `mode: launcher | budget` — **how work is billed, and how much todomd guarantees.**
-  - **launcher** (default): the always-on server spawns headless `claude -p` runs. These draw the **headless / Agent-SDK credit pool**, which is *separate from and smaller than* your interactive usage and is API-priced (≈ $20/mo on Pro). It's the well-tested path — deterministic state machine, Stop-hook build gate, schema-validated verdict, orphan reconciliation on boot — but a busy day can exhaust that pool and you'll see "usage limit reached" (that's the plan cap, not a bug). When it's hit, todomd parks the card and resumes when the limit resets.
+  - **launcher** (default): the always-on server spawns provider CLIs directly. Usage and limits follow the selected provider and execution type. It's the well-tested path — deterministic state machine, independent CI gate, schema-validated verdict, orphan reconciliation on boot — but a busy day can still exhaust a provider's plan and park work until its limit resets.
   - **budget**: the server only manages the board; you run a dispatcher in an interactive session (`/loop 2m /todomd-dispatch`), so work bills your **interactive subscription pool** instead. It mirrors the launcher (triage → plan → build-in-worktree → independent verify → retry, with the cross-process lock + lease and the same setup-error handling), **but it only runs while that `/loop` is running** and its guarantees are prompt-enforced, not server-enforced (no Stop-hook hard gate; the server can only *nudge* if cards sit stuck). Treat it as the cheaper, lighter-touch path. See `docs/automations.md`.
 - **Pause queue** in the top bar is a local operational hold: active work finishes normally, while new Build starts remain parked in Queue until you click **Resume queue**. The pause survives a board restart, does not touch task worktrees, and is kept under the gitignored `.todomd/local/` directory rather than being shared through Git.
-- `verify_command` — the repo's own gate (e.g. `npm test`). It runs in the task worktree as the **CI stage** between Build and Verify — for every vendor, and admitted through the scheduler's `CI` column — and, for claude builds, additionally as the build agent's Stop hook. A failing CI stage sends the card to **Needs Human** (`ci_failed`) with the command's output and never reaches Verify; leaving it empty skips the CI stage. **Treated as trusted/executable — only board repos you trust.**
+- `verify_command` — the repo's own gate (e.g. `npm test`). It runs in the task worktree as the **CI stage** between Build and Verify for every vendor and is admitted through the scheduler's `CI` column. A failing CI stage sends the card to **Needs Human** (`ci_failed`) with the command's output and never reaches Verify; leaving it empty skips the CI stage. **Treated as trusted/executable — only board repos you trust.**
 - `worktree_link` — gitignored runtime deps symlinked into each build worktree so the verify command can actually run. `init` auto-detects `node_modules` plus any present, gitignored `.env*`/`.npmrc`/`venv`; **add anything else your tests need** (a built `dist/`, a generated client, a `.env.vault`). If the verify command can't even start in the worktree, the card goes to **Needs Human** with reason `worktree_env` and the missing-file hint — a distinct signal that it's an environment gap, not an agent failure.
 - `max_attempts`, `concurrency`, `merge`, `default_agent`.
 - `triage: { enabled, model, max_turns }` — auto-review of incoming cards.

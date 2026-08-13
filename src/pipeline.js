@@ -315,9 +315,13 @@ function stageConfig(config, stageName, card) {
 function buildContinuationConfig(config) {
   const c = config.build_continuation || {};
   const n = Number(c.max_no_progress_slices);
+  const slices = Number(c.max_slices);
+  const minutes = Number(c.budget_minutes);
   return {
     enabled: c.enabled !== false,
     maxNoProgressSlices: Number.isInteger(n) && n > 0 ? n : 2,
+    maxSlices: Number.isInteger(slices) && slices > 0 ? slices : 3,
+    budgetMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 60 * 60_000,
   };
 }
 
@@ -354,18 +358,18 @@ function escalationConfig(config) {
 }
 
 function ultraCodeInstructions() {
-  return '\n\nUltra Code workflow: before reporting ready, inspect the surrounding implementation, complete every acceptance criterion, run the relevant tests, review your own diff for regressions, and commit the finished repair. The Stop hook remains mandatory.';
+  return '\n\nUltra Code workflow: before reporting ready, inspect the surrounding implementation, complete every acceptance criterion, run the relevant tests, review your own diff for regressions, and commit the finished repair. The independent CI gate remains mandatory.';
 }
 
-// Config for EXECUTION (stage tools/models, the verify_command Stop hook) is
+// Config for EXECUTION (stage tools/models and CI commands) is
 // read from the COMMITTED config at HEAD, not the working tree. Otherwise a
 // `git pull` or a mid-run agent edit to .todomd/config.yml would arm a new
-// verify_command (a shell hook) or widen a stage's tool allowlist for a run
+// CI shell command or widen a stage's tool allowlist for a run
 // that was resolved under the old rules. Board display paths keep reading the
 // working tree. Falls back to the working-tree file when it isn't committed
 // yet (fresh `todomd init` before the first commit).
 // Keys that can make something RUN, or widen what a run is allowed to do:
-// verify_command is a shell hook; stages carries each column's command, model
+// verify_command is an executable CI command; stages carries each column's command, model
 // and allowed_tools; default_agent picks the CLI (and codex ignores the tool
 // allowlist entirely); worktree_link decides which gitignored paths get linked
 // into the worktree an agent reads. These are taken from the COMMITTED config
@@ -563,6 +567,7 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
   const recoverableStage = reason === 'orphaned_run'
+    || (reason === 'build_budget' && from === 'Build')
     || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
     || (reason === 'agent_error' && from === 'Build');
   await patchFrontmatter(project.path, id, {
@@ -982,7 +987,7 @@ export async function recoveryActions(project, id) {
   const reason = card.data.needs_human_reason;
   const resumableBuild = (reason === 'orphaned_run'
       && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error'].includes(reason) && card.data.recovery_stage === 'Build');
+    || (['run_timeout', 'agent_error', 'build_budget'].includes(reason) && card.data.recovery_stage === 'Build');
   const orphanedBuild = reason === 'orphaned_run'
     && (!card.data.recovery_stage || card.data.recovery_stage === 'Build');
   return {
@@ -1000,7 +1005,7 @@ export async function resumeBuild(project, id) {
   if (!card) return { ok: false, error: 'card not found' };
   const reason = card.data.needs_human_reason;
   const eligible = (reason === 'orphaned_run' && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error'].includes(reason) && card.data.recovery_stage === 'Build');
+    || (['run_timeout', 'agent_error', 'build_budget'].includes(reason) && card.data.recovery_stage === 'Build');
   if (card.data.status !== 'Needs Human' || !eligible) {
     return { ok: false, error: 'card is not an eligible preserved Build run' };
   }
@@ -1604,10 +1609,27 @@ function ciBoardColumn(config) {
   return config.columns.includes('CI') && config.ci.enabled;
 }
 
+async function captureCiEvidence(project, id, worktreeAbs, command) {
+  const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
+  const dirty = await git(worktreeAbs, ['status', '--porcelain']);
+  const evidence = head.ok && dirty.ok && !dirty.stdout
+    ? { head: head.stdout, command, passed_at: new Date().toISOString(), clean: true }
+    : {};
+  await patchFrontmatter(project.path, id, { ci_evidence: evidence });
+  return evidence;
+}
+
+async function trustedCiEvidence(card, worktreeAbs, command) {
+  const evidence = card?.data?.ci_evidence;
+  if (!evidence?.clean || !evidence.head || evidence.command !== command) return null;
+  const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
+  const dirty = await git(worktreeAbs, ['status', '--porcelain']);
+  return head.ok && dirty.ok && !dirty.stdout && head.stdout === evidence.head ? evidence : null;
+}
+
 // Fire-and-forget dispatch for the CI stage between Build and Verify, admitted
 // against the scheduler's CI column. Two real things this buys beyond
-// accounting: the command runs ONLY as a claude Stop hook (runner.js) for
-// claude builds, so codex builds never executed it at all, and a machine
+// enforcement: every provider reaches this independent gate, and a machine
 // hosting several boards can cap how many test suites run at once
 // independently of how many agents may build or verify.
 //
@@ -1669,11 +1691,16 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   // shell command has none, so the card history gets the same run-log line
   // without the meaningless columns.
   if (outcome.ok) {
+    const evidence = await captureCiEvidence(project, id, worktreeAbs, command);
     await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` passed`);
+    if (!evidence.clean) {
+      await appendRunLog(project.path, id, '  - CI evidence not reusable: candidate worktree is dirty or HEAD could not be resolved');
+    }
     sendState(project, id, 'passed', 'CI');
     await orchMove(project, id, 'Verify', `attempt ${attempt}`); // no-op if already 'Verify' (the legacy path)
     return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, findings);
   }
+  await patchFrontmatter(project.path, id, { ci_evidence: {} });
   await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` failed`);
   sendState(project, id, 'failed', 'CI');
   // CI is the first thing to enter the worktree after Build. A worktree the
@@ -1739,8 +1766,8 @@ function maybeStopCriticalWatch() {
 // session, envelope or jsonl transcript to collect — only the exit status, a
 // bounded tail of the output for the card, and the ability to stop it on
 // cancel/shutdown/critical-load. `command` comes from execConfig (the
-// COMMITTED config.yml), the same source as the Stop hook, so a working-tree
-// edit can never arm a new command here.
+// COMMITTED config.yml), so a working-tree edit can never arm a new command
+// here.
 function runVerifyCommand(project, id, command, cwd, config) {
   const key = runKey(project.name, id);
   // `detached: true` makes the shell the leader of its OWN process group
@@ -1931,6 +1958,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
 
   await patchFrontmatter(project.path, id, {
     worktree: branch,
+    ci_evidence: {},
     ...(forkedFrom ? { base_branch: forkedFrom } : {}),
     verification: { attempts: attempt, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
   });
@@ -1999,6 +2027,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   }
 
   const continuation = buildContinuationConfig(config);
+  const buildStartedAt = Date.now();
   let noProgressSlices = 0;
   let slice = 1;
   let before = await progressSnapshot(worktreeAbs);
@@ -2018,6 +2047,10 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     if (noProgressSlices >= continuation.maxNoProgressSlices) {
       return toNeedsHuman(project, id, 'Build', 'stalled_build',
         `No git-visible progress across ${noProgressSlices} consecutive build checkpoints`);
+    }
+    if (slice >= continuation.maxSlices || Date.now() - buildStartedAt >= continuation.budgetMs) {
+      return toNeedsHuman(project, id, 'Build', 'build_budget',
+        `Build reached its ${slice >= continuation.maxSlices ? `${continuation.maxSlices}-slice` : `${Math.round(continuation.budgetMs / 60_000)}m`} automation budget; worktree, branch, changes, and session are preserved for Resume Build`);
     }
 
     slice++;
@@ -2154,6 +2187,14 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const vendor = cardVendor(config, card, 'Verify');
   const route = validateModelRoute(vendor, stage.model, config);
   if (!route.ok) return toNeedsHuman(project, id, 'Verify', 'routing_error', route.error, pendingOwner);
+  const ciCommand = ciBoardColumn(config) ? ciCommandForProfile(config) : String(config.verify_command || '').trim();
+  const ciEvidence = ciCommand ? await trustedCiEvidence(card, worktreeAbs, ciCommand) : null;
+  let verifyPrompt = stagePrompt(project, vendor, stage, id);
+  if (ciEvidence) {
+    verifyPrompt += `\n\nTrusted CI evidence: the exact clean candidate HEAD ${ciEvidence.head} passed ` +
+      `\`${ciEvidence.command}\` at ${ciEvidence.passed_at}. Do not rerun that full command. ` +
+      'Independently review the diff and acceptance criteria; run only focused checks needed to investigate a specific finding.';
+  }
 
   if (triggerClaim?.cancelled) {
     if (triggerClaim.preserveWorktree) {
@@ -2189,7 +2230,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     triggerClaim,
     vendor,
     cwd: worktreeAbs,
-    prompt: stagePrompt(project, vendor, stage, id),
+    prompt: verifyPrompt,
     model: stage.model,
     effort: stage.effort,
     maxTurns: stage.maxTurns,

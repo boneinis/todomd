@@ -81,7 +81,7 @@ test('an unwritable jsonl log path does not kill the run (or the process)', asyn
   assert.equal(envelope?.subtype, 'success', 'the run completes; only the transcript is lost');
 });
 
-test('the Stop-hook settings file is written 0600 (it carries a shell command)', async (t) => {
+test('an explicit settings file is written 0600', async (t) => {
   if (process.platform === 'win32') return t.skip('POSIX permission bits');
   process.env.TODOMD_CLAUDE_BIN = FAKE;
   process.env.FAKE_MODE = 'parsing';

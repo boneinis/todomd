@@ -42,8 +42,8 @@ if (process.env.FAKE_STAT_SETTINGS) {
   try { if (i >= 0) mode = (fs.statSync(argv[i + 1]).mode & 0o777).toString(8); } catch { mode = 'unreadable'; }
   fs.writeFileSync(process.env.FAKE_STAT_SETTINGS, mode);
 }
-// copy out the --settings CONTENT (the Stop hook command the run was armed
-// with) — same reason: the runner deletes the file when the run ends
+// copy out the --settings CONTENT — same reason: the runner deletes the file
+// when the run ends
 if (process.env.FAKE_DUMP_SETTINGS) {
   const i = argv.indexOf('--settings');
   try { fs.writeFileSync(process.env.FAKE_DUMP_SETTINGS, i >= 0 ? fs.readFileSync(argv[i + 1], 'utf8') : '(no --settings)'); } catch {}

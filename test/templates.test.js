@@ -53,7 +53,7 @@ test('shipped config scopes Plan Edit to the cards dir and drops Bash(node:*) fr
   initProject(repo);
   const cfg = fs.readFileSync(path.join(repo, '.todomd/config.yml'), 'utf8');
   // the plan agent runs in the MAIN checkout with acceptEdits — an unscoped
-  // Edit could rewrite config.yml's verify_command (a shell hook next build)
+  // Edit could rewrite config.yml's verify_command (a CI shell command)
   assert.match(cfg, /allowed_tools: \[Read, Glob, Grep, "Edit\(\.todomd\/tasks\/\*\*\)"\]/,
     'Plan Edit is scoped to the cards dir');
   // Bash(node:*) auto-approves `node -e fs.writeFileSync(...)` anywhere — gone

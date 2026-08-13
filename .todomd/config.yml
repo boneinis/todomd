@@ -1,11 +1,17 @@
-columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]
-# mode: launcher — the todomd server spawns headless agent runs (instant,
-#   bills the included headless credit pool).
+columns: [Review, Plan, Planned, Queue, Build, CI, Verify, Needs Human, Done]
+# mode: launcher — the todomd server spawns the configured authenticated
+#   provider CLI; usage follows that provider and execution type.
 # mode: budget — the server only manages the board; you run a dispatcher
 #   inside an interactive session (`/loop 2m /todomd-dispatch`), so work
 #   bills the interactive subscription pool instead.
 mode: launcher
 verify_command: npm test
+ci:
+  enabled: true
+  profile: full
+  quick: npm run ci:quick
+  full: npm test
+  timeout_seconds: 0
 max_attempts: 3
 concurrency: 1
 merge: merge            # merge | pr (pr lands in a later phase)
@@ -36,6 +42,8 @@ github_sync:
 build_continuation:
   enabled: true
   max_no_progress_slices: 2
+  max_slices: 3
+  budget_minutes: 60
 
 # Pin the board's model picker to the models available to this team. This
 # supplements CLI discovery, which only exposes generic aliases for some models.

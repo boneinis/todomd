@@ -96,6 +96,57 @@ test('CI board column: the quick profile command runs and a pass advances the ca
   }
 });
 
+test('clean exact-HEAD CI evidence reaches Verify and suppresses the duplicate full command', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('ci-evidence'), 'argv.jsonl');
+  useFakeAgent({ build: 'good', verdict: 'pass', argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  configureCi(repo, { profile: 'full', quick: 'node --version', full: 'node --version' });
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.ci_evidence.command, 'node --version');
+    assert.equal(card.data.ci_evidence.clean, true);
+    const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+    const verifyPrompt = calls.flat().find((arg) => typeof arg === 'string' && arg.includes('Trusted CI evidence:'));
+    assert.match(verifyPrompt, /Do not rerun that full command/);
+    assert.match(verifyPrompt, new RegExp(card.data.ci_evidence.head));
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('a passing CI command that leaves the candidate dirty is not trusted by Verify', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('ci-dirty'), 'argv.jsonl');
+  useFakeAgent({ build: 'good', verdict: 'pass', argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  writeScript(repo, 'ci-dirty.mjs', `import fs from 'node:fs'; fs.writeFileSync('dirty.tmp', 'dirty');\n`);
+  configureCi(repo, { profile: 'full', full: 'node ci-dirty.mjs' });
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    assert.deepEqual(readCard(repo, 'task-0001').data.ci_evidence, {});
+    const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(calls.flat().some((arg) => typeof arg === 'string' && arg.includes('Trusted CI evidence:')), false);
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('CI board column: the full profile command runs instead of quick when configured', async () => {
   isolateHome();
   useFakeAgent({ build: 'good', verdict: 'pass' });

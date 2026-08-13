@@ -370,7 +370,7 @@ test('a failing CI stage stops the chain before Verify and carries its output to
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   // Vendor-independent by construction: this is a plain child process, not a
-  // claude Stop hook, so a codex build runs the same gate.
+  // independent CI stage, so a codex build runs the same gate.
   fs.writeFileSync(path.join(repo, 'ci-fail.mjs'),
     `process.stdout.write('verbose progress '.repeat(5000));\n` +
     `console.error('CI_OUTPUT_MARKER: 2 tests failed');\nprocess.exit(1);\n`);
@@ -476,6 +476,39 @@ test('a productive Build turn-limit checkpoint resumes automatically and reaches
   assert.ok(fs.existsSync(marker), 'the first slice reached its provider turn limit');
   assert.match(card.body, /checkpoint 1: no git-visible progress/, 'the checkpoint was recorded');
   assert.equal(card.data.needs_human_reason || '', '', 'a productive continuation does not need a human');
+  clearFakeAgent();
+});
+
+test('Build slice budget pauses as resumable infrastructure without losing the worktree or attempt', async () => {
+  isolateHome();
+  const marker = path.join(tmp('build-budget'), 'first-slice');
+  useFakeAgent({ verdict: 'pass', build: 'good', maxturns_once_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.appendFileSync(cfg, 'build_continuation:\n  enabled: true\n  max_no_progress_slices: 2\n  max_slices: 1\n  budget_minutes: 60\n');
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'bound build slices']);
+  const p = project(repo);
+  writeCard(repo, 'task-budget', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-budget', 'Queue');
+  await until(() => status(repo, 'task-budget') === 'Needs Human', { timeout: BUDGET.stage });
+  const paused = readCard(repo, 'task-budget');
+  const worktree = path.join(repo, '.todomd/worktrees/task-budget');
+  assert.equal(paused.data.needs_human_reason, 'build_budget');
+  assert.equal(paused.data.recovery_stage, 'Build');
+  assert.equal(paused.data.verification.attempts, 1);
+  assert.equal(fs.existsSync(worktree), true);
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-budget'), { timeout: BUDGET.stage });
+  assert.equal((await pipeline.recoveryActions(p, 'task-budget')).resume_build, true);
+
+  clearFakeAgent();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  const resumed = await pipeline.resumeBuild(p, 'task-budget');
+  assert.equal(resumed.ok, true);
+  assert.equal(resumed.attempt, 1);
+  assert.equal(fs.existsSync(worktree), true);
+  await until(() => status(repo, 'task-budget') === 'Done', { timeout: BUDGET.chain });
   clearFakeAgent();
 });
 
@@ -1731,7 +1764,7 @@ test('pipeline error: an unexpected throw in buildChain lands in Needs Human (pi
   writeCard(repo, 'task-0001', { status: 'Planned' });
   // codex inlines the stage command file — removing it makes stagePrompt throw
   // mid-chain (after the worktree exists), an unexpected buildChain failure
-  await patchFrontmatter(repo, 'task-0001', { agent: 'codex' });
+  await patchFrontmatter(repo, 'task-0001', { agent: 'codex', model: 'gpt-test' });
   fs.rmSync(path.join(repo, '.claude/commands/todomd-build.md'));
 
   const r = await pipeline.humanMove(p, 'task-0001', 'Queue'); // codex is a supported vendor → gate passes
@@ -2343,7 +2376,7 @@ test('Codex Verify infrastructure failures retain diagnostics and Retry Verifica
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = project(repo);
-  await setStageRouting(repo, 'Verify', { agent: 'codex' });
+  await setStageRouting(repo, 'Verify', { agent: 'codex', model: 'gpt-test' });
   writeCard(repo, 'task-0001', { status: 'Planned' });
   await patchFrontmatter(repo, 'task-0001', { agent: 'claude' });
 

@@ -101,7 +101,7 @@ function runClaude({
   maxTurns,
   allowedTools = [],
   permissionMode = 'acceptEdits',
-  settings,            // object → written to a temp settings file (Stop hook)
+  settings,            // optional object → written to a private temp settings file
   jsonSchema,          // object → buffered mode with structured output
   resume,              // session id
   logFile,             // jsonl tee target (streaming mode)
@@ -126,9 +126,8 @@ function runClaude({
   let settingsFile;
   if (settings) {
     settingsFile = path.join(os.tmpdir(), `todomd-settings-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-    // 0600: this file carries the repo's verify_command as a Stop hook — on a
-    // shared machine /tmp is world-readable, and another user must not be able
-    // to read (or, on a lax umask, rewrite) a command this process runs
+    // Keep explicit settings private on shared machines, where /tmp is
+    // otherwise world-readable and a lax umask could expose or permit edits.
     fs.writeFileSync(settingsFile, JSON.stringify(settings), { mode: 0o600 });
     args.push('--settings', settingsFile);
   }
@@ -203,9 +202,9 @@ function runClaude({
 // codex exec --json emits JSONL events (thread.started carries the session id,
 // turn.failed signals errors); resume via `codex exec resume <id>`; structured
 // output via --output-schema <file> + --output-last-message <file>.
-// No per-run hook injection → the independent Verify stage is the quality
-// gate (the Stop hook is a claude-only extra layer). Codex reports no $ cost
-// on subscription; the ledger records 0 for codex runs.
+// No per-run hook injection: the provider-independent CI and Verify stages are
+// the quality gates. Subscription runs may omit monetary cost while still
+// reporting normalized token usage.
 const CLAUDE_MODEL_NAMES = /^(sonnet|haiku|opus|claude)/i;
 
 function runCodex({
@@ -639,8 +638,9 @@ function runKimi({
   return { child, done };
 }
 
-// Stop-hook settings generated from the repo's verify_command at spawn time —
-// the single source of truth lives in config.yml, never in a stale file.
+// Legacy utility for callers that explicitly request a Claude Stop hook.
+// The board pipeline does not inject this: provider-independent CI is the
+// authoritative quality gate.
 export function stopHookSettings(verifyCommand) {
   return {
     hooks: {

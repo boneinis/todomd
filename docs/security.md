@@ -56,8 +56,8 @@ that runs without a human in the loop is confined:
   the *main checkout* with `--permission-mode acceptEdits`, so the shipped
   default is `allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]`.
   Unscoped, an email-injected plan could rewrite `.todomd/config.yml`'s
-  `verify_command` — which todomd runs as a shell command on the next build
-  (the CI stage, and the claude Stop hook).
+  `verify_command` — which todomd runs as the independent CI shell command on
+  the next build.
   **Existing repos:** update your `.todomd/config.yml` Plan `allowed_tools`
   likewise (and re-`init` won't clobber an existing config).
 - **No broad Bash rules in Build.** The shipped Build allowlist drops
@@ -75,21 +75,17 @@ that runs without a human in the loop is confined:
   re-adds it if missing), never committed, and appended to the stage prompt at
   spawn time. If you push your board to a public remote, assume every word in
   the shared box is public.
-- **The Stop-hook settings file is `0600`.** The `verify_command` is handed to
-  the agent CLI as a temp settings file in `/tmp` (world-readable on a shared
-  machine) and deleted when the run ends — it's written owner-only so no other
-  user can read, or on a lax umask rewrite, a command this process runs.
 - **Executable config comes from `HEAD:`, not the working tree.** The keys that
-  can make something run or widen what a run may do — `verify_command` (the CI
-  stage command, and the claude Stop hook), `stages` (per-column
+  can make something run or widen what a run may do — `verify_command` and
+  `ci` (the CI stage commands), `stages` (per-column
   command/model/`allowed_tools`), `default_agent`
   (codex ignores the allowlist), `worktree_link` (what gets linked into the
   worktree an agent reads) — are resolved via
   `git show HEAD:.todomd/config.yml`. A `git pull` or a mid-run agent edit
-  can't arm a new shell hook or widen an allowlist for a run already in flight.
+  can't arm a new shell command or widen an allowlist for a run already in flight.
   **This holds for keys the committed config OMITS too:** `verify_command` is
   optional, so if an absent key fell through to the working tree, an injected
-  edit that *adds* one would arm arbitrary shell as the next build's Stop hook.
+  edit that *adds* one would arm arbitrary shell as the next build's CI gate.
   An omitted key falls to the code's own default instead. Operational keys
   (`mode`, `concurrency`, `max_attempts`, `columns`) still follow the working
   tree, so the board behaves the way it displays and an uncommitted

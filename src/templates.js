@@ -3,16 +3,15 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const CONFIG_YML = `columns: [Review, Plan, Planned, Queue, Build, CI, Verify, Needs Human, Done]
-# mode: launcher — the todomd server spawns headless agent runs (instant,
-#   bills the included headless credit pool).
+# mode: launcher — the todomd server spawns the configured authenticated
+#   provider CLI; usage follows that provider and execution type.
 # mode: budget — the server only manages the board; you run a dispatcher
 #   inside an interactive session (\`/loop 2m /todomd-dispatch\`), so work
 #   bills the interactive subscription pool instead.
 mode: launcher
 # The repo's own gate: the legacy single-command form. It runs in the task
 # worktree as the CI stage between Build and Verify (for every vendor, admitted
-# against the scheduler's CI column below), and — for claude builds only — as
-# the build agent's Stop hook. A failing CI stage sends the card to Needs Human
+# against the scheduler's CI column below). A failing CI stage sends the card to Needs Human
 # with its output; an empty value skips the CI stage entirely. Superseded by
 # the \`ci:\` block below when the CI column is present: remove 'CI' from
 # columns above (or set ci.enabled: false) to go back to legacy behavior —
@@ -68,6 +67,8 @@ github_sync:
 build_continuation:
   enabled: true
   max_no_progress_slices: 2
+  max_slices: 3          # total provider checkpoints before a resumable Build-budget pause
+  budget_minutes: 60    # total wall-clock budget for one Build admission
 
 # Resource monitor: before starting new heavy work (a build/verify agent run),
 # the scheduler samples host CPU/memory/disk and defers if any metric has
@@ -155,7 +156,7 @@ stages:
     max_turns: 20
     # Edit is scoped to the cards dir: the plan agent runs in the main checkout
     # with --permission-mode acceptEdits, so an email-injected card must not be
-    # able to rewrite config.yml (verify_command runs as a shell hook next build)
+    # able to rewrite config.yml (verify_command runs as a CI shell command)
     allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
   Build:
     command: todomd-build
@@ -250,7 +251,7 @@ You are the todomd VERIFY agent — independent quality control with no knowledg
 You are running inside the task's git worktree containing the candidate implementation.
 
 1. Read the task file \`.todomd/tasks/<task-id>-*.md\`: the Acceptance Criteria are your checklist.
-2. Run the project's verify command and inspect the relevant code with fresh eyes.
+2. Run the project's verify command and inspect the relevant code with fresh eyes. If the board prompt includes trusted CI evidence for the exact clean candidate HEAD and exact command, do not rerun that full command; independently review the diff and use only focused checks needed to investigate a concrete concern.
 3. Check EVERY acceptance criterion individually and skeptically — do not take the implementation's word for anything.
 4. **Adversarially review the candidate's diff for bugs the acceptance criteria don't cover.** Run \`git diff main...HEAD\` to see exactly what changed, then scan it from three angles: (a) **line-by-line** — wrong/inverted conditions, off-by-one, null/undefined deref, missing \`await\`, falsy-zero treated as missing, swapped or copy-pasted variables, errors swallowed in a catch, unescaped regex metacharacters; (b) **removed-behavior** — for each deleted or replaced line, name the invariant it enforced and confirm the new code re-establishes it; (c) **cross-file** — for each changed function, check its callers and callees for a broken precondition, a changed return shape, or a new race/ordering dependency. A real, reachable bug found here is a **fail** even if every acceptance criterion is met and the tests pass — describe it in \`findings\` so the build agent can fix it.
 5. Modify nothing. You are read-only except for running tests and reading git history.
