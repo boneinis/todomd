@@ -166,7 +166,16 @@ async function loadBoard() {
   const modeTag = boardData.mode === 'budget' ? ' · budget' : '';
   const viewer = boardData.access === 'viewer';
   const pausedTag = usage.queue_paused ? ' · queue paused' : '';
-  $('#usage').textContent = (usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)}/mo` : '') + modeTag + pausedTag + (viewer ? ' · monitor' : '');
+  const runsTag = usage.model_runs ? `${usage.model_runs} AI run${usage.model_runs === 1 ? '' : 's'}` : '';
+  const tokenTag = usage.tokens && usage.model_runs
+    ? `${compactNumber(usage.tokens.input_tokens)} in / ${compactNumber(usage.tokens.output_tokens)} out`
+    : '';
+  const unavailableTag = usage.unavailable_usage_runs ? `${usage.unavailable_usage_runs} usage unavailable` : '';
+  const costTag = usage.month_cost_usd ? `$${usage.month_cost_usd.toFixed(2)} legacy est` : '';
+  $('#usage').textContent = [costTag, runsTag, tokenTag, unavailableTag].filter(Boolean).join(' · ') + modeTag + pausedTag + (viewer ? ' · monitor' : '');
+  const providers = Object.entries(usage.by_provider || {}).map(([provider, item]) =>
+    `${provider}: ${item.runs} run${item.runs === 1 ? '' : 's'}, ${compactNumber(item.tokens?.input_tokens)} input, ${compactNumber(item.tokens?.cached_input_tokens)} cached, ${compactNumber(item.tokens?.output_tokens)} output${item.unavailable_usage_runs ? `, ${item.unavailable_usage_runs} unavailable` : ''}`);
+  $('#usage').title = ['Current-month normalized model usage. Dollar value is provider-reported legacy estimate, not a bill.', ...providers].join('\n');
   document.body.classList.toggle('viewer', viewer);
   applyQueuePause(usage.queue_paused === true);
   renderBoard();
@@ -178,6 +187,13 @@ async function loadBoard() {
   // voice/main.js is a separate ES module (see index.html) with no access to
   // this classic script's top-level scope — this is the only bridge it needs.
   publishVoiceContext({ project: requestedProject, access: boardData.access, primary: boardData.primary === true });
+}
+
+function compactNumber(value) {
+  const n = Number(value) || 0;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
 }
 
 function applyQueuePause(paused) {

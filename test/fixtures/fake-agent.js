@@ -58,7 +58,9 @@ const emitStream = (events) => {
 };
 const resultEnvelope = (extra = {}) => ({
   type: 'result', subtype: 'success', is_error: false,
-  total_cost_usd: 0.001, num_turns: 1, session_id: session, result: 'ok', ...extra,
+  total_cost_usd: 0.001, num_turns: 1, session_id: session, result: 'ok',
+  usage: { input_tokens: 20, cache_read_input_tokens: 10, cache_creation_input_tokens: 2, output_tokens: 5 },
+  ...extra,
 });
 
 async function waitBeforeExit() {

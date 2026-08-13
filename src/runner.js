@@ -25,11 +25,64 @@ const MAX_BUF = 32 * 1024 * 1024;
 // Vendor dispatch: every stage run returns the same shape —
 // { envelope: {subtype, is_error, total_cost_usd, num_turns, structured_output?},
 //   sessionId, exitCode, stderr } — regardless of which CLI did the work.
+const n = (value) => Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0;
+
+export function normalizeUsage(raw) {
+  raw = raw && typeof raw === 'object' ? raw : {};
+  const usage = {
+    input_tokens: n(raw.input_tokens ?? raw.inputTokens),
+    cached_input_tokens: n(raw.cached_input_tokens ?? raw.cache_read_input_tokens ?? raw.cacheReadInputTokens),
+    cache_write_input_tokens: n(raw.cache_write_input_tokens ?? raw.cache_creation_input_tokens ?? raw.cacheCreationInputTokens),
+    output_tokens: n(raw.output_tokens ?? raw.outputTokens),
+    reasoning_output_tokens: n(raw.reasoning_output_tokens ?? raw.reasoningOutputTokens),
+  };
+  usage.available = Object.values(usage).some((value) => typeof value === 'number' && value > 0);
+  return usage;
+}
+
+function addUsage(total, raw) {
+  const next = normalizeUsage(raw);
+  for (const key of Object.keys(total)) if (key !== 'available') total[key] += next[key] || 0;
+  total.available ||= next.available;
+}
+
+// All provider adapters resolve through one telemetry boundary. This keeps the
+// pipeline independent from vendor-specific JSON field names and ensures a
+// zero-dollar subscription run is never mistaken for a zero-usage run.
 export function runStage(opts) {
-  if (opts.vendor === 'codex') return runCodex(opts);
-  if (opts.vendor === 'gemini') return runGemini(opts);
-  if (opts.vendor === 'kimi') return runKimi(opts);
-  return runClaude(opts);
+  const vendor = opts.vendor || 'claude';
+  const streamed = normalizeUsage();
+  const callerEvent = opts.onEvent || (() => {});
+  const wrapped = { ...opts, vendor, onEvent: (event) => {
+    if (event?.type === 'turn.completed') addUsage(streamed, event.usage);
+    callerEvent(event);
+  } };
+  const run = vendor === 'codex' ? runCodex(wrapped)
+    : vendor === 'gemini' ? runGemini(wrapped)
+    : vendor === 'kimi' ? runKimi(wrapped)
+    : runClaude(wrapped);
+  const executionType = vendor === 'gemini' ? 'gateway' : 'subscription_cli';
+  const executable = vendor === 'codex' ? (process.env.TODOMD_CODEX_BIN || 'codex')
+    : vendor === 'gemini' ? (process.env.TODOMD_GEMINI_BIN || 'agy')
+    : vendor === 'kimi' ? (process.env.TODOMD_KIMI_BIN || 'kimi')
+    : (process.env.TODOMD_CLAUDE_BIN || 'claude');
+  return {
+    child: run.child,
+    done: run.done.then((result) => {
+      const envelopeUsage = normalizeUsage(result?.envelope?.usage);
+      const usage = envelopeUsage.available ? envelopeUsage : streamed;
+      const reportedModel = Object.keys(result?.envelope?.modelUsage || {})[0] || opts.model || '';
+      return {
+        ...result,
+        runId: opts.runId || '',
+        provider: vendor,
+        model: reportedModel,
+        executable: result?.diagnostic?.executable || executable,
+        executionType,
+        usage,
+      };
+    }),
+  };
 }
 
 // Spawn one headless claude run for a pipeline stage.

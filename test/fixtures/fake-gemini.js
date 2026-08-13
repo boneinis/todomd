@@ -29,7 +29,8 @@ if (format === 'stream-json') {
     } }));
   } else {
     process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'fake-gemini-session' }) + '\n');
-    process.stdout.write(JSON.stringify({ type: 'turn.completed', session_id: 'fake-gemini-session' }) + '\n');
+    process.stdout.write(JSON.stringify({ type: 'turn.completed', session_id: 'fake-gemini-session',
+      usage: { input_tokens: 30, cached_input_tokens: 12, output_tokens: 7 } }) + '\n');
     process.stdout.write(JSON.stringify({ type: 'result', subtype: exitCode ? 'error' : 'success', is_error: !!exitCode,
       session_id: 'fake-gemini-session', result: process.env.FAKE_GEMINI_LAST_MESSAGE || 'done' }));
   }

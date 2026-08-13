@@ -23,6 +23,7 @@ import { isolateHome, makeRepo, writeCard, until, git, BUDGET } from '../helpers
 import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
 import { appendIntakeAudit } from '../../src/screen.js';
+import { recordUsage } from '../../src/runstore.js';
 import { openPage } from '../browser.js';
 
 function freePort() {
@@ -78,6 +79,9 @@ const SKIP = 'no Chrome/Chromium found (set TODOMD_CHROME_BIN to run this)';
 
 before(async () => {
   isolateHome();
+  recordUsage({ run_id: 'ui-codex', provider: 'codex', model: 'gpt-5.6-sol', execution_type: 'subscription_cli',
+    usage: { available: true, input_tokens: 1200, cached_input_tokens: 900, output_tokens: 50 } });
+  recordUsage({ run_id: 'ui-gateway', provider: 'gemini', execution_type: 'gateway', usage: { available: false } });
   const repo = hostileBoard();
   addProject(repo);
   name = path.basename(repo);
@@ -102,6 +106,10 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     const count = await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null,
       { timeout: BUDGET.stage });
     assert.equal(count, 7, 'every card rendered (a render throw would blank the board)');
+    const usageText = await page.eval(`document.getElementById('usage').textContent`);
+    assert.match(usageText, /2 AI runs/);
+    assert.match(usageText, /1\.2K in \/ 50 out/);
+    assert.match(usageText, /1 usage unavailable/);
     assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0005-broken"]')`), true,
       'the unparseable card is surfaced rather than swallowed');
 

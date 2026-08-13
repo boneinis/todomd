@@ -17,12 +17,15 @@ test('stream-json: captures session id, final envelope, and flushes a trailing n
   const { done } = runStage({
     cwd: process.cwd(), prompt: 'anything', onEvent: (e) => events.push(e),
   });
-  const { envelope, sessionId, exitCode } = await done;
+  const { envelope, sessionId, exitCode, usage, executionType } = await done;
   delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN;
   assert.equal(exitCode, 0);
   assert.equal(sessionId, 'fake-session-0001');
   assert.ok(envelope, 'final result envelope must be parsed even without a trailing newline');
   assert.equal(envelope.subtype, 'success');
+  assert.equal(usage.input_tokens, 20);
+  assert.equal(usage.cached_input_tokens, 10);
+  assert.equal(executionType, 'subscription_cli');
   // the multibyte assistant text decoded cleanly (no replacement chars)
   const txt = events.find((e) => e.type === 'assistant')?.message?.content?.[0]?.text;
   assert.equal(txt, 'héllo 日本語');
@@ -116,6 +119,9 @@ test('Codex Verify retains executable, cwd, exit, stderr, and structured output'
   delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_STDERR;
 
   assert.equal(result.envelope.structured_output.verdict, 'pass');
+  assert.equal(result.usage.input_tokens, 100);
+  assert.equal(result.usage.cached_input_tokens, 80);
+  assert.equal(result.usage.reasoning_output_tokens, 4);
   assert.equal(result.diagnostic.executable, FAKE_CODEX);
   assert.equal(result.diagnostic.cwd, dir);
   assert.equal(result.diagnostic.exitCode, 0);
@@ -215,6 +221,8 @@ test('Gemini Build is sandboxed, headless, routed, and never skips permissions g
   assert.equal(argv.includes('--dangerously-skip-permissions'), false);
   assert.equal(result.sessionId, 'fake-gemini-session');
   assert.equal(result.envelope.subtype, 'success');
+  assert.equal(result.executionType, 'gateway');
+  assert.equal(result.usage.input_tokens, 30);
   assert.ok(events.some((e) => e.type === 'turn.completed'));
 });
 

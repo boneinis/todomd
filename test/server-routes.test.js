@@ -11,6 +11,7 @@ import { startServer } from '../src/server.js';
 import { readCard } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 import * as scheduler from '../src/scheduler.js';
+import { recordUsage } from '../src/runstore.js';
 
 // The epic-delete test drives a build that hangs until it's signalled. A live
 // agent child is a ref'd handle — one left behind (cancel path missed, an early
@@ -83,6 +84,24 @@ test('API auth gauntlet: token tiers, origin check, viewer is read-only', async 
     assert.equal((await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': viewer } })).status, 403);
     // unknown project → 404
     assert.equal((await fetch(`${base}/api/board?project=nope`, { headers: { 'x-todomd-token': full } })).status, 404);
+  } finally { srv.close(); }
+});
+
+test('API usage separates subscription tokens, unavailable gateway runs, and legacy estimated cost', async () => {
+  isolateHome();
+  const { base, srv, q } = await boot();
+  try {
+    recordUsage({ run_id: 'api-codex', provider: 'codex', model: 'gpt-5.6-sol', execution_type: 'subscription_cli',
+      usage: { available: true, input_tokens: 500, cached_input_tokens: 400, output_tokens: 25 } });
+    recordUsage({ run_id: 'api-gemini', provider: 'gemini', model: 'gemini-3.6-flash-low', execution_type: 'gateway',
+      usage: { available: false } });
+    const r = await fetch(`${base}/api/board${q}`, { headers: { 'x-todomd-token': srv.token } });
+    const usage = (await r.json()).usage;
+    assert.equal(usage.model_runs, 2);
+    assert.equal(usage.tokens.input_tokens, 500);
+    assert.equal(usage.by_provider.codex.tokens.cached_input_tokens, 400);
+    assert.equal(usage.by_provider.gemini.unavailable_usage_runs, 1);
+    assert.equal(typeof usage.month_cost_usd, 'number', 'legacy API field remains compatible');
   } finally { srv.close(); }
 });
 

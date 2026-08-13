@@ -8,7 +8,7 @@ import { isGitRepo, addWorktree, archiveBranchForRestart, removeWorktree, mergeB
 import { runStage } from './runner.js';
 import { SUPPORTED_VENDORS as SUPPORTED_VENDOR_LIST, validateModelRoute } from './models.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
-import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
+import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost, recordUsage, usageSummary } from './runstore.js';
 import * as scheduler from './scheduler.js';
 
 const VERDICT_SCHEMA = {
@@ -521,15 +521,42 @@ async function recordRun(project, id, stage, attempt, result, note) {
   const cost = result?.envelope?.total_cost_usd || 0;
   const turns = result?.envelope?.num_turns ?? '?';
   addCost(cost);
+  recordUsage({
+    run_id: result?.runId,
+    project: project.name,
+    card: id,
+    stage,
+    attempt: attempt || 0,
+    provider: result?.provider || 'unknown',
+    model: result?.model || '',
+    executable: result?.executable || '',
+    execution_type: result?.executionType || 'unknown',
+    estimated_cost_usd: cost,
+    usage: result?.usage,
+  });
   const card = readCard(project.path, id);
   const prevCost = Number(card?.data?.cost_usd) || 0;
   const patch = { cost_usd: Math.round((prevCost + cost) * 10000) / 10000 };
   if (result?.sessionId) patch.session_id = result.sessionId;
   await patchFrontmatter(project.path, id, patch);
+  const usage = result?.usage;
+  const usageText = usage?.available
+    ? `${compactTokens(usage.input_tokens)} input, ${compactTokens(usage.cached_input_tokens)} cached, ${compactTokens(usage.output_tokens)} output`
+    : 'usage unavailable';
+  const source = result?.executionType === 'subscription_cli' ? 'subscription CLI'
+    : result?.executionType === 'gateway' ? 'gateway' : result?.executionType || 'unknown source';
   await appendRunLog(
     project.path, id,
-    `- ${now()} · ${stage}${attempt ? ` attempt ${attempt}` : ''} · ${turns} turns · $${cost.toFixed(3)} · ${note}`
+    `- ${now()} · ${stage}${attempt ? ` attempt ${attempt}` : ''} · ${turns} turns · ` +
+    `${result?.provider || 'agent'}${result?.model ? `/${result.model}` : ''} · ${source} · ${usageText} · $${cost.toFixed(3)} est · ${note}`
   );
+}
+
+function compactTokens(value) {
+  const n = Number(value) || 0;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
 }
 
 async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner) {
@@ -679,6 +706,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   const { child, done } = runStage({
     ...stageOpts,
     stage,
+    runId: `${project.name}:${id}:${stage}:${attempt || 0}:${path.basename(stageOpts.logFile || `${Date.now()}`)}`,
     onEvent: (event) => {
       saveSession(event.session_id || event.thread_id || event?.thread?.id);
       if (event.type === 'assistant' || event.type === 'rate_limit_event' ||
@@ -2749,6 +2777,7 @@ export function usage(projectOrName) {
   const projectName = typeof projectOrName === 'string' ? projectOrName : projectOrName?.name;
   return {
     month_cost_usd: monthCost(),
+    ...usageSummary(),
     quota_paused: projectName ? quotaPaused.has(projectName) : quotaPaused.size > 0,
     queue_paused: typeof projectOrName === 'object' && isQueuePaused(projectOrName),
   };

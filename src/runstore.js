@@ -6,6 +6,7 @@ import os from 'node:os';
 const dir = () => path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd');
 const RUNS_FILE = () => path.join(dir(), 'runs.json');
 const LEDGER_FILE = () => path.join(dir(), 'ledger.json');
+const USAGE_FILE = () => path.join(dir(), 'usage.jsonl');
 
 // key `${project}:${cardId}` → { project, card, stage, pid, sessionId,
 //   startedAt, prevStatus, attempt, vendor, executable }
@@ -58,4 +59,75 @@ export function monthCost() {
   } catch {
     return 0;
   }
+}
+
+const tokenFields = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens'];
+const cleanNumber = (value) => Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0;
+
+// Append-only telemetry avoids the cross-process lost-update race of a shared
+// JSON object. Summary reads dedupe by run_id, so retrying a finalization after
+// a crash cannot double-count the same provider invocation.
+export function recordUsage(record) {
+  if (!record?.run_id) return false;
+  try {
+    fs.mkdirSync(dir(), { recursive: true });
+    const usage = {};
+    for (const field of tokenFields) usage[field] = cleanNumber(record.usage?.[field]);
+    usage.available = record.usage?.available === true || tokenFields.some((field) => usage[field] > 0);
+    const entry = {
+      run_id: String(record.run_id).slice(0, 500),
+      recorded_at: new Date().toISOString(),
+      project: String(record.project || ''), card: String(record.card || ''),
+      stage: String(record.stage || ''), attempt: cleanNumber(record.attempt),
+      provider: String(record.provider || 'unknown'), model: String(record.model || ''),
+      executable: path.basename(String(record.executable || '')),
+      execution_type: String(record.execution_type || 'unknown'),
+      estimated_cost_usd: cleanNumber(record.estimated_cost_usd),
+      usage,
+    };
+    fs.appendFileSync(USAGE_FILE(), JSON.stringify(entry) + '\n', { mode: 0o600 });
+    return true;
+  } catch { return false; }
+}
+
+function emptyTokens() {
+  return Object.fromEntries(tokenFields.map((field) => [field, 0]));
+}
+
+export function usageSummary(month = new Date().toISOString().slice(0, 7)) {
+  const summary = {
+    usage_month: month,
+    model_runs: 0,
+    unavailable_usage_runs: 0,
+    estimated_cost_usd: 0,
+    tokens: emptyTokens(),
+    by_provider: {},
+    by_execution_type: {},
+  };
+  let lines;
+  try { lines = fs.readFileSync(USAGE_FILE(), 'utf8').split('\n'); } catch { return summary; }
+  const seen = new Set();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (!entry.run_id || seen.has(entry.run_id) || !String(entry.recorded_at || '').startsWith(month)) continue;
+    seen.add(entry.run_id);
+    summary.model_runs++;
+    if (!entry.usage?.available) summary.unavailable_usage_runs++;
+    summary.estimated_cost_usd += cleanNumber(entry.estimated_cost_usd);
+    for (const field of tokenFields) summary.tokens[field] += cleanNumber(entry.usage?.[field]);
+    for (const [group, key] of [['by_provider', entry.provider || 'unknown'], ['by_execution_type', entry.execution_type || 'unknown']]) {
+      const bucket = summary[group][key] ||= { runs: 0, unavailable_usage_runs: 0, estimated_cost_usd: 0, tokens: emptyTokens() };
+      bucket.runs++;
+      if (!entry.usage?.available) bucket.unavailable_usage_runs++;
+      bucket.estimated_cost_usd += cleanNumber(entry.estimated_cost_usd);
+      for (const field of tokenFields) bucket.tokens[field] += cleanNumber(entry.usage?.[field]);
+    }
+  }
+  const roundCost = (bucket) => { bucket.estimated_cost_usd = Math.round(bucket.estimated_cost_usd * 10000) / 10000; };
+  roundCost(summary);
+  Object.values(summary.by_provider).forEach(roundCost);
+  Object.values(summary.by_execution_type).forEach(roundCost);
+  return summary;
 }
