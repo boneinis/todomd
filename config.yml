@@ -17,8 +17,8 @@ branch_prefix: todomd/
 # Board-wide defaults — the bottom of the card → column → board override chain.
 # A card's own agent/model wins; else the stage column's (stages.<col>.agent|
 # model); else these. default_model is the fallback where a stage sets no model.
-default_agent: gemini
-# default_model: gemini-2.5-pro
+default_agent: claude
+# default_model: claude-sonnet-5
 default_effort: high
 
 # Publish shared board Markdown to a dedicated GitHub branch. This never
@@ -42,8 +42,7 @@ build_continuation:
 models:
   claude: [fable, claude-fable-5, opus, claude-opus-5, sonnet, haiku]
   codex: [gpt-5.6-sol, gpt-5-codex, gpt-5, o3]
-  gemini: [gemini-3.6-pro, gemini-3.5-pro, gemini-2.5-pro, gemini-3.6-flash, gemini-2.5-flash]
-  kimi: [kimi-k1.5, moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k]
+  gemini: [gemini-3.6-flash-low, gemini-3.6-flash-medium, gemini-3.6-flash-high, gemini-3.1-pro-high]
 
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
 # in-flight work (which card/files each worker is building), so several people
@@ -60,7 +59,8 @@ coordination:
 # to turn off, or model: haiku/flash to cut the per-card cost.
 triage:
   enabled: true
-  model: gemini-3.6-flash
+  agent: gemini
+  model: gemini-3.6-flash-low
   effort: low
   max_turns: 8
 
@@ -72,16 +72,16 @@ triage:
 stages:
   Plan:
     command: todomd-plan
-    model: gemini-3.6-pro
-    effort: xhigh
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
     max_turns: 20
     allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
   Build:
     command: todomd-build
-    agent: gemini
-    model: gemini-3.1-pro-high
-    effort: xhigh
-    workflow: ultra_code
+    agent: claude
+    model: claude-sonnet-5
+    effort: high
     max_turns: 100
     allowed_tools:
       - Read
@@ -105,9 +105,9 @@ stages:
     allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(node --test:*)", "Bash(git diff:*)", "Bash(git log:*)"]
 
 # Repeated-failure escalation: after the second failed independent review,
-# Gemini 3.6 Pro diagnoses, repairs, and performs the final merge gate.
+# Fable diagnoses and repairs before the final independent Codex gate.
 escalation:
   enabled: true
   after_failed_reviews: 2
-  diagnosis: { agent: gemini, model: gemini-3.6-pro, effort: xhigh }
-  repair: { agent: gemini, model: gemini-3.6-pro, effort: xhigh }
+  diagnosis: { agent: claude, model: claude-fable-5, effort: high }
+  repair: { agent: claude, model: claude-fable-5, effort: high }
