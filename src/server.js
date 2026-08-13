@@ -10,7 +10,7 @@ import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
 import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
-import { listModels } from './models.js';
+import { listModels, SUPPORTED_VENDORS, validateModelRoute } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
 import { createMetadataScheduler } from './github-sync.js';
@@ -379,8 +379,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const updates = {};
       if ('agent' in fields) {
         const agent = pipeline.normalizeVendor(fields.agent);
-        if (fields.agent && !['claude', 'codex', 'gemini', 'kimi'].includes(agent)) return json(res, 400, { error: 'agent must be claude, codex, gemini, or kimi' });
+        if (fields.agent && !SUPPORTED_VENDORS.includes(agent)) return json(res, 400, { error: `agent must be ${SUPPORTED_VENDORS.join(', ')}` });
         updates.agent = fields.agent ? agent : '';
+        if (!('model' in fields)) updates.model = '';
       }
       if ('model' in fields) updates.model = String(fields.model || '');
       if ('effort' in fields) updates.effort = String(fields.effort || '');
@@ -388,6 +389,10 @@ export function startServer({ port = 7337, lan = false } = {}) {
         if (col !== 'Build') return json(res, 400, { error: 'workflow presets are available only for Build' });
         updates.workflow = String(fields.workflow || '');
       }
+      const effectiveAgent = updates.agent || (cfg.stages || {})[col]?.agent || cfg.default_agent || 'claude';
+      const effectiveModel = 'model' in updates ? updates.model : (cfg.stages || {})[col]?.model || cfg.default_model || '';
+      const route = validateModelRoute(effectiveAgent, effectiveModel, cfg);
+      if (!route.ok) return json(res, 400, { error: route.error });
       const result = await setStageRouting(project.path, col, updates);
       return json(res, result.ok ? 200 : 400, result);
     }
@@ -488,6 +493,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       // full token only: this spawns blocking CLI --help processes
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
       const agent = (url.searchParams.get('agent') || 'claude').replace(/[^\w-]/g, '');
+      if (!SUPPORTED_VENDORS.includes(agent)) return json(res, 400, { error: `agent must be ${SUPPORTED_VENDORS.join(', ')}` });
       return json(res, 200, { agent, models: listModels(agent, loadConfig(project.path)) });
     }
     if (url.pathname === '/api/cards' && req.method === 'POST') {
@@ -621,8 +627,9 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const updates = {};
       if ('agent' in fields) {
         const agent = pipeline.normalizeVendor(fields.agent);
-        if (!['claude', 'codex', 'gemini', 'kimi'].includes(agent)) return json(res, 400, { error: 'agent must be claude, codex, gemini, or kimi' });
+        if (!SUPPORTED_VENDORS.includes(agent)) return json(res, 400, { error: `agent must be ${SUPPORTED_VENDORS.join(', ')}` });
         updates.agent = agent;
+        if (!('model' in fields)) updates.model = '';
       }
       if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
@@ -630,6 +637,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if ('skill' in fields) updates.skill = String(fields.skill || '').replace(/[^\w:-]/g, '');
       if ('assignee' in fields) updates.assignee = sanitizeAssignee(fields.assignee);
       if (!Object.keys(updates).length) return json(res, 400, { error: 'nothing to set' });
+      const current = readCard(project.path, setMatch[1]);
+      const effectiveAgent = updates.agent || current?.data?.agent || loadConfig(project.path).default_agent || 'claude';
+      const effectiveModel = 'model' in updates ? updates.model : current?.data?.model || '';
+      const route = validateModelRoute(effectiveAgent, effectiveModel, loadConfig(project.path));
+      if (!route.ok) return json(res, 400, { error: route.error });
       const result = await patchFrontmatter(project.path, setMatch[1], updates);
       return json(res, result.ok ? 200 : 400, result);
     }

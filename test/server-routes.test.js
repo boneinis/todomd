@@ -285,8 +285,8 @@ test('API per-column routing: /api/commands carries stage routing; /api/stages s
     r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
     assert.equal((await r.json()).commands.find((c) => c.column === 'Build').agent, '');
 
-    // Gemini and Kimi are first-class choices; aliases normalize. Unknown
-    // columns and unknown providers remain rejected.
+    // Gemini is a first-class Agent Gateway choice and its alias normalizes.
+    // Kimi stays fail-closed until its installed CLI adapter is compatible.
     r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'gemini' }) });
     assert.equal(r.status, 200);
     r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'agy' }) });
@@ -296,6 +296,8 @@ test('API per-column routing: /api/commands carries stage routing; /api/stages s
     r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Nope', agent: 'codex' }) });
     assert.equal(r.status, 400);
     r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'unknown-agent' }) });
+    assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', agent: 'kimi' }) });
     assert.equal(r.status, 400);
 
     // viewer cannot write routing → 403

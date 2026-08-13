@@ -5,7 +5,8 @@ import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, archiveBranchForRestart, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
-import { runStage, stopHookSettings } from './runner.js';
+import { runStage } from './runner.js';
+import { SUPPORTED_VENDORS as SUPPORTED_VENDOR_LIST, validateModelRoute } from './models.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost } from './runstore.js';
 import * as scheduler from './scheduler.js';
@@ -43,6 +44,28 @@ const ESCALATION_SCHEMA = {
   properties: {
     diagnosis: { type: 'string' },
     repair_strategy: { type: 'string' },
+  },
+};
+
+const PLAN_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['plan', 'chunks'],
+  properties: {
+    plan: { type: 'string' },
+    chunks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'plan', 'criteria'],
+        properties: {
+          title: { type: 'string' },
+          plan: { type: 'string' },
+          criteria: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
   },
 };
 
@@ -206,7 +229,7 @@ async function orchMove(project, id, to, reason) {
   return moveCard(project.path, id, to, { reason });
 }
 
-const SUPPORTED_VENDORS = new Set(['claude', 'codex', 'gemini', 'kimi']);
+const SUPPORTED_VENDORS = new Set(SUPPORTED_VENDOR_LIST);
 
 export function normalizeVendor(value) {
   const vendor = String(value || '').trim().toLowerCase();
@@ -214,12 +237,12 @@ export function normalizeVendor(value) {
   return aliases[vendor] || vendor;
 }
 
-// Override precedence is normally card → column → board. Verify is the one
-// deliberate exception: an explicitly routed Verify column owns its provider
-// so a card's Build agent cannot silently replace independent quality control.
+// Override precedence is normally card → column → board. Plan and Verify are
+// independent, explicitly-routed stages: a Build provider selected on a card
+// must not replace either planning or independent quality control.
 function cardVendor(config, card, stageName) {
   const stageAgent = stageName && (config.stages || {})[stageName]?.agent;
-  if (stageName === 'Verify' && stageAgent) return normalizeVendor(stageAgent);
+  if (['Plan', 'Verify'].includes(stageName) && stageAgent) return normalizeVendor(stageAgent);
   return normalizeVendor(card?.data?.agent || stageAgent || config.default_agent || 'claude');
 }
 
@@ -259,9 +282,9 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
 
 function stageConfig(config, stageName, card) {
   const stage = (config.stages || {})[stageName] || {};
-  const independentVerify = stageName === 'Verify' && !!stage.agent;
+  const independentStage = ['Plan', 'Verify'].includes(stageName) && !!stage.agent;
   const workflow = card?.data?.workflow || stage.workflow || '';
-  let effort = independentVerify
+  let effort = independentStage
     ? (stage.effort || config.default_effort)
     : (card?.data?.effort || stage.effort || config.default_effort);
   // Ultra Code is the board's high-rigor Build contract, not merely an extra
@@ -275,7 +298,7 @@ function stageConfig(config, stageName, card) {
     command: stage.command || `todomd-${stageName.toLowerCase()}`,
     // A model selected for the card's Build provider may be invalid for the
     // independent verifier. Prefer Verify's own routing (or provider default).
-    model: independentVerify ? (stage.model || undefined) : (card?.data?.model || stage.model || config.default_model),
+    model: independentStage ? (stage.model || undefined) : (card?.data?.model || stage.model || config.default_model),
     effort,
     workflow,
     // Zero deliberately means "let the provider choose its per-session cap".
@@ -320,12 +343,12 @@ function escalationConfig(config) {
     diagnosis: {
       agent: ['codex', 'gemini', 'kimi'].includes(e.diagnosis?.agent) ? e.diagnosis.agent : 'claude',
       model: e.diagnosis?.model || 'claude-fable-5',
-      effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.diagnosis?.effort) ? e.diagnosis.effort : 'xhigh',
+      effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.diagnosis?.effort) ? e.diagnosis.effort : 'high',
     },
     repair: {
       agent: ['codex', 'gemini', 'kimi'].includes(e.repair?.agent) ? e.repair.agent : 'claude',
-      model: e.repair?.model || 'claude-opus-5',
-      effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.repair?.effort) ? e.repair.effort : 'xhigh',
+      model: e.repair?.model || 'claude-fable-5',
+      effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.repair?.effort) ? e.repair.effort : 'high',
     },
   };
 }
@@ -393,36 +416,48 @@ function stagePrompt(project, vendor, stage, id) {
   // .todomd/local/<command>.md is the private half of a prompt: gitignored, so
   // it can hold what the committed file must not (client names, internal URLs).
   const local = readLocalPrompt(project.path, stage.command);
-  if (!local) {
-    // unchanged path: claude resolves the slash command itself, non-claude vendors can't
-    return vendor !== 'claude' ? commandBody(project, stage.command, id) : `/${stage.command} ${id}`;
-  }
+  const heading = `# TODOMD command: ${stage.command} ${id}\n\n`;
+  if (!local) return heading + commandBody(project, stage.command, id);
   // With a local layer we inline the body for ALL vendors rather than appending
   // after `/command id` — text trailing a slash command is the CLI's to
   // interpret, and a silently-dropped addendum is worse than none. Inlining is
   // exactly what non-claude vendors receive, so the content is identical either
   // way; only the delivery changes.
-  return `${commandBody(project, stage.command, id)}\n\n` +
+  return heading + `${commandBody(project, stage.command, id)}\n\n` +
     `## Project conventions (local, not committed)\n\n` +
     `Treat the following as additional instructions for this repo:\n\n${local}\n`;
 }
 
-// Per-card skill override: a card with `skill:` frontmatter dragged into a
-// trigger column invokes that skill (any repo command, user skill, or plugin
-// skill) with the card as context, instead of the column's default command.
+// Per-card automation may invoke only a repo-owned command file. User/global
+// skills and plugins are deliberately unavailable to the isolated CLI run.
 function skillPrompt(project, vendor, skill, id, card) {
   const safe = String(skill).replace(/[^\w:-]/g, '');
   const ctx = `\n\nThis run is for todomd card ${id} ("${card.data.title || ''}") in this repository.` +
     ` If the work produces findings or output worth keeping, append them under a "## Findings"` +
     ` section of the card file .todomd/tasks/${card.file} (create the section if needed).` +
     ` Never modify the YAML frontmatter or the "## Run Log" section.`;
-  if (vendor === 'claude') return `/${safe} ${id}${ctx}`;
   const file = path.join(project.path, '.claude', 'commands', `${safe}.md`);
   if (!fs.existsSync(file)) {
-    throw new Error(`skill "${safe}" has no .claude/commands file — ${vendor} cards can only run repo commands`);
+    throw new Error(`skill "${safe}" has no repo command file — automated cards cannot load user/global skills`);
   }
   const body = fs.readFileSync(file, 'utf8').replace(/^---[\s\S]*?---\s*/, '');
   return body.replaceAll('$ARGUMENTS', id) + ctx;
+}
+
+async function writeImplementationPlan(project, id, plan) {
+  await withRepoLock(project.path, async () => {
+    const card = readCard(project.path, id);
+    if (!card) return;
+    const header = '## Implementation Plan\n';
+    const idx = card.raw.indexOf(header);
+    if (idx === -1) return;
+    const afterHeader = idx + header.length;
+    const nextSection = card.raw.indexOf('\n## ', afterHeader);
+    const end = nextSection >= 0 ? nextSection + 1 : card.raw.length;
+    const safePlan = String(plan || '').trim();
+    const updated = card.raw.slice(0, afterHeader) + `\n${safePlan}\n\n` + card.raw.slice(end);
+    fs.writeFileSync(path.join(project.path, '.todomd', 'tasks', card.file), updated);
+  });
 }
 
 function providerLabel(vendor, result) {
@@ -1265,6 +1300,10 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   const stage = stageConfig(config, stageName, card);
   const vendor = cardVendor(config, card, stageName);
   const skill = card.data.skill;
+  const route = validateModelRoute(vendor, stage.model, config);
+  if (!route.ok) {
+    return toNeedsHuman(project, id, stageName, 'routing_error', route.error);
+  }
 
   let prompt;
   try {
@@ -1275,6 +1314,11 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
     return toNeedsHuman(project, id, stageName, 'skill_not_found', String(e.message || e));
   }
 
+  const structuredCodexPlan = stageName === 'Plan' && vendor === 'codex' && !skill;
+  if (structuredCodexPlan) {
+    prompt += '\n\nDo not edit files. Return the implementation plan as the required structured output. ' +
+      'Use plan for an ordinary task. Use chunks only when the work genuinely needs two or more sequential child cards.';
+  }
   const { result, run, finishTracking } = await spawnTracked(project, id, stageName, 'Review', 0, {
     retainUntilFinalized: true,
     triggerClaim,
@@ -1285,6 +1329,7 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
     effort: stage.effort,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
+    jsonSchema: structuredCodexPlan ? PLAN_SCHEMA : undefined,
     logFile: runLogFile(project, id, stageName),
   });
 
@@ -1321,6 +1366,13 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
       return;
     }
     const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
+    const structuredPlan = structuredCodexPlan ? result.envelope?.structured_output : null;
+    if (ok && structuredCodexPlan &&
+        (!structuredPlan || typeof structuredPlan.plan !== 'string' || !Array.isArray(structuredPlan.chunks))) {
+      await recordRun(project, id, stageName, 0, result, 'failed: invalid structured plan');
+      await toNeedsHuman(project, id, stageName, 'bad_plan', 'Codex returned no valid structured implementation plan');
+      return;
+    }
     if (ok) {
       await recordRun(project, id, stageName, 0, result, skill ? `ok (/${skill})` : 'ok');
       if (await finishCancellation()) return;
@@ -1332,26 +1384,16 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
         } else {
           // the plan agent may have split the work into a `## Chunks` breakdown —
           // fan it out into sequential child cards; otherwise it's a normal plan
-          const chunks = parseChunks(readCard(project.path, id)?.body || '');
+          const chunks = structuredPlan?.chunks || parseChunks(readCard(project.path, id)?.body || '');
+          if (structuredPlan) {
+            const plan = chunks.length === 1 ? chunks[0].plan : structuredPlan.plan;
+            if (plan) await writeImplementationPlan(project, id, plan);
+          }
           if (chunks.length >= 2) {
             await fanOutChunks(project, id, chunks);
           } else {
-            if (chunks.length === 1) {
-              await withRepoLock(project.path, async () => {
-                const card = readCard(project.path, id);
-                if (card) {
-                  const plan = (chunks[0].plan || '').trimEnd();
-                  const header = '## Implementation Plan\n';
-                  const idx = card.raw.indexOf(header);
-                  if (idx !== -1) {
-                    const afterHeader = idx + header.length;
-                    const nextSection = card.raw.indexOf('\n## ', afterHeader);
-                    const end = nextSection >= 0 ? nextSection + 1 : card.raw.length;
-                    const updated = card.raw.slice(0, afterHeader) + `\n${plan}\n\n` + card.raw.slice(end);
-                    fs.writeFileSync(path.join(project.path, '.todomd', 'tasks', card.file), updated);
-                  }
-                }
-              });
+            if (chunks.length === 1 && !structuredPlan) {
+              await writeImplementationPlan(project, id, chunks[0].plan || '');
               await appendRunLog(project.path, id, '  - note: single-chunk plan folded into Implementation Plan');
             }
             await orchMove(project, id, 'Planned', 'plan complete');
@@ -1902,9 +1944,8 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     allowedTools: stage.allowedTools,
     logFile: runLogFile(project, id, 'Build', attempt),
   };
-  // Stop-hook quality gate is claude-only; for other vendors the independent
-  // Verify stage is the gate.
-  if (vendor === 'claude') buildOpts.settings = stopHookSettings(config.verify_command || 'npm test');
+  const route = validateModelRoute(vendor, buildOpts.model, config);
+  if (!route.ok) return toNeedsHuman(project, id, 'Build', 'routing_error', route.error);
   if (recovery && !repair) {
     buildOpts.resume = recovery.sessionId || undefined;
     buildOpts.prompt = recovery.sessionId
@@ -2044,6 +2085,9 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
 }
 
 async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation) {
+  const config = await execConfig(project.path);
+  const route = validateModelRoute(escalation.diagnosis.agent, escalation.diagnosis.model, config);
+  if (!route.ok) return { ok: false, reason: 'routing_error', detail: route.error };
   const prompt = `You are TODOMD's escalation diagnostician. Task ${id} has failed two independent verification rounds. Do not edit code. Read the task, the current worktree, and the prior findings below. Return a concise root-cause diagnosis and a concrete repair strategy for the next build agent.\n\nPrior verification findings:\n${findings}`;
   const { result, run } = await spawnTracked(project, id, 'Escalate', 'Verify', attempt, {
     vendor: escalation.diagnosis.agent,
@@ -2080,6 +2124,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const config = await execConfig(project.path);
   const stage = stageConfig(config, 'Verify', card);
   const vendor = cardVendor(config, card, 'Verify');
+  const route = validateModelRoute(vendor, stage.model, config);
+  if (!route.ok) return toNeedsHuman(project, id, 'Verify', 'routing_error', route.error, pendingOwner);
 
   if (triggerClaim?.cancelled) {
     if (triggerClaim.preserveWorktree) {
@@ -2281,7 +2327,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const findings = `${verdict.findings}\n${unmet.map((c) => `- unmet: ${c}`).join('\n')}`.trim();
   const escalation = escalationConfig(config);
   if (escalation && attempt === escalation.afterFailedReviews && attempt < maxAttempts) {
-    await appendRunLog(project.path, id, `  - escalating after ${attempt} failed reviews: Fable diagnosis → Opus repair → final Codex gate`);
+    await appendRunLog(project.path, id, `  - escalating after ${attempt} failed reviews: Fable diagnosis → Fable repair → final Codex gate`);
     const diagnosis = await diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation);
     if (!diagnosis.ok) return toNeedsHuman(project, id, 'Escalate', diagnosis.reason, diagnosis.detail);
     // This Verify slot is released now; the repair Build is its own fresh
@@ -2318,8 +2364,16 @@ export async function maybeTriage(project, id) {
     const t = config.triage || {};
     if (t.enabled === false) return;
     if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
-    const vendor = cardVendor(config, card);
+    const vendor = normalizeVendor(t.agent || cardVendor(config, card));
     if (!SUPPORTED_VENDORS.has(vendor)) return;
+    const triageModel = t.model || config.default_model;
+    const route = validateModelRoute(vendor, triageModel, config);
+    if (!route.ok) {
+      setBanner('triage_routing', 'warn', `triage paused: ${route.error}`);
+      await patchFrontmatter(project.path, id, { triaged: 'failed (routing_error)' });
+      await commitCardChanges(project.path, id, `chore(todomd): ${id} triage routing failed`);
+      return;
+    }
     await runTriage(project, id, config, t, vendor, claim);
   } finally {
     triaging.delete(key);
@@ -2374,8 +2428,8 @@ async function runTriage(project, id, config, t, vendor, claim) {
     vendor,
     cwd: nonClaudeTriage ? path.join(project.path, '.todomd', 'tasks') : project.path,
     prompt: nonClaudeTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
-    model: card.data.model || t.model || config.default_model,
-    effort: card.data.effort || t.effort || config.default_effort,
+    model: t.model || config.default_model,
+    effort: t.effort || config.default_effort,
     maxTurns: t.max_turns || 15,
     allowedTools: ['Read(./**)', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'], // claude-only; codex ignores this
     logFile: runLogFile(project, id, 'Triage'),

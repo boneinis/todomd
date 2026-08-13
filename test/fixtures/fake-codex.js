@@ -14,7 +14,9 @@ const defaultVerdict = JSON.stringify({
   setup_error: null,
   question: null,
 });
-const finalMessage = process.env.FAKE_CODEX_LAST_MESSAGE ?? defaultVerdict;
+const defaultPlan = JSON.stringify({ plan: '1. Do the thing.', chunks: [] });
+const finalMessage = process.env.FAKE_CODEX_LAST_MESSAGE ??
+  (args.join(' ').includes('implementation plan') ? defaultPlan : defaultVerdict);
 const stderr = process.env.FAKE_CODEX_STDERR || '';
 const exitCode = Number(process.env.FAKE_CODEX_EXIT || 0);
 
@@ -37,7 +39,7 @@ if (process.env.FAKE_CODEX_REQUIRE_STRICT_SCHEMA && schemaFile) {
 process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'fake-codex-session' }) + '\n');
 process.stdout.write(JSON.stringify(exitCode
   ? { type: 'turn.failed', error: { message: 'fake Codex failure' } }
-  : { type: 'turn.completed' }) + '\n');
+  : { type: 'turn.completed', usage: { input_tokens: 100, cached_input_tokens: 80, output_tokens: 10, reasoning_output_tokens: 4 } }) + '\n');
 if (outputFile) fs.writeFileSync(outputFile, finalMessage);
 if (stderr) process.stderr.write(stderr);
 process.exit(exitCode);

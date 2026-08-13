@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmp } from './helpers.js';
-import { modelsFromHelp, listModels } from '../src/models.js';
+import { modelsFromHelp, modelsFromAgy, listModels, validateModelRoute } from '../src/models.js';
 
 const CLAUDE_HELP = `Usage: claude [options]
   --fallback-model <model>              ignore this one (e.g. 'nope')
@@ -22,6 +22,27 @@ test('modelsFromHelp extracts model tokens from the --model block only', () => {
 test('modelsFromHelp returns [] with no --model block and ignores --fallback-model', () => {
   assert.deepEqual(modelsFromHelp('no model flag here'), []);
   assert.deepEqual(modelsFromHelp(`  --fallback-model <m>   e.g. 'opus'`), []);
+});
+
+test('modelsFromAgy parses the installed gateway inventory and ignores chatter', () => {
+  assert.deepEqual(modelsFromAgy('Fetching available models...\ngemini-3.6-flash-low\tFlash\ngemini-3.1-pro-high Pro\n'),
+    ['gemini-3.6-flash-low', 'gemini-3.1-pro-high']);
+});
+
+test('listModels uses agy models as the authoritative Gemini inventory', () => {
+  const dir = tmp('agy-models');
+  const bin = path.join(dir, 'fake-agy');
+  fs.writeFileSync(bin, '#!/bin/sh\nprintf "gemini-live-low\\tLive\\ngemini-live-high\\tLive\\n"\n', { mode: 0o755 });
+  process.env.TODOMD_GEMINI_BIN = bin;
+  const models = listModels('gemini', { models: { gemini: ['gemini-stale'] } });
+  delete process.env.TODOMD_GEMINI_BIN;
+  assert.deepEqual(models, ['gemini-live-low', 'gemini-live-high']);
+});
+
+test('validateModelRoute rejects cross-provider models and the disabled Kimi adapter', () => {
+  assert.match(validateModelRoute('gemini', 'claude-sonnet-5').error, /belongs to claude/);
+  assert.match(validateModelRoute('kimi', 'kimi-k1.5').error, /disabled/);
+  assert.equal(validateModelRoute('codex', 'gpt-5.6-sol').ok, true);
 });
 
 test('listModels: a config `models` override wins (no CLI call)', () => {

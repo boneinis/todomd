@@ -104,8 +104,7 @@ async function setModelOptions(vendor) {
   if (modelCache[vendor]) { fillModels(modelCache[vendor]); return; }
   fillModels(
     vendor === 'codex' ? ['gpt-5-codex', 'gpt-5'] :
-    vendor === 'gemini' ? ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3.6-flash'] :
-    vendor === 'kimi' ? ['kimi-k1.5', 'moonshot-v1-8k', 'moonshot-v1-32k'] :
+    vendor === 'gemini' ? ['gemini-3.6-flash-low', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-high', 'gemini-3.1-pro-high'] :
     ['opus', 'sonnet', 'haiku']
   ); // instant default
   if (!currentProject) return;

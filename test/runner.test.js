@@ -49,6 +49,18 @@ test('passes configured effort to the Claude CLI', async () => {
   assert.deepEqual(argv.slice(argv.indexOf('--effort'), argv.indexOf('--effort') + 2), ['--effort', 'xhigh']);
 });
 
+test('Claude automation is isolated from user/project plugins, MCP, hooks, skills, and memory', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  const log = path.join(tmp('safe-mode'), 'argv.jsonl');
+  process.env.FAKE_ARGV_LOG = log;
+  await runStage({ cwd: process.cwd(), prompt: 'anything' }).done;
+  delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_ARGV_LOG;
+  const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+  assert.ok(argv.includes('--safe-mode'));
+  assert.ok(argv.includes('--disable-slash-commands'));
+});
+
 // the jsonl tee is telemetry: an unwritable path (full disk, read-only mount,
 // a stray FILE where the runs dir should be) must not take the server down —
 // without an 'error' listener a stream error is an uncaught exception
@@ -125,9 +137,21 @@ test('Codex resume omits the unsupported sandbox flag', async () => {
   delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
 
   const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
-  assert.deepEqual(argv.slice(0, 3), ['exec', 'resume', 'saved-session']);
+  assert.deepEqual(argv.slice(0, 4), ['exec', '--ignore-user-config', 'resume', 'saved-session']);
   assert.equal(argv.includes('--sandbox'), false);
   assert.ok(argv.includes('--json'));
+});
+
+test('Codex ignores user config and uses read-only outside Build', async () => {
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  const dir = tmp('codex-isolated');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_CODEX_ARGV_LOG = argvLog;
+  await runStage({ vendor: 'codex', stage: 'Verify', cwd: dir, prompt: 'verify' }).done;
+  delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.ok(argv.includes('--ignore-user-config'));
+  assert.deepEqual(argv.slice(argv.indexOf('--sandbox'), argv.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);
 });
 
 test('Codex Verify preserves a raw final message and unsuccessful exit diagnostic', async () => {

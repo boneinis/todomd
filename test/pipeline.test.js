@@ -572,6 +572,30 @@ test('Verify column routing stays independent from a card Build-agent override',
   }
 });
 
+test('Codex Plan is read-only and TODOMD writes its structured plan into the card', async () => {
+  isolateHome();
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  const argvLog = path.join(tmp('codex-plan'), 'argv.json');
+  process.env.FAKE_CODEX_ARGV_LOG = argvLog;
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  await setStageRouting(repo, 'Plan', { agent: 'codex', model: 'gpt-test', effort: 'high' });
+  writeCard(repo, 'task-0001');
+
+  try {
+    const r = await pipeline.humanMove(p, 'task-0001', 'Plan');
+    assert.equal(r.ok, true);
+    await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+    assert.match(readCard(repo, 'task-0001').body, /## Implementation Plan\n\n1\. Do the thing\./);
+    const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+    assert.deepEqual(argv.slice(argv.indexOf('--sandbox'), argv.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);
+    assert.ok(argv.includes('--output-schema'));
+  } finally {
+    delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
+  }
+});
+
 test('verification loop: fail then pass on retry → Done', async () => {
   isolateHome();
   // build writes wrong code first; we flip the verdict after the first verify
@@ -1449,8 +1473,8 @@ test('cancel escalates to SIGKILL when the child ignores SIGTERM', async () => {
 // The HEAD: guard must cover keys the committed config OMITS, not just the ones
 // it defines. verify_command is optional — if a run inherited it from the
 // working tree whenever HEAD's config left it out, an injected edit would arm an
-// arbitrary shell command as the build's Stop hook, which is the exact attack
-// the guard exists to stop.
+// arbitrary shell command in the independent CI stage. Claude automation is
+// isolated and no longer receives a project/user Stop hook at all.
 test('an executable key MISSING from the committed config is not taken from the working tree', async () => {
   isolateHome();
   const dump = path.join(tmp('hook'), 'settings.json');
@@ -1472,8 +1496,7 @@ test('an executable key MISSING from the committed config is not taken from the 
   await until(() => fs.existsSync(dump), { timeout: BUDGET.chain });
 
   const armed = fs.readFileSync(dump, 'utf8');
-  assert.doesNotMatch(armed, /POISONED_HOOK/, 'an uncommitted verify_command must never be armed as the Stop hook');
-  assert.match(armed, /npm test/, 'the code default applies instead');
+  assert.equal(armed, '(no --settings)', 'isolated Claude automation receives no injected Stop hook');
   clearFakeAgent();
 });
 
@@ -1501,14 +1524,14 @@ test('a local prompt layer reaches the agent, appended to the committed prompt',
   // compare against the real file so this holds whatever the template says
   const committed = fs.readFileSync(path.join(repo, '.claude/commands/todomd-plan.md'), 'utf8')
     .replace(/^---[\s\S]*?---\s*/, '').replaceAll('$ARGUMENTS', 'task-0001').trim();
-  assert.ok(prompt.startsWith(committed), 'the committed prompt body leads, the local layer follows');
+  assert.ok(prompt.includes(committed), 'the committed prompt body is preserved before the local layer');
   assert.ok(prompt.indexOf('SENTINEL_LOCAL_CONTEXT') > committed.length, 'local text comes after the core');
   assert.ok(!calls.flat().some((a) => a === '/todomd-plan task-0001'),
     'with a local layer the body is inlined, so nothing can silently drop the addendum');
   clearFakeAgent();
 });
 
-test('no local layer leaves the claude slash-command path exactly as it was', async () => {
+test('no local layer still inlines the repo-owned command under isolated Claude mode', async () => {
   isolateHome();
   const argvLog = path.join(tmp('argv2'), 'argv.jsonl');
   useFakeAgent({ argv_log: argvLog });
@@ -1521,8 +1544,9 @@ test('no local layer leaves the claude slash-command path exactly as it was', as
   await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
 
   const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
-  assert.ok(calls.flat().includes('/todomd-plan task-0001'),
-    'unchanged behavior when the feature is unused');
+  const prompt = calls.flat().find((a) => typeof a === 'string' && a.includes('TODOMD command: todomd-plan task-0001'));
+  assert.ok(prompt && prompt.includes('stub task-0001'), 'repo-owned prompt is explicit and inlined');
+  assert.ok(!calls.flat().includes('/todomd-plan task-0001'), 'user/global slash-command expansion is never used');
   clearFakeAgent();
 });
 

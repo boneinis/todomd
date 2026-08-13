@@ -55,7 +55,10 @@ function runClaude({
   onEvent = () => {},
 }) {
   const streaming = !jsonSchema;
-  const args = ['-p'];
+  // Board automation must not inherit user/project plugins, MCP servers,
+  // hooks, skills, memory, or CLAUDE.md. The pipeline supplies the complete
+  // prompt and tool boundary explicitly.
+  const args = ['--safe-mode', '--disable-slash-commands', '-p'];
   if (resume) args.push('--resume', resume);
   args.push(prompt);
   args.push('--output-format', streaming ? 'stream-json' : 'json');
@@ -157,6 +160,8 @@ function runCodex({
   prompt,
   model,
   effort,
+  stage,
+  sandbox,
   jsonSchema,
   resume,
   logFile,
@@ -166,13 +171,13 @@ function runCodex({
     path.join(os.tmpdir(), `todomd-codex-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const executable = process.env.TODOMD_CODEX_BIN || 'codex';
   // codex exec is non-interactive by design — no approval flag exists (v0.139)
-  const args = ['exec'];
+  const args = ['exec', '--ignore-user-config'];
   if (resume) args.push('resume', resume);
   args.push('--json');
   // `codex exec resume` inherits the original session sandbox and does not
   // accept --sandbox itself. Supplying it makes every verifier-repair resume
   // exit at argument parsing before the agent can act.
-  if (!resume) args.push('--sandbox', 'workspace-write');
+  if (!resume) args.push('--sandbox', sandbox || (stage === 'Build' ? 'workspace-write' : 'read-only'));
   args.push('--skip-git-repo-check');
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('-m', model);
   if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);

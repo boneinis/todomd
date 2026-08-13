@@ -8,9 +8,9 @@ import { execFileSync } from 'node:child_process';
 const FALLBACK = {
   claude: ['opus', 'sonnet', 'haiku'],
   codex: ['gpt-5-codex', 'gpt-5', 'o3'],
-  gemini: ['gemini-3.6-pro', 'gemini-3.5-pro', 'gemini-2.5-pro', 'gemini-3.6-flash', 'gemini-2.5-flash'],
-  kimi: ['kimi-k1.5', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+  gemini: ['gemini-3.6-flash-low', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-high', 'gemini-3.1-pro-high'],
 };
+export const SUPPORTED_VENDORS = Object.freeze(['claude', 'codex', 'gemini']);
 const bin = (vendor) => {
   if (vendor === 'codex') return process.env.TODOMD_CODEX_BIN || vendor;
   if (vendor === 'gemini') return process.env.TODOMD_GEMINI_BIN || 'agy';
@@ -46,15 +46,71 @@ function helpText(vendor) {
   } catch { return ''; }
 }
 
+// Agent Gateway has a real, non-interactive model inventory. Prefer it over
+// guesses scraped from --help so a stale config cannot offer aliases that agy
+// will reject only after a card has entered a pipeline stage.
+export function modelsFromAgy(text) {
+  return [...new Set(String(text || '').split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/)[0])
+    .filter((model) => /^gemini-[\w.-]+$/.test(model)))];
+}
+
+function cliModels(vendor) {
+  try {
+    if (vendor === 'gemini') {
+      return modelsFromAgy(execFileSync(bin(vendor), ['models'], {
+        encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
+      }));
+    }
+    return modelsFromHelp(helpText(vendor));
+  } catch { return []; }
+}
+
 export function listModels(vendor = 'claude', config = {}) {
+  if (!SUPPORTED_VENDORS.includes(vendor)) return [];
   const override = config?.models?.[vendor];
-  if (Array.isArray(override) && override.length) return override.map(String); // config wins, uncached
+  // Gemini's installed gateway is authoritative when it can answer. Other
+  // providers do not expose a dependable inventory, so their curated config
+  // remains authoritative.
+  if (vendor !== 'gemini' && Array.isArray(override) && override.length) return override.map(String);
   if (cache.has(vendor)) return cache.get(vendor);
   const fallback = FALLBACK[vendor] || FALLBACK.claude;
-  if (Date.now() < (missUntil.get(vendor) || 0)) return fallback; // recent failed probe
-  const fromCli = modelsFromHelp(helpText(vendor));
-  const merged = [...new Set([...fromCli, ...fallback])];
-  if (fromCli.length) cache.set(vendor, merged); // a real CLI read is cached for good
+  const configured = Array.isArray(override) ? override.map(String) : [];
+  if (Date.now() < (missUntil.get(vendor) || 0)) return configured.length ? configured : fallback;
+  const fromCli = cliModels(vendor);
+  const merged = vendor === 'gemini' && fromCli.length
+    ? fromCli
+    : [...new Set([...fromCli, ...configured, ...fallback])];
+  if (fromCli.length) cache.set(vendor, merged);
   else missUntil.set(vendor, Date.now() + MISS_TTL_MS); // back off, don't re-block per request
   return merged;
+}
+
+const MODEL_FAMILY = [
+  ['claude', /^(?:claude-|sonnet|haiku|opus|fable)/i],
+  ['codex', /^(?:gpt-|codex|o\d)/i],
+  ['gemini', /^gemini-/i],
+  ['kimi', /^(?:kimi|moonshot)/i],
+];
+
+export function validateModelRoute(vendor, model, config = {}) {
+  vendor = String(vendor || '').toLowerCase();
+  model = String(model || '').trim();
+  if (!SUPPORTED_VENDORS.includes(vendor)) {
+    return { ok: false, error: vendor === 'kimi'
+      ? 'Kimi is disabled: its installed CLI adapter is not compatible yet'
+      : `agent "${vendor}" is not supported` };
+  }
+  if (!model) return { ok: true };
+  const family = MODEL_FAMILY.find(([, pattern]) => pattern.test(model))?.[0];
+  if (family && family !== vendor) {
+    return { ok: false, error: `model "${model}" belongs to ${family}, not ${vendor}` };
+  }
+  if (vendor === 'gemini') {
+    const available = listModels(vendor, config);
+    if (available.length && !available.includes(model)) {
+      return { ok: false, error: `model "${model}" is not available through agy` };
+    }
+  }
+  return { ok: true };
 }

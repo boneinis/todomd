@@ -136,7 +136,8 @@ coordination:
 # to turn off, or model: haiku to cut the per-card cost ~5x.
 triage:
   enabled: true
-  model: sonnet
+  agent: gemini
+  model: gemini-3.6-flash-low
   effort: low
   max_turns: 8
 
@@ -148,7 +149,8 @@ triage:
 stages:
   Plan:
     command: todomd-plan
-    model: sonnet
+    agent: codex
+    model: gpt-5.6-sol
     effort: high
     max_turns: 20
     # Edit is scoped to the cards dir: the plan agent runs in the main checkout
@@ -157,7 +159,8 @@ stages:
     allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
   Build:
     command: todomd-build
-    model: sonnet
+    agent: claude
+    model: claude-sonnet-5
     effort: high
     # workflow: ultra_code  # Sonnet at xhigh plus required self-review before Verify
     max_turns: 40
@@ -178,19 +181,20 @@ stages:
       - "Bash(git diff:*)"
   Verify:
     command: todomd-verify
-    model: haiku
+    agent: codex
+    model: gpt-5.6-sol
     effort: high
     max_turns: 15
     allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(node --test:*)", "Bash(git diff:*)", "Bash(git log:*)"]
 
 # Optional repeated-failure escalation. After the chosen number of failed
-# independent Verify rounds, Fable diagnoses; Opus repairs; Verify stays the
+# independent Verify rounds, Fable diagnoses and repairs; Verify stays the
 # final independent gate.
 # escalation:
 #   enabled: true
 #   after_failed_reviews: 2
-#   diagnosis: { agent: claude, model: claude-fable-5, effort: xhigh }
-#   repair: { agent: claude, model: claude-opus-5, effort: xhigh }
+#   diagnosis: { agent: claude, model: claude-fable-5, effort: high }
+#   repair: { agent: claude, model: claude-fable-5, effort: high }
 `;
 
 export const CMD_PLAN = `---
