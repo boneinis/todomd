@@ -24,6 +24,7 @@ import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
 import { appendIntakeAudit } from '../../src/screen.js';
 import { recordUsage } from '../../src/runstore.js';
+import { readCard } from '../../src/board.js';
 import { openPage } from '../browser.js';
 
 function freePort() {
@@ -178,6 +179,59 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
   }
+});
+
+test('UI smoke: Add Card is prompt-first and preserves Advanced options', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+  addProject(repo);
+  const promptProject = path.basename(repo);
+
+  page.errors.length = 0;
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(promptProject)}`);
+  await until(async () => (await page.eval(`currentProject`)) === promptProject || null,
+    { timeout: BUDGET.stage, label: 'prompt test project selected' });
+
+  await page.eval(`document.getElementById('new-card').click()`);
+  const initial = await page.eval(`({
+    open: document.getElementById('card-advanced').open,
+    focused: document.activeElement?.name,
+    promptVisible: document.querySelector('[name=prompt]').getClientRects().length > 0,
+    titleVisible: document.querySelector('#card-form [name=title]').getClientRects().length > 0,
+  })`);
+  assert.deepEqual(initial, { open: false, focused: 'prompt', promptVisible: true, titleVisible: false });
+
+  await page.eval(`document.querySelector('#card-advanced summary').click()`);
+  assert.equal(await page.eval(`document.querySelector('#card-form [name=title]').getClientRects().length > 0`), true,
+    'the original structured fields remain available under Advanced options');
+  await page.setViewport(390, 844);
+  const mobileAdvanced = await page.eval(`(() => {
+    const form = document.getElementById('card-form');
+    return { overflowY: getComputedStyle(form).overflowY, scrolls: form.scrollHeight > form.clientHeight };
+  })()`);
+  assert.deepEqual(mobileAdvanced, { overflowY: 'auto', scrolls: true },
+    'the full Advanced form remains scrollable on a phone-sized viewport');
+  await page.setViewport(1280, 900);
+
+  const prompt = '## Fix interrupted builds\n\nResume from the preserved worktree without losing partial changes.';
+  await page.eval(`(() => {
+    const form = document.getElementById('card-form');
+    form.elements.prompt.value = ${JSON.stringify(prompt)};
+    form.elements.description.value = 'Keep the board API compatible.';
+    form.requestSubmit();
+  })()`);
+  await until(async () => (await page.eval(
+    `!!document.querySelector('[data-id="task-0001"]') && document.getElementById('modal-backdrop').hidden`)) || null,
+  { timeout: BUDGET.stage, label: 'prompt-created Review card rendered' });
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.title, 'Fix interrupted builds');
+  assert.equal(card.data.status, 'Review');
+  assert.match(card.body, /Resume from the preserved worktree without losing partial changes\./);
+  assert.match(card.body, /Additional context:\nKeep the board API compatible\./);
+  assert.deepEqual(page.errors, [], 'prompt-first creation produces no browser errors');
 });
 
 // The CI column (task-0041) added three run-state values — 'deferred-for-load',

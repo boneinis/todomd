@@ -1542,17 +1542,19 @@ $('#card-form [name=agent]').addEventListener('change', (e) => setModelOptions(e
 const backdrop = $('#modal-backdrop');
 $('#new-card').addEventListener('click', () => {
   $('#card-form').reset();
+  $('#card-advanced').open = false;
   setModelOptions($('#card-form [name=agent]').value); // suggestions for the default vendor
   backdrop.hidden = false;
-  $('#card-form [name=title]').focus();
+  $('#card-form [name=prompt]').focus();
 });
 $('#modal-cancel').addEventListener('click', () => { backdrop.hidden = true; });
 backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.hidden = true; });
 $('#card-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
+  const prompt = String(f.get('prompt') || '').trim();
   const payload = {
-    title: f.get('title'),
+    title: todoCardPrompt.deriveTitle(prompt, f.get('title')),
     type: f.get('type'),
     priority: f.get('priority'),
     agent: f.get('agent'),
@@ -1562,7 +1564,7 @@ $('#card-form').addEventListener('submit', async (e) => {
     skill: (f.get('skill') || '').trim() || undefined,
     assignee: (f.get('assignee') || '').trim() || undefined,
     labels: String(f.get('labels') || '').split(',').map((s) => s.trim()).filter(Boolean),
-    description: f.get('description'),
+    description: todoCardPrompt.buildDescription(prompt, f.get('description')),
     criteria: String(f.get('criteria') || '').split('\n').map((s) => s.trim()).filter(Boolean),
   };
   try {

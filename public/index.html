@@ -145,39 +145,48 @@
 <div id="modal-backdrop" class="modal-backdrop" hidden>
   <form id="card-form" class="modal">
     <h2>new card</h2>
-    <label>title <input name="title" required maxlength="120" autocomplete="off" /></label>
-    <div class="modal-row">
-      <label>type
-        <select name="type">
-          <option>fix</option><option selected>improvement</option>
-          <option>module</option><option>troubleshoot</option>
-        </select>
-      </label>
-      <label>priority
-        <select name="priority">
-          <option>low</option><option selected>medium</option>
-          <option>high</option><option>critical</option>
-        </select>
-      </label>
-      <label>labels <input name="labels" placeholder="a, b" autocomplete="off" /></label>
-    </div>
-    <div class="modal-row">
-      <label>assignee <input name="assignee" placeholder="developer (optional)" autocomplete="off" /></label>
-      <span></span><span></span>
-    </div>
-    <div class="modal-row">
-      <label>agent
-        <select name="agent">
-          <option selected>claude</option><option>codex</option><option>gemini</option>
-        </select>
-      </label>
-      <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
-      <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-      <label>build workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
-      <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
-    </div>
-    <label>description <textarea name="description" rows="3"></textarea></label>
-    <label>acceptance criteria — one per line <textarea name="criteria" rows="3"></textarea></label>
+    <p id="card-prompt-help" class="modal-intro">Describe the outcome in plain language. The card will open in Review and be structured by auto-triage.</p>
+    <label>what do you want done?
+      <textarea class="card-prompt" name="prompt" rows="6" required maxlength="8000" aria-describedby="card-prompt-help" placeholder="For example: Add a way to retry an interrupted build without losing its changes."></textarea>
+    </label>
+    <details id="card-advanced" class="card-advanced">
+      <summary>Advanced options</summary>
+      <div class="card-advanced-fields">
+        <label>title override <input name="title" maxlength="120" autocomplete="off" placeholder="derived from the prompt" /></label>
+        <div class="modal-row">
+          <label>type
+            <select name="type">
+              <option>fix</option><option selected>improvement</option>
+              <option>module</option><option>troubleshoot</option>
+            </select>
+          </label>
+          <label>priority
+            <select name="priority">
+              <option>low</option><option selected>medium</option>
+              <option>high</option><option>critical</option>
+            </select>
+          </label>
+          <label>labels <input name="labels" placeholder="a, b" autocomplete="off" /></label>
+        </div>
+        <div class="modal-row">
+          <label>assignee <input name="assignee" placeholder="developer (optional)" autocomplete="off" /></label>
+          <span></span><span></span>
+        </div>
+        <div class="modal-row">
+          <label>agent
+            <select name="agent">
+              <option selected>claude</option><option>codex</option><option>gemini</option>
+            </select>
+          </label>
+          <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
+          <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+          <label>build workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
+          <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
+        </div>
+        <label>additional context <textarea name="description" rows="3"></textarea></label>
+        <label>acceptance criteria — one per line <textarea name="criteria" rows="3"></textarea></label>
+      </div>
+    </details>
     <div class="modal-actions">
       <button type="button" id="modal-cancel" class="drawer-close">cancel</button>
       <button type="submit" class="modal-submit">create in Review</button>
@@ -339,6 +348,7 @@ todomd init             # scaffolds the board + registers it</code></pre>
 <datalist id="skill-options"></datalist>
 
 <script src="/hierarchy.js"></script>
+<script src="/card-prompt.js"></script>
 <script src="/app.js"></script>
 <script type="module" src="/voice/main.js"></script>
 </body>
