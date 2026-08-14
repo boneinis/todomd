@@ -106,6 +106,7 @@ function runClaude({
   resume,              // session id
   logFile,             // jsonl tee target (streaming mode)
   onEvent = () => {},
+  reviewOnly = false,
 }) {
   const streaming = !jsonSchema;
   // Board automation must not inherit user/project plugins, MCP servers,
@@ -118,7 +119,11 @@ function runClaude({
   if (streaming) args.push('--verbose');
   if (jsonSchema) args.push('--json-schema', JSON.stringify(jsonSchema));
   args.push('--permission-mode', permissionMode);
-  if (allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
+  // CPU-pressure review receives a complete, prepared diff bundle in its
+  // prompt. Remove every tool deterministically so it cannot turn the light
+  // admission into an ungoverned test/lint/database process.
+  if (reviewOnly) args.push('--tools', '');
+  else if (allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
   if (maxTurns) args.push('--max-turns', String(maxTurns));
   if (model) args.push('--model', model);
   if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('--effort', effort);
@@ -218,6 +223,7 @@ function runCodex({
   resume,
   logFile,
   onEvent = () => {},
+  reviewOnly = false,
 }) {
   const tmp = (name) =>
     path.join(os.tmpdir(), `todomd-codex-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -230,6 +236,13 @@ function runCodex({
   // accept --sandbox itself. Supplying it makes every verifier-repair resume
   // exit at argument parsing before the agent can act.
   if (!resume) args.push('--sandbox', sandbox || (stage === 'Build' ? 'workspace-write' : 'read-only'));
+  // A read-only sandbox still permits read-only shell commands (including a
+  // full test suite). Tool-less review consumes the prepared prompt bundle, so
+  // disable every local execution path instead of trusting the model not to
+  // run a command while the host governor reports CPU pressure.
+  if (reviewOnly) {
+    args.push('--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'code_mode');
+  }
   args.push('--skip-git-repo-check');
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('-m', model);
   if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);

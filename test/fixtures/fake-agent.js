@@ -196,9 +196,17 @@ if (hangNow &&
     verdict,
     criteria: [{ criterion: 'works', met: verdict === 'pass' }],
     findings: verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
+    setup_error: null,
+    question: null,
+    checks_requested: [],
   };
   // simulate "the verify command couldn't even run" (missing gitignored dep/env)
   if (process.env.FAKE_SETUP_ERROR) structured.setup_error = process.env.FAKE_SETUP_ERROR;
+  if (process.env.FAKE_CHECKS_REQUESTED &&
+      !(process.env.FAKE_CHECKS_MARKER && fs.existsSync(process.env.FAKE_CHECKS_MARKER))) {
+    structured.checks_requested = process.env.FAKE_CHECKS_REQUESTED.split('|').filter(Boolean);
+    if (process.env.FAKE_CHECKS_MARKER) fs.writeFileSync(process.env.FAKE_CHECKS_MARKER, '1');
+  }
   // simulate "the agent needs a human decision" ONCE (marker), then behave
   if (process.env.FAKE_QUESTION && process.env.FAKE_QUESTION_MARKER && !fs.existsSync(process.env.FAKE_QUESTION_MARKER)) {
     fs.writeFileSync(process.env.FAKE_QUESTION_MARKER, '1');

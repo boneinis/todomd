@@ -245,6 +245,43 @@ test('governor pressure defers admission with a reason and spawns nothing; a lat
   assert.equal(started, true, 'the deferred entry starts on its own once a later tick observes recovery — no human action');
 });
 
+test('a light entry starts through CPU-only pressure while heavy work remains deferred', async () => {
+  const p = makeProject('light-cpu', 'concurrency: 3\n');
+  const thresholds = resourcesConfig({
+    resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 },
+  });
+  scheduler.setGovernor(createGovernor({ thresholds, sample: () => ({ cpuLoad: 0.99 }) }));
+  scheduler.tick();
+
+  let heavyStarted = false;
+  let lightAdmission = null;
+  scheduler.schedule(p, 'heavy', 'Build', () => { heavyStarted = true; return Promise.resolve(); });
+  await scheduler.schedule(p, 'light', 'Verify', (admission) => {
+    lightAdmission = admission;
+    return Promise.resolve();
+  }, { resourceClass: 'light' });
+
+  assert.equal(heavyStarted, false, 'ordinary Build/CI/Verify work still obeys CPU deferral');
+  assert.equal(lightAdmission.resourcePressure, true);
+  assert.deepEqual(lightAdmission.reasons.map((reason) => reason.metric), ['cpu']);
+  assert.deepEqual(scheduler.queuedEntries(p.name).map((entry) => entry.card), ['heavy']);
+});
+
+test('a light entry never bypasses memory or disk pressure', () => {
+  const p = makeProject('light-memory', 'concurrency: 2\n');
+  const thresholds = resourcesConfig({
+    resources: { memory: { defer: 0.8, resume: 0.5, critical: 0.95 }, recovery_samples: 1 },
+  });
+  scheduler.setGovernor(createGovernor({ thresholds, sample: () => ({ memoryPressure: 0.9 }) }));
+  scheduler.tick();
+
+  let started = false;
+  scheduler.schedule(p, 'light', 'Verify', () => { started = true; return Promise.resolve(); },
+    { resourceClass: 'light' });
+  assert.equal(started, false);
+  assert.match(scheduler.queuedEntries(p.name)[0].deferredReason, /memory/);
+});
+
 // pipeline.js's getRunStates() reads queuedEntries() as a SNAPSHOT (e.g. for a
 // client that just reconnected or reloaded mid-deferral) to tell a CI entry
 // held at CRITICAL severity apart from an ordinary defer-level wait. That
