@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 const FALLBACK = {
   claude: ['opus', 'sonnet', 'haiku'],
   codex: ['gpt-5-codex', 'gpt-5', 'o3'],
-  gemini: ['gemini-3.6-flash-low', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-high', 'gemini-3.1-pro-high'],
+  gemini: ['gemini-3.7-flash-high', 'gemini-3.1-pro-high'],
 };
 export const SUPPORTED_VENDORS = Object.freeze(['claude', 'codex', 'gemini']);
 const bin = (vendor) => {

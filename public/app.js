@@ -93,26 +93,37 @@ const collapsedEpicIds = new Set();
 const epicCollapseKey = (id) => JSON.stringify([currentProject || '', id]);
 
 // model suggestions per vendor — pulled from the provider CLI (server reads
-// `<cli> --help` + config), cached per vendor. Still a datalist, so a custom
-// id is allowed. Falls back to a sane default until the fetch resolves.
+// `<cli> --help` + config), cached per vendor. The card editor still uses the
+// shared datalist; column routing copies these values into a real select.
 const modelCache = {};
+const MODEL_FALLBACKS = {
+  codex: ['gpt-5-codex', 'gpt-5'],
+  gemini: ['gemini-3.7-flash-high', 'gemini-3.1-pro-high'],
+  claude: ['opus', 'sonnet', 'haiku'],
+};
 function fillModels(list) {
   $('#model-options').innerHTML = (list || []).map((m) => `<option value="${esc(m)}"></option>`).join('');
 }
 async function setModelOptions(vendor) {
   vendor = vendor || 'claude';
   if (modelCache[vendor]) { fillModels(modelCache[vendor]); return; }
-  fillModels(
-    vendor === 'codex' ? ['gpt-5-codex', 'gpt-5'] :
-    vendor === 'gemini' ? ['gemini-3.6-flash-low', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-high', 'gemini-3.1-pro-high'] :
-    ['opus', 'sonnet', 'haiku']
-  ); // instant default
+  fillModels(MODEL_FALLBACKS[vendor] || MODEL_FALLBACKS.claude); // instant default
   if (!currentProject) return;
   try {
     const { models } = await api(`models?agent=${encodeURIComponent(vendor)}&project=${encodeURIComponent(currentProject)}`);
     modelCache[vendor] = models;
     fillModels(models);
   } catch { /* keep the default */ }
+}
+async function setStageModelOptions(vendor, selected = '') {
+  await setModelOptions(vendor);
+  const models = [...$('#model-options').querySelectorAll('option')].map((o) => o.value);
+  if (selected && !models.includes(selected)) models.unshift(selected);
+  $('#stage-model').innerHTML = [
+    '<option value="">board default</option>',
+    ...models.map((model) => `<option value="${esc(model)}">${esc(model)}</option>`),
+  ].join('');
+  $('#stage-model').value = selected;
 }
 function setSkillOptions() { // the repo's available commands (from the board payload)
   $('#skill-options').innerHTML = ((boardData && boardData.skills) || [])
@@ -1285,12 +1296,11 @@ async function updateRoutingRow(item) {
   if (!item || !item.stage) { row.hidden = true; routingColumn = null; return; }
   routingColumn = item.column;
   $('#stage-agent').value = item.agent || '';
-  $('#stage-model').value = item.model || '';
   $('#stage-effort').value = item.effort || '';
   $('#stage-workflow').value = item.workflow || '';
   $('#stage-workflow-row').hidden = item.column !== 'Build';
   row.hidden = false;
-  await setModelOptions(item.agent || promptDefaults.agent); // suggestions match the effective vendor
+  await setStageModelOptions(item.agent || promptDefaults.agent, item.model || '');
   renderRoutingNote(item);
 }
 async function loadPromptCommand(command) {
@@ -1334,15 +1344,20 @@ $('#stage-agent').addEventListener('change', async (e) => {
   const col = routingColumn, item = promptCommands.find((c) => c.column === col);
   if (await saveRouting({ agent: e.target.value }) && item) {
     item.agent = e.target.value;
-    await setModelOptions(item.agent || promptDefaults.agent);
+    item.model = ''; // the API clears an incompatible model whenever the vendor changes
+    await setStageModelOptions(item.agent || promptDefaults.agent, '');
     renderRoutingNote(item); toast(`${col} agent saved`);
+  } else if (item) {
+    e.target.value = item.agent || '';
   }
 });
 $('#stage-model').addEventListener('change', async (e) => {
   const col = routingColumn, item = promptCommands.find((c) => c.column === col);
   if (await saveRouting({ model: e.target.value }) && item) {
-    item.model = e.target.value.replace(/[^\w.-]/g, '');
+    item.model = e.target.value;
     renderRoutingNote(item); toast(`${col} model saved`);
+  } else if (item) {
+    e.target.value = item.model || '';
   }
 });
 $('#stage-effort').addEventListener('change', async (e) => {

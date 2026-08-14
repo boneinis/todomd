@@ -24,7 +24,7 @@ import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
 import { appendIntakeAudit } from '../../src/screen.js';
 import { recordUsage } from '../../src/runstore.js';
-import { readCard } from '../../src/board.js';
+import { loadConfig, readCard } from '../../src/board.js';
 import { openPage } from '../browser.js';
 
 function freePort() {
@@ -232,6 +232,49 @@ test('UI smoke: Add Card is prompt-first and preserves Advanced options', async 
   assert.match(card.body, /Resume from the preserved worktree without losing partial changes\./);
   assert.match(card.body, /Additional context:\nKeep the board API compatible\./);
   assert.deepEqual(page.errors, [], 'prompt-first creation produces no browser errors');
+});
+
+test('UI smoke: column agent and model selections persist and stay synchronized', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+  addProject(repo);
+  const routingProject = path.basename(repo);
+
+  page.errors.length = 0;
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(routingProject)}`);
+  await until(async () => (await page.eval(`currentProject`)) === routingProject || null,
+    { timeout: BUDGET.stage, label: 'routing test project selected' });
+  await page.eval(`document.querySelector('.column[data-status="Plan"] .col-edit').click()`);
+  await until(async () => (await page.eval(
+    `!document.getElementById('prompts-backdrop').hidden && document.querySelectorAll('#stage-model option').length > 1`)) || null,
+  { timeout: BUDGET.stage, label: 'Plan routing controls loaded' });
+
+  assert.equal(await page.eval(`document.getElementById('stage-model').tagName`), 'SELECT',
+    'the model is a real selectable control rather than a fragile free-text datalist');
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-agent');
+    select.value = 'gemini';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.agent === 'gemini' || null,
+    { timeout: BUDGET.quick, label: 'Gemini agent persisted' });
+  await until(async () => (await page.eval(
+    `document.getElementById('stage-model').value === '' && [...document.querySelectorAll('#stage-model option')].some((o) => o.value === 'gemini-3.7-flash-high')`)) || null,
+  { timeout: BUDGET.stage, label: 'model reset and Gemini choices loaded' });
+
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-model');
+    select.value = 'gemini-3.7-flash-high';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.model === 'gemini-3.7-flash-high' || null,
+    { timeout: BUDGET.quick, label: 'Gemini model persisted' });
+  await until(async () => /runs as gemini · gemini-3\.7-flash-high/.test(
+    await page.eval(`document.getElementById('stage-routing-note').textContent`)) || null,
+  { timeout: BUDGET.quick, label: 'effective-route note matches the saved values' });
+  assert.deepEqual(page.errors, [], 'routing changes produce no browser errors');
 });
 
 // The CI column (task-0041) added three run-state values — 'deferred-for-load',
