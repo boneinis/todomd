@@ -474,7 +474,7 @@ test('a productive Build turn-limit checkpoint resumes automatically and reaches
 
   const card = readCard(repo, 'task-continue');
   assert.ok(fs.existsSync(marker), 'the first slice reached its provider turn limit');
-  assert.match(card.body, /checkpoint 1: no git-visible progress/, 'the checkpoint was recorded');
+  assert.match(card.body, /checkpoint 1\/3 \(standard\): no worktree progress/, 'the checkpoint was recorded');
   assert.equal(card.data.needs_human_reason || '', '', 'a productive continuation does not need a human');
   clearFakeAgent();
 });
@@ -498,6 +498,8 @@ test('Build slice budget pauses as resumable infrastructure without losing the w
   assert.equal(paused.data.needs_human_reason, 'build_budget');
   assert.equal(paused.data.recovery_stage, 'Build');
   assert.equal(paused.data.verification.attempts, 1);
+  assert.equal(paused.data.build_profile, 'standard');
+  assert.deepEqual(paused.data.build_limits, { max_slices: 1, budget_minutes: 60 });
   assert.equal(fs.existsSync(worktree), true);
   await until(() => !pipeline.hasLiveRun(p.name, 'task-budget'), { timeout: BUDGET.stage });
   assert.equal((await pipeline.recoveryActions(p, 'task-budget')).resume_build, true);
@@ -525,8 +527,54 @@ test('repeated no-progress Build checkpoints pause safely for a human', async ()
 
   const card = readCard(repo, 'task-stalled');
   assert.equal(card.data.needs_human_reason, 'stalled_build');
-  assert.match(card.body, /checkpoint 2: no git-visible progress/);
+  assert.match(card.body, /checkpoint 2\/3 \(standard\): no worktree progress/);
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-stalled'), { timeout: BUDGET.stage });
+  assert.equal((await pipeline.recoveryActions(p, 'task-stalled')).resume_build, true,
+    'a stalled Build preserves the same guarded recovery path');
   clearFakeAgent();
+});
+
+test('long Build keeps advancing when the same dirty file changes, then pauses at its frozen absolute cap', async () => {
+  isolateHome();
+  useFakeAgent({ maxturns: 1, maxturns_progress_file: 'scratch/progress.txt' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.appendFileSync(cfg,
+    'build_continuation:\n  enabled: true\n  max_no_progress_slices: 2\n  max_slices: 2\n  budget_minutes: 30\n' +
+    '  profiles:\n    long:\n      max_slices: 4\n      budget_minutes: 90\n');
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'configure build profiles']);
+  const p = project(repo);
+  writeCard(repo, 'task-long', { status: 'Planned', extra: 'build_profile: long\n' });
+
+  await pipeline.humanMove(p, 'task-long', 'Queue');
+  await until(() => status(repo, 'task-long') === 'Needs Human', { timeout: BUDGET.stage });
+  const card = readCard(repo, 'task-long');
+  assert.equal(card.data.needs_human_reason, 'build_budget', 'content progress avoids a false stalled_build');
+  assert.deepEqual(card.data.build_limits, { max_slices: 4, budget_minutes: 90 });
+  assert.match(card.body, /checkpoint 3\/4 \(long\): worktree progress detected/);
+  assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-long/scratch/progress.txt')), true);
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-long'), { timeout: BUDGET.stage });
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('      max_slices: 4', '      max_slices: 5'));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'change future long profile']);
+  const recovery = await pipeline.recoveryActions(p, 'task-long');
+  assert.equal(recovery.resume_build, true);
+  assert.deepEqual(recovery.build_limits, { max_slices: 4, budget_minutes: 90 },
+    'a later config edit cannot lengthen an already-admitted Build');
+  clearFakeAgent();
+});
+
+test('split_required profile cannot enter Queue without materialized child cards', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-split', { status: 'Planned', extra: 'build_profile: split_required\n' });
+
+  const result = await pipeline.humanMove(p, 'task-split', 'Queue');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /requires splitting before Build/);
+  assert.equal(status(repo, 'task-split'), 'Planned');
 });
 
 test('stage routing precedence: an unknown column agent is gated; a supported card agent overrides it', async () => {
@@ -621,6 +669,7 @@ test('Codex Plan is read-only and TODOMD writes its structured plan into the car
     assert.equal(r.ok, true);
     await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
     assert.match(readCard(repo, 'task-0001').body, /## Implementation Plan\n\n1\. Do the thing\./);
+    assert.equal(readCard(repo, 'task-0001').data.build_profile, 'standard');
     const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
     assert.deepEqual(argv.slice(argv.indexOf('--sandbox'), argv.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);
     assert.ok(argv.includes('--output-schema'));

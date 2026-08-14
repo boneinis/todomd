@@ -14,7 +14,7 @@ const defaultVerdict = JSON.stringify({
   setup_error: null,
   question: null,
 });
-const defaultPlan = JSON.stringify({ plan: '1. Do the thing.', chunks: [] });
+const defaultPlan = JSON.stringify({ plan: '1. Do the thing.', chunks: [], build_profile: 'standard' });
 const finalMessage = process.env.FAKE_CODEX_LAST_MESSAGE ??
   (args.join(' ').includes('implementation plan') ? defaultPlan : defaultVerdict);
 const stderr = process.env.FAKE_CODEX_STDERR || '';

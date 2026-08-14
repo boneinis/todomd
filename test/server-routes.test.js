@@ -115,13 +115,20 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
     assert.match(id, /^task-\d+$/);
 
     // set routing fields (sanitized + validated)
-    r = await fetch(`${base}/api/cards/${id}/set${q}`, { method: 'POST', headers: h, body: '{"assignee":"alice","agent":"codex"}' });
+    r = await fetch(`${base}/api/cards/${id}/set${q}`, { method: 'POST', headers: h, body: '{"assignee":"alice","agent":"codex","build_profile":"long"}' });
     assert.equal(r.status, 200);
     r = await fetch(`${base}/api/cards/${id}${q}`, { headers: { 'x-todomd-token': srv.token } });
     const card = await r.json();
     assert.equal(card.data.assignee, 'alice');
     assert.equal(card.data.agent, 'codex');
-    assert.deepEqual(card.recovery, { resume_build: false, restart_build: false, retry_verification: false });
+    assert.equal(card.data.build_profile, 'long');
+    assert.deepEqual(card.recovery, {
+      resume_build: false,
+      restart_build: false,
+      retry_verification: false,
+      build_profile: 'long',
+      build_limits: { max_slices: 6, budget_minutes: 120 },
+    });
 
     // invalid agent → 400
     r = await fetch(`${base}/api/cards/${id}/set${q}`, { method: 'POST', headers: h, body: '{"agent":"bogus"}' });

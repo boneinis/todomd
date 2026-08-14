@@ -672,6 +672,7 @@ created_date: ${new Date().toISOString().slice(0, 10)}
 source: ${fmScalar(fields.source, 'ui')}
 assignee: ${fields.assignee ? String(fields.assignee).replace(/[^\w.@ -]/g, '').trim() : ''}
 agent: ${['codex', 'gemini', 'kimi'].includes(fields.agent) ? fields.agent : 'claude'}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? `\neffort: ${fields.effort}` : ''}${fields.workflow === 'ultra_code' ? '\nworkflow: ultra_code' : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
+build_profile: ${['long', 'split_required'].includes(fields.build_profile) ? fields.build_profile : 'standard'}
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }

@@ -624,6 +624,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (pipeline.hasLiveRun(project.name, setMatch[1])) {
         return json(res, 400, { error: 'run in progress — cancel it first' });
       }
+      const current = readCard(project.path, setMatch[1]);
       const updates = {};
       if ('agent' in fields) {
         const agent = pipeline.normalizeVendor(fields.agent);
@@ -634,10 +635,19 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
       if ('workflow' in fields) updates.workflow = fields.workflow === 'ultra_code' ? 'ultra_code' : '';
+      if ('build_profile' in fields) {
+        const profile = String(fields.build_profile || '');
+        if (!['standard', 'long', 'split_required'].includes(profile)) {
+          return json(res, 400, { error: 'build_profile must be standard, long, or split_required' });
+        }
+        updates.build_profile = profile;
+        // Re-resolve and freeze limits on the next Build admission. This is
+        // what lets a preserved budget pause be deliberately resumed as long.
+        if (current?.data?.build_profile !== profile) updates.build_limits = {};
+      }
       if ('skill' in fields) updates.skill = String(fields.skill || '').replace(/[^\w:-]/g, '');
       if ('assignee' in fields) updates.assignee = sanitizeAssignee(fields.assignee);
       if (!Object.keys(updates).length) return json(res, 400, { error: 'nothing to set' });
-      const current = readCard(project.path, setMatch[1]);
       const effectiveAgent = updates.agent || current?.data?.agent || loadConfig(project.path).default_agent || 'claude';
       const effectiveModel = 'model' in updates ? updates.model : current?.data?.model || '';
       const route = validateModelRoute(effectiveAgent, effectiveModel, loadConfig(project.path));

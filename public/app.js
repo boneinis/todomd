@@ -843,6 +843,12 @@ async function openDrawer(id) {
   $('#route-model').value = card.data.model || '';
   $('#route-effort').value = card.data.effort || '';
   $('#route-workflow').value = card.data.workflow || '';
+  const buildProfile = card.data.build_profile || card.recovery?.build_profile || 'standard';
+  $('#route-build-profile').value = buildProfile;
+  const buildLimits = card.recovery?.build_limits || card.data.build_limits || {};
+  $('#build-profile-hint').textContent = buildProfile === 'split_required'
+    ? 'This card must return to Plan and become child cards before Build.'
+    : `${buildProfile} profile: up to ${buildLimits.max_slices || (buildProfile === 'long' ? 6 : 3)} checkpoints / ${buildLimits.budget_minutes || (buildProfile === 'long' ? 120 : 60)} minutes per admission.`;
   $('#route-skill').value = card.data.skill || '';
   $('#route-assignee').value = card.data.assignee || '';
   const cols = boardData?.config?.columns || [];
@@ -971,13 +977,17 @@ $('#route-save').addEventListener('click', async () => {
         model: $('#route-model').value.trim(),
         effort: $('#route-effort').value,
         workflow: $('#route-workflow').value,
+        build_profile: $('#route-build-profile').value,
         skill: $('#route-skill').value.trim(),
         assignee: $('#route-assignee').value.trim(),
       }),
     });
     const out = await res.json();
     toast(res.ok ? 'routing saved' : out.error || 'save failed');
-    if (res.ok) loadBoard();
+    if (res.ok) {
+      await loadBoard();
+      if (drawerCard) await openDrawer(drawerCard);
+    }
   } catch {
     toast('server unreachable');
   }

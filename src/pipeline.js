@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt } from './board.js';
@@ -50,9 +51,10 @@ const ESCALATION_SCHEMA = {
 const PLAN_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['plan', 'chunks'],
+  required: ['plan', 'chunks', 'build_profile'],
   properties: {
     plan: { type: 'string' },
+    build_profile: { type: 'string', enum: ['standard', 'long', 'split_required'] },
     chunks: {
       type: 'array',
       items: {
@@ -237,6 +239,13 @@ export function normalizeVendor(value) {
   return aliases[vendor] || vendor;
 }
 
+const BUILD_PROFILES = new Set(['standard', 'long', 'split_required']);
+
+export function normalizeBuildProfile(value) {
+  const profile = String(value || '').trim().toLowerCase();
+  return BUILD_PROFILES.has(profile) ? profile : 'standard';
+}
+
 // Override precedence is normally card → column → board. Plan and Verify are
 // independent, explicitly-routed stages: a Build provider selected on a card
 // must not replace either planning or independent quality control.
@@ -265,6 +274,9 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
   // Epic approval follows its separate child-cascade path and does not build
   // the epic's own plan or apply the ordinary card dependency gate.
   if (card.data.epic) return { ok: true };
+  if (normalizeBuildProfile(card.data.build_profile) === 'split_required') {
+    return { ok: false, error: `${id}'s plan requires splitting before Build. Move it back to Plan so child cards can be created.` };
+  }
   if (parseChunks(card.body).length >= 2) {
     return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
   }
@@ -310,32 +322,82 @@ function stageConfig(config, stageName, card) {
 
 // A provider's max-turn result is a checkpoint, not automatically a human
 // blocker. Build continues in the same worktree/session while it is changing
-// the candidate. A run that repeatedly makes no git-visible progress is the
+// the candidate. A run that repeatedly makes no worktree progress is the
 // useful signal that a human or the escalation path is needed.
-function buildContinuationConfig(config) {
+function boundedPositive(value, fallback, max, integer = false) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || (integer && !Number.isInteger(n))) return fallback;
+  return Math.min(n, max);
+}
+
+function buildContinuationConfig(config, card = null) {
   const c = config.build_continuation || {};
-  const n = Number(c.max_no_progress_slices);
-  const slices = Number(c.max_slices);
-  const minutes = Number(c.budget_minutes);
+  const profile = normalizeBuildProfile(card?.data?.build_profile);
+  const configured = c.profiles?.[profile] || {};
+  const defaults = profile === 'long'
+    ? { maxSlices: 6, budgetMinutes: 120 }
+    : {
+        maxSlices: boundedPositive(c.max_slices, 3, 12, true),
+        budgetMinutes: boundedPositive(c.budget_minutes, 60, 240),
+      };
+  // Once Build is admitted, keep using the limits stamped onto the card. A
+  // later config edit must not silently lengthen an already-running or resumed
+  // task. Changing build_profile through the card API clears this frozen map.
+  const frozen = card?.data?.build_limits || {};
+  const maxSlices = boundedPositive(
+    frozen.max_slices ?? configured.max_slices,
+    defaults.maxSlices,
+    12,
+    true,
+  );
+  const budgetMinutes = boundedPositive(
+    frozen.budget_minutes ?? configured.budget_minutes,
+    defaults.budgetMinutes,
+    240,
+  );
   return {
     enabled: c.enabled !== false,
-    maxNoProgressSlices: Number.isInteger(n) && n > 0 ? n : 2,
-    maxSlices: Number.isInteger(slices) && slices > 0 ? slices : 3,
-    budgetMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 60 * 60_000,
+    profile,
+    maxNoProgressSlices: boundedPositive(c.max_no_progress_slices, 2, 4, true),
+    maxSlices,
+    budgetMinutes,
+    budgetMs: budgetMinutes * 60_000,
   };
 }
 
 async function progressSnapshot(worktreeAbs) {
   const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
-  const changed = await git(worktreeAbs, ['status', '--porcelain']);
+  const changed = await git(worktreeAbs, ['status', '--porcelain=v1']);
+  const tracked = await git(worktreeAbs, ['diff', '--name-only', '-z', 'HEAD', '--']);
+  const untracked = await git(worktreeAbs, ['ls-files', '--others', '--exclude-standard', '-z']);
+  const digest = createHash('sha256');
+  const paths = new Set();
+  for (const output of [tracked, untracked]) {
+    if (!output.ok) continue;
+    for (const file of output.stdout.split('\0').filter(Boolean)) paths.add(file);
+  }
+  for (const file of [...paths].sort()) {
+    digest.update(`\0${file}\0`);
+    try {
+      const absolute = path.join(worktreeAbs, file);
+      const stat = fs.statSync(absolute);
+      digest.update(`${stat.size}:${stat.mtimeMs}:`);
+      // Source files are normally small. Hash their contents exactly; for a
+      // large generated artifact, size+mtime still detects continued writes
+      // without reading an unbounded file into the board process.
+      if (stat.isFile() && stat.size <= 1024 * 1024) digest.update(fs.readFileSync(absolute));
+    }
+    catch { digest.update('unreadable'); }
+  }
   return {
     head: head.ok ? head.stdout : '',
-    changed: changed.ok ? changed.stdout : '',
+    fingerprint: digest.digest('hex'),
+    changed: changed.ok ? changed.stdout.split('\n').filter(Boolean).length : 0,
   };
 }
 
 function hasProgress(before, after) {
-  return before.head !== after.head || before.changed !== after.changed;
+  return before.head !== after.head || before.fingerprint !== after.fingerprint;
 }
 
 function escalationConfig(config) {
@@ -567,7 +629,7 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
   const recoverableStage = reason === 'orphaned_run'
-    || (reason === 'build_budget' && from === 'Build')
+    || (['build_budget', 'stalled_build'].includes(reason) && from === 'Build')
     || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
     || (reason === 'agent_error' && from === 'Build');
   await patchFrontmatter(project.path, id, {
@@ -978,22 +1040,30 @@ function canRetryVerification(card) {
 
 export async function recoveryActions(project, id) {
   const card = readCard(project.path, id);
-  if (!card || card.data.status !== 'Needs Human' || hasLiveRun(project.name, id)) {
-    return { resume_build: false, restart_build: false, retry_verification: false };
+  const empty = { resume_build: false, restart_build: false, retry_verification: false };
+  if (!card) return { ...empty, build_profile: 'standard', build_limits: { max_slices: 3, budget_minutes: 60 } };
+  const profile = buildContinuationConfig(await execConfig(project.path), card);
+  const summary = {
+    build_profile: profile.profile,
+    build_limits: { max_slices: profile.maxSlices, budget_minutes: profile.budgetMinutes },
+  };
+  if (card.data.status !== 'Needs Human' || hasLiveRun(project.name, id)) {
+    return { ...empty, ...summary };
   }
   const kept = await preservedWorktree(project, card);
   // Older orphan records predate recovery_stage. orphaned_run was only emitted
   // for Build at that point, so keep those cards recoverable too.
   const reason = card.data.needs_human_reason;
-  const resumableBuild = (reason === 'orphaned_run'
+  const resumableBuild = profile.profile !== 'split_required' && ((reason === 'orphaned_run'
       && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_budget'].includes(reason) && card.data.recovery_stage === 'Build');
+    || (['run_timeout', 'agent_error', 'build_budget', 'stalled_build'].includes(reason) && card.data.recovery_stage === 'Build'));
   const orphanedBuild = reason === 'orphaned_run'
     && (!card.data.recovery_stage || card.data.recovery_stage === 'Build');
   return {
     resume_build: !!kept && resumableBuild,
     restart_build: !kept && orphanedBuild,
     retry_verification: !!kept && canRetryVerification(card),
+    ...summary,
   };
 }
 
@@ -1004,8 +1074,11 @@ export async function resumeBuild(project, id) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
   const reason = card.data.needs_human_reason;
+  if (normalizeBuildProfile(card.data.build_profile) === 'split_required') {
+    return { ok: false, error: 'this card must be split into child cards before Build can resume' };
+  }
   const eligible = (reason === 'orphaned_run' && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_budget'].includes(reason) && card.data.recovery_stage === 'Build');
+    || (['run_timeout', 'agent_error', 'build_budget', 'stalled_build'].includes(reason) && card.data.recovery_stage === 'Build');
   if (card.data.status !== 'Needs Human' || !eligible) {
     return { ok: false, error: 'card is not an eligible preserved Build run' };
   }
@@ -1350,7 +1423,15 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   const structuredCodexPlan = stageName === 'Plan' && vendor === 'codex' && !skill;
   if (structuredCodexPlan) {
     prompt += '\n\nDo not edit files. Return the implementation plan as the required structured output. ' +
-      'Use plan for an ordinary task. Use chunks only when the work genuinely needs two or more sequential child cards.';
+      'Set build_profile to standard for an ordinary cohesive task, long for a cohesive task that is likely to need more than three build checkpoints, or split_required when it must become child cards. ' +
+      'Use chunks only when the work genuinely needs two or more independently verifiable child cards.';
+  } else if (stageName === 'Plan' && !skill) {
+    // Existing project command files may predate build profiles. Carry the
+    // contract in the orchestrator prompt too, so upgrading TODOMD upgrades
+    // Plan behavior without rewriting a project's customized command file.
+    prompt += '\n\nRequired Build sizing: update only the task card frontmatter key build_profile. ' +
+      'Use standard for a cohesive task expected within three Build checkpoints, long for a cohesive task likely to need more than three, or split_required when child cards are required. ' +
+      'The board owns the actual limits; do not invent per-task timeout values.';
   }
   const { result, run, finishTracking } = await spawnTracked(project, id, stageName, 'Review', 0, {
     retainUntilFinalized: true,
@@ -1401,7 +1482,8 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
     const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
     const structuredPlan = structuredCodexPlan ? result.envelope?.structured_output : null;
     if (ok && structuredCodexPlan &&
-        (!structuredPlan || typeof structuredPlan.plan !== 'string' || !Array.isArray(structuredPlan.chunks))) {
+        (!structuredPlan || typeof structuredPlan.plan !== 'string' || !Array.isArray(structuredPlan.chunks)
+          || !BUILD_PROFILES.has(structuredPlan.build_profile))) {
       await recordRun(project, id, stageName, 0, result, 'failed: invalid structured plan');
       await toNeedsHuman(project, id, stageName, 'bad_plan', 'Codex returned no valid structured implementation plan');
       return;
@@ -1418,6 +1500,11 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
           // the plan agent may have split the work into a `## Chunks` breakdown —
           // fan it out into sequential child cards; otherwise it's a normal plan
           const chunks = structuredPlan?.chunks || parseChunks(readCard(project.path, id)?.body || '');
+          const plannedCard = readCard(project.path, id);
+          const plannedProfile = chunks.length >= 2
+            ? 'split_required'
+            : normalizeBuildProfile(structuredPlan?.build_profile || plannedCard?.data?.build_profile);
+          await patchFrontmatter(project.path, id, { build_profile: plannedProfile, build_limits: {} });
           if (structuredPlan) {
             const plan = chunks.length === 1 ? chunks[0].plan : structuredPlan.plan;
             if (plan) await writeImplementationPlan(project, id, plan);
@@ -1923,6 +2010,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   const worktreeRel = path.join(config.worktree_dir || '.todomd/worktrees', id);
   const worktreeAbs = recovery?.worktreeAbs || path.join(project.path, worktreeRel);
   const fromStatus = recovery ? 'Build' : retry ? 'Verify' : 'Queue';
+  const continuation = buildContinuationConfig(config, card);
 
   // worktree exists across retries; create on first attempt. A leftover dir is
   // only reusable if it's a real git worktree checked out on THIS task's branch
@@ -1959,6 +2047,11 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   await patchFrontmatter(project.path, id, {
     worktree: branch,
     ci_evidence: {},
+    build_profile: continuation.profile,
+    build_limits: {
+      max_slices: continuation.maxSlices,
+      budget_minutes: continuation.budgetMinutes,
+    },
     ...(forkedFrom ? { base_branch: forkedFrom } : {}),
     verification: { attempts: attempt, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
   });
@@ -2026,7 +2119,6 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
       { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: ver.last_verdict });
   }
 
-  const continuation = buildContinuationConfig(config);
   const buildStartedAt = Date.now();
   let noProgressSlices = 0;
   let slice = 1;
@@ -2042,15 +2134,17 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     const after = await progressSnapshot(worktreeAbs);
     const progressed = hasProgress(before, after);
     await recordRun(project, id, 'Build', attempt, result,
-      progressed ? `checkpoint ${slice}: progress detected; continuing` : `checkpoint ${slice}: no git-visible progress`);
+      progressed
+        ? `checkpoint ${slice}/${continuation.maxSlices} (${continuation.profile}): worktree progress detected; continuing`
+        : `checkpoint ${slice}/${continuation.maxSlices} (${continuation.profile}): no worktree progress (${after.changed} changed paths)`);
     noProgressSlices = progressed ? 0 : noProgressSlices + 1;
     if (noProgressSlices >= continuation.maxNoProgressSlices) {
       return toNeedsHuman(project, id, 'Build', 'stalled_build',
-        `No git-visible progress across ${noProgressSlices} consecutive build checkpoints`);
+        `The ${continuation.profile} Build made no worktree progress across ${noProgressSlices} consecutive checkpoints; worktree, branch, changes, and session are preserved for Resume Build`);
     }
     if (slice >= continuation.maxSlices || Date.now() - buildStartedAt >= continuation.budgetMs) {
       return toNeedsHuman(project, id, 'Build', 'build_budget',
-        `Build reached its ${slice >= continuation.maxSlices ? `${continuation.maxSlices}-slice` : `${Math.round(continuation.budgetMs / 60_000)}m`} automation budget; worktree, branch, changes, and session are preserved for Resume Build`);
+        `${continuation.profile} Build reached its ${slice >= continuation.maxSlices ? `${continuation.maxSlices}-slice` : `${continuation.budgetMinutes}m`} automation budget; worktree, branch, changes, and session are preserved for Resume Build`);
     }
 
     slice++;

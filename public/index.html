@@ -105,6 +105,8 @@
       <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
       <label class="rail-field">effort <select id="route-effort" class="rail-input"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
       <label class="rail-field">build workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
+      <label class="rail-field">build length <select id="route-build-profile" class="rail-input"><option value="standard">Standard</option><option value="long">Long</option><option value="split_required">Split required</option></select></label>
+      <p id="build-profile-hint" class="route-hint"></p>
       <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
       <label class="rail-field">assignee <input id="route-assignee" class="rail-input" placeholder="developer" autocomplete="off" /></label>
       <button id="route-save" class="rail-btn rail-primary">save</button>

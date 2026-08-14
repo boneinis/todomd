@@ -170,6 +170,16 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       await page.eval(`document.getElementById('drawer-title').textContent`)) || null, { timeout: BUDGET.quick });
     assert.equal(await page.eval(`document.getElementById('drawer-resume-build').hidden`), false,
       'an eligible card with a registered preserved worktree shows Resume Build');
+    assert.equal(await page.eval(`document.getElementById('route-build-profile').value`), 'standard');
+    assert.match(await page.eval(`document.getElementById('build-profile-hint').textContent`), /3 checkpoints \/ 60 minutes/,
+      'the drawer explains the resolved standard Build limits');
+    await page.eval(`document.getElementById('route-build-profile').value = 'long'`);
+    await page.eval(`document.getElementById('route-save').click()`);
+    await until(async () => /6 checkpoints \/ 120 minutes/.test(
+      await page.eval(`document.getElementById('build-profile-hint').textContent`)) || null,
+    { timeout: BUDGET.quick, label: 'saved long Build profile refreshes the drawer limits' });
+    assert.equal(await page.eval(`document.getElementById('drawer-resume-build').hidden`), false,
+      'changing the Build profile does not lose preserved recovery eligibility');
 
     await page.eval(`document.querySelector('[data-id="task-0007"]').click()`);
     await until(async () => /restartable orphaned build/.test(
