@@ -1,13 +1,11 @@
 import { execFileSync } from 'node:child_process';
 
-// Model suggestions for the picker. There's no headless "list models" command on
-// either CLI (`/model` is an interactive TUI), so we do the closest scriptable
-// thing: read the model aliases the installed CLI documents in its `--help`, and
-// union them with a safe fallback. A `models:` block in .todomd/config.yml wins
-// over both, for full user control. No API/network — just `<cli> --help`.
+// Model suggestions for the picker. Codex and Agent Gateway expose
+// machine-readable inventories; Claude still documents aliases through
+// `--help`. A `models:` block in .todomd/config.yml wins for full user control.
 const FALLBACK = {
   claude: ['opus', 'sonnet', 'haiku'],
-  codex: ['gpt-5-codex', 'gpt-5', 'o3'],
+  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'],
   gemini: ['gemini-3.7-flash-high', 'gemini-3.1-pro-high'],
 };
 export const SUPPORTED_VENDORS = Object.freeze(['claude', 'codex', 'gemini']);
@@ -55,8 +53,23 @@ export function modelsFromAgy(text) {
     .filter((model) => /^gemini-[\w.-]+$/.test(model)))];
 }
 
+export function modelsFromCodexDebug(text) {
+  try {
+    const catalog = JSON.parse(String(text || ''));
+    return [...new Set((Array.isArray(catalog?.models) ? catalog.models : [])
+      .filter((model) => model?.visibility === 'list')
+      .map((model) => String(model.slug || '').trim())
+      .filter((model) => /^(?:gpt-|codex|o\d)/i.test(model)))];
+  } catch { return []; }
+}
+
 function cliModels(vendor) {
   try {
+    if (vendor === 'codex') {
+      return modelsFromCodexDebug(execFileSync(bin(vendor), ['debug', 'models'], {
+        encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
+      }));
+    }
     if (vendor === 'gemini') {
       return modelsFromAgy(execFileSync(bin(vendor), ['models'], {
         encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
@@ -69,9 +82,8 @@ function cliModels(vendor) {
 export function listModels(vendor = 'claude', config = {}) {
   if (!SUPPORTED_VENDORS.includes(vendor)) return [];
   const override = config?.models?.[vendor];
-  // Gemini's installed gateway is authoritative when it can answer. Other
-  // providers do not expose a dependable inventory, so their curated config
-  // remains authoritative.
+  // Machine-readable provider inventories are authoritative when available.
+  // Claude has no dependable inventory, so its curated config remains so.
   if (vendor !== 'gemini' && Array.isArray(override) && override.length) return override.map(String);
   if (cache.has(vendor)) return cache.get(vendor);
   const fallback = FALLBACK[vendor] || FALLBACK.claude;

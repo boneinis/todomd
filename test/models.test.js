@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmp } from './helpers.js';
-import { modelsFromHelp, modelsFromAgy, listModels, validateModelRoute } from '../src/models.js';
+import { modelsFromHelp, modelsFromAgy, modelsFromCodexDebug, listModels, validateModelRoute } from '../src/models.js';
 
 const CLAUDE_HELP = `Usage: claude [options]
   --fallback-model <model>              ignore this one (e.g. 'nope')
@@ -27,6 +27,17 @@ test('modelsFromHelp returns [] with no --model block and ignores --fallback-mod
 test('modelsFromAgy parses the installed gateway inventory and ignores chatter', () => {
   assert.deepEqual(modelsFromAgy('Fetching available models...\ngemini-3.6-flash-low\tFlash\ngemini-3.1-pro-high Pro\n'),
     ['gemini-3.6-flash-low', 'gemini-3.1-pro-high']);
+});
+
+test('modelsFromCodexDebug returns only selectable model slugs', () => {
+  const catalog = JSON.stringify({ models: [
+    { slug: 'gpt-5.6-sol', visibility: 'list' },
+    { slug: 'gpt-5.6-terra', visibility: 'list' },
+    { slug: 'gpt-hidden', visibility: 'hide' },
+    { slug: 'not-a-codex-family', visibility: 'list' },
+  ] });
+  assert.deepEqual(modelsFromCodexDebug(catalog), ['gpt-5.6-sol', 'gpt-5.6-terra']);
+  assert.deepEqual(modelsFromCodexDebug('not json'), []);
 });
 
 test('listModels uses agy models as the authoritative Gemini inventory', () => {
@@ -72,6 +83,6 @@ test('listModels probes the CLI once, then backs off (no re-spawn per request)',
   const second = listModels('codex');
   delete process.env.TODOMD_CODEX_BIN;
   assert.deepEqual(second, first);
-  assert.ok(first.includes('gpt-5-codex'), 'curated codex fallback');
+  assert.ok(first.includes('gpt-5.6-sol'), 'current curated Codex fallback');
   assert.equal(fs.readFileSync(counter, 'utf8'), 'x', 'the CLI is probed once, not once per call');
 });

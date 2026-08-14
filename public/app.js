@@ -97,7 +97,7 @@ const epicCollapseKey = (id) => JSON.stringify([currentProject || '', id]);
 // shared datalist; column routing copies these values into a real select.
 const modelCache = {};
 const MODEL_FALLBACKS = {
-  codex: ['gpt-5-codex', 'gpt-5'],
+  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'],
   gemini: ['gemini-3.7-flash-high', 'gemini-3.1-pro-high'],
   claude: ['opus', 'sonnet', 'haiku'],
 };

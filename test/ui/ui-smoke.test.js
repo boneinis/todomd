@@ -274,6 +274,28 @@ test('UI smoke: column agent and model selections persist and stay synchronized'
   await until(async () => /runs as gemini · gemini-3\.7-flash-high/.test(
     await page.eval(`document.getElementById('stage-routing-note').textContent`)) || null,
   { timeout: BUDGET.quick, label: 'effective-route note matches the saved values' });
+
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-agent');
+    select.value = 'codex';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.agent === 'codex' || null,
+    { timeout: BUDGET.quick, label: 'Codex agent persisted' });
+  await until(async () => (await page.eval(
+    `document.getElementById('stage-model').value === '' && [...document.querySelectorAll('#stage-model option')].some((o) => o.value === 'gpt-5.6-sol')`)) || null,
+  { timeout: BUDGET.stage, label: 'current Codex choices loaded' });
+
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-model');
+    select.value = 'gpt-5.6-sol';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.model === 'gpt-5.6-sol' || null,
+    { timeout: BUDGET.quick, label: 'Codex Sol model persisted' });
+  await until(async () => /runs as codex · gpt-5\.6-sol/.test(
+    await page.eval(`document.getElementById('stage-routing-note').textContent`)) || null,
+  { timeout: BUDGET.quick, label: 'Codex effective-route note matches the saved values' });
   assert.deepEqual(page.errors, [], 'routing changes produce no browser errors');
 });
 
