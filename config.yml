@@ -44,6 +44,10 @@ build_continuation:
   max_no_progress_slices: 2
   max_slices: 3
   budget_minutes: 60
+  profiles:
+    long:
+      max_slices: 6
+      budget_minutes: 120
 
 # Pin the board's model picker to the models available to this team. This
 # supplements CLI discovery, which only exposes generic aliases for some models.
