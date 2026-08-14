@@ -1,0 +1,5 @@
+# TODOMD's shared board history is owner-managed. External contributors should
+# open an Issue instead of editing operational task or routing state directly.
+/.github/** @boneinis
+/.todomd/tasks/** @boneinis
+/.todomd/config.yml @boneinis

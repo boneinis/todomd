@@ -1,0 +1,25 @@
+name: todomd task protection
+
+# This check intentionally runs on every pull request. GitHub can then require
+# one stable status context even when the PR does not touch board task files.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: protect tracked board tasks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Reject external edits to tracked TODOMD tasks
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: node .github/scripts/guard-todomd-tasks.mjs

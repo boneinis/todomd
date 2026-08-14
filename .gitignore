@@ -5,7 +5,8 @@ spike/demo-repo/
 .todomd/runs/
 .todomd/.lock/
 # The shared configuration and task Markdown are board history and may sync to
-# GitHub. Everything operational, private, or machine-specific stays ignored.
+# GitHub. They are NOT private on a public remote. Everything operational,
+# private, or machine-specific stays ignored.
 .todomd/*
 !.todomd/config.yml
 !.todomd/tasks/

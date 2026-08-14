@@ -15,6 +15,8 @@ Review ──drag──▶ Plan ──auto──▶ Planned ──drag──▶ 
 
 Every transition is a path-scoped git commit — board history is `git log`. Run logs stream live to the browser; per-card and monthly costs are tracked from the CLI's own envelopes.
 
+> **Board history is repository content, not a privacy boundary.** `.todomd/tasks/*.md` and `.todomd/config.yml` are intentionally tracked, so they are visible on every public remote and in Git history. Gitignore cannot hide files that have already been committed. This repository uses CODEOWNERS plus a required pull-request check to reject external task-file edits, but sensitive operational work belongs in a private repository or a separate private board.
+
 ## Prerequisites
 
 - **Node ≥ 20** and **git** (each board change is a git commit — run `todomd init` inside a git repo).
