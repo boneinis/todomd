@@ -5,17 +5,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addProject, listProjects } from '../src/registry.js';
 import { initProject } from '../src/templates.js';
-import { startServer } from '../src/server.js';
+import { startServer, loadToken } from '../src/server.js';
 import { killAllChildren } from '../src/pipeline.js';
+import { enableControlApproval, disableControlApproval, readControlApproval } from '../src/control-approval.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|control-enable|control-disable|control-status|stop|install-launcher|upgrade-commands|intake-test <project>] [--port N] [--minutes N] [--lan] [--no-open] [--safe-output] [--full]';
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(['--port']);
+const VALUE_FLAGS = new Set(['--port', '--minutes']);
 const positional = [];
 for (let i = 0; i < args.length; i++) {
   if (VALUE_FLAGS.has(args[i])) { i++; continue; }
@@ -125,12 +126,46 @@ if (cmd === 'revoke') {
   // cut off mobile/viewer links without touching the desktop session;
   // new tokens are minted on the next server start. Use TODOMD_DIR so a
   // TODOMD_HOME override is honored (the server writes tokens there too).
+  const full = args.includes('--full');
   let n = 0;
-  for (const f of ['token-mobile', 'token-viewer']) {
+  const files = ['token-mobile', 'token-viewer', 'token-control', 'control-approval.json'];
+  if (full) files.push('token');
+  for (const f of files) {
     try { fs.unlinkSync(path.join(TODOMD_DIR, f)); n++; } catch {}
   }
-  console.log(n ? `revoked ${n} device token(s) — restart todomd; old QR links are now dead.` : 'no device tokens to revoke');
+  console.log(n
+    ? `revoked ${n} ${full ? 'token/approval file(s)' : 'device/control token(s)'} — restart todomd; old links and MCP control sessions are now dead.`
+    : 'no matching tokens or control approval to revoke');
   process.exit(0);
+}
+
+if (cmd === 'control-enable') {
+  try {
+    // Ensure the dedicated MCP credential exists before Codex starts the
+    // control server. It is separate from the primary browser token.
+    loadToken('token-control');
+    const approval = enableControlApproval({ minutes: flag('--minutes', 5) });
+    console.log(`MCP board control enabled for ${approval.minutes} minute(s), until ${new Date(approval.expiresAt).toLocaleTimeString()}.`);
+    console.log('Run `todomd control-disable` sooner when the approved changes are complete.');
+    process.exit(0);
+  } catch (e) {
+    console.error(`could not enable MCP control: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+if (cmd === 'control-disable') {
+  const result = disableControlApproval();
+  console.log(result.removed ? 'MCP board control disabled.' : 'MCP board control was already disabled.');
+  process.exit(0);
+}
+
+if (cmd === 'control-status') {
+  const approval = readControlApproval();
+  console.log(approval.active
+    ? `MCP board control is enabled until ${new Date(approval.expiresAt).toLocaleTimeString()}.`
+    : `MCP board control is disabled (${approval.reason}).`);
+  process.exit(approval.active ? 0 : 1);
 }
 
 if (cmd === 'install-launcher') {
@@ -286,11 +321,12 @@ if (cmd === 'serve') {
   // backstop: a stray rejection (IMAP socket, watcher, pipeline sweep) must
   // never take the board down
   process.on('unhandledRejection', (e) => console.error('todomd: unhandled rejection:', e));
-  const { url, lanUrl, close } = await startServer({ port, lan: args.includes('--lan') });
+  const { url, lanUrl, instanceNonce, close } = await startServer({ port, lan: args.includes('--lan') });
   // record the pid so `todomd stop` can stop a detached (launcher-started) server
   try {
     fs.mkdirSync(TODOMD_DIR, { recursive: true });
-    fs.writeFileSync(PID_FILE, `${process.pid} ${port}`);
+    fs.writeFileSync(PID_FILE, `${process.pid} ${port} ${instanceNonce}\n`, { mode: 0o600 });
+    fs.chmodSync(PID_FILE, 0o600);
     // only remove the pid file if it's still OURS — never clobber another
     // running instance's pid (e.g. a terminal serve exiting on EADDRINUSE)
     const cleanup = () => {
@@ -314,8 +350,11 @@ if (cmd === 'serve') {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } catch {}
-  console.log(`todomd board: ${url}`);
-  if (lanUrl) console.log(`mobile monitor (read-only, this network): ${lanUrl}`);
+  const safeOutput = args.includes('--safe-output');
+  console.log(safeOutput ? `todomd board: http://127.0.0.1:${port}` : `todomd board: ${url}`);
+  if (lanUrl) console.log(safeOutput
+    ? 'mobile monitor enabled on this network — use the board QR menu to share access'
+    : `mobile monitor (read-only, this network): ${lanUrl}`);
   if (!args.includes('--no-open')) {
     if (process.platform === 'darwin') execFile('open', [url], () => {});
     else if (process.platform === 'win32') execFile('cmd', ['/c', 'start', '', url], () => {});

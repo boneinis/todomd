@@ -108,7 +108,14 @@ todomd commits use a `chore(todomd):` prefix and `--no-verify` so they pass (or 
 
 `bin/todomd-mcp.js` exposes the board over the [Model Context Protocol](https://modelcontextprotocol.io) as a stdio server, so Claude, Codex, or any MCP-capable agent can read and drive the board through reliable tools instead of shelling out to `curl`. It's a thin HTTP client of the *running* `todomd serve` process — every tool calls the same routes the web UI does — rather than a second importer of `board.js`/`pipeline.js`. That's not just style: run/queue state only exists in the memory of the one process that's actually driving the pipeline, so **`todomd serve` must already be running** for these tools to see or change anything real.
 
-**Auth.** The server is started with one token (`~/.todomd/token` for full access, `~/.todomd/token-viewer` for read-only — the same files `todomd serve` writes) and refuses to start with anything else. Pass it as `--token <value>` or `TODOMD_MCP_TOKEN`:
+**Auth.** File-sourced plugin access uses dedicated credentials: `~/.todomd/token-viewer` for read-only and `~/.todomd/token-control` for MCP full access. The primary browser credential (`~/.todomd/token`) is not loaded by either plugin tier. For a local plugin or private user-level MCP config, select the tier without copying any token into configuration:
+
+```bash
+todomd-mcp --access viewer  # reads only ~/.todomd/token-viewer
+todomd-mcp --access full    # reads only ~/.todomd/token-control
+```
+
+`--access` ignores inherited `TODOMD_MCP_TOKEN`, `TODOMD_MCP_URL`, and `TODOMD_MCP_PORT` values. It cannot be combined with `--token`, `--url`, or `--port`. Before sending the selected credential, it requires a protected `~/.todomd/server.pid` file and verifies the live loopback server's per-process nonce through a credential-free health request. A missing, stale, malformed, permission-broad, or mismatched identity fails closed. Existing explicit-token clients may continue to use `--token <value>` or `TODOMD_MCP_TOKEN` and their explicit endpoint settings:
 
 ```bash
 TODOMD_MCP_TOKEN=$(cat ~/.todomd/token) todomd-mcp
@@ -116,24 +123,34 @@ TODOMD_MCP_TOKEN=$(cat ~/.todomd/token) todomd-mcp
 
 `npm i -g github:boneinis/todomd` (see [Install](#install)) puts `todomd-mcp` on your PATH alongside `todomd`. From a git clone instead, run `node /path/to/todomd/bin/todomd-mcp.js` — there's no published npm package, so `npx todomd-mcp` will not resolve.
 
-**Finding the running server.** By default it reads the port `todomd serve` recorded in `~/.todomd/server.pid`. Override with `--url <http://host:port>`/`TODOMD_MCP_URL`, or just `--port <port>`/`TODOMD_MCP_PORT` if it's local.
+**Finding the running server.** `--access` always uses the nonce-verified loopback process recorded in `~/.todomd/server.pid`; endpoint overrides are deliberately unavailable on this credential path. Legacy explicit-token clients can override the default endpoint with `--url <http://host:port>`/`TODOMD_MCP_URL`, or `--port <port>`/`TODOMD_MCP_PORT` for a local server.
 
-**Read tools** (either token): `list_projects`, `get_board`, `get_run_state`, `get_card`, `get_card_file`. **Full-access-only tools**: `list_commands` (reads stage routing) and every write tool — `create_card`, `move_card`, `assign_card`, `retry_verify`, `cancel_card`, `archive_card`. A viewer-token session simply doesn't see the full-access tools listed, and the running server enforces the same tier on every request regardless — a bad or mismatched token is a 401/403 from the real API, not a client-side guess. Every card/project id a tool touches goes through the HTTP API's own validation (registered-project lookup, the `task-NNNN` id format, live-run/triage guards), so an MCP call can't do anything the web UI couldn't.
+**Full-control approval.** Installing or enabling a full-access MCP server does not enable mutations. Every non-GET request made with `token-control` is rejected until a person opens a short-lived server-side approval window:
 
-**Connecting a client.** Point an MCP-capable agent at the stdio command. Keep the token in your shell environment or a private user/local MCP scope; never paste a full-control token into a project-scoped `.mcp.json` or commit it. For a client that expands environment variables:
+```bash
+todomd control-enable --minutes 5   # 1–15 minutes
+todomd control-status
+todomd control-disable              # close it early
+```
+
+The approval expires automatically and does not affect the primary browser or mobile credentials. Run `todomd revoke` to rotate device/viewer/control credentials and clear the approval; add `--full` to rotate the primary browser credential too. Restart the board after revocation. For token-free startup logs, use `todomd serve --no-open --safe-output`.
+
+**Read tools** (either tier): `list_projects`, `get_board`, `get_run_state`, `get_card`, `get_card_file`. Attachment reads are capped at 2 MiB before MCP base64 expansion. **Full-access-only tools**: `list_commands` (reads stage routing) and every write tool — `create_card`, `move_card`, `assign_card`, `retry_verify`, `cancel_card`, `archive_card`. `archive_card` always requires an explicit boolean `archived` value; omission is rejected. A viewer session simply doesn't see the full-access tools listed, while the running server enforces the credential and current control approval on every request. Every card/project id a tool touches goes through the HTTP API's own validation (registered-project lookup, the `task-NNNN` id format, live-run/triage guards), so an MCP call can't do anything the web UI couldn't.
+
+**Connecting a client.** Point an MCP-capable agent at the stdio command. Prefer a viewer connection and elevate through a separate, deliberately installed configuration only when board mutations are required:
 
 ```json
 {
   "mcpServers": {
-    "todomd": {
+    "todomd-viewer": {
       "command": "todomd-mcp",
-      "env": { "TODOMD_MCP_TOKEN": "${TODOMD_MCP_TOKEN}" }
+      "args": ["--access", "viewer"]
     }
   }
 }
 ```
 
-Export `TODOMD_MCP_TOKEN="$(cat ~/.todomd/token)"` before starting the client. From a git clone, use `"command": "node", "args": ["/path/to/todomd/bin/todomd-mcp.js"]` instead. Use the viewer token for a read-only connection.
+Keep explicit tokens in a private shell environment or user-local MCP scope; never paste a full-control token into a project-scoped `.mcp.json` or commit it. Legacy clients can export `TODOMD_MCP_TOKEN="$(cat ~/.todomd/token-viewer)"` and omit `args`. From a git clone, use `"command": "node", "args": ["/path/to/todomd/bin/todomd-mcp.js", "--access", "viewer"]` instead.
 
 **Argument validation.** Each tool's advertised `inputSchema` is enforced before anything is dispatched: unknown properties, missing required ones, and wrong types are all refused with a message naming the offending property (no coercion — `archived: "false"` is an error, not `true`). That matters because the HTTP API underneath is a *trusted-caller* interface: `POST /api/cards` deliberately honours internal orchestrator fields (`status`, `triaged`, `plan`, …) so the Plan stage can mint chunk cards. `create_card` forwards an explicit allowlist (`title`, `description`, `type`, `priority`, `labels`, `criteria`) and nothing else, so an MCP caller can't create a card born `status: "Done"` and skip the Review → triage → build → verify flow.
 

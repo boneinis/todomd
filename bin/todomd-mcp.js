@@ -13,9 +13,18 @@ const flag = (name) => {
 // TODOMD_MCP_URL/TODOMD_MCP_PORT or ~/.todomd/server.pid.
 const port = flag('--port');
 try {
+  const token = flag('--token');
+  const access = flag('--access');
+  const url = flag('--url');
+  if (args.includes('--token') && token === undefined) throw new Error('--token requires a value');
+  if (args.includes('--access') && access === undefined) throw new Error('--access requires viewer or full');
+  if (access !== undefined && (url !== undefined || port !== undefined)) {
+    throw new Error('--access uses verified local discovery and cannot be combined with --url or --port');
+  }
   await startMcpServer({
-    token: flag('--token'),
-    baseUrl: flag('--url') || (port ? `http://127.0.0.1:${port}` : undefined),
+    token,
+    access,
+    baseUrl: url || (port ? `http://127.0.0.1:${port}` : undefined),
   });
 } catch (e) {
   console.error(`todomd-mcp: ${e.message}`);

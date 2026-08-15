@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { makeRepo, writeCard, isolateHome } from './helpers.js';
+import { makeRepo, writeCard, isolateHome, until, BUDGET } from './helpers.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(ROOT, 'bin/todomd.js');
@@ -16,6 +17,86 @@ function runCli(args, { cwd } = {}) {
     encoding: 'utf8',
   });
 }
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+test('control approval lifecycle is short-lived, explicit, and independently revocable', () => {
+  const home = isolateHome();
+  const dir = path.join(home, '.todomd');
+
+  const enabled = runCli(['control-enable', '--minutes', '2']);
+  assert.equal(enabled.status, 0, enabled.stderr);
+  assert.match(enabled.stdout, /enabled for 2 minute/);
+  for (const name of ['token-control', 'control-approval.json']) {
+    const file = path.join(dir, name);
+    assert.ok(fs.existsSync(file));
+    assert.equal(fs.statSync(file).mode & 0o077, 0, `${name} must not be group/world accessible`);
+  }
+  const approval = JSON.parse(fs.readFileSync(path.join(dir, 'control-approval.json'), 'utf8'));
+  assert.ok(approval.expiresAt > Date.now());
+  assert.ok(approval.expiresAt <= Date.now() + 2 * 60_000);
+
+  const status = runCli(['control-status']);
+  assert.equal(status.status, 0);
+  assert.match(status.stdout, /enabled until/);
+
+  fs.chmodSync(path.join(dir, 'control-approval.json'), 0o644);
+  assert.equal(runCli(['control-status']).status, 1, 'a permission-broad approval must fail closed');
+  assert.equal(runCli(['control-enable', '--minutes', '2']).status, 0);
+
+  const disabled = runCli(['control-disable']);
+  assert.equal(disabled.status, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'control-approval.json')), false);
+  assert.equal(runCli(['control-status']).status, 1);
+
+  fs.writeFileSync(path.join(dir, 'token'), `${'a'.repeat(32)}\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(dir, 'token-control'), `${'b'.repeat(32)}\n`, { mode: 0o600 });
+  assert.equal(runCli(['revoke']).status, 0);
+  assert.ok(fs.existsSync(path.join(dir, 'token')), 'default revoke preserves the primary browser credential');
+  assert.equal(fs.existsSync(path.join(dir, 'token-control')), false);
+  assert.equal(runCli(['revoke', '--full']).status, 0);
+  assert.equal(fs.existsSync(path.join(dir, 'token')), false, '--full rotates the primary credential too');
+});
+
+test('serve --safe-output writes a protected server identity without printing the primary token', async () => {
+  const home = isolateHome();
+  const repo = makeRepo();
+  const port = await freePort();
+  const child = spawn(process.execPath, [BIN, 'serve', '--port', String(port), '--no-open', '--safe-output'], {
+    cwd: repo,
+    env: { ...process.env, TODOMD_HOME: home },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  try {
+    await until(() => stdout.includes('todomd board:'), { timeout: BUDGET.stage, label: 'safe todomd startup output' });
+    const token = fs.readFileSync(path.join(home, '.todomd', 'token'), 'utf8').trim();
+    assert.match(stdout, new RegExp(`http://127\\.0\\.0\\.1:${port}`));
+    assert.doesNotMatch(stdout, /[?&]token=/);
+    assert.ok(!stdout.includes(token), 'safe startup output must not contain the primary credential');
+
+    const identity = path.join(home, '.todomd', 'server.pid');
+    const parts = fs.readFileSync(identity, 'utf8').trim().split(/\s+/);
+    assert.deepEqual(parts.slice(0, 2), [String(child.pid), String(port)]);
+    assert.match(parts[2], /^[a-f0-9]{32}$/);
+    assert.equal(fs.statSync(identity).mode & 0o077, 0);
+    assert.equal(stderr, '');
+  } finally {
+    child.kill('SIGTERM');
+    await new Promise((resolve) => child.once('exit', resolve));
+  }
+});
 
 test('fanout: bails with exit 1 when card already has epic: true', () => {
   isolateHome();

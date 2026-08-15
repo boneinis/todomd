@@ -14,7 +14,8 @@ function copyIfPresent(src, dest) {
 // just re-opens the board — the detached server keeps running.
 function unixScript(nodeBin, todomdBin, root, port, openCmd) {
   // port check uses bash's /dev/tcp (no curl dependency); server.log is created
-  // 0600 since `serve` prints the token in its URL line. Auto-restart: if any
+  // 0600 as defense in depth, while --safe-output keeps credentials out of it.
+  // Auto-restart: if any
   // source file is newer than the running server (a git pull / code change), the
   // detached server is stale — stop and relaunch it so the new code takes effect.
   return `#!/bin/bash
@@ -40,7 +41,7 @@ mkdir -p "$HOME/.todomd"
 up() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
 start() {
   touch "$HOME/.todomd/server.log"; chmod 600 "$HOME/.todomd/server.log"
-  nohup $NODE_PREFIX "$NODE" "$BIN" serve --no-open --port $PORT >> "$HOME/.todomd/server.log" 2>&1 &
+  nohup $NODE_PREFIX "$NODE" "$BIN" serve --no-open --safe-output --port $PORT >> "$HOME/.todomd/server.log" 2>&1 &
   for i in $(seq 1 20); do up && break; sleep 0.5; done
 }
 if up; then
@@ -125,7 +126,7 @@ function winBat(nodeBin, todomdBin, port, home) {
   fs.mkdirSync(desktop, { recursive: true });
   const bat = path.join(desktop, 'todomd.bat');
   fs.writeFileSync(bat,
-    `@echo off\r\n"${nodeBin}" "${todomdBin}" serve --port ${port}\r\n`);
+    `@echo off\r\n"${nodeBin}" "${todomdBin}" serve --safe-output --port ${port}\r\n`);
   return { path: bat, hint: 'double-click todomd.bat on your Desktop' };
 }
 

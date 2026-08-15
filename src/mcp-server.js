@@ -23,6 +23,7 @@ import crypto from 'node:crypto';
 import { loadToken } from './server.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
+const MAX_MCP_FILE_BYTES = 2 * 1024 * 1024;
 
 const eq = (a, b) => {
   const ba = Buffer.from(String(a ?? '')), bb = Buffer.from(String(b ?? ''));
@@ -41,6 +42,49 @@ export function resolveTier(suppliedToken) {
   return null;
 }
 
+// Plugin configs must not contain a raw board token. An explicit access tier
+// lets a local MCP process read exactly one protected token file at startup.
+// In particular, viewer startup must not call loadToken('token'): loadToken()
+// creates a missing file, which would make a supposedly read-only plugin touch
+// the full-access credential as a side effect.
+export function resolveStartupCredential({ token, access, envToken = process.env.TODOMD_MCP_TOKEN } = {}) {
+  if (access !== undefined) {
+    if (token !== undefined) throw new Error('choose either --access or --token, not both');
+    if (access !== 'viewer' && access !== 'full') {
+      throw new Error('--access must be viewer or full');
+    }
+
+    // Full MCP control deliberately has its own credential. The primary token
+    // opens the desktop UI and may authorize broader API routes; Codex never
+    // needs it, and the control credential is additionally lease-gated by the
+    // live HTTP server for every mutation.
+    const name = access === 'viewer' ? 'token-viewer' : 'token-control';
+    const home = process.env.TODOMD_HOME || os.homedir();
+    const file = path.join(home, '.todomd', name);
+    let resolved;
+    try {
+      const st = fs.lstatSync(file);
+      if (!st.isFile() || st.isSymbolicLink()) throw new Error('not a regular file');
+      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) throw new Error('wrong owner');
+      if ((st.mode & 0o077) !== 0) throw new Error('permissions are too broad');
+      resolved = fs.readFileSync(file, 'utf8').trim();
+    } catch {
+      throw new Error(`couldn't read ${access} token file at ${file}`);
+    }
+    if (!/^[a-f0-9]{32}$/.test(resolved)) {
+      throw new Error(`invalid ${access} token file at ${file}`);
+    }
+    return { token: resolved, tier: access };
+  }
+
+  const resolved = token || envToken || '';
+  const tier = resolveTier(resolved);
+  if (!tier) {
+    throw new Error('bad or missing token — set TODOMD_MCP_TOKEN (or pass --token) to the value in ~/.todomd/token or ~/.todomd/token-viewer');
+  }
+  return { token: resolved, tier };
+}
+
 // `todomd serve` records "<pid> <port>" in ~/.todomd/server.pid (bin/todomd.js)
 // — read it so an MCP client doesn't have to know or pass the port itself.
 export function discoverBaseUrl() {
@@ -54,11 +98,60 @@ export function discoverBaseUrl() {
   return 'http://127.0.0.1:7337';
 }
 
+// File-sourced plugin credentials must never follow inherited endpoint
+// overrides or a blind default port. Verify the live server first using the
+// pid file's per-process nonce, then return its loopback URL. No credential is
+// sent during this handshake.
+export async function discoverVerifiedBaseUrl({ fetchImpl = fetch } = {}) {
+  const home = process.env.TODOMD_HOME || os.homedir();
+  const file = path.join(home, '.todomd', 'server.pid');
+  let pid, port, nonce;
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.isSymbolicLink()) throw new Error('not a regular file');
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) throw new Error('wrong owner');
+    if ((st.mode & 0o077) !== 0) throw new Error('permissions are too broad');
+    [pid, port, nonce] = fs.readFileSync(file, 'utf8').trim().split(/\s+/);
+  } catch {
+    throw new Error('couldn\'t verify a running todomd server — start it with `todomd serve --no-open --safe-output`');
+  }
+  pid = Number(pid); port = Number(port);
+  if (!Number.isInteger(pid) || pid < 1 || !Number.isInteger(port) || port < 1 || port > 65535 || !/^[a-f0-9]{32}$/.test(nonce || '')) {
+    throw new Error('invalid todomd server identity file — restart the server');
+  }
+  try { process.kill(pid, 0); }
+  catch { throw new Error('todomd server identity is stale — restart the server'); }
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const challenge = crypto.randomBytes(32).toString('hex');
+  const healthUrl = new URL('/api/health', baseUrl);
+  healthUrl.searchParams.set('challenge', challenge);
+  let response, body;
+  try {
+    response = await fetchImpl(healthUrl, { signal: AbortSignal.timeout(2000) });
+    body = await response.json();
+  } catch {
+    throw new Error('couldn\'t authenticate the local todomd server — restart it');
+  }
+  const expectedProof = crypto.createHmac('sha256', nonce).update(challenge).digest('hex');
+  if (!response.ok || !eq(body?.proof, expectedProof)) {
+    throw new Error('local server identity did not match todomd — refusing to send credentials');
+  }
+  return baseUrl;
+}
+
+async function resolveBaseUrl(ctx) {
+  return ctx.strictDiscovery ? discoverVerifiedBaseUrl() : ctx.baseUrl;
+}
+
 const enc = encodeURIComponent;
 
 // One JSON call against the live todomd HTTP API.
 async function apiCall(ctx, method, pathname, { query = {}, body } = {}) {
-  const url = new URL(pathname, ctx.baseUrl);
+  let baseUrl;
+  try { baseUrl = await resolveBaseUrl(ctx); }
+  catch (e) { return { status: 0, json: { ok: false, error: e.message } }; }
+  const url = new URL(pathname, baseUrl);
   for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   let res;
   try {
@@ -68,7 +161,7 @@ async function apiCall(ctx, method, pathname, { query = {}, body } = {}) {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (e) {
-    return { status: 0, json: { ok: false, error: `couldn't reach the todomd server at ${ctx.baseUrl} — is \`todomd serve\` running? (${e.message})` } };
+    return { status: 0, json: { ok: false, error: `couldn't reach the todomd server at ${baseUrl} — is \`todomd serve\` running? (${e.message})` } };
   }
   let json;
   try { json = await res.json(); } catch { json = { ok: false, error: `bad response from todomd server (status ${res.status})` }; }
@@ -78,7 +171,10 @@ async function apiCall(ctx, method, pathname, { query = {}, body } = {}) {
 // /api/file isn't JSON — it streams the raw attachment bytes with a
 // content-type header — so it gets its own thin fetch instead of apiCall().
 async function fetchFile(ctx, project, rel) {
-  const url = new URL('/api/file', ctx.baseUrl);
+  let baseUrl;
+  try { baseUrl = await resolveBaseUrl(ctx); }
+  catch (e) { return { status: 0, json: { ok: false, error: e.message } }; }
+  const url = new URL('/api/file', baseUrl);
   url.searchParams.set('project', project);
   url.searchParams.set('p', rel);
   let res;
@@ -89,7 +185,15 @@ async function fetchFile(ctx, project, rel) {
     try { json = await res.json(); } catch { json = { ok: false, error: `not found (status ${res.status})` }; }
     return { status: res.status, json };
   }
+  const declaredSize = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_MCP_FILE_BYTES) {
+    try { await res.body?.cancel(); } catch {}
+    return { status: 413, json: { ok: false, error: `attachment exceeds the ${MAX_MCP_FILE_BYTES} byte MCP limit` } };
+  }
   const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_MCP_FILE_BYTES) {
+    return { status: 413, json: { ok: false, error: `attachment exceeds the ${MAX_MCP_FILE_BYTES} byte MCP limit` } };
+  }
   return { status: 200, json: { ok: true, path: rel, contentType: res.headers.get('content-type') || '', base64: buf.toString('base64') } };
 }
 
@@ -246,11 +350,11 @@ const TOOLS = [
     description: 'Archive or unarchive a card.',
     inputSchema: {
       type: 'object',
-      properties: { project: { type: 'string' }, id: { type: 'string' }, archived: { type: 'boolean', default: true } },
-      required: ['project', 'id'],
+      properties: { project: { type: 'string' }, id: { type: 'string' }, archived: { type: 'boolean' } },
+      required: ['project', 'id', 'archived'],
       additionalProperties: false,
     },
-    call: (ctx, args) => apiCall(ctx, 'POST', `/api/cards/${enc(args.id)}/archive`, { query: { project: args.project }, body: { archived: args.archived !== false } }),
+    call: (ctx, args) => apiCall(ctx, 'POST', `/api/cards/${enc(args.id)}/archive`, { query: { project: args.project }, body: { archived: args.archived } }),
   },
 ];
 
@@ -328,9 +432,8 @@ async function callTool(ctx, name, args = {}) {
 // Builds a tier- and server-bound MCP request handler. `baseUrl` defaults to
 // discoverBaseUrl() but is overridable so tests can point it at a throwaway
 // `startServer()` instance instead of a real, already-running `todomd serve`.
-export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
-  const tier = resolveTier(token);
-  const ctx = { token, tier, baseUrl };
+function createTieredMcpServer({ token, tier, baseUrl, strictDiscovery = false }) {
+  const ctx = { token, tier, baseUrl: baseUrl || (strictDiscovery ? undefined : discoverBaseUrl()), strictDiscovery };
 
   // handleMessage: given one parsed JSON-RPC request/notification, returns
   // the JSON-RPC response object, or null for a notification (no reply).
@@ -368,16 +471,24 @@ export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
   return { handleMessage, listTools: () => listToolsFor(tier), callTool: (name, args) => callTool(ctx, name, args), tier };
 }
 
+// Test/programmatic entry point for explicit-token clients. Keep tier
+// derivation inside this module so a caller cannot claim full access by
+// passing an arbitrary tier alongside an unrelated token.
+export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
+  return createTieredMcpServer({ token, tier: resolveTier(token), baseUrl });
+}
+
 // Entry point used by bin/todomd-mcp.js: validates the token, then reads
 // newline-delimited JSON-RPC requests from stdin and writes responses to
 // stdout — the MCP stdio transport. Never returns while stdin stays open.
-export async function startMcpServer({ token, baseUrl, input = process.stdin, output = process.stdout } = {}) {
-  const resolvedToken = token || process.env.TODOMD_MCP_TOKEN || '';
-  const tier = resolveTier(resolvedToken);
-  if (!tier) {
-    throw new Error('bad or missing token — set TODOMD_MCP_TOKEN (or pass --token) to the value in ~/.todomd/token or ~/.todomd/token-viewer');
-  }
-  const server = createMcpServer({ token: resolvedToken, baseUrl });
+export async function startMcpServer({ token, access, baseUrl, input = process.stdin, output = process.stdout } = {}) {
+  const credential = resolveStartupCredential({ token, access });
+  const server = createTieredMcpServer({
+    token: credential.token,
+    tier: credential.tier,
+    baseUrl,
+    strictDiscovery: access !== undefined && baseUrl === undefined,
+  });
   const rl = readline.createInterface({ input, terminal: false });
   rl.on('line', async (line) => {
     line = line.trim();

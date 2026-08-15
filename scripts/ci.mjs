@@ -105,7 +105,9 @@ async function packSmoke() {
     execFileSync('npm', ['init', '-y'], { cwd: proj, stdio: 'ignore' });
     await run('npm', ['install', '--no-audit', '--no-fund', '--prefer-offline', tarball], { cwd: proj });
     const bin = path.join(proj, 'node_modules', '.bin', 'todomd');
+    const mcpBin = path.join(proj, 'node_modules', '.bin', 'todomd-mcp');
     if (!fs.existsSync(bin)) throw new Error('the installed package has no todomd bin');
+    if (!fs.existsSync(mcpBin)) throw new Error('the installed package has no todomd-mcp bin');
 
     // 3. scaffold a board in a fresh git repo
     execFileSync('git', ['init', '-q', '.'], { cwd: repo });
@@ -127,7 +129,7 @@ async function packSmoke() {
 
     // 4. boot the installed server and exercise the API
     const port = await freePort();
-    server = spawn(bin, ['serve', '--no-open', '--port', String(port)],
+    server = spawn(bin, ['serve', '--no-open', '--safe-output', '--port', String(port)],
       { cwd: repo, env: { ...process.env, TODOMD_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
     let log = '';
     server.stdout.on('data', (d) => { log += d; });
@@ -141,6 +143,7 @@ async function packSmoke() {
 
     const tok = fs.readFileSync(path.join(home, '.todomd', 'token'), 'utf8').trim();
     const viewer = fs.readFileSync(path.join(home, '.todomd', 'token-viewer'), 'utf8').trim();
+    if (log.includes(tok) || /[?&]token=/.test(log)) throw new Error('safe installed startup leaked the primary token');
     const base = `http://127.0.0.1:${port}`;
     const code = async (p, headers) => (await fetch(base + p, { headers })).status;
     const expect = (got, want, what) => { if (got !== want) throw new Error(`${what}: expected ${want}, got ${got}`); };
@@ -151,6 +154,33 @@ async function packSmoke() {
     // today's fix: an authenticated-but-limited viewer is 403, never 401
     expect(await code('/api/cards/task-0001/runlog?project=repo', { 'x-todomd-token': viewer }), 403, 'viewer runlog');
     expect(await code('/api/models?project=repo&agent=claude', { 'x-todomd-token': viewer }), 403, 'viewer models');
+
+    // Exercise the INSTALLED stdio entrypoint through file-sourced, verified
+    // discovery. Inherited endpoint overrides must not divert its credential.
+    const mcp = spawn(mcpBin, ['--access', 'viewer'], {
+      env: { ...process.env, TODOMD_HOME: home, TODOMD_MCP_URL: 'http://127.0.0.1:1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const mcpResult = await new Promise((resolve, reject) => {
+      let stdout = '', stderr = '';
+      const timer = setTimeout(() => reject(new Error(`installed todomd-mcp timed out\n${tail(stderr || stdout)}`)), 15_000);
+      mcp.stdout.setEncoding('utf8');
+      mcp.stderr.setEncoding('utf8');
+      mcp.stdout.on('data', (chunk) => {
+        stdout += chunk;
+        const line = stdout.split('\n').find(Boolean);
+        if (!line) return;
+        clearTimeout(timer);
+        try { resolve(JSON.parse(line)); } catch (e) { reject(e); }
+      });
+      mcp.stderr.on('data', (chunk) => { stderr += chunk; });
+      mcp.on('error', reject);
+      mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n');
+    }).finally(() => mcp.kill());
+    const installedTools = mcpResult?.result?.tools?.map((tool) => tool.name) || [];
+    if (!installedTools.includes('get_board') || installedTools.includes('create_card')) {
+      throw new Error('installed viewer MCP tool boundary is wrong');
+    }
     // the prompt editor must expose both halves in the installed build
     const parts = await (await fetch(`${base}/api/commands/todomd-plan?project=repo`, { headers: { 'x-todomd-token': tok } })).json();
     if (!('local' in parts) || !('custom' in parts)) throw new Error('installed build is missing a prompt half');

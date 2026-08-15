@@ -13,7 +13,8 @@ test('macOS: creates a valid .app on the Desktop with resolved paths', () => {
   const exe = fs.readFileSync(path.join(app, 'Contents/MacOS/todomd'), 'utf8');
   assert.match(exe, /\/usr\/bin\/node/);
   assert.match(exe, /\/opt\/todomd\/bin\/todomd\.js/);
-  assert.match(exe, /serve --no-open --port/);
+  assert.match(exe, /serve --no-open --safe-output --port/);
+  assert.doesNotMatch(exe, /serve --no-open --port/);
   assert.match(exe, /hw\.optional\.arm64/);
   assert.match(exe, /nohup \$NODE_PREFIX "\$NODE"/);
   assert.match(exe, /open "http:\/\/127\.0\.0\.1/); // opens the board
@@ -26,8 +27,10 @@ test('Linux: writes a .desktop entry and a launch script', () => {
   installLauncher({ nodeBin: '/usr/bin/node', todomdBin: '/x/bin.js', home, platform: 'linux' });
   assert.ok(fs.existsSync(path.join(home, '.todomd/launch.sh')));
   const desktop = fs.readFileSync(path.join(home, '.local/share/applications/todomd.desktop'), 'utf8');
+  const script = fs.readFileSync(path.join(home, '.todomd/launch.sh'), 'utf8');
   assert.match(desktop, /Type=Application/);
   assert.match(desktop, /Exec=.*\.todomd\/launch\.sh/);
+  assert.match(script, /serve --no-open --safe-output --port/);
 });
 
 test('Windows: writes a .bat on the Desktop', () => {
@@ -36,5 +39,5 @@ test('Windows: writes a .bat on the Desktop', () => {
   const r = installLauncher({ nodeBin: 'C:\\node.exe', todomdBin: 'C:\\todomd\\bin.js', home, platform: 'win32' });
   const bat = fs.readFileSync(r.path, 'utf8');
   assert.match(bat, /node\.exe/);
-  assert.match(bat, /serve --port/);
+  assert.match(bat, /serve --safe-output --port/);
 });

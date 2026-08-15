@@ -17,6 +17,7 @@ import { createMetadataScheduler } from './github-sync.js';
 import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction, invalidateProject as invalidateVoiceProject } from './voice.js';
 import { createRealtimeSession } from './realtime.js';
 import { sanitizeAssignee, resolveAttachmentFile } from './api-shared.js';
+import { readControlApproval } from './control-approval.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -124,10 +125,11 @@ function lanAddress() {
   return null;
 }
 
-export function startServer({ port = 7337, lan = false } = {}) {
+export function startServer({ port = 7337, lan = false, instanceNonce = crypto.randomBytes(16).toString('hex') } = {}) {
   const token = loadToken('token');
   const viewerToken = loadToken('token-viewer');
   const mobileToken = loadToken('token-mobile'); // full control, revocable per device class
+  const controlToken = loadToken('token-control'); // MCP-only; writes also require a short-lived approval lease
 
   const sentToken = (req) => {
     const url = new URL(req.url, 'http://x');
@@ -138,7 +140,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
   };
   const primary = (req) => eq(sentToken(req), token);
-  const authed = (req) => primary(req) || eq(sentToken(req), mobileToken);
+  const controlAuthed = (req) => eq(sentToken(req), controlToken);
+  const authed = (req) => primary(req) || eq(sentToken(req), mobileToken) || controlAuthed(req);
   const viewerAuthed = (req) => authed(req) || eq(sentToken(req), viewerToken);
 
   // DNS-rebinding / CSRF defense: the browser sends the rebound or foreign
@@ -170,12 +173,30 @@ export function startServer({ port = 7337, lan = false } = {}) {
   async function handleApi(req, res, url) {
     if (!hostOk(req)) return json(res, 403, { error: 'bad host' });
     if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
+    // Credential-free identity proof for local MCP discovery. The random
+    // secret is written beside the server pid with mode 0600 but never returned
+    // over HTTP; a challenge-specific HMAC prevents a replacement listener
+    // from replaying a proof it observed before a rare pid/port reuse.
+    if (url.pathname === '/api/health' && req.method === 'GET') {
+      const challenge = url.searchParams.get('challenge') || '';
+      if (!/^[a-f0-9]{64}$/.test(challenge)) return json(res, 400, { error: 'invalid challenge' });
+      const proof = crypto.createHmac('sha256', instanceNonce).update(challenge).digest('hex');
+      return json(res, 200, { ok: true, proof });
+    }
     // reads work with either token; anything that mutates or spawns
     // requires the full token (the viewer/QR link is monitor-only)
     if (!viewerAuthed(req)) return json(res, 401, { error: 'bad token' });
     const fullAccess = authed(req);
     if (!fullAccess && req.method !== 'GET') {
       return json(res, 403, { error: 'read-only link — open the board on your computer to make changes' });
+    }
+    if (controlAuthed(req) && req.method !== 'GET') {
+      const approval = readControlApproval();
+      if (!approval.active) {
+        return json(res, 403, {
+          error: `${approval.reason} — run \`todomd control-enable\` in a terminal, then retry the explicitly approved change`,
+        });
+      }
     }
 
     if (url.pathname === '/api/projects') {
@@ -516,8 +537,10 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const resolved = resolveAttachmentFile(project.path, rel);
       if (!resolved.ok) return json(res, 404, { error: resolved.error });
       const { real, ext } = resolved;
+      const size = fs.statSync(real).size;
       res.writeHead(200, {
         'content-type': FILE_MIME[ext] || 'application/octet-stream',
+        'content-length': size,
         'content-disposition': `${INLINE_EXT.has(ext) ? 'inline' : 'attachment'}; filename="${path.basename(real).replace(/"/g, '')}"`,
         'content-security-policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
         'x-content-type-options': 'nosniff',
@@ -872,7 +895,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       resolve({
         url: `http://127.0.0.1:${port}/?token=${token}`,
         lanUrl: lanUrl(),
-        port, token, server, close,
+        port, token, instanceNonce, server, close,
       });
     });
   });
