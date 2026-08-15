@@ -47,7 +47,7 @@ function hostileBoard() {
     'labels: ui\nassignee: 12345\n---\n\n## Description\n\nhand-edited\n');
   card('task-0002-mapping-label.md',
     '---\nid: task-0002\ntitle: labels as a YAML mapping\nstatus: Queue\ntype: bug\n' +
-    'labels: {a: 1}\nneeds_human_reason: 42\n---\n\n## Description\n\nhand-edited\n');
+    'labels: {a: 1}\nneeds_human_reason: 42\nagent: codex\n---\n\n## Description\n\nhand-edited\n');
   card('task-0003-scalar-children.md',
     '---\nid: task-0003\ntitle: epic with scalar children\nstatus: Review\ntype: module\n' +
     'epic: true\nchildren: task-0004\n---\n\n## Description\n\nhand-edited\n');
@@ -69,6 +69,17 @@ function hostileBoard() {
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', 'hostile UI fixtures']);
   git(repo, ['worktree', 'add', '-q', '-b', 'todomd/task-0006', path.join(repo, '.todomd/worktrees/task-0006')]);
+  const runDir = path.join(repo, '.todomd', 'runs', 'task-0002');
+  fs.mkdirSync(runDir, { recursive: true });
+  const runEvents = [
+    { type: 'thread.started', thread_id: 'ui-agent-chat' },
+    { type: 'item.completed', item: { id: 'reason-1', type: 'reasoning', text: 'I checked the card context and selected the focused UI path.' } },
+    { type: 'item.started', item: { id: 'cmd-1', type: 'command_execution', command: 'npm test -- --focused', status: 'in_progress' } },
+    { type: 'item.completed', item: { id: 'cmd-1', type: 'command_execution', command: 'npm test -- --focused', aggregated_output: '12 passing', exit_code: 0, status: 'completed' } },
+    { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: 'The focused UI checks pass. **Next:** verify the complete drawer flow.' } },
+    { type: 'turn.completed', usage: { input_tokens: 120, output_tokens: 24 } },
+  ];
+  fs.writeFileSync(path.join(runDir, 'Build-1.jsonl'), runEvents.map((event) => JSON.stringify(event)).join('\n') + '\n');
   return repo;
 }
 
@@ -164,6 +175,37 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /YAML mapping/);
     assert.equal(await page.eval(`document.getElementById('drawer-resume-build').hidden`), true,
       'an ineligible card never shows Resume Build');
+    const rollups = await until(async () => {
+      const state = await page.eval(`({
+        descriptionOpen: document.getElementById('drawer-description').open,
+        descriptionMeta: document.getElementById('description-summary').textContent,
+        runHidden: document.getElementById('drawer-run').hidden,
+        runOpen: document.getElementById('drawer-run').open,
+        runTitle: document.getElementById('run-title').textContent,
+        runMeta: document.getElementById('run-summary').textContent,
+        messages: document.querySelectorAll('#run-log .chat-assistant').length,
+        tools: document.querySelectorAll('#run-log .chat-tool').length,
+        reasoning: document.querySelectorAll('#run-log .chat-reasoning').length,
+      })`);
+      return !state.runHidden && state.messages ? state : null;
+    }, { timeout: BUDGET.quick, label: 'last run rendered as agent chat' });
+    assert.equal(rollups.descriptionOpen, true, 'description is an open, collapsible rollup');
+    assert.match(rollups.descriptionMeta, /words/);
+    assert.equal(rollups.runOpen, true, 'the last run is open but can be collapsed');
+    assert.equal(rollups.runTitle, 'last run');
+    assert.match(rollups.runMeta, /Build · codex · 5 updates/);
+    assert.deepEqual({ messages: rollups.messages, tools: rollups.tools, reasoning: rollups.reasoning },
+      { messages: 1, tools: 1, reasoning: 1 }, 'CLI start/complete pairs collapse into one activity row');
+    assert.match(await page.eval(`document.querySelector('#run-log .chat-assistant').textContent`), /focused UI checks pass/);
+    assert.equal(await page.eval(`document.querySelector('#run-log .chat-tool').open`), false,
+      'tool output is folded until requested');
+    assert.equal(await page.eval(`document.querySelector('#run-log .chat-reasoning').open`), false,
+      'reasoning is folded until requested');
+    await page.eval(`document.getElementById('drawer-description').open = false; document.getElementById('drawer-run').open = false`);
+    assert.deepEqual(await page.eval(`({
+      description: document.getElementById('drawer-description').open,
+      run: document.getElementById('drawer-run').open,
+    })`), { description: false, run: false }, 'both rollups can be collapsed independently');
 
     await page.eval(`document.querySelector('[data-id="task-0006"]').click()`);
     await until(async () => /resumable orphaned build/.test(

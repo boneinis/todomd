@@ -61,25 +61,36 @@
         <button type="button" class="drawer-tab" data-tab="subtasks">subtasks</button>
       </nav>
       <div id="drawer-details">
-        <div id="drawer-criteria" class="criteria-bar" hidden>
-          <div class="criteria-track"><div class="criteria-fill" id="criteria-fill"></div></div>
-          <span id="criteria-label"></span>
-        </div>
         <section id="drawer-question" class="drawer-question" hidden>
           <h2 class="run-title">⚠ the agent needs a decision</h2>
           <p id="question-text" class="question-text"></p>
           <textarea id="answer-input" class="answer-input" rows="2" placeholder="your answer — fed into the next build…" spellcheck="false"></textarea>
           <button id="answer-submit" class="route-save">answer &amp; resume</button>
         </section>
-        <article class="drawer-body" id="drawer-body"></article>
+        <details id="drawer-description" class="drawer-rollup drawer-description" open>
+          <summary>
+            <span class="rollup-title">description</span>
+            <span id="description-summary" class="rollup-meta"></span>
+          </summary>
+          <div class="rollup-content">
+            <div id="drawer-criteria" class="criteria-bar" hidden>
+              <div class="criteria-track"><div class="criteria-fill" id="criteria-fill"></div></div>
+              <span id="criteria-label"></span>
+            </div>
+            <article class="drawer-body" id="drawer-body"></article>
+          </div>
+        </details>
         <details id="drawer-planner" class="drawer-planner" hidden>
           <summary>planner record</summary>
           <pre id="drawer-planner-body"></pre>
         </details>
-        <section id="drawer-run" class="drawer-run" hidden>
-          <h2 class="run-title">live run</h2>
+        <details id="drawer-run" class="drawer-rollup drawer-run" hidden open>
+          <summary>
+            <span class="rollup-title"><span id="run-status-dot" class="run-status-dot"></span><span id="run-title">last run</span></span>
+            <span id="run-summary" class="rollup-meta"></span>
+          </summary>
           <div id="run-log" class="run-log"></div>
-        </section>
+        </details>
         <footer class="drawer-foot" id="drawer-file"></footer>
       </div>
       <section id="drawer-subtasks" class="drawer-subtasks" hidden>
