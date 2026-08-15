@@ -92,6 +92,11 @@ if (process.env.FAKE_MAXTURNS_ONCE_MARKER && !fs.existsSync(process.env.FAKE_MAX
   process.exit(0);
 }
 if (process.env.FAKE_MAXTURNS === '1') {
+  if (process.env.FAKE_MAXTURNS_PROGRESS_FILE) {
+    const progressFile = path.join(cwd, process.env.FAKE_MAXTURNS_PROGRESS_FILE);
+    fs.mkdirSync(path.dirname(progressFile), { recursive: true });
+    fs.appendFileSync(progressFile, `${Date.now()}-${Math.random()}\n`);
+  }
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope({ subtype: 'error_max_turns', is_error: true })]);
   process.exit(0);
 }
@@ -135,6 +140,10 @@ if (hangNow &&
   const file = findCard(taskId);
   if (file) {
     const raw = fs.readFileSync(file, 'utf8');
+    const profile = process.env.FAKE_BUILD_PROFILE || (process.env.FAKE_CHUNKS ? 'split_required' : 'standard');
+    const planned = /^build_profile:.*$/m.test(raw)
+      ? raw.replace(/^build_profile:.*$/m, `build_profile: ${profile}`)
+      : raw.replace(/^agent:.*$/m, (line) => `${line}\nbuild_profile: ${profile}`);
     if (process.env.FAKE_CHUNKS) {
       // split into N chunks: write a `## Chunks` yaml block, leave the plan empty
       const n = Math.max(1, Number(process.env.FAKE_CHUNKS) || 2);
@@ -143,9 +152,9 @@ if (hangNow &&
         items.push(`- title: Chunk ${i}\n  plan: |\n    1. Implement part ${i}.\n  criteria:\n    - Part ${i} works`);
       }
       const block = '## Chunks\n\n```yaml\n' + items.join('\n') + '\n```\n\n';
-      fs.writeFileSync(file, raw.replace('## Run Log', block + '## Run Log'));
+      fs.writeFileSync(file, planned.replace('## Run Log', block + '## Run Log'));
     } else {
-      fs.writeFileSync(file, raw.replace('## Implementation Plan\n', '## Implementation Plan\n\n1. Do the thing.\n'));
+      fs.writeFileSync(file, planned.replace('## Implementation Plan\n', '## Implementation Plan\n\n1. Do the thing.\n'));
     }
   }
   // Let tests park the orchestrator precisely after the agent has finished its
@@ -187,9 +196,17 @@ if (hangNow &&
     verdict,
     criteria: [{ criterion: 'works', met: verdict === 'pass' }],
     findings: verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
+    setup_error: null,
+    question: null,
+    checks_requested: [],
   };
   // simulate "the verify command couldn't even run" (missing gitignored dep/env)
   if (process.env.FAKE_SETUP_ERROR) structured.setup_error = process.env.FAKE_SETUP_ERROR;
+  if (process.env.FAKE_CHECKS_REQUESTED &&
+      !(process.env.FAKE_CHECKS_MARKER && fs.existsSync(process.env.FAKE_CHECKS_MARKER))) {
+    structured.checks_requested = process.env.FAKE_CHECKS_REQUESTED.split('|').filter(Boolean);
+    if (process.env.FAKE_CHECKS_MARKER) fs.writeFileSync(process.env.FAKE_CHECKS_MARKER, '1');
+  }
   // simulate "the agent needs a human decision" ONCE (marker), then behave
   if (process.env.FAKE_QUESTION && process.env.FAKE_QUESTION_MARKER && !fs.existsSync(process.env.FAKE_QUESTION_MARKER)) {
     fs.writeFileSync(process.env.FAKE_QUESTION_MARKER, '1');

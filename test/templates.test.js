@@ -34,6 +34,18 @@ test('initProject ships the PLAN command with the sequential-chunks contract', (
   assert.match(plan, /## Chunks/);
   assert.match(plan, /sequential chunks/i);
   assert.match(plan, /yaml/); // the fenced block format the orchestrator parses
+  assert.match(plan, /build_profile:/);
+  assert.match(plan, /standard.*long.*split_required/s);
+});
+
+test('shipped config documents bounded standard and long Build profiles', () => {
+  const repo = tmp('build-profiles');
+  git(repo, ['init', '-q']);
+  initProject(repo);
+  const parsed = yaml.load(fs.readFileSync(path.join(repo, '.todomd/config.yml'), 'utf8'));
+  assert.equal(parsed.build_continuation.max_slices, 3);
+  assert.equal(parsed.build_continuation.budget_minutes, 60);
+  assert.deepEqual(parsed.build_continuation.profiles.long, { max_slices: 6, budget_minutes: 120 });
 });
 
 test('initProject injects the detected gitignored deps into a fresh config.yml', () => {

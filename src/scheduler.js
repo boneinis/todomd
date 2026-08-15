@@ -30,7 +30,7 @@ import { loadConfig, withoutRepoLockContext } from './board.js';
 import { createGovernor, sampleProjectResources, resourcesConfig } from './resources.js';
 import { listProjects } from './registry.js';
 
-const queue = [];                    // [{project, card, column, run, resolveFn, rejectFn, deferredReason, onDefer}]
+const queue = [];                    // [{project, card, column, resourceClass, run, resolveFn, rejectFn, deferredReason, onDefer}]
 const runningByColumn = new Map();   // column -> count
 const runningByProject = new Map();  // project name -> count
 let runningGlobal = 0;
@@ -205,6 +205,17 @@ function setDeferred(entry, reason, critical) {
   entry.onDefer?.(reason, critical);
 }
 
+// A tool-less review is CPU-light: model inference is remote and the local
+// process only submits a prepared diff bundle. Let that useful work proceed
+// through CPU pressure, but never bypass memory or disk pressure — both can
+// make even a small child/log write unsafe. Heavy entries (Build, CI, normal
+// Verify, and focused-check continuations) retain the existing governor gate.
+function pressureAllows(entry, state) {
+  return entry.resourceClass === 'light' &&
+    state.reasons?.length > 0 &&
+    state.reasons.every((reason) => reason.metric === 'cpu');
+}
+
 // Subscribers notified with the governor's fresh state on every scan() — used
 // by pipeline.js to gracefully cancel an already-RUNNING CI child at critical
 // pressure. This is intentionally separate from admission: scan()/admitEntry()
@@ -256,7 +267,10 @@ function scan() {
     // pressure — never applies to an in-flight chain's own later stages (only
     // schedule()'s enqueueBuild call ever sets this).
     if (entry.blocked?.()) { setDeferred(entry, null, false); continue; }
-    if (g.deferring) { setDeferred(entry, summarizeReasons(g.reasons), g.critical); continue; }
+    if (g.deferring && !pressureAllows(entry, g)) {
+      setDeferred(entry, summarizeReasons(g.reasons), g.critical);
+      continue;
+    }
     setDeferred(entry, null, false); // no longer governor-blocked — clear a stale reason before the capacity checks
     if (!columnLimitCache.has(entry.column)) columnLimitCache.set(entry.column, combinedColumnLimit(entry.column));
     const columnLimit = columnLimitCache.get(entry.column);
@@ -266,7 +280,7 @@ function scan() {
     if (runningGlobal >= globalLimit) continue;
     if (columnRunning >= columnLimit) continue;
     if (projectRunning >= projectLimit) continue;
-    admitEntry(entry);
+    admitEntry(entry, g);
   }
 }
 
@@ -274,7 +288,7 @@ function bump(map, key, delta) {
   map.set(key, Math.max(0, (map.get(key) || 0) + delta));
 }
 
-function admitEntry(entry) {
+function admitEntry(entry, resourceState = { deferring: false, critical: false, reasons: [] }) {
   const idx = queue.indexOf(entry);
   if (idx === -1) return;
   queue.splice(idx, 1);
@@ -284,7 +298,13 @@ function admitEntry(entry) {
   bump(runningByProject, entry.project.name, 1);
   withoutRepoLockContext(() => {
     let result;
-    try { result = entry.run(); }
+    try {
+      result = entry.run({
+        resourcePressure: !!resourceState.deferring,
+        critical: !!resourceState.critical,
+        reasons: resourceState.reasons || [],
+      });
+    }
     catch (err) { result = Promise.reject(err); }
     // Explicit onFulfilled/onRejected (not .finally()) so a rejection is
     // handled right here — release counters, then hand the error to
@@ -315,11 +335,19 @@ function release(entry) {
 //   string on entering/changing governor deferral, or null when it clears
 //   (back to plain queued, whether admitted next or merely off resource
 //   pressure and now just waiting on ordinary capacity).
+// opts.resourceClass: `heavy` (default) obeys every governor deferral. `light`
+//   may start through CPU-only pressure, and receives the admission snapshot as
+//   the argument to run(); it never bypasses memory or disk pressure.
 export function schedule(project, card, column, run, opts = {}) {
   noteProject(project);
   let resolveFn, rejectFn;
   const promise = new Promise((resolve, reject) => { resolveFn = resolve; rejectFn = reject; });
-  queue.push({ project, card, column, run, deferredReason: null, resolveFn, rejectFn, onDefer: opts.onDefer, blocked: opts.blocked });
+  queue.push({
+    project, card, column, run,
+    resourceClass: opts.resourceClass === 'light' ? 'light' : 'heavy',
+    deferredReason: null, resolveFn, rejectFn,
+    onDefer: opts.onDefer, blocked: opts.blocked,
+  });
   scan();
   return promise;
 }

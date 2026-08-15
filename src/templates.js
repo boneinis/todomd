@@ -69,6 +69,10 @@ build_continuation:
   max_no_progress_slices: 2
   max_slices: 3          # total provider checkpoints before a resumable Build-budget pause
   budget_minutes: 60    # total wall-clock budget for one Build admission
+  profiles:
+    long:
+      max_slices: 6      # productive long builds may continue beyond the standard cap
+      budget_minutes: 120
 
 # Resource monitor: before starting new heavy work (a build/verify agent run),
 # the scheduler samples host CPU/memory/disk and defers if any metric has
@@ -207,7 +211,7 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
 1. Locate the task file \`.todomd/tasks/<task-id>-*.md\` and read it: Description and Acceptance Criteria define the goal.
 2. **If the card has a \`## Triage\` section, start from its Decision and Next step.** Do not re-do triage. A Technical spike or Needs human decision must be surfaced as a risk rather than researched indefinitely.
 3. Write a short working plan immediately after reading the card. Then use only targeted, read-only inspection to validate or correct it: inspect the named files, or use at most six focused Glob/Grep/Read calls to find directly related code. Do not use Bash, repo-wide inventories, or broad architecture mapping.
-4. **Decide whether to split into sequential chunks.** If the work naturally breaks into **2 or more independent steps that each build and verify on their own** — typically because it spans separable files or layers (e.g. a DB migration, then the API wiring, then the UI + tests) — produce a chunk breakdown (step 5). If it is a broad architectural change, split it immediately rather than continuing discovery. If it's a single cohesive change, write one plan (step 6).
+4. **Choose a Build profile and decide whether to split into sequential chunks.** Update only the frontmatter key \`build_profile:\`: use \`standard\` for a cohesive task expected to finish within three Build checkpoints, \`long\` for a cohesive task likely to need more than three checkpoints, or \`split_required\` when it must become child cards. Do not add arbitrary limits; the board owns those. If the work naturally breaks into **2 or more independent steps that each build and verify on their own** — typically because it spans separable files or layers (e.g. a DB migration, then the API wiring, then the UI + tests) — produce a chunk breakdown (step 5). If it is a broad architectural change, split it immediately rather than continuing discovery.
 5. **To split** — edit the task file (the only file you may modify), filling a \`## Chunks\` section (add it just before \`## Run Log\` if absent) and leaving \`## Implementation Plan\` empty. The section must contain exactly ONE fenced \`\`\`yaml block holding an ordered list; each item has:
    - \`title:\` a short imperative title for the chunk
    - \`plan:\` a block scalar (\`|\`) with that chunk's own numbered, concrete implementation steps (files to change, what to add where, tests to write)
@@ -219,7 +223,7 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
    - Numbered, concrete steps (files to change, what to add where, tests to write)
    - A \`Risks:\` line if anything could break existing behavior (include unresolved triage Flags / human decisions)
    Leave \`## Chunks\` empty or absent.
-7. Do NOT modify the YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
+7. Other than the single \`build_profile:\` key, do NOT modify YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
 
 Finish with a one-line summary (say whether you split into N chunks or wrote a single plan). Produce the card edit before spending the rest of the turn budget on investigation.
 `;
@@ -258,7 +262,7 @@ You are running inside the task's git worktree containing the candidate implemen
 6. If the verify command **cannot run at all** — a missing dependency or module, command-not-found, or a required env var / service that isn't present (as opposed to a test *assertion* failing) — report verdict=fail and set a short \`setup_error\` naming the cause. That signals the worktree is missing a gitignored file the build needs, not that the code is wrong, so it can be fixed by configuration rather than another build attempt.
 7. If you genuinely **cannot decide** because a human decision is required — the spec is ambiguous or a product choice is missing (NOT a code defect you can phrase as a finding) — report verdict=fail and set a short \`question\` stating the specific decision needed. A human will answer and the build will re-run with their answer; do not guess.
 
-Your final response must report: a boolean verdict (pass only if ALL criteria are met, the tests pass, AND no real bug surfaced in the adversarial review), a per-criterion result, a \`setup_error\` if the command couldn't run, a \`question\` if a human decision is required, and — if failing on the merits — specific, actionable findings the build agent can fix.
+Your final response must report: a boolean verdict (pass only if ALL criteria are met, the tests pass, AND no real bug surfaced in the adversarial review), a per-criterion result, a \`setup_error\` if the command couldn't run, a \`question\` if a human decision is required, a \`checks_requested\` array (normally empty; list only focused checks or inspection that must still run before the verdict can be final), and — if failing on the merits — specific, actionable findings the build agent can fix.
 `;
 
 const WELCOME_CARD = `---

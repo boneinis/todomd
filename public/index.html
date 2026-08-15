@@ -61,25 +61,36 @@
         <button type="button" class="drawer-tab" data-tab="subtasks">subtasks</button>
       </nav>
       <div id="drawer-details">
-        <div id="drawer-criteria" class="criteria-bar" hidden>
-          <div class="criteria-track"><div class="criteria-fill" id="criteria-fill"></div></div>
-          <span id="criteria-label"></span>
-        </div>
         <section id="drawer-question" class="drawer-question" hidden>
           <h2 class="run-title">⚠ the agent needs a decision</h2>
           <p id="question-text" class="question-text"></p>
           <textarea id="answer-input" class="answer-input" rows="2" placeholder="your answer — fed into the next build…" spellcheck="false"></textarea>
           <button id="answer-submit" class="route-save">answer &amp; resume</button>
         </section>
-        <article class="drawer-body" id="drawer-body"></article>
+        <details id="drawer-description" class="drawer-rollup drawer-description" open>
+          <summary>
+            <span class="rollup-title">description</span>
+            <span id="description-summary" class="rollup-meta"></span>
+          </summary>
+          <div class="rollup-content">
+            <div id="drawer-criteria" class="criteria-bar" hidden>
+              <div class="criteria-track"><div class="criteria-fill" id="criteria-fill"></div></div>
+              <span id="criteria-label"></span>
+            </div>
+            <article class="drawer-body" id="drawer-body"></article>
+          </div>
+        </details>
         <details id="drawer-planner" class="drawer-planner" hidden>
           <summary>planner record</summary>
           <pre id="drawer-planner-body"></pre>
         </details>
-        <section id="drawer-run" class="drawer-run" hidden>
-          <h2 class="run-title">live run</h2>
+        <details id="drawer-run" class="drawer-rollup drawer-run" hidden open>
+          <summary>
+            <span class="rollup-title"><span id="run-status-dot" class="run-status-dot"></span><span id="run-title">last run</span></span>
+            <span id="run-summary" class="rollup-meta"></span>
+          </summary>
           <div id="run-log" class="run-log"></div>
-        </section>
+        </details>
         <footer class="drawer-foot" id="drawer-file"></footer>
       </div>
       <section id="drawer-subtasks" class="drawer-subtasks" hidden>
@@ -105,6 +116,8 @@
       <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
       <label class="rail-field">effort <select id="route-effort" class="rail-input"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
       <label class="rail-field">build workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
+      <label class="rail-field">build length <select id="route-build-profile" class="rail-input"><option value="standard">Standard</option><option value="long">Long</option><option value="split_required">Split required</option></select></label>
+      <p id="build-profile-hint" class="route-hint"></p>
       <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
       <label class="rail-field">assignee <input id="route-assignee" class="rail-input" placeholder="developer" autocomplete="off" /></label>
       <button id="route-save" class="rail-btn rail-primary">save</button>
@@ -145,39 +158,48 @@
 <div id="modal-backdrop" class="modal-backdrop" hidden>
   <form id="card-form" class="modal">
     <h2>new card</h2>
-    <label>title <input name="title" required maxlength="120" autocomplete="off" /></label>
-    <div class="modal-row">
-      <label>type
-        <select name="type">
-          <option>fix</option><option selected>improvement</option>
-          <option>module</option><option>troubleshoot</option>
-        </select>
-      </label>
-      <label>priority
-        <select name="priority">
-          <option>low</option><option selected>medium</option>
-          <option>high</option><option>critical</option>
-        </select>
-      </label>
-      <label>labels <input name="labels" placeholder="a, b" autocomplete="off" /></label>
-    </div>
-    <div class="modal-row">
-      <label>assignee <input name="assignee" placeholder="developer (optional)" autocomplete="off" /></label>
-      <span></span><span></span>
-    </div>
-    <div class="modal-row">
-      <label>agent
-        <select name="agent">
-          <option selected>claude</option><option>codex</option><option>gemini</option>
-        </select>
-      </label>
-      <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
-      <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-      <label>build workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
-      <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
-    </div>
-    <label>description <textarea name="description" rows="3"></textarea></label>
-    <label>acceptance criteria — one per line <textarea name="criteria" rows="3"></textarea></label>
+    <p id="card-prompt-help" class="modal-intro">Describe the outcome in plain language. The card will open in Review and be structured by auto-triage.</p>
+    <label>what do you want done?
+      <textarea class="card-prompt" name="prompt" rows="6" required maxlength="8000" aria-describedby="card-prompt-help" placeholder="For example: Add a way to retry an interrupted build without losing its changes."></textarea>
+    </label>
+    <details id="card-advanced" class="card-advanced">
+      <summary>Advanced options</summary>
+      <div class="card-advanced-fields">
+        <label>title override <input name="title" maxlength="120" autocomplete="off" placeholder="derived from the prompt" /></label>
+        <div class="modal-row">
+          <label>type
+            <select name="type">
+              <option>fix</option><option selected>improvement</option>
+              <option>module</option><option>troubleshoot</option>
+            </select>
+          </label>
+          <label>priority
+            <select name="priority">
+              <option>low</option><option selected>medium</option>
+              <option>high</option><option>critical</option>
+            </select>
+          </label>
+          <label>labels <input name="labels" placeholder="a, b" autocomplete="off" /></label>
+        </div>
+        <div class="modal-row">
+          <label>assignee <input name="assignee" placeholder="developer (optional)" autocomplete="off" /></label>
+          <span></span><span></span>
+        </div>
+        <div class="modal-row">
+          <label>agent
+            <select name="agent">
+              <option selected>claude</option><option>codex</option><option>gemini</option>
+            </select>
+          </label>
+          <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
+          <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
+          <label>build workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
+          <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
+        </div>
+        <label>additional context <textarea name="description" rows="3"></textarea></label>
+        <label>acceptance criteria — one per line <textarea name="criteria" rows="3"></textarea></label>
+      </div>
+    </details>
     <div class="modal-actions">
       <button type="button" id="modal-cancel" class="drawer-close">cancel</button>
       <button type="submit" class="modal-submit">create in Review</button>
@@ -203,7 +225,9 @@
         </select>
       </label>
       <label>model
-        <input id="stage-model" list="model-options" placeholder="board default" autocomplete="off" />
+        <select id="stage-model">
+          <option value="">board default</option>
+        </select>
       </label>
       <label>effort
         <select id="stage-effort"><option value="">board default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
@@ -339,6 +363,7 @@ todomd init             # scaffolds the board + registers it</code></pre>
 <datalist id="skill-options"></datalist>
 
 <script src="/hierarchy.js"></script>
+<script src="/card-prompt.js"></script>
 <script src="/app.js"></script>
 <script type="module" src="/voice/main.js"></script>
 </body>

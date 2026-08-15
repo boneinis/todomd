@@ -474,7 +474,7 @@ test('a productive Build turn-limit checkpoint resumes automatically and reaches
 
   const card = readCard(repo, 'task-continue');
   assert.ok(fs.existsSync(marker), 'the first slice reached its provider turn limit');
-  assert.match(card.body, /checkpoint 1: no git-visible progress/, 'the checkpoint was recorded');
+  assert.match(card.body, /checkpoint 1\/3 \(standard\): no worktree progress/, 'the checkpoint was recorded');
   assert.equal(card.data.needs_human_reason || '', '', 'a productive continuation does not need a human');
   clearFakeAgent();
 });
@@ -498,6 +498,8 @@ test('Build slice budget pauses as resumable infrastructure without losing the w
   assert.equal(paused.data.needs_human_reason, 'build_budget');
   assert.equal(paused.data.recovery_stage, 'Build');
   assert.equal(paused.data.verification.attempts, 1);
+  assert.equal(paused.data.build_profile, 'standard');
+  assert.deepEqual(paused.data.build_limits, { max_slices: 1, budget_minutes: 60 });
   assert.equal(fs.existsSync(worktree), true);
   await until(() => !pipeline.hasLiveRun(p.name, 'task-budget'), { timeout: BUDGET.stage });
   assert.equal((await pipeline.recoveryActions(p, 'task-budget')).resume_build, true);
@@ -525,8 +527,54 @@ test('repeated no-progress Build checkpoints pause safely for a human', async ()
 
   const card = readCard(repo, 'task-stalled');
   assert.equal(card.data.needs_human_reason, 'stalled_build');
-  assert.match(card.body, /checkpoint 2: no git-visible progress/);
+  assert.match(card.body, /checkpoint 2\/3 \(standard\): no worktree progress/);
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-stalled'), { timeout: BUDGET.stage });
+  assert.equal((await pipeline.recoveryActions(p, 'task-stalled')).resume_build, true,
+    'a stalled Build preserves the same guarded recovery path');
   clearFakeAgent();
+});
+
+test('long Build keeps advancing when the same dirty file changes, then pauses at its frozen absolute cap', async () => {
+  isolateHome();
+  useFakeAgent({ maxturns: 1, maxturns_progress_file: 'scratch/progress.txt' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.appendFileSync(cfg,
+    'build_continuation:\n  enabled: true\n  max_no_progress_slices: 2\n  max_slices: 2\n  budget_minutes: 30\n' +
+    '  profiles:\n    long:\n      max_slices: 4\n      budget_minutes: 90\n');
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'configure build profiles']);
+  const p = project(repo);
+  writeCard(repo, 'task-long', { status: 'Planned', extra: 'build_profile: long\n' });
+
+  await pipeline.humanMove(p, 'task-long', 'Queue');
+  await until(() => status(repo, 'task-long') === 'Needs Human', { timeout: BUDGET.stage });
+  const card = readCard(repo, 'task-long');
+  assert.equal(card.data.needs_human_reason, 'build_budget', 'content progress avoids a false stalled_build');
+  assert.deepEqual(card.data.build_limits, { max_slices: 4, budget_minutes: 90 });
+  assert.match(card.body, /checkpoint 3\/4 \(long\): worktree progress detected/);
+  assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-long/scratch/progress.txt')), true);
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-long'), { timeout: BUDGET.stage });
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('      max_slices: 4', '      max_slices: 5'));
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'change future long profile']);
+  const recovery = await pipeline.recoveryActions(p, 'task-long');
+  assert.equal(recovery.resume_build, true);
+  assert.deepEqual(recovery.build_limits, { max_slices: 4, budget_minutes: 90 },
+    'a later config edit cannot lengthen an already-admitted Build');
+  clearFakeAgent();
+});
+
+test('split_required profile cannot enter Queue without materialized child cards', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-split', { status: 'Planned', extra: 'build_profile: split_required\n' });
+
+  const result = await pipeline.humanMove(p, 'task-split', 'Queue');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /requires splitting before Build/);
+  assert.equal(status(repo, 'task-split'), 'Planned');
 });
 
 test('stage routing precedence: an unknown column agent is gated; a supported card agent overrides it', async () => {
@@ -621,6 +669,7 @@ test('Codex Plan is read-only and TODOMD writes its structured plan into the car
     assert.equal(r.ok, true);
     await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
     assert.match(readCard(repo, 'task-0001').body, /## Implementation Plan\n\n1\. Do the thing\./);
+    assert.equal(readCard(repo, 'task-0001').data.build_profile, 'standard');
     const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
     assert.deepEqual(argv.slice(argv.indexOf('--sandbox'), argv.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);
     assert.ok(argv.includes('--output-schema'));
@@ -2165,15 +2214,22 @@ function seedPreservedVerification(repo, id) {
 }
 const spawnedAnything = (repo, id) => fs.existsSync(path.join(repo, '.todomd/runs', id));
 
-test('Retry Verification is admitted through the scheduler: under pressure it stays queued and spawns nothing', async () => {
+test('Retry Verification performs a tool-less review through CPU pressure when exact-HEAD CI is trusted', async () => {
   isolateHome();
   await sleep(300); // let earlier tests' releases drain before resetting (see the governor test above)
   scheduler.resetState();
-  useFakeAgent({ verdict: 'pass' });
+  const argvLog = path.join(tmp('light-verify'), 'argv.jsonl');
+  useFakeAgent({ verdict: 'pass', argv_log: argvLog });
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = project(repo);
-  seedPreservedVerification(repo, 'task-0001');
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+  await patchFrontmatter(repo, 'task-0001', {
+    ci_evidence: {
+      head: git(worktree, ['rev-parse', 'HEAD']), command: 'node --version',
+      passed_at: '2026-01-01T00:00:00.000Z', clean: true,
+    },
+  });
 
   let sample = { cpuLoad: 0.99 }; // breach — the governor defers
   scheduler.setGovernor(createGovernor({
@@ -2183,27 +2239,64 @@ test('Retry Verification is admitted through the scheduler: under pressure it st
   scheduler.tick(); // seed the deferring state
 
   try {
-    // A human pressing Retry Verification is not a bypass: it asks for a
-    // Verify-column admission like every other start point, so machine
-    // pressure holds it exactly the same way.
     assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
-    const deferred = pipeline.getRunStates(p.name)['task-0001'];
-    assert.equal(deferred?.state, 'deferred', 'the retry is held, not spawned');
-    assert.equal(deferred.stage, 'Verify');
-    assert.match(deferred.reason, /cpu/, 'the deferral carries the reason the governor gave');
-    assert.equal(spawnedAnything(repo, 'task-0001'), false, 'no child was started while deferred');
-    // the trigger claim spans the queued window, so the card still reads as live
-    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
-    assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, false);
-    assert.equal(scheduler.queuedEntries(p.name).filter((e) => e.card === 'task-0001').length, 1,
-      'a second press cannot double-queue the card');
-
-    sample = { cpuLoad: 0.05 }; // recovered
-    scheduler.tick();
     await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
     await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.quick });
-    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false,
-      'the persistent retry claim is released after terminal finalization settles');
+    const argv = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+    assert.match(argv.find((arg) => arg.includes('Resource-aware tool-less review')), /CPU pressure/);
+    assert.deepEqual(argv.slice(argv.indexOf('--tools'), argv.indexOf('--tools') + 2), ['--tools', '']);
+    assert.equal(sample.cpuLoad, 0.99, 'the review completed without waiting for CPU recovery');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
+});
+
+test('a tool-less review that requests checks preserves its findings and queues a heavy continuation', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  const marker = path.join(tmp('light-followup'), 'requested');
+  const argvLog = path.join(path.dirname(marker), 'argv.jsonl');
+  useFakeAgent({
+    verdict: 'pass', checks_requested: 'npm test -- focused', checks_marker: marker,
+    argv_log: argvLog,
+  });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+  await patchFrontmatter(repo, 'task-0001', {
+    ci_evidence: {
+      head: git(worktree, ['rev-parse', 'HEAD']), command: 'node --version',
+      passed_at: '2026-01-01T00:00:00.000Z', clean: true,
+    },
+  });
+
+  let sample = { cpuLoad: 0.99 };
+  scheduler.setGovernor(createGovernor({
+    thresholds: resourcesConfig({ resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 } }),
+    sample: () => sample,
+  }));
+  scheduler.tick();
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.state === 'deferred',
+      { timeout: BUDGET.stage });
+    assert.match(readCard(repo, 'task-0001').raw,
+      /preliminary review complete; 1 focused check queued/);
+    assert.equal(readCard(repo, 'task-0001').data.verification.last_verdict || '', '',
+      'a preliminary pass is never persisted as the final verdict');
+    assert.equal(fs.readFileSync(argvLog, 'utf8').trim().split('\n').length, 1,
+      'only the tool-less review ran while CPU was high');
+
+    sample = { cpuLoad: 0.05 };
+    scheduler.tick();
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+    assert.equal(fs.existsSync(worktree), false, 'the normal successful cleanup still runs after final verification');
   } finally {
     pipeline.forgetProject(p.name);
     await pipeline.killAllChildren({ graceMs: 1000 });
@@ -2322,11 +2415,12 @@ test('Retry Verification waits its turn when the Verify column is full — plain
   }
 });
 
-test('cancelling a queued Retry Verification unwinds through its claim instead of running', async () => {
+test('cancelling a deferred Retry Verification continuation unwinds through its claim', async () => {
   isolateHome();
   await sleep(300);
   scheduler.resetState();
-  useFakeAgent({ verdict: 'pass' });
+  const argvLog = path.join(tmp('cancel-light-continuation'), 'argv.jsonl');
+  useFakeAgent({ verdict: 'pass', argv_log: argvLog });
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = project(repo);
@@ -2341,7 +2435,8 @@ test('cancelling a queued Retry Verification unwinds through its claim instead o
 
   try {
     assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
-    assert.equal(pipeline.getRunStates(p.name)['task-0001']?.state, 'deferred');
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.state === 'deferred',
+      { timeout: BUDGET.stage });
     // pause the queue first, so the cancel's Queue re-drive parks instead of
     // starting a fresh Build we would then have to chase
     pipeline.pauseQueue(p);
@@ -2353,7 +2448,8 @@ test('cancelling a queued Retry Verification unwinds through its claim instead o
       { timeout: BUDGET.stage });
     assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
       'a queued re-verification has not opened an attempt to roll back');
-    assert.equal(spawnedAnything(repo, 'task-0001'), false, 'the cancelled retry never spawned a verifier');
+    assert.equal(fs.readFileSync(argvLog, 'utf8').trim().split('\n').length, 1,
+      'only the lightweight preliminary review ran; the cancelled heavy continuation never spawned');
     assert.equal(fs.existsSync(worktree), false, 'the cancel released the preserved worktree');
     assert.ok(!readCard(repo, 'task-0001').data.worktree, 'the stale branch reference is cleared too');
   } finally {

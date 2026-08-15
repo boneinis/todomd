@@ -24,6 +24,7 @@ import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
 import { appendIntakeAudit } from '../../src/screen.js';
 import { recordUsage } from '../../src/runstore.js';
+import { loadConfig, readCard } from '../../src/board.js';
 import { openPage } from '../browser.js';
 
 function freePort() {
@@ -46,7 +47,7 @@ function hostileBoard() {
     'labels: ui\nassignee: 12345\n---\n\n## Description\n\nhand-edited\n');
   card('task-0002-mapping-label.md',
     '---\nid: task-0002\ntitle: labels as a YAML mapping\nstatus: Queue\ntype: bug\n' +
-    'labels: {a: 1}\nneeds_human_reason: 42\n---\n\n## Description\n\nhand-edited\n');
+    'labels: {a: 1}\nneeds_human_reason: 42\nagent: codex\n---\n\n## Description\n\nhand-edited\n');
   card('task-0003-scalar-children.md',
     '---\nid: task-0003\ntitle: epic with scalar children\nstatus: Review\ntype: module\n' +
     'epic: true\nchildren: task-0004\n---\n\n## Description\n\nhand-edited\n');
@@ -68,6 +69,17 @@ function hostileBoard() {
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', 'hostile UI fixtures']);
   git(repo, ['worktree', 'add', '-q', '-b', 'todomd/task-0006', path.join(repo, '.todomd/worktrees/task-0006')]);
+  const runDir = path.join(repo, '.todomd', 'runs', 'task-0002');
+  fs.mkdirSync(runDir, { recursive: true });
+  const runEvents = [
+    { type: 'thread.started', thread_id: 'ui-agent-chat' },
+    { type: 'item.completed', item: { id: 'reason-1', type: 'reasoning', text: 'I checked the card context and selected the focused UI path.' } },
+    { type: 'item.started', item: { id: 'cmd-1', type: 'command_execution', command: 'npm test -- --focused', status: 'in_progress' } },
+    { type: 'item.completed', item: { id: 'cmd-1', type: 'command_execution', command: 'npm test -- --focused', aggregated_output: '12 passing', exit_code: 0, status: 'completed' } },
+    { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: 'The focused UI checks pass. **Next:** verify the complete drawer flow.' } },
+    { type: 'turn.completed', usage: { input_tokens: 120, output_tokens: 24 } },
+  ];
+  fs.writeFileSync(path.join(runDir, 'Build-1.jsonl'), runEvents.map((event) => JSON.stringify(event)).join('\n') + '\n');
   return repo;
 }
 
@@ -163,12 +175,53 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     assert.match(await page.eval(`document.getElementById('drawer-title').textContent`), /YAML mapping/);
     assert.equal(await page.eval(`document.getElementById('drawer-resume-build').hidden`), true,
       'an ineligible card never shows Resume Build');
+    const rollups = await until(async () => {
+      const state = await page.eval(`({
+        descriptionOpen: document.getElementById('drawer-description').open,
+        descriptionMeta: document.getElementById('description-summary').textContent,
+        runHidden: document.getElementById('drawer-run').hidden,
+        runOpen: document.getElementById('drawer-run').open,
+        runTitle: document.getElementById('run-title').textContent,
+        runMeta: document.getElementById('run-summary').textContent,
+        messages: document.querySelectorAll('#run-log .chat-assistant').length,
+        tools: document.querySelectorAll('#run-log .chat-tool').length,
+        reasoning: document.querySelectorAll('#run-log .chat-reasoning').length,
+      })`);
+      return !state.runHidden && state.messages ? state : null;
+    }, { timeout: BUDGET.quick, label: 'last run rendered as agent chat' });
+    assert.equal(rollups.descriptionOpen, true, 'description is an open, collapsible rollup');
+    assert.match(rollups.descriptionMeta, /words/);
+    assert.equal(rollups.runOpen, true, 'the last run is open but can be collapsed');
+    assert.equal(rollups.runTitle, 'last run');
+    assert.match(rollups.runMeta, /Build · codex · 5 updates/);
+    assert.deepEqual({ messages: rollups.messages, tools: rollups.tools, reasoning: rollups.reasoning },
+      { messages: 1, tools: 1, reasoning: 1 }, 'CLI start/complete pairs collapse into one activity row');
+    assert.match(await page.eval(`document.querySelector('#run-log .chat-assistant').textContent`), /focused UI checks pass/);
+    assert.equal(await page.eval(`document.querySelector('#run-log .chat-tool').open`), false,
+      'tool output is folded until requested');
+    assert.equal(await page.eval(`document.querySelector('#run-log .chat-reasoning').open`), false,
+      'reasoning is folded until requested');
+    await page.eval(`document.getElementById('drawer-description').open = false; document.getElementById('drawer-run').open = false`);
+    assert.deepEqual(await page.eval(`({
+      description: document.getElementById('drawer-description').open,
+      run: document.getElementById('drawer-run').open,
+    })`), { description: false, run: false }, 'both rollups can be collapsed independently');
 
     await page.eval(`document.querySelector('[data-id="task-0006"]').click()`);
     await until(async () => /resumable orphaned build/.test(
       await page.eval(`document.getElementById('drawer-title').textContent`)) || null, { timeout: BUDGET.quick });
     assert.equal(await page.eval(`document.getElementById('drawer-resume-build').hidden`), false,
       'an eligible card with a registered preserved worktree shows Resume Build');
+    assert.equal(await page.eval(`document.getElementById('route-build-profile').value`), 'standard');
+    assert.match(await page.eval(`document.getElementById('build-profile-hint').textContent`), /3 checkpoints \/ 60 minutes/,
+      'the drawer explains the resolved standard Build limits');
+    await page.eval(`document.getElementById('route-build-profile').value = 'long'`);
+    await page.eval(`document.getElementById('route-save').click()`);
+    await until(async () => /6 checkpoints \/ 120 minutes/.test(
+      await page.eval(`document.getElementById('build-profile-hint').textContent`)) || null,
+    { timeout: BUDGET.quick, label: 'saved long Build profile refreshes the drawer limits' });
+    assert.equal(await page.eval(`document.getElementById('drawer-resume-build').hidden`), false,
+      'changing the Build profile does not lose preserved recovery eligibility');
 
     await page.eval(`document.querySelector('[data-id="task-0007"]').click()`);
     await until(async () => /restartable orphaned build/.test(
@@ -178,6 +231,124 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
   }
+});
+
+test('UI smoke: Add Card is prompt-first and preserves Advanced options', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+  addProject(repo);
+  const promptProject = path.basename(repo);
+
+  page.errors.length = 0;
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(promptProject)}`);
+  await until(async () => (await page.eval(`currentProject`)) === promptProject || null,
+    { timeout: BUDGET.stage, label: 'prompt test project selected' });
+
+  await page.eval(`document.getElementById('new-card').click()`);
+  const initial = await page.eval(`({
+    open: document.getElementById('card-advanced').open,
+    focused: document.activeElement?.name,
+    promptVisible: document.querySelector('[name=prompt]').getClientRects().length > 0,
+    titleVisible: document.querySelector('#card-form [name=title]').getClientRects().length > 0,
+  })`);
+  assert.deepEqual(initial, { open: false, focused: 'prompt', promptVisible: true, titleVisible: false });
+
+  await page.eval(`document.querySelector('#card-advanced summary').click()`);
+  assert.equal(await page.eval(`document.querySelector('#card-form [name=title]').getClientRects().length > 0`), true,
+    'the original structured fields remain available under Advanced options');
+  await page.setViewport(390, 844);
+  const mobileAdvanced = await page.eval(`(() => {
+    const form = document.getElementById('card-form');
+    return { overflowY: getComputedStyle(form).overflowY, scrolls: form.scrollHeight > form.clientHeight };
+  })()`);
+  assert.deepEqual(mobileAdvanced, { overflowY: 'auto', scrolls: true },
+    'the full Advanced form remains scrollable on a phone-sized viewport');
+  await page.setViewport(1280, 900);
+
+  const prompt = '## Fix interrupted builds\n\nResume from the preserved worktree without losing partial changes.';
+  await page.eval(`(() => {
+    const form = document.getElementById('card-form');
+    form.elements.prompt.value = ${JSON.stringify(prompt)};
+    form.elements.description.value = 'Keep the board API compatible.';
+    form.requestSubmit();
+  })()`);
+  await until(async () => (await page.eval(
+    `!!document.querySelector('[data-id="task-0001"]') && document.getElementById('modal-backdrop').hidden`)) || null,
+  { timeout: BUDGET.stage, label: 'prompt-created Review card rendered' });
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.title, 'Fix interrupted builds');
+  assert.equal(card.data.status, 'Review');
+  assert.match(card.body, /Resume from the preserved worktree without losing partial changes\./);
+  assert.match(card.body, /Additional context:\nKeep the board API compatible\./);
+  assert.deepEqual(page.errors, [], 'prompt-first creation produces no browser errors');
+});
+
+test('UI smoke: column agent and model selections persist and stay synchronized', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+  addProject(repo);
+  const routingProject = path.basename(repo);
+
+  page.errors.length = 0;
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(routingProject)}`);
+  await until(async () => (await page.eval(`currentProject`)) === routingProject || null,
+    { timeout: BUDGET.stage, label: 'routing test project selected' });
+  await page.eval(`document.querySelector('.column[data-status="Plan"] .col-edit').click()`);
+  await until(async () => (await page.eval(
+    `!document.getElementById('prompts-backdrop').hidden && document.querySelectorAll('#stage-model option').length > 1`)) || null,
+  { timeout: BUDGET.stage, label: 'Plan routing controls loaded' });
+
+  assert.equal(await page.eval(`document.getElementById('stage-model').tagName`), 'SELECT',
+    'the model is a real selectable control rather than a fragile free-text datalist');
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-agent');
+    select.value = 'gemini';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.agent === 'gemini' || null,
+    { timeout: BUDGET.quick, label: 'Gemini agent persisted' });
+  await until(async () => (await page.eval(
+    `document.getElementById('stage-model').value === '' && [...document.querySelectorAll('#stage-model option')].some((o) => o.value === 'gemini-3.7-flash-high')`)) || null,
+  { timeout: BUDGET.stage, label: 'model reset and Gemini choices loaded' });
+
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-model');
+    select.value = 'gemini-3.7-flash-high';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.model === 'gemini-3.7-flash-high' || null,
+    { timeout: BUDGET.quick, label: 'Gemini model persisted' });
+  await until(async () => /runs as gemini · gemini-3\.7-flash-high/.test(
+    await page.eval(`document.getElementById('stage-routing-note').textContent`)) || null,
+  { timeout: BUDGET.quick, label: 'effective-route note matches the saved values' });
+
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-agent');
+    select.value = 'codex';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.agent === 'codex' || null,
+    { timeout: BUDGET.quick, label: 'Codex agent persisted' });
+  await until(async () => (await page.eval(
+    `document.getElementById('stage-model').value === '' && [...document.querySelectorAll('#stage-model option')].some((o) => o.value === 'gpt-5.6-sol')`)) || null,
+  { timeout: BUDGET.stage, label: 'current Codex choices loaded' });
+
+  await page.eval(`(() => {
+    const select = document.getElementById('stage-model');
+    select.value = 'gpt-5.6-sol';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await until(() => loadConfig(repo).stages.Plan.model === 'gpt-5.6-sol' || null,
+    { timeout: BUDGET.quick, label: 'Codex Sol model persisted' });
+  await until(async () => /runs as codex · gpt-5\.6-sol/.test(
+    await page.eval(`document.getElementById('stage-routing-note').textContent`)) || null,
+  { timeout: BUDGET.quick, label: 'Codex effective-route note matches the saved values' });
+  assert.deepEqual(page.errors, [], 'routing changes produce no browser errors');
 });
 
 // The CI column (task-0041) added three run-state values — 'deferred-for-load',

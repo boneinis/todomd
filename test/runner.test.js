@@ -64,6 +64,21 @@ test('Claude automation is isolated from user/project plugins, MCP, hooks, skill
   assert.ok(argv.includes('--disable-slash-commands'));
 });
 
+test('Claude tool-less review removes every local tool even when Verify normally allows tests', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  const log = path.join(tmp('claude-review-only'), 'argv.jsonl');
+  process.env.FAKE_ARGV_LOG = log;
+  await runStage({
+    cwd: process.cwd(), prompt: 'verify prepared evidence', stage: 'Verify',
+    allowedTools: ['Read', 'Grep', 'Bash(npm test:*)'], reviewOnly: true,
+  }).done;
+  delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_ARGV_LOG;
+  const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+  assert.deepEqual(argv.slice(argv.indexOf('--tools'), argv.indexOf('--tools') + 2), ['--tools', '']);
+  assert.equal(argv.includes('--allowedTools'), false);
+});
+
 // the jsonl tee is telemetry: an unwritable path (full disk, read-only mount,
 // a stray FILE where the runs dir should be) must not take the server down —
 // without an 'error' listener a stream error is an uncaught exception
@@ -157,6 +172,22 @@ test('Codex ignores user config and uses read-only outside Build', async () => {
   delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
   const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
   assert.ok(argv.includes('--ignore-user-config'));
+  assert.deepEqual(argv.slice(argv.indexOf('--sandbox'), argv.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);
+});
+
+test('Codex tool-less review disables every local execution feature', async () => {
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  const dir = tmp('codex-review-only');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_CODEX_ARGV_LOG = argvLog;
+  await runStage({
+    vendor: 'codex', stage: 'Verify', cwd: dir,
+    prompt: 'review the prepared evidence only', reviewOnly: true,
+  }).done;
+  delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  const disabled = argv.flatMap((arg, index) => arg === '--disable' ? [argv[index + 1]] : []);
+  assert.deepEqual(disabled, ['shell_tool', 'unified_exec', 'code_mode']);
   assert.deepEqual(argv.slice(argv.indexOf('--sandbox'), argv.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);
 });
 

@@ -93,26 +93,37 @@ const collapsedEpicIds = new Set();
 const epicCollapseKey = (id) => JSON.stringify([currentProject || '', id]);
 
 // model suggestions per vendor — pulled from the provider CLI (server reads
-// `<cli> --help` + config), cached per vendor. Still a datalist, so a custom
-// id is allowed. Falls back to a sane default until the fetch resolves.
+// `<cli> --help` + config), cached per vendor. The card editor still uses the
+// shared datalist; column routing copies these values into a real select.
 const modelCache = {};
+const MODEL_FALLBACKS = {
+  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'],
+  gemini: ['gemini-3.7-flash-high', 'gemini-3.1-pro-high'],
+  claude: ['opus', 'sonnet', 'haiku'],
+};
 function fillModels(list) {
   $('#model-options').innerHTML = (list || []).map((m) => `<option value="${esc(m)}"></option>`).join('');
 }
 async function setModelOptions(vendor) {
   vendor = vendor || 'claude';
   if (modelCache[vendor]) { fillModels(modelCache[vendor]); return; }
-  fillModels(
-    vendor === 'codex' ? ['gpt-5-codex', 'gpt-5'] :
-    vendor === 'gemini' ? ['gemini-3.6-flash-low', 'gemini-3.6-flash-medium', 'gemini-3.6-flash-high', 'gemini-3.1-pro-high'] :
-    ['opus', 'sonnet', 'haiku']
-  ); // instant default
+  fillModels(MODEL_FALLBACKS[vendor] || MODEL_FALLBACKS.claude); // instant default
   if (!currentProject) return;
   try {
     const { models } = await api(`models?agent=${encodeURIComponent(vendor)}&project=${encodeURIComponent(currentProject)}`);
     modelCache[vendor] = models;
     fillModels(models);
   } catch { /* keep the default */ }
+}
+async function setStageModelOptions(vendor, selected = '') {
+  await setModelOptions(vendor);
+  const models = [...$('#model-options').querySelectorAll('option')].map((o) => o.value);
+  if (selected && !models.includes(selected)) models.unshift(selected);
+  $('#stage-model').innerHTML = [
+    '<option value="">board default</option>',
+    ...models.map((model) => `<option value="${esc(model)}">${esc(model)}</option>`),
+  ].join('');
+  $('#stage-model').value = selected;
 }
 function setSkillOptions() { // the repo's available commands (from the board payload)
   $('#skill-options').innerHTML = ((boardData && boardData.skills) || [])
@@ -761,7 +772,13 @@ async function openDrawer(id) {
     history.replaceState(null, '', '#' + id);
   }
   $('#run-log').textContent = '';
-  $('#drawer-run').hidden = true;
+  const drawerRun = $('#drawer-run');
+  drawerRun.hidden = true;
+  drawerRun.open = true;
+  drawerRun.classList.remove('is-live');
+  drawerRun.dataset.agent = card.data.agent || 'claude';
+  drawerRun.dataset.stage = runStates[id]?.stage || '';
+  $('#drawer-description').open = true;
   $('#drawer-cancel').hidden = !runStates[id];
   backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
   $('#drawer-id').textContent = card.data.id;
@@ -826,12 +843,23 @@ async function openDrawer(id) {
     $('#criteria-label').textContent = `${critDone}/${critTotal} criteria`;
   }
   $('#drawer-body').innerHTML = mdToHtml(bodyForDisplay);
+  const descriptionWords = bodyForDisplay.trim() ? bodyForDisplay.trim().split(/\s+/).length : 0;
+  $('#description-summary').textContent = [
+    descriptionWords ? `${descriptionWords} ${descriptionWords === 1 ? 'word' : 'words'}` : 'empty',
+    critTotal ? `${critDone}/${critTotal} criteria` : '',
+  ].filter(Boolean).join(' · ');
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
   $('#route-agent').value = card.data.agent || 'claude';
   setModelOptions($('#route-agent').value); // suggestions match the card's vendor
   $('#route-model').value = card.data.model || '';
   $('#route-effort').value = card.data.effort || '';
   $('#route-workflow').value = card.data.workflow || '';
+  const buildProfile = card.data.build_profile || card.recovery?.build_profile || 'standard';
+  $('#route-build-profile').value = buildProfile;
+  const buildLimits = card.recovery?.build_limits || card.data.build_limits || {};
+  $('#build-profile-hint').textContent = buildProfile === 'split_required'
+    ? 'This card must return to Plan and become child cards before Build.'
+    : `${buildProfile} profile: up to ${buildLimits.max_slices || (buildProfile === 'long' ? 6 : 3)} checkpoints / ${buildLimits.budget_minutes || (buildProfile === 'long' ? 120 : 60)} minutes per admission.`;
   $('#route-skill').value = card.data.skill || '';
   $('#route-assignee').value = card.data.assignee || '';
   const cols = boardData?.config?.columns || [];
@@ -960,13 +988,17 @@ $('#route-save').addEventListener('click', async () => {
         model: $('#route-model').value.trim(),
         effort: $('#route-effort').value,
         workflow: $('#route-workflow').value,
+        build_profile: $('#route-build-profile').value,
         skill: $('#route-skill').value.trim(),
         assignee: $('#route-assignee').value.trim(),
       }),
     });
     const out = await res.json();
     toast(res.ok ? 'routing saved' : out.error || 'save failed');
-    if (res.ok) loadBoard();
+    if (res.ok) {
+      await loadBoard();
+      if (drawerCard) await openDrawer(drawerCard);
+    }
   } catch {
     toast('server unreachable');
   }
@@ -1077,70 +1109,189 @@ $('#drawer-restart-build').addEventListener('click', async () => {
 async function backfillRunLog(id) {
   const running = runStates[id]?.state === 'running';
   try {
-    const { agent, events } = await api(`cards/${id}/runlog?project=${encodeURIComponent(currentProject)}`);
+    const { agent, stage, events } = await api(`cards/${id}/runlog?project=${encodeURIComponent(currentProject)}`);
     if (id !== drawerCard) return; // the drawer moved on while we were fetching
     $('#run-log').textContent = '';
-    for (const ev of events) appendRunEvent(agent !== 'claude' ? { vendor: agent, ...ev } : ev);
+    const run = $('#drawer-run');
+    run.open = true;
+    run.dataset.agent = agent || '';
+    run.dataset.stage = stage || runStates[id]?.stage || '';
+    setRunHeader(running);
+    for (const ev of events) appendRunEvent({ vendor: agent, ...ev });
     $('#drawer-run').hidden = !(running || events.length);
-    $('#drawer-run .run-title').textContent = running ? 'live run' : 'last run';
+    setRunHeader(running);
   } catch {
     $('#drawer-run').hidden = !running;
+    setRunHeader(running);
   }
 }
 
-// one feed row per event; the gutter bar color marks the kind (see .log-line in css)
-function logLine(cls, text) {
+function runEntry(tag, cls) {
+  const entry = document.createElement(tag);
+  entry.className = `chat-entry ${cls}`;
+  return entry;
+}
+
+function appendRunEntry(entry) {
   const log = $('#run-log');
-  const div = document.createElement('div');
-  div.className = `log-line ${cls}`;
-  div.textContent = text;
-  log.appendChild(div);
+  log.appendChild(entry);
   log.scrollTop = log.scrollHeight;
+  setRunHeader($('#drawer-run').classList.contains('is-live'));
+  return entry;
+}
+
+function setRunHeader(running) {
+  const run = $('#drawer-run');
+  run.classList.toggle('is-live', !!running);
+  $('#run-title').textContent = running ? 'live run' : 'last run';
+  const parts = [run.dataset.stage, run.dataset.agent, `${$('#run-log').children.length} updates`].filter(Boolean);
+  $('#run-summary').textContent = parts.join(' · ');
+}
+
+function appendRunSystem(text, cls = 'chat-system') {
+  if (!text) return;
+  const entry = runEntry('div', cls);
+  entry.textContent = text;
+  appendRunEntry(entry);
+}
+
+function appendAgentMessage(text, vendor = 'agent') {
+  if (!text) return;
+  const entry = runEntry('article', 'chat-assistant');
+  const head = document.createElement('header');
+  const avatar = document.createElement('span');
+  avatar.className = 'chat-avatar';
+  avatar.textContent = '◆';
+  const label = document.createElement('span');
+  label.textContent = vendor || 'agent';
+  head.append(avatar, label);
+  const body = document.createElement('div');
+  body.className = 'chat-copy drawer-body';
+  body.innerHTML = mdToHtml(String(text));
+  entry.append(head, body);
+  appendRunEntry(entry);
+}
+
+function findRunEntry(eventId) {
+  if (!eventId) return null;
+  return [...$('#run-log').children].find((el) => el.dataset.eventId === String(eventId)) || null;
+}
+
+function appendRunDisclosure(cls, title, detail, { eventId = '', status = '' } = {}) {
+  let entry = findRunEntry(eventId);
+  if (!entry) {
+    entry = runEntry('details', cls);
+    if (eventId) entry.dataset.eventId = String(eventId);
+    appendRunEntry(entry);
+  }
+  entry.className = `chat-entry ${cls}`;
+  entry.textContent = '';
+  const summary = document.createElement('summary');
+  const glyph = document.createElement('span');
+  glyph.className = 'chat-glyph';
+  glyph.textContent = cls === 'chat-reasoning' ? '◇' : '›';
+  const name = document.createElement('span');
+  name.className = 'chat-entry-title';
+  name.textContent = title || 'activity';
+  summary.append(glyph, name);
+  if (status) {
+    const state = document.createElement('span');
+    state.className = `chat-entry-status ${status === 'completed' || status === 'success' ? 'is-complete' : ''}`;
+    state.textContent = String(status).replaceAll('_', ' ');
+    summary.append(state);
+  }
+  entry.appendChild(summary);
+  if (detail) {
+    const pre = document.createElement('pre');
+    pre.textContent = String(detail);
+    entry.appendChild(pre);
+  }
+  $('#run-log').scrollTop = $('#run-log').scrollHeight;
+}
+
+function compactJson(value) {
+  if (value == null || value === '') return '';
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function appendCodexItem(event) {
+  const item = event.item || {};
+  const completed = event.type === 'item.completed';
+  if (item.type === 'agent_message') {
+    if (completed || !String(event.type || '').startsWith('item.')) appendAgentMessage(item.text, event.vendor);
+    return true;
+  }
+  if (item.type === 'reasoning') {
+    if (item.text) appendRunDisclosure('chat-reasoning', 'reasoning', item.text, { eventId: item.id, status: item.status });
+    return true;
+  }
+  if (item.type === 'command_execution') {
+    appendRunDisclosure('chat-tool', item.command || 'command', item.aggregated_output, {
+      eventId: item.id, status: item.status || (completed ? 'completed' : 'in_progress'),
+    });
+    return true;
+  }
+  if (item.type === 'mcp_tool_call') {
+    const name = [item.server, item.tool].filter(Boolean).join('.') || item.name || 'tool call';
+    const detail = item.result != null ? compactJson(item.result) : compactJson(item.arguments || item.input);
+    appendRunDisclosure('chat-tool', name, detail, {
+      eventId: item.id, status: item.status || (completed ? 'completed' : 'in_progress'),
+    });
+    return true;
+  }
+  if (item.type === 'file_change' || item.type === 'web_search') {
+    appendRunDisclosure('chat-tool', item.type.replaceAll('_', ' '), compactJson(item.changes || item.query || item), {
+      eventId: item.id, status: item.status || (completed ? 'completed' : 'in_progress'),
+    });
+    return true;
+  }
+  return false;
 }
 
 function appendRunEvent(event) {
-  if (event.type === 'rate_limit_event') return;
-  if (event.type === 'system') {
-    if (event.subtype === 'init') {
-      logLine('log-sys', `· session ${event.session_id}`);
-    }
+  if (event.type === 'rate_limit_event' || event.type === 'turn.started') return;
+  if (event.type === 'system' || event.type === 'thread.started') {
+    const session = event.session_id || event.thread_id;
+    if (event.type === 'thread.started' || event.subtype === 'init') appendRunSystem(`session ${session || 'started'}`);
+    return;
+  }
+  if (event.type === 'runner-invocation') {
+    appendRunSystem(`started ${event.executable || event.vendor || 'agent'}`);
     return;
   }
   if (event.type === 'runner-diagnostic') {
     const exit = event.spawnError ? `start error ${event.spawnError}`
       : event.signal ? `signal ${event.signal}` : `exit ${event.exitCode}`;
-    const output = event.structuredOutput != null
-      ? JSON.stringify(event.structuredOutput)
-      : event.finalMessage || '(none)';
-    logLine('log-sys',
-      `${event.vendor || 'agent'} executable: ${event.executable}\nworking directory: ${event.cwd}\nresult: ${exit}` +
-      `\nstandard error: ${event.stderr || '(empty)'}\nfinal result: ${output}`);
+    const output = event.structuredOutput != null ? compactJson(event.structuredOutput) : event.finalMessage || '(none)';
+    appendRunDisclosure('chat-diagnostic', `${event.vendor || 'agent'} process · ${exit}`,
+      `executable: ${event.executable}\nworking directory: ${event.cwd}\nstandard error: ${event.stderr || '(empty)'}\nfinal result: ${output}`,
+      { status: event.exitCode === 0 && !event.signal && !event.spawnError ? 'success' : 'failed' });
     return;
   }
-  if (event.type === 'assistant' || event.message?.content) {
+  if (event.type === 'assistant' || Array.isArray(event.message?.content)) {
     const content = event.message?.content || (Array.isArray(event.content) ? event.content : []);
     for (const block of content) {
-      if (block.type === 'text' && block.text) {
-        logLine('log-text', block.text);
-      } else if (block.type === 'thinking' && block.thinking) {
-        const snippet = block.thinking.trim();
-        if (snippet) logLine('log-sys', `🧠 ${snippet.slice(0, 300)}${snippet.length > 300 ? '…' : ''}`);
+      if (block.type === 'text' && block.text) appendAgentMessage(block.text, event.vendor);
+      else if (block.type === 'thinking' && block.thinking) {
+        appendRunDisclosure('chat-reasoning', 'reasoning', block.thinking, { eventId: block.id });
       } else if (block.type === 'tool_use') {
-        const detail = block.input?.path || block.input?.command || block.input?.pattern || '';
-        logLine('log-tool', `▸ ${block.name}${detail ? `: ${detail}` : ''}`);
+        const primary = block.input?.path || block.input?.command || block.input?.pattern || block.name;
+        appendRunDisclosure('chat-tool', `${block.name}${primary && primary !== block.name ? ` · ${primary}` : ''}`,
+          compactJson(block.input), { eventId: block.id });
       }
     }
     return;
   }
-  if (event.text || event.item?.text) {
-    logLine('log-text', event.text || event.item?.text);
+  if (event.item && appendCodexItem(event)) return;
+  if (event.type === 'turn.completed') {
+    const usage = event.usage || {};
+    const tokens = usage.input_tokens != null ? ` · ${usage.input_tokens} in / ${usage.output_tokens || 0} out` : '';
+    appendRunSystem(`turn complete${tokens}`);
     return;
   }
-  if (['codex', 'gemini', 'kimi'].includes(event.vendor)) {
-    const text = event.item?.command || event.message || '';
-    if (text) logLine('log-tool', `▸ ${event.type}: ${String(text).slice(0, 200)}`);
-    return;
-  }
+  if (event.text) appendAgentMessage(event.text, event.vendor);
+  else if (typeof event.message === 'string') appendAgentMessage(event.message, event.vendor);
 }
 
 /* minimal markdown renderer: headings, checkboxes, lists, code, bold/inline code */
@@ -1244,13 +1395,23 @@ function connectWs() {
       else runStates[msg.card] = { state: msg.state, stage: msg.stage, reason: msg.reason };
       if (msg.card === drawerCard) {
         $('#drawer-cancel').hidden = msg.state === 'idle' || !runStates[msg.card];
-        if (msg.state === 'running') $('#drawer-run').hidden = false;
+        if (msg.state === 'running') {
+          const run = $('#drawer-run');
+          $('#run-log').textContent = '';
+          run.hidden = false;
+          run.open = true;
+          run.dataset.stage = msg.stage || '';
+          run.dataset.agent = $('#route-agent').value || '';
+          setRunHeader(true);
+        }
         else backfillRunLog(drawerCard); // run ended — keep its log, now as "last run"
       }
       renderBoard();
     } else if (msg.type === 'run-event' && msg.project === currentProject && msg.card === drawerCard) {
-      $('#drawer-run').hidden = false;
-      appendRunEvent(msg.event);
+      const run = $('#drawer-run');
+      run.hidden = false;
+      if (msg.event?.vendor) run.dataset.agent = msg.event.vendor;
+      appendRunEvent({ vendor: run.dataset.agent || 'agent', ...msg.event });
     } else if (msg.type === 'banners') {
       renderBanners(msg.banners);
     }
@@ -1285,12 +1446,11 @@ async function updateRoutingRow(item) {
   if (!item || !item.stage) { row.hidden = true; routingColumn = null; return; }
   routingColumn = item.column;
   $('#stage-agent').value = item.agent || '';
-  $('#stage-model').value = item.model || '';
   $('#stage-effort').value = item.effort || '';
   $('#stage-workflow').value = item.workflow || '';
   $('#stage-workflow-row').hidden = item.column !== 'Build';
   row.hidden = false;
-  await setModelOptions(item.agent || promptDefaults.agent); // suggestions match the effective vendor
+  await setStageModelOptions(item.agent || promptDefaults.agent, item.model || '');
   renderRoutingNote(item);
 }
 async function loadPromptCommand(command) {
@@ -1334,15 +1494,20 @@ $('#stage-agent').addEventListener('change', async (e) => {
   const col = routingColumn, item = promptCommands.find((c) => c.column === col);
   if (await saveRouting({ agent: e.target.value }) && item) {
     item.agent = e.target.value;
-    await setModelOptions(item.agent || promptDefaults.agent);
+    item.model = ''; // the API clears an incompatible model whenever the vendor changes
+    await setStageModelOptions(item.agent || promptDefaults.agent, '');
     renderRoutingNote(item); toast(`${col} agent saved`);
+  } else if (item) {
+    e.target.value = item.agent || '';
   }
 });
 $('#stage-model').addEventListener('change', async (e) => {
   const col = routingColumn, item = promptCommands.find((c) => c.column === col);
   if (await saveRouting({ model: e.target.value }) && item) {
-    item.model = e.target.value.replace(/[^\w.-]/g, '');
+    item.model = e.target.value;
     renderRoutingNote(item); toast(`${col} model saved`);
+  } else if (item) {
+    e.target.value = item.model || '';
   }
 });
 $('#stage-effort').addEventListener('change', async (e) => {
@@ -1542,17 +1707,19 @@ $('#card-form [name=agent]').addEventListener('change', (e) => setModelOptions(e
 const backdrop = $('#modal-backdrop');
 $('#new-card').addEventListener('click', () => {
   $('#card-form').reset();
+  $('#card-advanced').open = false;
   setModelOptions($('#card-form [name=agent]').value); // suggestions for the default vendor
   backdrop.hidden = false;
-  $('#card-form [name=title]').focus();
+  $('#card-form [name=prompt]').focus();
 });
 $('#modal-cancel').addEventListener('click', () => { backdrop.hidden = true; });
 backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.hidden = true; });
 $('#card-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
+  const prompt = String(f.get('prompt') || '').trim();
   const payload = {
-    title: f.get('title'),
+    title: todoCardPrompt.deriveTitle(prompt, f.get('title')),
     type: f.get('type'),
     priority: f.get('priority'),
     agent: f.get('agent'),
@@ -1562,7 +1729,7 @@ $('#card-form').addEventListener('submit', async (e) => {
     skill: (f.get('skill') || '').trim() || undefined,
     assignee: (f.get('assignee') || '').trim() || undefined,
     labels: String(f.get('labels') || '').split(',').map((s) => s.trim()).filter(Boolean),
-    description: f.get('description'),
+    description: todoCardPrompt.buildDescription(prompt, f.get('description')),
     criteria: String(f.get('criteria') || '').split('\n').map((s) => s.trim()).filter(Boolean),
   };
   try {
