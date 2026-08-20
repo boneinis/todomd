@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import matter from 'gray-matter';
@@ -246,6 +247,90 @@ function criteriaProgress(body) {
   return total ? { done, total } : null;
 }
 
+const TLDR_MAX = 480;
+const SUMMARY_CACHE_VERSION = 2;
+
+function cleanSummaryText(value) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^\s*(?:[-*+] |\d+[.)] |>+ |#{1,6}\s+)/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sectionText(body, name) {
+  const sections = String(body || '').split(/^## /m);
+  const section = sections.find((part) => new RegExp(`^${name}\\s*(?:\\r?\\n|$)`, 'i').test(part));
+  return section ? section.replace(new RegExp(`^${name}\\s*(?:\\r?\\n)?`, 'i'), '').trim() : '';
+}
+
+export function descriptionSummarySource(body) {
+  const description = sectionText(body, 'Description');
+  if (description) return description;
+  const raw = String(body || '').trim();
+  return /^## /m.test(raw) ? '' : raw;
+}
+
+export function summaryDigest(value) {
+  return createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+export function descriptionSummaryHash(body) {
+  return summaryDigest(descriptionSummarySource(body));
+}
+
+export function runSummaryHash(stage, events) {
+  return summaryDigest(JSON.stringify({ stage: stage || '', events: events || [] }));
+}
+
+export function summaryCachePath(repoPath, id) {
+  return path.join(repoPath, '.todomd', 'runs', String(id || ''), 'summaries.json');
+}
+
+export function readSummaryCache(repoPath, id) {
+  if (!id) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(summaryCachePath(repoPath, id), 'utf8'));
+    return parsed && typeof parsed === 'object' && parsed.version === SUMMARY_CACHE_VERSION ? parsed : null;
+  } catch { return null; }
+}
+
+export function writeSummaryCache(repoPath, id, value) {
+  const file = summaryCachePath(repoPath, id);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(tmp, file);
+}
+
+export function explicitCardTldr(body, data = {}) {
+  const source = typeof data.tldr === 'string' ? data.tldr : sectionText(body, 'TL;DR');
+  return cleanSummaryText(source);
+}
+
+// A TL;DR is an authored or synthesized summary—not the first paragraph under
+// Description. Falling back to an excerpt made the label misleading. Generated
+// summaries are cached outside Git and passed in by board/read-card callers.
+export function cardTldr(body, data = {}, generated = '') {
+  const source = explicitCardTldr(body, data) || generated;
+  const text = cleanSummaryText(source);
+  if (text.length <= TLDR_MAX) return text;
+  return `${text.slice(0, TLDR_MAX - 1).trimEnd()}…`;
+}
+
+function cachedDescriptionTldr(repoPath, body, data = {}) {
+  const explicit = explicitCardTldr(body, data);
+  if (explicit) return cardTldr(body, data);
+  const cache = readSummaryCache(repoPath, data.id);
+  const generated = cache?.description_hash === descriptionSummaryHash(body)
+    ? cache.description_tldr : '';
+  return cardTldr(body, data, generated);
+}
+
 // Parse the Plan agent's optional `## Chunks` breakdown — a single fenced yaml
 // block listing ordered, independently-buildable sub-tasks. The orchestrator
 // turns each into a child card. Returns a validated array of
@@ -316,6 +401,7 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
           file,
           ...parsed.data,
           ...listFields(parsed.data),
+          tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data),
           criteria: criteriaProgress(parsed.content),
         });
       } catch {
@@ -355,7 +441,12 @@ export function readRunLog(repoPath, id, { maxEvents = 800 } = {}) {
     if (!line.trim()) continue;
     try { events.push(JSON.parse(line)); } catch { /* skip a garbled line */ }
   }
-  return { stage: latest.replace(/-\d+\.jsonl$/, ''), events: events.slice(-maxEvents) };
+  const stage = latest.replace(/-\d+\.jsonl$/, '');
+  const visibleEvents = events.slice(-maxEvents);
+  const summaryHash = runSummaryHash(stage, visibleEvents);
+  const cache = readSummaryCache(repoPath, id);
+  const tldr = cache?.run_hash === summaryHash ? cardTldr('', {}, cache.last_run_tldr) : '';
+  return { stage, events: visibleEvents, tldr, summary_hash: summaryHash };
 }
 
 // The repo's invocable commands (.claude/commands/*.md) — the values a card's
@@ -377,7 +468,8 @@ export function readCard(repoPath, id) {
   const raw = fs.readFileSync(path.join(dir, file), 'utf8');
   try {
     const parsed = parseCard(raw);
-    return { file, raw, data: parsed.data, body: parsed.content };
+    return { file, raw, data: parsed.data, body: parsed.content,
+      tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data) };
   } catch (e) {
     return { file, raw, data: {}, body: raw, parseError: String(e.message || e) };
   }

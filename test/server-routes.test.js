@@ -8,7 +8,7 @@ import { WebSocket } from 'ws';
 import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
-import { readCard } from '../src/board.js';
+import { readCard, readRunLog } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 import * as scheduler from '../src/scheduler.js';
 import { recordUsage } from '../src/runstore.js';
@@ -105,9 +105,52 @@ test('API usage separates subscription tokens, unavailable gateway runs, and leg
   } finally { srv.close(); }
 });
 
+test('API card prompt is full-access only and streams an advisory chat turn without moving the card', async () => {
+  isolateHome();
+  useFakeAgent({ other_message: 'Review the latest verifier evidence before merging.' });
+  const { repo, name, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    writeCard(repo, 'task-0001', { status: 'Planned', body: 'A preserved implementation is ready for review.' });
+    const viewer = deviceToken('token-viewer');
+    let r = await fetch(`${base}/api/cards/task-0001/prompt${q}`, {
+      method: 'POST',
+      headers: { 'x-todomd-token': viewer, 'content-type': 'application/json', origin: base },
+      body: '{"prompt":"What next?"}',
+    });
+    assert.equal(r.status, 403, 'viewer links cannot start agent turns');
+
+    r = await fetch(`${base}/api/cards/task-0001/prompt${q}`, {
+      method: 'POST', headers: h, body: '{"prompt":"What next?"}',
+    });
+    assert.equal(r.status, 202);
+    assert.deepEqual(await r.json(), { ok: true, queued: true });
+    await until(() => !pipeline.hasLiveRun(name, 'task-0001'), {
+      timeout: BUDGET.stage, label: 'API-started card prompt completed',
+    });
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Planned');
+    assert.ok(readRunLog(repo, 'task-0001').events.some((event) =>
+      JSON.stringify(event).includes('Review the latest verifier evidence')));
+
+    r = await fetch(`${base}/api/cards/task-0001/summaries${q}`, {
+      method: 'POST',
+      headers: { 'x-todomd-token': viewer, origin: base },
+    });
+    assert.equal(r.status, 403, 'viewer links cannot spend an agent turn generating summaries');
+    r = await fetch(`${base}/api/cards/task-0001/summaries${q}`, { method: 'POST', headers: h });
+    assert.equal(r.status, 200);
+    const summaries = await r.json();
+    assert.match(summaries.description_tldr, /semantic description summary/);
+    assert.match(summaries.last_run_tldr, /completed.*next action/);
+  } finally {
+    srv.close();
+    clearFakeAgent();
+  }
+});
+
 test('API card lifecycle: create → set → move → read → cancel', async () => {
   isolateHome();
-  const { base, srv, q } = await boot();
+  const { repo, base, srv, q } = await boot();
   const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
   try {
     let r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: h, body: '{"title":"Lifecycle"}' });
@@ -126,6 +169,7 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
       resume_build: false,
       restart_build: false,
       retry_verification: false,
+      return_to_build: false,
       build_profile: 'long',
       build_limits: { max_slices: 6, budget_minutes: 120 },
     });
@@ -153,6 +197,16 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
     assert.equal(r.status, 400);
     r = await fetch(`${base}/api/cards/${id}/restart-build${q}`, { method: 'POST', headers: h });
     assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/cards/${id}/instruction${q}`, {
+      method: 'POST', headers: h, body: '{"instruction":"Preserve the public API while repairing the implementation."}',
+    });
+    assert.equal(r.status, 200, 'a handoff can be saved independently of a status change');
+    assert.match(fs.readFileSync(path.join(repo, '.todomd', 'local', 'card-instructions', `${id}.md`), 'utf8'),
+      /Preserve the public API/);
+    r = await fetch(`${base}/api/cards/${id}/return-build${q}`, {
+      method: 'POST', headers: h, body: '{"instruction":"repair it"}',
+    });
+    assert.equal(r.status, 400, 'the guarded return endpoint refuses an ineligible card');
 
     // GET a missing card → 404
     assert.equal((await fetch(`${base}/api/cards/task-9999${q}`, { headers: { 'x-todomd-token': srv.token } })).status, 404);

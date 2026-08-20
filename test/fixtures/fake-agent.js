@@ -26,6 +26,8 @@
 //                             so a test can assert what the runner passed
 //   FAKE_REQUIRE_FILE=<relpath> — a build fails unless this existing worktree
 //                             file survived (used by orphan recovery tests)
+//   FAKE_LEAVE_DIRTY=1      — leave an untracked candidate file after commit
+//   FAKE_FINDINGS=<text>    — override verifier findings (empty is allowed)
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -110,10 +112,34 @@ if (process.env.FAKE_MODE === 'parsing') {
   process.exit(0);
 }
 
-const stage = has('--resume') ? 'build' // only retry builds resume a session
-  : prompt.includes('plan') ? 'plan'
-  : prompt.includes('build') ? 'build'
-  : prompt.includes('verify') ? 'verify' : 'other';
+const promptLower = prompt.toLowerCase();
+const stage = (promptLower.includes('read-only agent attached') || promptLower.includes('advisory agent attached')) ? 'other'
+  : has('--resume') ? 'build' // only retry builds resume a session
+  : promptLower.includes('todomd-verify') ? 'verify'
+  : promptLower.includes('todomd-build') ? 'build'
+  : promptLower.includes('todomd-plan') ? 'plan'
+  : has('--json-schema') ? 'verify'
+  : promptLower.includes('plan') ? 'plan'
+  : promptLower.includes('build') ? 'build'
+  : promptLower.includes('verify') ? 'verify' : 'other';
+
+if (process.env.FAKE_RESUME_MISSING && has('--resume')) {
+  emitStream([resultEnvelope({
+    subtype: 'error_during_execution',
+    is_error: true,
+    num_turns: 0,
+    errors: ['No conversation found with session ID: fake-session'],
+  })]);
+  process.exit(0);
+}
+
+if (prompt.includes('TODOMD CARD SUMMARY REQUEST')) {
+  emitStream([resultEnvelope({ structured_output: {
+    description_tldr: process.env.FAKE_DESCRIPTION_TLDR || 'The card needs a concise semantic description summary.',
+    last_run_tldr: process.env.FAKE_LAST_RUN_TLDR || 'The latest run completed and left a concrete next action.',
+  } })]);
+  process.exit(0);
+}
 
 // ── hang a stage until SIGTERM, so a test can cancel/timeout a LIVE run ──
 // FAKE_HANG=1 hangs the build (legacy); FAKE_HANG=<stage> hangs that stage.
@@ -179,6 +205,9 @@ if (hangNow &&
     execFileSync('git', ['add', '-A'], { cwd });
     execFileSync('git', ['commit', '-qm', `${taskId}: add prod`], { cwd });
   }
+  if (process.env.FAKE_LEAVE_DIRTY) {
+    fs.writeFileSync(path.join(cwd, 'src/uncommitted.js'), 'export const dirty = true;\n');
+  }
   // delete the worktree from under the run: the NEXT stage (verify) then fails
   // to spawn with ENOENT on its cwd — distinct from a missing CLI binary
   if (process.env.FAKE_RM_WORKTREE) fs.rmSync(cwd, { recursive: true, force: true });
@@ -195,7 +224,9 @@ if (hangNow &&
   const structured = {
     verdict,
     criteria: [{ criterion: 'works', met: verdict === 'pass' }],
-    findings: verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
+    findings: Object.hasOwn(process.env, 'FAKE_FINDINGS')
+      ? process.env.FAKE_FINDINGS
+      : verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
     setup_error: null,
     question: null,
     checks_requested: [],
@@ -217,5 +248,11 @@ if (hangNow &&
   process.exit(0);
 } else {
   await waitBeforeExit();
-  emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
+  emitStream([
+    { type: 'system', subtype: 'init' },
+    ...(process.env.FAKE_OTHER_MESSAGE
+      ? [{ type: 'assistant', message: { content: [{ type: 'text', text: process.env.FAKE_OTHER_MESSAGE }] } }]
+      : []),
+    resultEnvelope(),
+  ]);
 }

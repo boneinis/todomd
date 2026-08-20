@@ -417,7 +417,13 @@ export function startServer({ port = 7337, lan = false } = {}) {
         // remains desktop-only, so expose the narrower tier separately and
         // let the client hide controls that its token cannot actually use.
         primary: primary(req),
-        runStates: pipeline.getRunStates(project.name),
+        runStates: pipeline.getRunStates(project.name, {
+          includeProgress: true,
+          // Activity can include an agent message or command. The full desktop
+          // token can already read the raw run log; monitor links receive only
+          // safe timing/checkpoint metadata.
+          includeDetails: fullAccess,
+        }),
         banners: pipeline.getBanners(),
         usage: pipeline.usage(project),
         skills: listSkills(project.path), // available command/skill names for the picker
@@ -584,13 +590,14 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const body = await readBody(req);
       if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let status;
+      let instruction = '';
       try {
-        ({ status } = JSON.parse(body || '{}'));
+        ({ status, instruction = '' } = JSON.parse(body || '{}'));
       } catch {
         return json(res, 400, { error: 'invalid JSON body' });
       }
       // every API move is a human move: the §3.1 table is enforced here
-      const result = await pipeline.humanMove(project, moveMatch[1], status);
+      const result = await pipeline.humanMove(project, moveMatch[1], status, { instruction });
       return json(res, result.ok ? 200 : 400, result);
     }
     const reorderMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/reorder$/);
@@ -659,6 +666,41 @@ export function startServer({ port = 7337, lan = false } = {}) {
     if (cancelMatch && req.method === 'POST') {
       const result = await pipeline.cancel(project, cancelMatch[1]);
       return json(res, result.ok ? 200 : 400, result);
+    }
+    const summariesMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/summaries$/);
+    if (summariesMatch && req.method === 'POST') {
+      const result = await pipeline.summarizeCard(project, summariesMatch[1]);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    const promptMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/prompt$/);
+    if (promptMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let prompt;
+      try { ({ prompt } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = await pipeline.promptCard(project, promptMatch[1], prompt);
+      return json(res, result.ok ? 202 : 400, result);
+    }
+    const instructionMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/instruction$/);
+    if (instructionMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let instruction;
+      try { ({ instruction } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      if (pipeline.hasLiveRun(project.name, instructionMatch[1])) {
+        return json(res, 400, { error: 'run in progress — save instructions after it finishes' });
+      }
+      const result = pipeline.setCardInstruction(project, instructionMatch[1], instruction);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    const returnBuildMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/return-build$/);
+    if (returnBuildMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let instruction = '';
+      try { ({ instruction = '' } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = await pipeline.returnToBuild(project, returnBuildMatch[1], instruction);
+      return json(res, result.ok ? 202 : 400, result);
     }
     const retryVerifyMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/retry-verify$/);
     if (retryVerifyMatch && req.method === 'POST') {

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
-import { readCard, loadBoard, setStageRouting, patchFrontmatter, withRepoLock } from '../src/board.js';
+import { readCard, loadBoard, setStageRouting, patchFrontmatter, withRepoLock, readRunLog } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import { createGovernor, resourcesConfig } from '../src/resources.js';
 import * as pipeline from '../src/pipeline.js';
@@ -479,6 +479,36 @@ test('a productive Build turn-limit checkpoint resumes automatically and reaches
   clearFakeAgent();
 });
 
+test('active long Builds expose safe progress metadata for monitors', async () => {
+  isolateHome();
+  useFakeAgent({ hang: 'build', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-progress', { status: 'Planned', extra: 'build_profile: long\n' });
+
+  try {
+    await pipeline.humanMove(p, 'task-progress', 'Queue');
+    await until(() => pipeline.getRunStates(p.name, { includeProgress: true })['task-progress']?.progress,
+      { timeout: BUDGET.stage });
+    const state = pipeline.getRunStates(p.name, { includeProgress: true, includeDetails: true })['task-progress'];
+    assert.equal(state.state, 'running');
+    assert.equal(state.stage, 'Build');
+    assert.equal(state.progress.profile, 'long');
+    assert.equal(state.progress.slice, 1);
+    assert.equal(state.progress.maxSlices, 6);
+    assert.equal(state.progress.budgetMinutes, 120);
+    assert.equal(typeof state.progress.startedAt, 'string');
+    assert.equal(typeof state.progress.lastActivityAt, 'string');
+    assert.equal(state.progress.timeoutMinutes, 45);
+    assert.equal('worktreeAbs' in state.progress, false, 'internal paths are never exposed in progress state');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('Build slice budget pauses as resumable infrastructure without losing the worktree or attempt', async () => {
   isolateHome();
   const marker = path.join(tmp('build-budget'), 'first-slice');
@@ -721,7 +751,7 @@ test('worktree env: a verify setup_error → Needs Human (worktree_env) on attem
   isolateHome();
   // the verify command "can't even run" — should escalate distinctly and at once,
   // not burn all attempts ending in a generic attempts_exhausted
-  useFakeAgent({ verdict: 'fail', build: 'good', setup_error: 'Cannot find module "dotenv"' });
+  useFakeAgent({ verdict: 'pass', findings: '', build: 'good', setup_error: 'Cannot inspect linked environment' });
   pipeline.init({ broadcast: noop });
   const repo = makeRepo();
   const p = project(repo);
@@ -735,6 +765,51 @@ test('worktree env: a verify setup_error → Needs Human (worktree_env) on attem
   const card = readCard(repo, 'task-0003');
   assert.equal(card.data.needs_human_reason, 'worktree_env');
   assert.equal(card.data.verification.attempts, 1, 'escalates on the first verify, not after the attempt cap');
+  await until(async () => (await pipeline.recoveryActions(p, 'task-0003')).retry_verification === true,
+    { label: 'a pure review environment failure can retry the same candidate/attempt' });
+  assert.doesNotMatch(card.raw, /lacks a gitignored file/,
+    'the remediation does not invent a missing worktree link');
+  clearFakeAgent();
+});
+
+test('verify preserves substantive findings when an environment limitation also occurs', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'fail', findings: 'prod returns the wrong value', build: 'good', setup_error: 'Docker socket access denied' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0003');
+
+  await pipeline.humanMove(p, 'task-0003', 'Plan');
+  await until(() => status(repo, 'task-0003') === 'Planned');
+  await pipeline.humanMove(p, 'task-0003', 'Queue');
+  await until(() => status(repo, 'task-0003') === 'Needs Human', { timeout: BUDGET.chain });
+
+  const card = readCard(repo, 'task-0003');
+  assert.equal(card.data.needs_human_reason, 'verification_incomplete');
+  assert.match(card.raw, /prod returns the wrong value/);
+  assert.match(card.raw, /Docker socket access denied/);
+  await until(async () => (await pipeline.recoveryActions(p, 'task-0003')).return_to_build === true,
+    { label: 'mixed code findings route back to a preserved repair Build' });
+  clearFakeAgent();
+});
+
+test('a Build response cannot advance while candidate changes remain uncommitted', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good', leave_dirty: 1 });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0004', { status: 'Planned' });
+
+  await pipeline.humanMove(p, 'task-0004', 'Queue');
+  await until(() => status(repo, 'task-0004') === 'Needs Human', { timeout: BUDGET.chain });
+
+  const card = readCard(repo, 'task-0004');
+  assert.equal(card.data.needs_human_reason, 'uncommitted_build');
+  assert.equal(card.data.recovery_stage, 'Build');
+  assert.match(card.raw, /src\/uncommitted\.js/);
+  await until(async () => (await pipeline.recoveryActions(p, 'task-0004')).resume_build === true);
   clearFakeAgent();
 });
 
@@ -786,6 +861,142 @@ test('agent question → Needs Human (needs_answer); answering re-drives the bui
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
   card = readCard(repo, 'task-0001');
   assert.equal(card.data.question || '', '', 'question cleared after answering');
+  clearFakeAgent();
+});
+
+test('card prompt runs an advisory agent turn without moving the card or replacing its Build session', async () => {
+  isolateHome();
+  useFakeAgent({ other_message: 'The safest next action is a fresh verification pass.' });
+  const events = [];
+  pipeline.init({ broadcast: (event) => events.push(event) });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0008', {
+    status: 'Needs Human',
+    body: 'Review the preserved implementation before deciding whether to merge.',
+    extra: 'session_id: build-session-must-survive\nneeds_human_reason: attempts_exhausted\n',
+  });
+
+  const queued = await pipeline.promptCard(p, 'task-0008', 'What should I do next?');
+  assert.deepEqual(queued, { ok: true, queued: true });
+  assert.equal((await pipeline.promptCard(p, 'task-0008', 'Duplicate')).ok, false,
+    'a second prompt cannot overlap the queued/live turn');
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0008'), { timeout: BUDGET.stage, label: 'card chat completed' });
+
+  const card = readCard(repo, 'task-0008');
+  assert.equal(card.data.status, 'Needs Human', 'chat never changes workflow state');
+  assert.equal(card.data.session_id, 'build-session-must-survive', 'chat cannot replace the resumable Build session');
+  const log = readRunLog(repo, 'task-0008');
+  assert.equal(log.stage, 'chat');
+  assert.equal(log.events[0].type, 'human_message');
+  assert.equal(log.events[0].text, 'What should I do next?');
+  assert.ok(log.events.some((event) => JSON.stringify(event).includes('fresh verification pass')));
+  assert.ok(events.some((event) => event.type === 'run-event' && event.event?.type === 'human_message'));
+  clearFakeAgent();
+});
+
+test('an exhausted preserved card can return to Build with a durable human handoff', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('return-build-handoff'), 'argv.jsonl');
+  useFakeAgent({ build: 'good', verdict: 'pass', argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  seedPreservedVerification(repo, 'task-0009');
+  await patchFrontmatter(repo, 'task-0009', {
+    needs_human_reason: 'attempts_exhausted',
+    verification: { attempts: 3, max_attempts: 3, last_verdict: 'fail' },
+  });
+
+  const actions = await pipeline.recoveryActions(p, 'task-0009');
+  assert.equal(actions.return_to_build, true);
+  const returned = await pipeline.humanMove(p, 'task-0009', 'Build', {
+    instruction: 'Fix the authenticated UPDATE grants called out by the verifier, then rerun focused RLS checks.',
+  });
+  assert.equal(returned.ok, true);
+  assert.equal(returned.attempt, 4, 'a human recovery extends the cap by one auditable attempt');
+  assert.equal(returned.max_attempts, 4);
+
+  await until(() => status(repo, 'task-0009') === 'Done', { timeout: BUDGET.chain });
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0009'), { timeout: BUDGET.stage });
+  const invocations = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+  const repairBuild = invocations.find((argv) => argv.some((arg) =>
+    /Human instruction for this Build[\s\S]*authenticated UPDATE grants/.test(arg)));
+  assert.ok(repairBuild,
+  'the next Build agent receives the saved handoff in its prompt');
+  assert.equal(repairBuild.includes('--resume'), false,
+    'a verifier-exhausted repair starts a fresh agent instead of trusting a stale provider session');
+  const finished = readCard(repo, 'task-0009');
+  assert.equal(finished.data.verification.attempts, 4);
+  assert.equal(finished.data.verification.max_attempts, 4);
+  assert.equal(fs.existsSync(path.join(repo, '.todomd/local/card-instructions/task-0009.md')), false,
+    'a successful Build consumes the one-run handoff');
+  clearFakeAgent();
+});
+
+test('Resume Build falls back to a fresh agent when the provider lost the saved conversation', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('resume-missing-fallback'), 'argv.jsonl');
+  useFakeAgent({ build: 'good', verdict: 'pass', resume_missing: '1', argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  seedPreservedVerification(repo, 'task-0011');
+  await patchFrontmatter(repo, 'task-0011', {
+    needs_human_reason: 'agent_error',
+    recovery_stage: 'Build',
+    verification: { attempts: 4, max_attempts: 4, last_verdict: 'fail' },
+  });
+
+  const resumed = await pipeline.resumeBuild(p, 'task-0011');
+  assert.equal(resumed.ok, true);
+  await until(() => status(repo, 'task-0011') === 'Done', { timeout: BUDGET.chain });
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0011'), { timeout: BUDGET.stage });
+  const invocations = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(invocations[0].includes('--resume'), true, 'recovery first tries the saved provider session');
+  assert.equal(invocations.some((argv) => !argv.includes('--resume') && argv.some((arg) =>
+    /Continue from the existing preserved worktree changes/.test(arg))), true,
+  'a missing session immediately retries with a fresh agent in the same worktree');
+  assert.match(readCard(repo, 'task-0011').raw,
+    /resume session unavailable; retrying fresh in preserved worktree/);
+  clearFakeAgent();
+});
+
+test('card summaries synthesize and cache the full description and latest run instead of extracting excerpts', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('summary-agent'), 'argv.jsonl');
+  useFakeAgent({
+    argv_log: argvLog,
+    description_tldr: 'The card consolidates several drawer requirements into one reviewable interaction.',
+    last_run_tldr: 'The run validated the focused behavior and left full-flow verification as the next action.',
+  });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0010', {
+    body: 'First, preserve collapsed sections. Second, summarize all requirements. Third, avoid presenting copied prose as a summary.',
+  });
+  const runDir = path.join(repo, '.todomd', 'runs', 'task-0010');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'Build-1.jsonl'), [
+    { type: 'item.completed', item: { type: 'command_execution', command: 'npm test', status: 'completed', aggregated_output: 'focused checks passed' } },
+    { type: 'item.completed', item: { type: 'agent_message', text: 'This final message is evidence, not itself the requested TL;DR.' } },
+  ].map((event) => JSON.stringify(event)).join('\n') + '\n');
+
+  const first = await pipeline.summarizeCard(p, 'task-0010');
+  assert.equal(first.ok, true);
+  assert.equal(first.cached, false);
+  assert.equal(first.description_tldr,
+    'The card consolidates several drawer requirements into one reviewable interaction.');
+  assert.equal(first.last_run_tldr,
+    'The run validated the focused behavior and left full-flow verification as the next action.');
+  assert.equal(readCard(repo, 'task-0010').tldr, first.description_tldr);
+  assert.equal(readRunLog(repo, 'task-0010').tldr, first.last_run_tldr);
+
+  const second = await pipeline.summarizeCard(p, 'task-0010');
+  assert.equal(second.cached, true);
+  assert.equal(fs.readFileSync(argvLog, 'utf8').trim().split('\n').length, 1,
+    'unchanged source material reuses the semantic summary cache');
   clearFakeAgent();
 });
 
@@ -2048,6 +2259,39 @@ test('orphan sweep: merged branch finishes as Done; unmerged work is preserved a
   clearFakeAgent();
 });
 
+test('restart restores a clean Verify checkpoint through trusted CI instead of orphaning it', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  addProject(repo);
+  const branch = 'todomd/task-0003';
+  const wt = path.join(repo, '.todomd/worktrees/task-0003');
+  const base = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']);
+
+  writeCard(repo, 'task-0003', { status: 'Verify' });
+  await patchFrontmatter(repo, 'task-0003', {
+    worktree: branch,
+    base_branch: base,
+    verification: { attempts: 1, max_attempts: 3, last_verdict: '' },
+  });
+  git(repo, ['add', '.todomd/tasks']);
+  git(repo, ['commit', '-qm', 'verify checkpoint']);
+  git(repo, ['worktree', 'add', '-q', '-b', branch, wt]);
+  fs.appendFileSync(path.join(wt, 'src/calc.js'), 'export const restoredCheckpoint = true;\n');
+  git(wt, ['add', '-A']);
+  git(wt, ['commit', '-qm', 'candidate ready for verification']);
+
+  await pipeline.reconcileOnBoot();
+  await until(() => status(repo, 'task-0003') === 'Done', { timeout: BUDGET.chain });
+
+  assert.match(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /restoredCheckpoint/);
+  const finished = readCard(repo, 'task-0003');
+  assert.match(finished.raw, /restart checkpoint restored · Verify attempt 1/);
+  assert.doesNotMatch(finished.raw, /orphaned_run/);
+  clearFakeAgent();
+});
+
 test('Resume Build reuses an orphaned Build worktree, saved attempt, and partial changes', async () => {
   isolateHome();
   useFakeAgent({ verdict: 'pass', build: 'good', require_file: 'resume-sentinel.txt' });
@@ -2172,12 +2416,13 @@ test('Retry Verification is claimed before its background spawn and refuses an i
 
   try {
     assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
-    // No polling: the retry has returned but verify() may still be awaiting
-    // config. Its synchronous claim must already be visible and protective.
+    // No polling: the retry has returned but its exact-HEAD CI refresh may
+    // still be awaiting admission. Its synchronous claim must already be
+    // visible and protective across CI -> Verify.
     assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
-    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'Verify' });
+    assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'], { state: 'running', stage: 'CI' });
     assert.deepEqual(voice.buildVoiceSummary(p).activeRuns,
-      [{ card: 'task-0001', state: 'running', stage: 'Verify', external: false }]);
+      [{ card: 'task-0001', state: 'running', stage: 'CI', external: false }]);
     const retriage = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'retriage' });
     assert.equal(retriage.status, 400);
     assert.match(retriage.error, /live run/);
@@ -2305,7 +2550,7 @@ test('a tool-less review that requests checks preserves its findings and queues 
   }
 });
 
-test('manual queue pause parks a direct Retry Verification until resume', async () => {
+test('manual queue pause parks a direct Retry Verification CI refresh until resume', async () => {
   isolateHome();
   scheduler.resetState();
   useFakeAgent({ verdict: 'pass' });
@@ -2319,9 +2564,9 @@ test('manual queue pause parks a direct Retry Verification until resume', async 
     assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
     await sleep(150);
     assert.deepEqual(pipeline.getRunStates(p.name)['task-0001'],
-      { state: 'queued', stage: 'Verify' });
+      { state: 'queued', stage: 'CI' });
     assert.equal(spawnedAnything(repo, 'task-0001'), false,
-      'the paused retry does not start a verifier');
+      'the paused retry does not start its trusted CI refresh');
     assert.equal(fs.existsSync(worktree), true,
       'the paused retry keeps its preserved worktree');
 
@@ -2415,7 +2660,7 @@ test('Retry Verification waits its turn when the Verify column is full — plain
   }
 });
 
-test('cancelling a deferred Retry Verification continuation unwinds through its claim', async () => {
+test('cancelling a CPU-deferred Retry Verification CI refresh unwinds through its claim', async () => {
   isolateHome();
   await sleep(300);
   scheduler.resetState();
@@ -2448,8 +2693,8 @@ test('cancelling a deferred Retry Verification continuation unwinds through its 
       { timeout: BUDGET.stage });
     assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
       'a queued re-verification has not opened an attempt to roll back');
-    assert.equal(fs.readFileSync(argvLog, 'utf8').trim().split('\n').length, 1,
-      'only the lightweight preliminary review ran; the cancelled heavy continuation never spawned');
+    assert.equal(fs.existsSync(argvLog), false,
+      'the cancelled CI refresh never spawned either CI or an agent review');
     assert.equal(fs.existsSync(worktree), false, 'the cancel released the preserved worktree');
     assert.ok(!readCard(repo, 'task-0001').data.worktree, 'the stale branch reference is cleared too');
   } finally {

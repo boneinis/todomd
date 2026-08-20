@@ -123,7 +123,7 @@ test('clean exact-HEAD CI evidence reaches Verify and suppresses the duplicate f
   }
 });
 
-test('a passing CI command that leaves the candidate dirty is not trusted by Verify', async () => {
+test('a passing CI command that leaves the candidate dirty is rejected before Verify', async () => {
   isolateHome();
   const argvLog = path.join(tmp('ci-dirty'), 'argv.jsonl');
   useFakeAgent({ build: 'good', verdict: 'pass', argv_log: argvLog });
@@ -136,8 +136,10 @@ test('a passing CI command that leaves the candidate dirty is not trusted by Ver
 
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');
-    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
-    assert.deepEqual(readCard(repo, 'task-0001').data.ci_evidence, {});
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.chain });
+    const card = readCard(repo, 'task-0001');
+    assert.deepEqual(card.data.ci_evidence, {});
+    assert.equal(card.data.needs_human_reason, 'ci_evidence_invalid');
     const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(calls.flat().some((arg) => typeof arg === 'string' && arg.includes('Trusted CI evidence:')), false);
   } finally {

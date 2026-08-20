@@ -165,6 +165,34 @@ test('a registered project with no queued work of its own still contributes its 
   assert.equal(started, 1, "strict's registered-but-idle global cap of 1 still governs busy's admissions");
 });
 
+test('a registered but idle project does not contribute dormant resource thresholds', () => {
+  const strict = makeProject('strict-idle-resources', [
+    'resources:',
+    '  enabled: true',
+    '  cpu: { resume: 0.0001, defer: 0.001, critical: 0.002 }',
+    '  memory: { resume: 0.0001, defer: 0.001, critical: 0.002 }',
+  ].join('\n'));
+  addProject(strict.path); // registered, but has no queued or running work
+
+  const busy = makeProject('busy-resources', [
+    'resources:',
+    '  enabled: true',
+    '  cpu: { resume: 99, defer: 100, critical: 101 }',
+    '  memory: { resume: 0.98, defer: 0.99, critical: 1.1 }',
+    '  disk: { min_free_gb: 0, resume_free_gb: 0.1 }',
+    '  recovery_samples: 1',
+  ].join('\n'));
+
+  let started = false;
+  scheduler.schedule(busy, 'card', 'Build', () => {
+    started = true;
+    return Promise.resolve();
+  });
+
+  assert.equal(started, true,
+    'only projects with current workload contribute host resource thresholds');
+});
+
 test('a resource-disabled project contributes no thresholds to enabled projects', () => {
   const enabled = makeProject('enabled', [
     'concurrency: 2',

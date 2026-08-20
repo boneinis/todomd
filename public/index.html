@@ -67,9 +67,12 @@
           <textarea id="answer-input" class="answer-input" rows="2" placeholder="your answer — fed into the next build…" spellcheck="false"></textarea>
           <button id="answer-submit" class="route-save">answer &amp; resume</button>
         </section>
-        <details id="drawer-description" class="drawer-rollup drawer-description" open>
+        <details id="drawer-description" class="drawer-rollup drawer-description">
           <summary>
-            <span class="rollup-title">description</span>
+            <span class="rollup-copy">
+              <span class="rollup-title">description</span>
+              <span id="description-tldr" class="rollup-tldr"></span>
+            </span>
             <span id="description-summary" class="rollup-meta"></span>
           </summary>
           <div class="rollup-content">
@@ -84,13 +87,47 @@
           <summary>planner record</summary>
           <pre id="drawer-planner-body"></pre>
         </details>
-        <details id="drawer-run" class="drawer-rollup drawer-run" hidden open>
+        <section id="drawer-build-progress" class="build-progress" hidden aria-live="polite">
+          <header class="build-progress-head">
+            <span><span id="build-progress-dot" class="build-progress-dot"></span>build progress</span>
+            <strong id="build-progress-state">active</strong>
+          </header>
+          <div class="build-progress-metrics">
+            <span><b id="build-progress-slice">slice 1/3</b><small>automation window</small></span>
+            <span><b id="build-progress-elapsed">0m</b><small>elapsed</small></span>
+            <span><b id="build-progress-activity-age">now</b><small>last activity</small></span>
+            <span><b id="build-progress-files">0</b><small>changed paths</small></span>
+          </div>
+          <div class="build-progress-track" aria-hidden="true"><div id="build-progress-fill"></div></div>
+          <p id="build-progress-current" class="build-progress-current">Waiting for the first agent update…</p>
+          <p id="build-progress-checkpoint" class="build-progress-checkpoint">No checkpoint yet. Productive turn-limit checkpoints continue automatically.</p>
+        </section>
+        <details id="drawer-run" class="drawer-rollup drawer-run" hidden>
           <summary>
-            <span class="rollup-title"><span id="run-status-dot" class="run-status-dot"></span><span id="run-title">last run</span></span>
+            <span class="rollup-copy">
+              <span class="rollup-title"><span id="run-status-dot" class="run-status-dot"></span><span id="run-title">last run</span></span>
+              <span id="run-tldr" class="rollup-tldr" hidden></span>
+            </span>
             <span id="run-summary" class="rollup-meta"></span>
           </summary>
           <div id="run-log" class="run-log"></div>
         </details>
+        <form id="drawer-prompt" class="drawer-prompt">
+          <div class="drawer-prompt-head">
+            <label for="agent-prompt">ask the card agent</label>
+            <span id="agent-prompt-status">advisor</span>
+          </div>
+          <textarea id="agent-prompt" rows="3" maxlength="4000" spellcheck="true"
+            placeholder="Ask for a summary, rationale, risk check, or recommended next action…"></textarea>
+          <div class="drawer-prompt-actions">
+            <span>Ask for guidance, save a handoff, or send preserved work through guarded Build and Verify.</span>
+            <div class="drawer-prompt-buttons">
+              <button id="agent-instruction-save" type="button" class="prompt-secondary">save handoff</button>
+              <button id="agent-return-build" type="button" class="prompt-secondary" hidden>send to build</button>
+              <button id="agent-prompt-submit" type="submit">ask</button>
+            </div>
+          </div>
+        </form>
         <footer class="drawer-foot" id="drawer-file"></footer>
       </div>
       <section id="drawer-subtasks" class="drawer-subtasks" hidden>
@@ -106,6 +143,7 @@
       <button id="drawer-resume-build" class="rail-btn rail-primary" hidden>resume build</button>
       <button id="drawer-restart-build" class="rail-btn rail-primary" hidden>restart build</button>
       <button id="drawer-retry-verify" class="rail-btn rail-primary" hidden>retry verification</button>
+      <button id="drawer-return-build" class="rail-btn rail-primary" hidden>return to build</button>
       <span class="rail-label">move to</span>
       <select id="move-select" class="rail-input"></select>
       <button id="move-apply" class="rail-btn rail-primary">move</button>
@@ -132,6 +170,7 @@
     <span class="card-notch" aria-hidden="true"></span>
     <header><span class="card-id"></span><span class="card-run"></span><span class="card-prio"></span></header>
     <h3 class="card-title"></h3>
+    <p class="card-tldr"></p>
     <div class="card-chips"></div>
     <footer>
       <span class="card-rel"></span>
