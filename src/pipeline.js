@@ -1402,7 +1402,16 @@ async function preservedWorktree(project, card) {
 
 function canRetryVerification(card) {
   const reason = card?.data?.needs_human_reason;
-  return ['bad_verdict', 'hook_cancelled', 'attempts_exhausted', 'worktree_env'].includes(reason)
+  return [
+    'bad_verdict', 'hook_cancelled', 'attempts_exhausted', 'worktree_env',
+    // CI terminal states describe the last run, not a permanently exhausted
+    // candidate. A human may repair/commit the preserved worktree outside the
+    // agent loop, then rerun CI on the SAME approved verification attempt.
+    // If it still fails, ciStage records another failure and parks it again;
+    // if it passes, the existing attempt continues into Verify without
+    // silently extending max_attempts or manufacturing another Build.
+    'ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid',
+  ].includes(reason)
     || (reason === 'orphaned_run' && card?.data?.recovery_stage === 'Verify')
     || (reason === 'run_timeout' && card?.data?.recovery_stage === 'Verify')
     // A real fail followed by an infrastructure error in the repair Build can
@@ -1596,7 +1605,7 @@ export async function retryVerification(project, id) {
   if (!card) return { ok: false, error: 'card not found' };
   if (card.data.status !== 'Needs Human') return { ok: false, error: 'card is not waiting for verification retry' };
   if (!canRetryVerification(card)) {
-    return { ok: false, error: 'only an unavailable verification verdict can be retried directly' };
+    return { ok: false, error: 'card is not eligible for a same-candidate CI/verification retry' };
   }
   const kept = await preservedWorktree(project, card);
   if (!kept) return { ok: false, error: 'the preserved worktree is unavailable or no longer valid' };

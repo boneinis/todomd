@@ -970,7 +970,14 @@ async function openDrawer(id) {
   // not just a possibly stale `worktree:` frontmatter value.
   $('#drawer-resume-build').hidden = !card.recovery?.resume_build;
   $('#drawer-restart-build').hidden = !card.recovery?.restart_build;
-  $('#drawer-retry-verify').hidden = !card.recovery?.retry_verification;
+  const retryVerify = $('#drawer-retry-verify');
+  retryVerify.hidden = !card.recovery?.retry_verification;
+  const retryingCi = ['ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid']
+    .includes(card.data.needs_human_reason);
+  retryVerify.textContent = retryingCi ? 'retry CI + verification' : 'retry verification';
+  retryVerify.title = retryingCi
+    ? 'rerun CI on this preserved candidate and continue the same verification attempt if it passes'
+    : 'retry verification on this preserved candidate';
   $('#drawer-return-build').hidden = !card.recovery?.return_to_build;
   $('#agent-return-build').hidden = !card.recovery?.return_to_build;
   resetDeleteBtn();

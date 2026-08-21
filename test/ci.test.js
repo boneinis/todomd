@@ -186,6 +186,7 @@ test('CI board column: a failing gate retries the build up to max_attempts, then
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');
     await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.chain });
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
 
     const card = readCard(repo, 'task-0001');
     assert.equal(card.data.needs_human_reason, 'ci_attempts_exhausted');
@@ -197,6 +198,30 @@ test('CI board column: a failing gate retries the build up to max_attempts, then
     }
     assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/verify-1.jsonl')), false,
       'the gate never passed, so Verify never ran');
+
+    // The human repairs the preserved candidate directly after the automatic
+    // Build/CI budget is exhausted. This must rerun CI on attempt 3, not force
+    // a fourth Build/verification allowance merely to clear a stale terminal
+    // flag (the live Phase-1 failure mode this guards).
+    const worktree = path.join(repo, '.todomd/worktrees/task-0001');
+    writeScript(worktree, 'ci-bad.mjs', `process.exit(0);\n`);
+    git(worktree, ['add', 'ci-bad.mjs']);
+    git(worktree, ['commit', '-qm', 'repair CI candidate outside the agent loop']);
+
+    const recovery = await pipeline.recoveryActions(p, 'task-0001');
+    assert.equal(recovery.retry_verification, true,
+      'CI exhaustion exposes same-candidate CI/verification recovery');
+    assert.equal(recovery.return_to_build, true,
+      'a substantive failure can still choose a new repair Build instead');
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+
+    const recovered = readCard(repo, 'task-0001');
+    assert.equal(recovered.data.verification.attempts, 3,
+      'the repaired CI rerun reuses the approved attempt instead of extending the cap');
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/build-4.jsonl')), false,
+      'same-candidate recovery never manufactures another Build');
+    assert.match(recovered.raw, /CI attempt 3 · [\d.]+s · `node ci-bad\.mjs` passed/);
   } finally {
     pipeline.forgetProject(p.name);
     await pipeline.killAllChildren({ graceMs: 1000 });
