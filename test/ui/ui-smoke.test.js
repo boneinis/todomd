@@ -271,6 +271,8 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       'a verifier-exhausted card with preserved work shows Return to Build');
     assert.equal(await page.eval(`document.getElementById('agent-return-build').hidden`), false,
       'the card-agent composer can carry its handoff into the guarded repair Build');
+    assert.equal(await page.eval(`document.getElementById('drawer-recovery-agent').hidden`), false,
+      'a full-access Needs Human drawer offers one-click guarded recovery review');
     assert.deepEqual(await page.eval(`({
       buildAllowed: ![...document.getElementById('move-select').options].find((o) => o.value === 'Build').disabled,
       queueAllowed: ![...document.getElementById('move-select').options].find((o) => o.value === 'Queue').disabled,

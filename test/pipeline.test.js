@@ -934,6 +934,82 @@ test('an exhausted preserved card can return to Build with a durable human hando
   clearFakeAgent();
 });
 
+test('Recovery agent turns substantive exhausted findings into one guarded repair Build', async () => {
+  isolateHome();
+  const argvLog = path.join(tmp('recovery-agent-build'), 'argv.jsonl');
+  useFakeAgent({
+    build: 'good',
+    verdict: 'pass',
+    argv_log: argvLog,
+    recovery_action: 'return_to_build',
+    recovery_confidence: 'high',
+    recovery_diagnosis: 'The verifier found mutable activated rows; unchanged verification would repeat the failure.',
+    recovery_handoff: 'Block INSERT into activated metadata, add role-impersonated regressions, and rerun the trusted CI gate.',
+  });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  seedPreservedVerification(repo, 'task-0010');
+  await patchFrontmatter(repo, 'task-0010', {
+    needs_human_reason: 'attempts_exhausted',
+    verification: { attempts: 3, max_attempts: 3, last_verdict: 'fail' },
+  });
+
+  assert.deepEqual(await pipeline.reviewAndProcessRecovery(p, 'task-0010'), { ok: true, queued: true });
+  assert.equal((await pipeline.reviewAndProcessRecovery(p, 'task-0010')).ok, false,
+    'one card cannot queue overlapping recovery reviews');
+  await until(() => status(repo, 'task-0010') === 'Done', { timeout: BUDGET.chain });
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0010'), { timeout: BUDGET.stage });
+
+  const finished = readCard(repo, 'task-0010');
+  assert.equal(finished.data.verification.attempts, 4);
+  assert.equal(finished.data.verification.max_attempts, 4,
+    'one explicit recovery click creates exactly one auditable repair attempt');
+  assert.match(finished.raw, /Recovery.*reviewed: return_to_build \(high\)/);
+  const invocations = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(invocations.some((argv) => argv.some((arg) =>
+    /Human instruction for this Build[\s\S]*Block INSERT into activated metadata/.test(arg))),
+  'the structured recovery handoff reaches the fresh Build agent');
+  clearFakeAgent();
+});
+
+test('Recovery agent refuses to re-verify unchanged substantive failures or act below high confidence', async () => {
+  isolateHome();
+  useFakeAgent({
+    recovery_action: 'retry_verification',
+    recovery_confidence: 'high',
+    recovery_diagnosis: 'Retry the same candidate.',
+  });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  seedPreservedVerification(repo, 'task-0012');
+  await patchFrontmatter(repo, 'task-0012', {
+    needs_human_reason: 'attempts_exhausted',
+    verification: { attempts: 3, max_attempts: 3, last_verdict: 'fail' },
+  });
+
+  await pipeline.reviewAndProcessRecovery(p, 'task-0012');
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0012'), { timeout: BUDGET.stage });
+  let held = readCard(repo, 'task-0012');
+  assert.equal(held.data.status, 'Needs Human');
+  assert.deepEqual(held.data.verification, { attempts: 3, max_attempts: 3, last_verdict: 'fail' });
+  assert.match(held.raw, /substantive verification failures must return to Build/);
+
+  useFakeAgent({
+    recovery_action: 'return_to_build',
+    recovery_confidence: 'medium',
+    recovery_diagnosis: 'The evidence may be incomplete.',
+    recovery_handoff: 'Investigate the incomplete evidence.',
+  });
+  await pipeline.reviewAndProcessRecovery(p, 'task-0012');
+  await until(() => !pipeline.hasLiveRun(p.name, 'task-0012'), { timeout: BUDGET.stage });
+  held = readCard(repo, 'task-0012');
+  assert.equal(held.data.status, 'Needs Human');
+  assert.match(held.raw, /reviewer confidence was medium; no workflow action executed/);
+  clearFakeAgent();
+});
+
 test('Resume Build falls back to a fresh agent when the provider lost the saved conversation', async () => {
   isolateHome();
   const argvLog = path.join(tmp('resume-missing-fallback'), 'argv.jsonl');

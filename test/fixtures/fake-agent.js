@@ -141,6 +141,16 @@ if (prompt.includes('TODOMD CARD SUMMARY REQUEST')) {
   process.exit(0);
 }
 
+if (prompt.includes('TODOMD RECOVERY REVIEW')) {
+  process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: {
+    action: process.env.FAKE_RECOVERY_ACTION || 'hold_for_human',
+    confidence: process.env.FAKE_RECOVERY_CONFIDENCE || 'high',
+    diagnosis: process.env.FAKE_RECOVERY_DIAGNOSIS || 'The evidence requires an explicit human decision.',
+    handoff: process.env.FAKE_RECOVERY_HANDOFF || '',
+  } })));
+  process.exit(0);
+}
+
 // ── hang a stage until SIGTERM, so a test can cancel/timeout a LIVE run ──
 // FAKE_HANG=1 hangs the build (legacy); FAKE_HANG=<stage> hangs that stage.
 // With FAKE_HANG_MARKER set it hangs only ONCE (the marker records the first

@@ -672,6 +672,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const result = await pipeline.summarizeCard(project, summariesMatch[1]);
       return json(res, result.ok ? 200 : 400, result);
     }
+    const recoveryReviewMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/recover$/);
+    if (recoveryReviewMatch && req.method === 'POST') {
+      const result = await pipeline.reviewAndProcessRecovery(project, recoveryReviewMatch[1]);
+      return json(res, result.ok ? 202 : 400, result);
+    }
     const promptMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/prompt$/);
     if (promptMatch && req.method === 'POST') {
       const body = await readBody(req);

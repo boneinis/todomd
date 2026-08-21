@@ -980,6 +980,7 @@ async function openDrawer(id) {
     : 'retry verification on this preserved candidate';
   $('#drawer-return-build').hidden = !card.recovery?.return_to_build;
   $('#agent-return-build').hidden = !card.recovery?.return_to_build;
+  $('#drawer-recovery-agent').hidden = card.data.status !== 'Needs Human' || boardData?.access !== 'full';
   resetDeleteBtn();
   // pending agent question
   const q = card.data.question;
@@ -1023,6 +1024,7 @@ function syncPromptComposer() {
   $('#agent-prompt-submit').disabled = busy;
   $('#agent-instruction-save').disabled = busy;
   $('#agent-return-build').disabled = busy;
+  $('#drawer-recovery-agent').disabled = busy;
   $('#agent-prompt-status').textContent = busy
     ? `${state.state || 'running'} · ${state.stage || 'agent'}`
     : 'advisor · handoff ready';
@@ -1266,6 +1268,26 @@ $('#drawer-retry-verify').addEventListener('click', async () => {
 });
 
 $('#drawer-return-build').addEventListener('click', returnCardToBuild);
+
+$('#drawer-recovery-agent').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  const button = $('#drawer-recovery-agent');
+  button.disabled = true;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/recover?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers,
+    });
+    const out = await res.json();
+    if (!res.ok) {
+      syncPromptComposer();
+      return toast(out.error || 'could not start recovery review');
+    }
+    toast('recovery agent queued — it will execute at most one guarded action');
+  } catch {
+    syncPromptComposer();
+    toast('server unreachable');
+  }
+});
 
 $('#drawer-resume-build').addEventListener('click', async () => {
   if (!drawerCard) return;

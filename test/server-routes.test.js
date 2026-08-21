@@ -132,6 +132,25 @@ test('API card prompt is full-access only and streams an advisory chat turn with
     assert.ok(readRunLog(repo, 'task-0001').events.some((event) =>
       JSON.stringify(event).includes('Review the latest verifier evidence')));
 
+    writeCard(repo, 'task-0002', {
+      status: 'Needs Human',
+      body: 'A product choice is required before work can continue.',
+      extra: 'needs_human_reason: needs_answer\nquestion: Which behavior should win?\n',
+    });
+    r = await fetch(`${base}/api/cards/task-0002/recover${q}`, {
+      method: 'POST', headers: { 'x-todomd-token': viewer, origin: base },
+    });
+    assert.equal(r.status, 403, 'viewer links cannot authorize a recovery agent action');
+    r = await fetch(`${base}/api/cards/task-0002/recover${q}`, { method: 'POST', headers: h });
+    assert.equal(r.status, 202);
+    assert.deepEqual(await r.json(), { ok: true, queued: true });
+    await until(() => !pipeline.hasLiveRun(name, 'task-0002'), {
+      timeout: BUDGET.stage, label: 'API-started recovery review completed',
+    });
+    assert.equal(readCard(repo, 'task-0002').data.status, 'Needs Human',
+      'a recovery review holds when the agent selects a human decision');
+    assert.match(readCard(repo, 'task-0002').raw, /Recovery.*hold_for_human/);
+
     r = await fetch(`${base}/api/cards/task-0001/summaries${q}`, {
       method: 'POST',
       headers: { 'x-todomd-token': viewer, origin: base },
