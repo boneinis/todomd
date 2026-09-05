@@ -156,9 +156,13 @@ test('Run Queue is project-scoped and idempotent', async () => {
   writeCard(repoB, 'task-kick-b', { status: 'Queue' });
 
   try {
-    assert.deepEqual(await pipeline.kickQueue(a), { ok: true, enqueued: 1 });
-    assert.deepEqual(await pipeline.kickQueue(a), { ok: true, enqueued: 0 },
-      'a repeated click cannot enqueue the same card twice');
+    const first = await pipeline.kickQueue(a);
+    assert.equal(first.ok, true);
+    assert.equal(first.enqueued, 1);
+    assert.equal(first.cards[0].code, 'enqueued');
+    const repeated = await pipeline.kickQueue(a);
+    assert.equal(repeated.enqueued, 0, 'a repeated click cannot enqueue the same card twice');
+    assert.ok(['running', 'already_queued'].includes(repeated.cards[0].code));
     await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
     assert.equal(status(repoB, 'task-kick-b'), 'Queue', 'another registered project is untouched');
     assert.equal(fs.existsSync(path.join(repoB, '.todomd/worktrees/task-kick-b')), false,
@@ -3025,4 +3029,130 @@ test('Gemini Plan preserves agent-written complexity through parseCard/loadBoard
     delete process.env.TODOMD_GEMINI_BIN;
     clearFakeAgent();
   }
+});
+
+
+test('malformed approval reports its YAML location before the Planned status gate', async () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0001-bad.md'),
+    '---\nid: task-0001\ntitle: Broken: title\nstatus: Planned\n---\n');
+  loadBoard(repo); // reproduce the prior failed-parse cache poisoning
+  const eligibility = await pipeline.approvalEligibility(p, readCard(repo, 'task-0001'));
+  assert.equal(eligibility.code, 'frontmatter_parse_error');
+  const approved = await pipeline.humanMove(p, 'task-0001', 'Queue');
+  assert.equal(approved.code, 'frontmatter_parse_error');
+  assert.match(approved.error, /card task-0001.*line 3/);
+  assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false);
+});
+
+test('Queue admission explains malformed, unknown, waiting, paused and active cards', async () => {
+  isolateHome();
+  const marker = path.join(tmp('queue-diagnostics'), 'build');
+  useFakeAgent({ build: 'good', verdict: 'pass', hang: 'build', hang_marker: marker });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Queue', deps: ['P1-01'] });
+  writeCard(repo, 'task-0002', { status: 'Queue', deps: ['task-0003'] });
+  writeCard(repo, 'task-0003', { status: 'Planned' });
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0004-bad.md'), '---\ntitle: Bad: title\nstatus: Queue\n---\n');
+  writeCard(repo, 'task-0005', { status: 'Queue' });
+  try {
+    pipeline.pauseQueue(p);
+    let result = await pipeline.kickQueue(p);
+    assert.equal(result.ok, false);
+    assert.equal(result.enqueued, 0);
+    const codes = Object.fromEntries(result.cards.map((c) => [c.id, c.code]));
+    assert.deepEqual(codes, { 'task-0001': 'unknown_dependencies', 'task-0002': 'waiting_dependencies',
+      'task-0004': 'frontmatter_parse_error', 'task-0005': 'paused' });
+    assert.match(result.cards[0].reason, /no existing card/);
+    pipeline.resumeQueue(p);
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+    result = await pipeline.kickQueue(p);
+    assert.equal(result.cards.find((c) => c.id === 'task-0005').code, 'running');
+    assert.equal(status(repo, 'task-0001'), 'Queue');
+    assert.equal(status(repo, 'task-0002'), 'Queue');
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), false);
+    await patchFrontmatter(repo, 'task-0003', { status: 'Done', archived: true });
+    result = await pipeline.kickQueue(p);
+    assert.equal(result.cards.find((c) => c.id === 'task-0002').code, 'enqueued');
+    const again = await pipeline.kickQueue(p);
+    assert.equal(again.cards.find((c) => c.id === 'task-0002').code, 'already_queued');
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+
+for (const stage of ['Plan', 'Triage']) {
+  test(`${stage} refuses to finalize agent-written malformed frontmatter`, async () => {
+    isolateHome();
+    const log = path.join(tmp('malformed-agent'), 'argv.jsonl');
+    useFakeAgent({ corrupt_card: '1', argv_log: log });
+    pipeline.init({ broadcast: noop });
+    const repo = makeRepo({ triage: true });
+    const p = project(repo);
+    writeCard(repo, 'task-0001');
+    try {
+      if (stage === 'Plan') await pipeline.humanMove(p, 'task-0001', 'Plan');
+      else await pipeline.maybeTriage(p, 'task-0001');
+      await until(() => readCard(repo, 'task-0001').parseError && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
+      assert.match(readCard(repo, 'task-0001').parseError, /frontmatter parse error at line 3/);
+      assert.ok(pipeline.getBanners().some((b) => /task-0001.*frontmatter parse error/.test(b.text || b.message || '')));
+      assert.deepEqual(pipeline.getRunStates(p.name), {});
+      const args = JSON.parse(fs.readFileSync(log, 'utf8').trim());
+      assert.match(args.join(' '), /[Pp]reserve.*title/);
+      assert.match(args.join(' '), /[Vv]alidate.*frontmatter/);
+    } finally { clearFakeAgent(); }
+  });
+}
+
+
+test('a dependency introduced while Build waits for capacity prevents admission until fixed', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Queue' });
+  let release;
+  const hold = scheduler.schedule(p, 'capacity-holder', 'Build', () => new Promise((resolve) => { release = resolve; }));
+  try {
+    assert.equal((await pipeline.kickQueue(p)).enqueued, 1);
+    assert.equal(scheduler.isQueued(p.name, 'task-0001'), true);
+    await patchFrontmatter(repo, 'task-0001', { dependencies: ['P1-01'] });
+    release();
+    await hold;
+    scheduler.rescan();
+    await sleep(100);
+    assert.equal(status(repo, 'task-0001'), 'Queue');
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), false);
+    assert.equal((await pipeline.kickQueue(p)).cards[0].code, 'unknown_dependencies');
+    await patchFrontmatter(repo, 'task-0001', { dependencies: [] });
+    scheduler.rescan();
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+  } finally {
+    release?.();
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('repairing malformed YAML clears its parse-error banner on the next sweep', () => {
+  isolateHome();
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-9917', { title: 'Broken: title' });
+  pipeline.triageSweep(p);
+  assert.ok(pipeline.getBanners().some((b) => b.text.includes('task-9917') && b.text.includes('parse error')));
+  writeCard(repo, 'task-9917', { title: 'Fixed title', status: 'Planned' });
+  pipeline.triageSweep(p);
+  assert.equal(pipeline.getBanners().some((b) => b.text.includes('task-9917') && b.text.includes('parse error')), false);
 });

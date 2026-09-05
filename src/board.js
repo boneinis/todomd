@@ -11,19 +11,44 @@ import { resourcesConfig } from './resources.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'];
 
-// gray-matter (v4) caches parse results keyed by the input string — AND caches
-// an empty result even after the first parse THREW. So once loadBoard hits a
-// card with malformed frontmatter (throws, caught → "(unparseable)"), a later
-// matter() on that same string returns {data:{}, content:<entire raw>} without
-// throwing — silently losing the card's id/status. Detect that poisoned shape
-// (a frontmatter block that wasn't consumed and yielded no keys) and re-throw,
-// so every read path treats the bad card consistently as a parse failure.
+// Pass options to disable gray-matter's cache: a thrown parse otherwise leaves
+// an empty cached result, losing the original YAML reason and source location.
 function parseCard(raw) {
-  const parsed = matter(raw);
-  if (/^---\r?\n/.test(raw) && parsed.content === raw && Object.keys(parsed.data).length === 0) {
-    throw new Error('frontmatter failed to parse');
+  return matter(raw, {});
+}
+
+const fallbackCardId = (file) => file.match(/^(task-\d+)(?:-|\.md$)/)?.[1] || file.replace(/\.md$/, '');
+function frontmatterError(file, error) {
+  const id = fallbackCardId(file);
+  // gray-matter retains the newline after the opening delimiter in its YAML
+  // input, so the parser's zero-based line maps to the file with +1.
+  const line = Number.isInteger(error.mark?.line) ? error.mark.line + 1 : null;
+  const column = Number.isInteger(error.mark?.column) ? error.mark.column + 1 : null;
+  const reason = error.reason || String(error.message || error);
+  return {
+    parseError: `card ${id} has a frontmatter parse error${line ? ` at line ${line}` : ''} (${file}): ${reason}`,
+    parseErrorDetail: { line, column, reason },
+  };
+}
+
+export function cardParseFailure(card) {
+  return card?.parseError ? {
+    ok: false, code: 'frontmatter_parse_error', error: card.parseError,
+    file: card.file, parseErrorDetail: card.parseErrorDetail,
+  } : null;
+}
+
+// Resolve against the complete board, including archived Done cards. Missing
+// references are configuration errors; existing unfinished cards are normal waits.
+export function dependencyIssues(card, cards) {
+  const missing = [], waiting = [], unparseable = [];
+  for (const id of asArray(card?.dependencies).map(String)) {
+    const dependency = cards.find((c) => c.id === id);
+    if (!dependency) missing.push(id);
+    else if (dependency.unparseable) unparseable.push(id);
+    else if (dependency.status !== 'Done') waiting.push({ id, status: dependency.status });
   }
-  return parsed;
+  return { missing, waiting, unparseable };
 }
 
 // Columns the pipeline hard-requires — if a config edit drops one, its cards
@@ -396,7 +421,7 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
         const parsed = parseCard(fs.readFileSync(path.join(dir, file), 'utf8'));
         // archived cards are hidden from the board (and skipped by the pipeline)
         // unless explicitly requested — the "show archived" view passes the flag
-        if (!includeArchived && parsed.data.archived) continue;
+        // Keep archived dependencies available until reference resolution below.
         cards.push({
           file,
           ...parsed.data,
@@ -404,12 +429,14 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
           tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data),
           criteria: criteriaProgress(parsed.content),
         });
-      } catch {
-        cards.push({ file, id: file.replace(/\.md$/, ''), title: `(unparseable) ${file}`, status: 'Review', unparseable: true });
+      } catch (error) {
+        cards.push({ file, id: fallbackCardId(file), title: `(unparseable) ${file}`, status: 'Review', unparseable: true,
+          ...frontmatterError(file, error) });
       }
     }
   }
-  return { config, cards };
+  for (const card of cards) card.dependencyIssues = dependencyIssues(card, cards);
+  return { config, cards: includeArchived ? cards : cards.filter((card) => !card.archived) };
 }
 
 // Manual priority within a column. Cards without an explicit order retain the
@@ -471,7 +498,7 @@ export function readCard(repoPath, id) {
     return { file, raw, data: parsed.data, body: parsed.content,
       tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data) };
   } catch (e) {
-    return { file, raw, data: {}, body: raw, parseError: String(e.message || e) };
+    return { file, raw, data: {}, body: raw, ...frontmatterError(file, e) };
   }
 }
 
@@ -550,6 +577,7 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
     }
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     const oldStatus = card.data.status;
     if (oldStatus === newStatus) return { ok: true, unchanged: true };
 
@@ -627,6 +655,7 @@ export function setArchived(repoPath, id, on) {
   return withRepoLock(repoPath, async () => {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     const m = card.raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!m) return { ok: false, error: `${id} has no frontmatter block; fix the file manually` };
     let fm = m[1];
@@ -687,6 +716,7 @@ export function patchFrontmatter(repoPath, id, updates) {
   return withRepoLock(repoPath, async () => {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     const m = card.raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!m) return { ok: false, error: 'no frontmatter' };
     let fm = m[1];
@@ -934,6 +964,7 @@ export function attachCard(repoPath, id, filename, buffer) {
     if (buffer.length > MAX_ATTACHMENT) return { ok: false, error: 'file too large (25 MB max)' };
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
 
     // no spaces/special chars — keep attachment names URL-safe for markdown links
     let safe = path.basename(String(filename || 'file')).replace(/[^\w.\-]/g, '_').replace(/^\.+/, '');
@@ -974,6 +1005,7 @@ export function appendRunLog(repoPath, id, line) {
   return withRepoLock(repoPath, async () => {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     let raw = card.raw;
     // Anchor to the REAL "## Run Log" heading — not a line-start mention inside a
     // fenced code block (a self-documenting todomd card can quote the heading

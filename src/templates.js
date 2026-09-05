@@ -223,7 +223,7 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
    - Numbered, concrete steps (files to change, what to add where, tests to write)
    - A \`Risks:\` line if anything could break existing behavior (include unresolved triage Flags / human decisions)
    Leave \`## Chunks\` empty or absent.
-7. Other than the \`build_profile:\` and \`complexity:\` keys, do NOT modify YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
+7. Preserve the existing title. Quote YAML strings containing a colon followed by a space (use a YAML serializer), and validate the final frontmatter. Other than the \`build_profile:\` and \`complexity:\` keys, do NOT modify YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
 
 Finish with a one-line summary (say whether you split into N chunks or wrote a single plan). Produce the card edit before spending the rest of the turn budget on investigation.
 `;
@@ -320,7 +320,7 @@ You are the todomd TRIAGE agent. A new card just arrived for human review. The t
    - **Rationale:** 1-2 short sentences.
    - **Risks or questions:** concise, or "none".
    - **Next step:** Plan, create a technical spike, split, or ask the human.
-5. Never modify the YAML frontmatter, any other section, or any other file. Do not implement anything.
+5. Never modify the YAML frontmatter (including title), any other section, or any other file. Validate the final frontmatter; quote any YAML strings in permitted output that contain a colon followed by a space. Do not implement anything.
 
 Finish with a one-line routing summary. Complete the decision before additional investigation.
 `;

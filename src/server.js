@@ -9,7 +9,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
+import { loadBoard, readCard, cardParseFailure, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
 import { listModels, SUPPORTED_VENDORS, validateModelRoute } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
@@ -538,12 +538,18 @@ export function startServer({ port = 7337, lan = false } = {}) {
       let cid = cardIdInPath[1];
       try { cid = decodeURIComponent(cid); } catch { return json(res, 400, { error: 'invalid card id' }); }
       if (!CARD_ID.test(cid)) return json(res, 400, { error: 'invalid card id' });
+      if (req.method === 'POST' && !url.pathname.endsWith('/cancel')) {
+        const invalid = cardParseFailure(readCard(project.path, cid));
+        if (invalid) return json(res, 400, invalid);
+      }
     }
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
     if (cardMatch && req.method === 'GET') {
       const card = readCard(project.path, cardMatch[1]);
       if (!card) return json(res, 404, { error: 'card not found' });
-      return json(res, 200, { ...card, recovery: await pipeline.recoveryActions(project, cardMatch[1]) });
+      const summary = loadBoard(project.path, { includeArchived: true }).cards.find((c) => c.file === card.file);
+      return json(res, 200, { ...card, dependencyIssues: summary?.dependencyIssues,
+        recovery: card.parseError ? {} : await pipeline.recoveryActions(project, cardMatch[1]) });
     }
     // the streamed events of the card's most recent run, to back-fill the drawer
     const runlogMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/runlog$/);

@@ -79,6 +79,13 @@ function findCard(id) {
 }
 const taskId = (prompt.match(/task-\d+/) || [])[0];
 
+if (process.env.FAKE_CORRUPT_CARD) {
+  const file = findCard(taskId);
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^title:.*$/m, 'title: Broken: agent title'));
+  emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
+  process.exit(0);
+}
+
 // ── quota-once: emit a usage-limit error on the first BUILD run, then behave ──
 if (process.env.FAKE_QUOTA_MARKER && prompt.includes('build') && !fs.existsSync(process.env.FAKE_QUOTA_MARKER)) {
   fs.writeFileSync(process.env.FAKE_QUOTA_MARKER, '1');

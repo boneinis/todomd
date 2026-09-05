@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
-import { loadConfig, normalizeConfig, loadBoard, readCard, readRunLog, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt, ensureGitExcluded, cardTldr, explicitCardTldr, descriptionSummarySource, descriptionSummaryHash, readSummaryCache, writeSummaryCache } from './board.js';
+import { loadConfig, normalizeConfig, loadBoard, readCard, cardParseFailure, dependencyIssues, readRunLog, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt, ensureGitExcluded, cardTldr, explicitCardTldr, descriptionSummarySource, descriptionSummaryHash, readSummaryCache, writeSummaryCache } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, archiveBranchForRestart, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage } from './runner.js';
@@ -258,9 +258,11 @@ async function parkForQuota(project, id, attempt, maxAttempts, findings, attempt
 function enqueueQueue(project) {
   let enqueued = 0;
   try {
-    for (const card of sortCardsByBoardOrder(loadBoard(project.path).cards.filter((c) => c.status === 'Queue'))) {
+    const board = loadBoard(project.path, { includeArchived: true });
+    for (const card of sortCardsByBoardOrder(board.cards.filter((c) => !c.archived && c.status === 'Queue'))) {
       // epics sit in Queue as trackers — they never build (their chunks do)
       if (card.id && !card.epic &&
+          !queueCardBlocker(card, board.cards) &&
           !children.has(runKey(project.name, card.id)) && !pending.has(runKey(project.name, card.id))) {
         if (enqueueBuild(project, card.id)) enqueued++;
       }
@@ -342,6 +344,7 @@ function cardVendor(config, card, stageName) {
 // an approval that humanMove already knows it will refuse.
 export async function approvalEligibility(project, card, config = loadConfig(project.path)) {
   if (!card) return { ok: false, error: 'card not found' };
+  if (card.parseError) return cardParseFailure(card);
   const id = card.data.id;
   if (card.data.status !== 'Planned') {
     return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
@@ -365,11 +368,25 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
   // same one-item list as YAML array syntax. Using the raw readCard value here
   // used to silently drop that dependency and approve blocked work.
   const board = loadBoard(project.path, { includeArchived: true });
-  const deps = board.cards.find((c) => c.id === id)?.dependencies || [];
-  const blocked = deps.filter((d) => board.cards.find((c) => c.id === d)?.status !== 'Done');
-  return blocked.length
-    ? { ok: false, error: `blocked by: ${blocked.join(', ')}` }
-    : { ok: true };
+  return dependencyBlocker(card.data, board.cards) || { ok: true };
+}
+
+function dependencyBlocker(card, cards) {
+  const issues = dependencyIssues(card, cards);
+  if (issues.missing.length) return { ok: false, code: 'unknown_dependencies', dependencyIssues: issues,
+    error: `blocked by unknown dependencies: ${issues.missing.join(', ')} — no existing card has these IDs; use card IDs such as task-0009` };
+  if (issues.unparseable.length) return { ok: false, code: 'unparseable_dependencies', dependencyIssues: issues,
+    error: `blocked by dependencies with frontmatter parse errors: ${issues.unparseable.join(', ')}` };
+  if (issues.waiting.length) return { ok: false, code: 'waiting_dependencies', dependencyIssues: issues,
+    error: `blocked by: ${issues.waiting.map((d) => `${d.id} (${d.status})`).join(', ')}` };
+  return null;
+}
+
+function queueCardBlocker(card, cards) {
+  if (card.parseError) return cardParseFailure(card);
+  if (card.epic) return { ok: false, code: 'epic_tracker', error: 'epic tracker — its child cards build separately' };
+  if (card.build_profile === 'split_required') return { ok: false, code: 'split_required', error: 'plan requires splitting before Build' };
+  return dependencyBlocker(card, cards);
 }
 
 function stageConfig(config, stageName, card) {
@@ -1392,6 +1409,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
 export async function humanMove(project, id, to, { instruction = '' } = {}) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: `card not found: ${id}` };
+  if (card.parseError) return cardParseFailure(card);
   const from = card.data.status;
   const config = loadConfig(project.path);
   const key = runKey(project.name, id);
@@ -2143,6 +2161,7 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
       '(unfamiliarity, blast radius across consumers, coordination, tricky edge cases), judged independently of size. ' +
       'build_profile sizes the effort; complexity rates the difficulty. These two frontmatter keys are the only ones you may set.';
   }
+  prompt += '\n\nPreserve the existing title and other unauthorized frontmatter keys. Any YAML string you are allowed to write containing a colon followed by a space must be quoted (use a YAML serializer). Validate the card frontmatter before finishing.';
   const { result, run, finishTracking } = await spawnTracked(project, id, stageName, 'Review', 0, {
     retainUntilFinalized: true,
     triggerClaim,
@@ -2183,6 +2202,13 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
 
   try {
     if (await finishCancellation()) return;
+    const edited = readCard(project.path, id);
+    if (edited?.parseError) {
+      setBanner(`unparseable:${project.name}:${edited.file}`, 'error', edited.parseError);
+      releaseTracking();
+      sendState(project, id, 'idle');
+      return;
+    }
     if (run?.timedOut) {
       await recordRun(project, id, stageName, 0, result, 'run timeout');
       await toNeedsHuman(project, id, stageName, 'run_timeout',
@@ -2341,7 +2367,12 @@ function enqueueBuild(project, id) {
     pending.set(key, owner);
     return buildChain(project, id, null, recovery, owner);
   }, {
-    blocked: () => quotaPaused.has(project.name) || isQueuePaused(project),
+    blocked: () => {
+      if (quotaPaused.has(project.name) || isQueuePaused(project)) return true;
+      const current = readCard(project.path, id);
+      return !!current && !!queueCardBlocker({ ...current.data, ...current, epic: current.data.epic },
+        loadBoard(project.path, { includeArchived: true }).cards);
+    },
     onDefer: onDeferState(project, id, 'Build'),
   }).catch((err) => pipelineError(project, id, err, owner));
   return true;
@@ -3543,6 +3574,7 @@ async function runTriage(project, id, config, t, vendor, claim) {
   //    triage with the tasks dir as cwd: writes are confined to the cards
   //    themselves, and the inlined command's board-relative paths are rewritten
   //    to match the new cwd.
+  prompt += '\n\nPreserve all frontmatter, including title. If writing YAML strings in your permitted output, quote strings containing a colon followed by a space and validate the final card frontmatter.';
   const nonClaudeTriage = vendor !== 'claude';
   if (claim.cancelled) {
     await patchFrontmatter(project.path, id, { triaged: '' });
@@ -3571,6 +3603,11 @@ async function runTriage(project, id, config, t, vendor, claim) {
 
   try {
     if (await finishCancellation()) return;
+    const edited = readCard(project.path, id);
+    if (edited?.parseError) {
+      setBanner(`unparseable:${project.name}:${edited.file}`, 'error', edited.parseError);
+      return;
+    }
     const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
     if (run?.timedOut) {
       await recordRun(project, id, 'Triage', 0, result, 'run timeout');
@@ -3602,6 +3639,11 @@ async function runTriage(project, id, config, t, vendor, claim) {
 export function triageSweep(project) {
   try {
     const board = loadBoard(project.path);
+    const invalidKeys = new Set(board.cards.filter((card) => card.unparseable)
+      .map((card) => `unparseable:${project.name}:${card.file}`));
+    for (const key of banners.keys()) {
+      if (key.startsWith(`unparseable:${project.name}:`) && !invalidKeys.has(key)) setBanner(key, null, null);
+    }
     for (const card of board.cards) {
       // an unparseable card can't be read or triaged — surface it once per file
       // (setBanner dedupes on the key) instead of burning a triage run every
@@ -3609,7 +3651,7 @@ export function triageSweep(project) {
       // a board.js that predates it.
       if (card.unparseable || String(card.title || '').startsWith('(unparseable)')) {
         setBanner(`unparseable:${project.name}:${card.file}`, 'error',
-          `${project.name}: ${card.file} could not be parsed — fix or remove the card file`);
+          card.parseError || `${project.name}: ${card.file} could not be parsed — fix or remove the card file`);
         continue;
       }
       if (card.status === 'Review' && card.id && !card.triaged && !card.skill) {
@@ -3991,19 +4033,45 @@ export function resumeQueue(project) {
 // repeatedly because enqueueBuild and the scheduler both dedupe by project/card.
 export async function kickQueue(project) {
   const config = loadConfig(project.path);
-  if (isQueuePaused(project)) return { ok: false, error: 'queue is paused — resume it first' };
-  if (quotaPaused.has(project.name)) return { ok: false, error: 'usage limit is paused — resume usage first' };
-  if ((config.mode || 'launcher') === 'budget') {
-    return { ok: false, error: 'budget-mode work is started by its dispatcher' };
+  const gate = isQueuePaused(project) ? { code: 'paused', error: 'queue is paused — resume it first' }
+    : quotaPaused.has(project.name) ? { code: 'quota_paused', error: 'usage limit is paused — resume usage first' }
+    : (config.mode || 'launcher') === 'budget' ? { code: 'budget_mode', error: 'budget-mode work is started by its dispatcher' } : null;
+  if (!gate) {
+    for (const card of loadBoard(project.path).cards) {
+      if (card.epic && card.status === 'Queue') await advanceChildren(project, card.id);
+    }
   }
-
-  const board = loadBoard(project.path);
-  for (const card of board.cards) {
-    if (card.epic && card.status === 'Queue') await advanceChildren(project, card.id);
+  const board = loadBoard(project.path, { includeArchived: true });
+  const cards = [];
+  let enqueued = 0;
+  for (const card of sortCardsByBoardOrder(board.cards)) {
+    const key = runKey(project.name, card.id);
+    const active = children.has(key) || pending.has(key) || runs.has(key);
+    if (card.archived || !(card.status === 'Queue' || card.unparseable ||
+        (active && ['Build', 'CI', 'Verify'].includes(card.status)))) continue;
+    const blocker = queueCardBlocker(card, board.cards);
+    let code, reason, added = false;
+    if (blocker) { code = blocker.code; reason = blocker.error; }
+    else if (active) { code = 'running'; reason = 'already active in the pipeline'; }
+    else if (gate) { code = gate.code; reason = gate.error; }
+    else if (scheduler.isQueued(project.name, card.id)) {
+      code = 'already_queued';
+      const entry = scheduler.queuedEntries(project.name).find((e) => e.card === card.id);
+      reason = entry?.deferredReason || `already queued for ${entry?.column || 'Build'}; waiting for scheduler admission`;
+    } else {
+      added = enqueueBuild(project, card.id);
+      code = added ? 'enqueued' : 'already_queued';
+      reason = added ? 'submitted to the Build scheduler' : 'already queued or active';
+      if (added) enqueued++;
+    }
+    cards.push({ id: card.id, file: card.file, status: card.status, enqueued: added, code, reason,
+      ...(blocker?.dependencyIssues ? { dependencyIssues: blocker.dependencyIssues } : {}),
+      ...(card.parseErrorDetail ? { parseErrorDetail: card.parseErrorDetail } : {}) });
   }
-  const enqueued = enqueueQueue(project);
-  scheduler.rescan();
-  return { ok: true, enqueued };
+  if (!gate) scheduler.rescan();
+  const states = getRunStates(project.name);
+  for (const card of cards) if (states[card.id]) card.scheduler = states[card.id];
+  return { ok: !gate, ...(gate || {}), enqueued, cards };
 }
 
 export function resumeQueues(projects) {

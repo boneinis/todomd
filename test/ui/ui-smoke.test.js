@@ -44,7 +44,7 @@ function hostileBoard() {
   const card = (name, body) => fs.writeFileSync(path.join(repo, '.todomd/tasks', name), body);
   card('task-0001-scalar-label.md',
     '---\nid: task-0001\ntitle: labels as a bare string\nstatus: Review\ntype: improvement\n' +
-    'complexity: very-high\nbuild_profile: long\nlabels: ui\nassignee: 12345\ntldr: The card verifies resilient rendering for hand-edited label metadata.\n---\n\n## Description\n\nhand-edited\n');
+    'dependencies: [P1-01, task-0002]\ncomplexity: very-high\nbuild_profile: long\nlabels: ui\nassignee: 12345\ntldr: The card verifies resilient rendering for hand-edited label metadata.\n---\n\n## Description\n\nhand-edited\n');
   card('task-0002-mapping-label.md',
     '---\nid: task-0002\ntitle: labels as a YAML mapping\nstatus: Queue\ntype: bug\n' +
     'labels: {a: 1}\nneeds_human_reason: 42\nagent: codex\n' +
@@ -142,11 +142,17 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     await until(async () => /build profile/.test(await page.eval(`document.getElementById('drawer-meta').textContent`)), { timeout: BUDGET.quick });
     assert.match(await page.eval(`document.getElementById('drawer-meta').textContent`), /complexity.*very-high.*build profile.*long/s);
     await page.eval(`closeDrawer()`);
+    assert.match(await page.eval(`document.querySelector('[data-id="task-0001"] .card-diagnostics').textContent`), /Unknown dependencies: P1-01.*Waiting for: task-0002/s);
+    assert.match(await page.eval(`document.querySelector('[data-id="task-0005"] .card-diagnostics').textContent`), /frontmatter parse error at line/);
+    await page.eval(`openDrawer('task-0005')`);
+    await until(async () => /frontmatter parse error/.test(await page.eval(`document.getElementById('drawer-diagnostics').textContent`)), { timeout: BUDGET.quick });
+    assert.equal(await page.eval(`document.getElementById('drawer-title').textContent`), 'task-0005-broken.md');
+    await page.eval(`closeDrawer()`);
     const usageText = await page.eval(`document.getElementById('usage').textContent`);
     assert.match(usageText, /2 AI runs/);
     assert.match(usageText, /1\.2K in \/ 50 out/);
     assert.match(usageText, /1 usage unavailable/);
-    assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0005-broken"]')`), true,
+    assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0005"]')`), true,
       'the unparseable card is surfaced rather than swallowed');
 
     // the epic/chunk badges are computed FROM the scalar fields — the exact

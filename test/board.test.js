@@ -891,3 +891,38 @@ test('loadConfig discards a hand-edited resources band whose resume is looser th
   const cfg = loadConfig(repo);
   assert.deepEqual(cfg.resources.cpu, DEFAULT_RESOURCES_CONFIG.cpu);
 });
+
+
+test('embedded colon parse errors retain canonical id and file location across repeated reads', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/tasks/task-0001-colon.md');
+  const raw = '---\nid: task-0001\ntitle: Broken: title\nstatus: Planned\n---\nBody\n';
+  fs.writeFileSync(file, raw);
+  for (let i = 0; i < 3; i++) {
+    const card = loadBoard(repo).cards[0];
+    assert.equal(card.id, 'task-0001');
+    assert.equal(card.parseErrorDetail.line, 3);
+    assert.equal(card.parseErrorDetail.column, 14);
+    assert.match(card.parseError, /card task-0001 has a frontmatter parse error at line 3/);
+    assert.equal(readCard(repo, 'task-0001').parseError, card.parseError);
+  }
+  const moved = await moveCard(repo, 'task-0001', 'Queue');
+  assert.equal(moved.code, 'frontmatter_parse_error');
+  assert.equal(fs.readFileSync(file, 'utf8'), raw, 'failed approval cannot rewrite malformed YAML');
+  fs.writeFileSync(file, raw.replace('title: Broken: title', 'title: "Broken: title"'));
+  assert.equal(loadBoard(repo).cards[0].title, 'Broken: title');
+  assert.equal(readCard(repo, 'task-0001').parseError, undefined);
+});
+
+test('dependency diagnostics distinguish unknown, unfinished, malformed and archived Done references', () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001', { deps: ['P1-01', 'task-0002', 'task-0003', 'task-0004'] });
+  writeCard(repo, 'task-0002', { status: 'Build' });
+  writeCard(repo, 'task-0003', { status: 'Done', extra: 'archived: true\n' });
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0004-bad.md'), '---\ntitle: Bad: title\n---\n');
+  const board = loadBoard(repo);
+  assert.deepEqual(board.cards.find((c) => c.id === 'task-0001').dependencyIssues, {
+    missing: ['P1-01'], waiting: [{ id: 'task-0002', status: 'Build' }], unparseable: ['task-0004'],
+  });
+  assert.equal(board.cards.some((c) => c.id === 'task-0003'), false, 'archived dependency stays hidden');
+});

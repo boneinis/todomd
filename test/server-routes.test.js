@@ -936,3 +936,35 @@ test('email push API: a retry reports the screen verdict after its audit line ro
     assert.equal(await cardCount(), startCount + 1, 'the retry created no second card');
   } finally { srv.close(); }
 });
+
+
+test('API preserves actionable parse and dependency diagnostics on read, approve and queue kick', async () => {
+  isolateHome();
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+  addProject(repo);
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0001-bad.md'),
+    '---\nid: task-0001\ntitle: Bad: title\nstatus: Planned\n---\n');
+  writeCard(repo, 'task-0002', { status: 'Queue', deps: ['P1-01'] });
+  const server = await startServer({ port: await freePort() });
+  const base = `http://127.0.0.1:${server.port}`;
+  const q = `?project=${encodeURIComponent(path.basename(repo))}`;
+  const headers = { 'x-todomd-token': server.token, 'content-type': 'application/json' };
+  try {
+    const board = await (await fetch(`${base}/api/board${q}`, { headers })).json();
+    assert.equal(board.cards[0].id, 'task-0001');
+    assert.equal(board.cards[0].parseErrorDetail.line, 3);
+    const read = await (await fetch(`${base}/api/cards/task-0001${q}`, { headers })).json();
+    assert.match(read.parseError, /frontmatter parse error at line 3/);
+    const move = await fetch(`${base}/api/cards/task-0001/move${q}`, {
+      method: 'POST', headers, body: JSON.stringify({ status: 'Queue' }),
+    });
+    assert.equal(move.status, 400);
+    assert.equal((await move.json()).code, 'frontmatter_parse_error');
+    const kick = await (await fetch(`${base}/api/queue/kick${q}`, { method: 'POST', headers })).json();
+    assert.equal(kick.enqueued, 0);
+    assert.equal(kick.cards.find((c) => c.id === 'task-0001').code, 'frontmatter_parse_error');
+    assert.equal(kick.cards.find((c) => c.id === 'task-0002').code, 'unknown_dependencies');
+  } finally { server.close(); }
+});

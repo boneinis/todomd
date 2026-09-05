@@ -1001,3 +1001,7 @@ body.viewer .drawer-question { display: none; }
   box-shadow: var(--shadow-pop);
   animation: pop .2s ease;
 }
+
+/* Card configuration errors and ordinary dependency waits remain readable. */
+.card-diagnostics { color: var(--amber); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-line; }
+.card-diagnostics[data-error="true"] { color: var(--red); }

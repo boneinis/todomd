@@ -279,7 +279,9 @@ $('#queue-run').addEventListener('click', async () => {
       { method: 'POST', headers });
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not run queue');
-    toast(out.enqueued ? `queued ${out.enqueued} card${out.enqueued === 1 ? '' : 's'}` : 'queue already up to date');
+    const reasons = (out.cards || []).filter((card) => !card.enqueued).map((card) => `${card.id}: ${card.reason}`);
+    toast([out.enqueued ? `queued ${out.enqueued} card${out.enqueued === 1 ? '' : 's'}` : '',
+      ...reasons].filter(Boolean).join(' · ') || 'no Queue cards');
     await loadBoard();
   } catch {
     toast('server unreachable');
@@ -482,6 +484,24 @@ function renderSubtaskRow(kid) {
   return el;
 }
 
+function cardDiagnostic(card) {
+  if (card.parseError) return { text: card.parseError, error: true };
+  const issues = card.dependencyIssues;
+  if (!issues) return { text: '', error: false };
+  const messages = [];
+  if (issues.missing.length) messages.push(`Unknown dependencies: ${issues.missing.join(', ')} — no matching card ID`);
+  if (issues.unparseable.length) messages.push(`Dependencies have frontmatter errors: ${issues.unparseable.join(', ')}`);
+  if (issues.waiting.length) messages.push(`Waiting for: ${issues.waiting.map((d) => `${d.id} (${d.status})`).join(', ')}`);
+  return { text: messages.join('\n'), error: !!(issues.missing.length || issues.unparseable.length) };
+}
+
+function renderCardDiagnostic(element, card) {
+  const diagnostic = cardDiagnostic(card);
+  element.textContent = diagnostic.text;
+  element.hidden = !diagnostic.text;
+  element.dataset.error = String(diagnostic.error);
+}
+
 function renderCard(card, color, i, nestedIds) {
   const el = $('#card-tpl').content.firstElementChild.cloneNode(true);
   if (boardData.access === 'viewer') el.draggable = false;
@@ -497,6 +517,7 @@ function renderCard(card, color, i, nestedIds) {
   const tldr = el.querySelector('.card-tldr');
   tldr.textContent = card.tldr || '';
   tldr.hidden = !card.tldr;
+  renderCardDiagnostic(el.querySelector('.card-diagnostics'), card);
   // label pills — a needs-human flag replaces them with a warning pill
   const chips = el.querySelector('.card-chips');
   if (card.needs_human_reason) {
@@ -712,7 +733,7 @@ function relChip(id, label) {
 function depChip(id, state) {
   const waiting = state.waitingOn.find((w) => w.id === id);
   const done = !waiting;
-  const status = done ? 'Done' : (waiting.status || '?');
+  const status = done ? 'Done' : (waiting.status || 'missing card');
   return `<span class="dep-chip ${done ? 'dep-done' : 'dep-blocked'}">${done ? '' : '🔒 '}${esc(id)} <span class="rel-status">${esc(status)}</span></span>`;
 }
 
@@ -869,8 +890,9 @@ async function openDrawer(id) {
   $('#drawer-description').open = false;
   $('#drawer-cancel').hidden = !runStates[id];
   backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
-  $('#drawer-id').textContent = card.data.id;
-  $('#drawer-title').textContent = card.data.title;
+  $('#drawer-id').textContent = card.data.id || id;
+  $('#drawer-title').textContent = card.data.title || card.file;
+  renderCardDiagnostic($('#drawer-diagnostics'), card);
   const tldr = String(card.tldr || '').trim();
   $('#drawer-meta').innerHTML = [
     ['status', card.data.status], ['type', card.data.type], ['priority', card.data.priority],
@@ -910,13 +932,13 @@ async function openDrawer(id) {
       : '<span class="rel-empty">no chunks</span>';
     relEl.innerHTML = `<span class="rel-label">chunks</span>${chipsHtml}`;
     relEl.hidden = false;
-  } else if (card.data.parent) {
-    const state = TodomdHierarchy.dependencyState(card.data, boardData.cards);
+  } else if (card.data.parent || asList(card.data.dependencies).length) {
+    const state = TodomdHierarchy.dependencyState({ ...card.data, dependencyIssues: card.dependencyIssues }, boardData.cards);
     const deps = TodomdHierarchy.asList(card.data.dependencies);
     const depsHtml = deps.length
       ? `<span class="rel-label">depends on</span>${deps.map((id) => depChip(id, state)).join('')}`
       : '';
-    relEl.innerHTML = `<span class="rel-label">epic</span>${relChip(card.data.parent, card.data.parent)}${depsHtml}`;
+    relEl.innerHTML = (card.data.parent ? `<span class="rel-label">epic</span>${relChip(card.data.parent, card.data.parent)}` : '') + depsHtml;
     relEl.hidden = false;
   } else {
     relEl.innerHTML = '';
@@ -992,7 +1014,8 @@ async function openDrawer(id) {
   $('#agent-prompt').value = '';
   syncPromptComposer();
   showDrawer();
-  refreshCardSummaries(id, seq);
+  if (!card.parseError) refreshCardSummaries(id, seq);
+  else { $('#description-tldr').textContent = 'Fix the frontmatter error in the card file.'; $('#description-tldr').classList.remove('is-pending'); }
 }
 
 $('#drawer-rel').addEventListener('click', (e) => {
