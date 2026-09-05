@@ -20,6 +20,7 @@
     <button id="help-btn" class="qr-btn" title="getting started guide">?</button>
     <button id="theme-btn" class="qr-btn" title="toggle light / dark">◐</button>
     <button id="qr-btn" class="qr-btn" title="mobile monitor link">▦</button>
+    <button id="board-agent-open" class="view-toggle" type="button">board agent</button>
     <button id="new-card" class="new-card">+ card</button>
     <button id="queue-pause" class="view-toggle" type="button" aria-pressed="false" title="let active work finish, then hold new starts">pause queue</button>
     <button id="queue-run" class="view-toggle" type="button" title="wake this project's already-approved Queue cards">▶ run queue</button>
@@ -398,6 +399,36 @@ todomd init             # scaffolds the board + registers it</code></pre>
   </div>
 </div>
 
+<dialog id="board-agent-dialog" aria-labelledby="ba-title">
+  <header class="ba-header"><div><h2 id="ba-title">Board Agent</h2><p>One conversation for the boards you choose.</p></div><button id="ba-close" type="button" aria-label="Close Board Agent">✕</button></header>
+  <div class="ba-layout">
+    <form id="ba-settings">
+      <h3>Your rules</h3>
+      <label>Point of contact<select id="ba-contact"><option value="built_in">Chat inside To-do MD</option><option value="external">My external agent</option></select></label>
+      <fieldset><legend>Boards this agent can manage</legend><div id="ba-boards"></div></fieldset>
+      <fieldset><legend>Routine actions allowed without asking</legend><div id="ba-permissions"></div></fieldset>
+      <label>Instructions<textarea id="ba-instructions" rows="3" maxlength="4000" placeholder="Priorities and guidance for routine work"></textarea></label>
+      <p class="ba-hint">Board selection and action permissions are enforced. Written instructions guide the agent; exceptions require your approval.</p>
+      <div id="ba-builtin">
+        <label>Agent<select id="ba-agent"><option value="claude">Claude</option></select></label>
+        <label>Model (optional)<input id="ba-model" placeholder="CLI default" /></label>
+        <label>Maximum actions per turn<input id="ba-limit" type="number" min="1" max="5" value="3" /></label>
+        <label class="ba-check"><input id="ba-watch" type="checkbox" />Run on board changes while To-do MD is serving</label>
+        <p class="ba-hint">Uses your installed Claude CLI. Choose external mode for other agents. Background checks are at least five minutes apart. Resuming a paused queue during background checks always asks.</p>
+      </div>
+      <p id="ba-external" class="ba-hint" hidden>Connect your MCP-capable agent with <code>todomd-mcp --board-agent</code> and the primary token in TODOMD_MCP_TOKEN. Ask it to read board_agent_context, submit board_agent_propose actions, and save board_agent_reply updates. Your external agent must be running; To-do MD does not start or schedule it.</p>
+      <button type="submit" id="ba-save">Save rules</button>
+    </form>
+    <section class="ba-conversation" aria-label="Board Agent conversation">
+      <div class="ba-controls"><span id="ba-status" role="status"></span><button id="ba-stop" type="button">Stop agent &amp; watching</button></div>
+      <div id="ba-pending" aria-label="Exceptions needing approval"></div>
+      <div id="ba-history" tabindex="0" aria-label="Conversation history"></div>
+      <form id="ba-message"><label for="ba-text">Message your Board Agent</label><textarea id="ba-text" rows="3" maxlength="12000" required placeholder="What needs attention across my boards?"></textarea><button type="submit" id="ba-send">Send</button></form>
+      <p id="ba-error" role="alert"></p>
+    </section>
+  </div>
+</dialog>
+
 <div id="toast" class="toast" hidden></div>
 
 <!-- suggestion lists for the model / skill pickers (populated by app.js) -->
@@ -407,6 +438,7 @@ todomd init             # scaffolds the board + registers it</code></pre>
 <script src="/hierarchy.js"></script>
 <script src="/card-prompt.js"></script>
 <script src="/app.js"></script>
+<script src="/board-agent.js"></script>
 <script type="module" src="/voice/main.js"></script>
 </body>
 </html>

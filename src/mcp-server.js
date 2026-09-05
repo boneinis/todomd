@@ -95,6 +95,27 @@ async function fetchFile(ctx, project, rel) {
 
 const TOOLS = [
   {
+    name: 'board_agent_context', tier: 'full',
+    description: 'Read selected boards, saved rules, conversation, exceptions and action receipts for the Board Agent.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    call: (ctx) => apiCall(ctx, 'GET', '/api/board-agent/context'),
+  },
+  {
+    name: 'board_agent_propose', tier: 'full',
+    description: 'Submit a Board Agent action. Saved routine permissions execute it; exceptions wait for human approval. Reuse request_id only to retry the identical request. Never bypass this with other board tools.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['request_id', 'action', 'project', 'why'],
+      properties: Object.fromEntries(['request_id', 'action', 'project', 'card_id', 'title', 'description', 'why'].map((key) => [key, { type: 'string' }])) },
+    call: (ctx, args) => apiCall(ctx, 'POST', '/api/board-agent/actions', { body: args }),
+  },
+  {
+    name: 'board_agent_reply', tier: 'full',
+    description: 'Save a reply in the shared Board Agent conversation. Report actual action results and pending exceptions.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['request_id', 'text'],
+      properties: { request_id: { type: 'string' }, text: { type: 'string' } } },
+    call: (ctx, args) => apiCall(ctx, 'POST', '/api/board-agent/reply', { body: args }),
+  },
+
+  {
     name: 'list_projects', tier: 'viewer',
     description: 'List registered To-do MD project names.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -256,8 +277,8 @@ const TOOLS = [
 
 const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
-function listToolsFor(tier) {
-  return TOOLS.filter((t) => tier === 'full' || t.tier === 'viewer').map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+function listToolsFor(tier, boardAgentOnly = false) {
+  return TOOLS.filter((t) => (!boardAgentOnly || t.name.startsWith('board_agent_')) && (tier === 'full' || t.tier === 'viewer')).map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 }
 
 function toolResult(status, json) {
@@ -307,6 +328,7 @@ function validateArgs(schema, args) {
 
 async function callTool(ctx, name, args = {}) {
   const tool = TOOLS_BY_NAME.get(name);
+  if (ctx.boardAgentOnly && !name?.startsWith('board_agent_')) return errorResult('tool unavailable in Board Agent mode');
   if (!tool) return errorResult(`unknown tool: ${name}`);
   if (tool.tier === 'full' && ctx.tier !== 'full') return errorResult('full access required');
   // The advertised schemas ARE the trust boundary for MCP callers. The HTTP
@@ -328,9 +350,9 @@ async function callTool(ctx, name, args = {}) {
 // Builds a tier- and server-bound MCP request handler. `baseUrl` defaults to
 // discoverBaseUrl() but is overridable so tests can point it at a throwaway
 // `startServer()` instance instead of a real, already-running `todomd serve`.
-export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
+export function createMcpServer({ token, baseUrl = discoverBaseUrl(), boardAgentOnly = false }) {
   const tier = resolveTier(token);
-  const ctx = { token, tier, baseUrl };
+  const ctx = { token, tier, baseUrl, boardAgentOnly };
 
   // handleMessage: given one parsed JSON-RPC request/notification, returns
   // the JSON-RPC response object, or null for a notification (no reply).
@@ -350,7 +372,7 @@ export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
         case 'ping':
           return respond({});
         case 'tools/list':
-          return respond({ tools: listToolsFor(tier) });
+          return respond({ tools: listToolsFor(tier, boardAgentOnly) });
         case 'tools/call': {
           const result = await callTool(ctx, params?.name, params?.arguments || {});
           return respond(result);
@@ -365,19 +387,19 @@ export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
 
   // Exposed for tests that want to skip JSON-RPC framing and call a tool
   // directly; startMcpServer() only ever goes through handleMessage.
-  return { handleMessage, listTools: () => listToolsFor(tier), callTool: (name, args) => callTool(ctx, name, args), tier };
+  return { handleMessage, listTools: () => listToolsFor(tier, boardAgentOnly), callTool: (name, args) => callTool(ctx, name, args), tier };
 }
 
 // Entry point used by bin/todomd-mcp.js: validates the token, then reads
 // newline-delimited JSON-RPC requests from stdin and writes responses to
 // stdout — the MCP stdio transport. Never returns while stdin stays open.
-export async function startMcpServer({ token, baseUrl, input = process.stdin, output = process.stdout } = {}) {
+export async function startMcpServer({ token, baseUrl, boardAgentOnly = false, input = process.stdin, output = process.stdout } = {}) {
   const resolvedToken = token || process.env.TODOMD_MCP_TOKEN || '';
   const tier = resolveTier(resolvedToken);
   if (!tier) {
     throw new Error('bad or missing token — set TODOMD_MCP_TOKEN (or pass --token) to the value in ~/.todomd/token or ~/.todomd/token-viewer');
   }
-  const server = createMcpServer({ token: resolvedToken, baseUrl });
+  const server = createMcpServer({ token: resolvedToken, baseUrl, boardAgentOnly });
   const rl = readline.createInterface({ input, terminal: false });
   rl.on('line', async (line) => {
     line = line.trim();

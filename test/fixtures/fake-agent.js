@@ -142,6 +142,11 @@ if (process.env.FAKE_RESUME_MISSING && has('--resume')) {
   process.exit(0);
 }
 
+if (prompt.startsWith('TODOMD BOARD AGENT\n')) {
+  process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: JSON.parse(process.env.FAKE_BOARD_AGENT_OUTPUT || '{"reply":"Your selected boards are ready for review.","actions":[]}') })));
+  process.exit(0);
+}
+
 if (prompt.includes('TODOMD CARD SUMMARY REQUEST')) {
   emitStream([resultEnvelope({ structured_output: {
     description_tldr: process.env.FAKE_DESCRIPTION_TLDR || 'The card needs a concise semantic description summary.',

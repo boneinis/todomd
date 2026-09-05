@@ -1,3 +1,4 @@
+import { createBoardAgent } from './board-agent.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -165,6 +166,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     res.end(JSON.stringify(obj));
   };
 
+  const boardAgent = createBoardAgent();
+
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
   async function handleApi(req, res, url) {
@@ -176,6 +179,28 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const fullAccess = authed(req);
     if (!fullAccess && req.method !== 'GET') {
       return json(res, 403, { error: 'read-only link — open the board on your computer to make changes' });
+    }
+
+    if (url.pathname === '/api/board-agent' || url.pathname.startsWith('/api/board-agent/')) {
+      if (!primary(req)) return json(res, 403, { ok: false, error: 'Board Agent requires the primary desktop token' });
+      const route = url.pathname.slice('/api/board-agent'.length);
+      if (req.method === 'GET' && route === '') return json(res, 200, boardAgent.publicState());
+      if (req.method === 'GET' && route === '/context') return json(res, 200, boardAgent.context());
+      if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' });
+      const raw = await readBody(req);
+      if (raw === null) return json(res, 413, { ok: false, error: 'body too large' });
+      let body;
+      try { body = JSON.parse(raw || '{}'); } catch { return json(res, 400, { ok: false, error: 'invalid JSON' }); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { ok: false, error: 'expected an object' });
+      let result;
+      if (route === '/config') result = boardAgent.configure(body);
+      else if (route === '/message') result = await boardAgent.message(body.text);
+      else if (route === '/actions') result = await boardAgent.external(body);
+      else if (route === '/reply') result = boardAgent.reply(body);
+      else if (route === '/stop') result = boardAgent.stop();
+      else if (route.startsWith('/proposals/') && typeof body.accept === 'boolean') result = await boardAgent.decide(route.slice('/proposals/'.length), body.accept);
+      else return json(res, 400, { ok: false, error: 'unknown action or invalid approval' });
+      return json(res, result.ok ? 200 : 400, result);
     }
 
     if (url.pathname === '/api/projects') {
@@ -868,6 +893,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
         timer = setTimeout(() => {
           if (closed || !watchers.has(dir)) return;
           broadcast({ type: 'board-changed', project: name });
+          boardAgent.changed(name);
           // File edits under the board lock approve Queue work just like the
           // move API. Reuse project-scoped admission, including pause/budget gates.
           if (project) pipeline.kickQueue(project).catch(() => {});
@@ -902,6 +928,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
   // (and the 10s rescan would re-open the watchers we just released).
   const close = () => {
     closed = true;
+    boardAgent.close();
     clearInterval(watchTimer);
     clearInterval(pingTimer);
     try { server.close(); server.closeAllConnections?.(); } catch {}

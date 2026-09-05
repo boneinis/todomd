@@ -157,3 +157,7 @@ That runs everything but the browser stage (~60s idle). Bypass once with `git pu
 Timing note: the suite spawns git and agent CLIs, so it stretches with machine load (measured ~20x median at load 120 on 10 cores). `until()` in `test/helpers.js` scales its deadlines by `loadavg/cores` so a busy machine doesn't produce phantom failures; pin it with `TODOMD_TEST_TIMEOUT_SCALE` if you'd rather it were fixed.
 
 What local CI can't do: tell you the code works anywhere but your machine. The `ps` probe in `todomd stop` was macOS-only and would pass here forever. For that you want the same commands on a clean Linux runner — the stages above are a single `npm run ci` line in any CI service.
+
+### Board Agent
+
+Use **board agent** in the desktop toolbar to choose built-in chat or your own external agent as the point of contact for selected boards. Save routine permissions, review exceptions, and optionally enable background checks. See [Board Agent setup and behavior](docs/board-agent.md).
