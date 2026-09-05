@@ -1,6 +1,6 @@
 # Separate board context and Codex voice coordination
 
-Status: reviewed implementation plan, 2026-09-05. No runtime changes, permission changes, new agent tasks, or production restart are part of this review.
+Status: phases 1–3 implemented and automatically verified, 2026-09-05. Phase 4 (actual spoken acceptance) and phase 5 (production restart/rollout) remain pending. Final regression: 663 core/integration tests and 36 browser tests passed, no skips. Production settings and running service are unchanged. See [current setup](board-agent.md).
 
 ## Intended experience
 
@@ -139,3 +139,13 @@ The existing focused suite is a baseline, not evidence for these future behavior
 ## Recommendation
 
 Proceed with one coordinator conversation and separate durable contexts/policies per board. Make native Codex voice the external contact interface, using the policy-enforcing MCP connection. Complete phases 1–3 before presenting the experience as ready to run all repos, and require the real voice acceptance test before claiming voice operation is verified. Multi-host federation and approvals based solely on speech remain outside the first release.
+
+## Implementation choices
+
+The v2 store uses one atomic snapshot containing separate board records instead of multiple board files. This makes policy/history/receipt transactions atomic without a partial multi-file commit. One fenced owner holds the service directory; model calls never hold a repository lock. Three independent board turns may run concurrently; a portfolio turn takes exclusive coordinator scope, and existing pipeline resource limits still apply.
+
+External tools page card details and expose recent separate board memory. Built-in portfolio turns use equal small detail allocations plus every board summary; the user focuses a board when additional detail is needed. Arbitrary older conversation search and automatic multi-pass model retrieval are not included. The sourced decision summary is a bounded set of recorded decision events, not model-generated long-term memory.
+
+The structured publication policy enforces review-before-merge and protected-branch metadata commits through To-do MD. Other repository prose remains revisioned guidance. The existing pipeline provides worktree isolation; this change does not add an arbitrary policy language or deployment control over separately granted shell tools. External session leases last 60 seconds; the client must initiate work and no external background scheduler is installed.
+
+The native Codex voice connection is prepared through a separate scoped STDIO MCP entry. No entry was activated against the still-running v1 service. Production restart, Codex connection loading and actual spoken acceptance remain explicit rollout gates.

@@ -1,3 +1,4 @@
+import { agentPublicationPolicy } from './board-agent-policy.js';
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -133,6 +134,7 @@ export async function branchTouchesBoard(repoPath, branch) {
 }
 
 export async function mergeBranch(repoPath, branch, message) {
+  if (agentPublicationPolicy(repoPath)?.publication === 'review_required') return { ok: false, reviewRequired: true, reason: 'Verified work requires publication review; branch and worktree are preserved.' };
   if (midOperation(repoPath)) return { ok: false, reason: 'repo is mid merge/rebase' };
   // --no-verify: this is a tool-generated merge commit; don't let the repo's
   // commit-msg/pre-commit hooks (commitlint, etc.) block board automation
@@ -152,6 +154,10 @@ export async function mergeBranch(repoPath, branch, message) {
 export async function commitPaths(repoPath, relPaths, message) {
   if (!(await isGitRepo(repoPath))) return { committed: false, reason: 'not a git repo' };
   if (midOperation(repoPath)) return { committed: false, reason: 'repo is mid merge/rebase' };
+  const policy = agentPublicationPolicy(repoPath);
+  if (policy?.publication === 'review_required' && (policy.error || policy.protectedBranches?.includes(await currentBranch(repoPath)))) {
+    return { committed: false, reviewRequired: true, reason: 'Board metadata saved locally; protected-branch commits require review.' };
+  }
   const add = await git(repoPath, ['add', '--', ...relPaths]);
   if (!add.ok) return { committed: false, reason: add.stderr };
   const commit = await git(repoPath, ['commit', '--no-verify', '-m', message, '--only', '--', ...relPaths]);

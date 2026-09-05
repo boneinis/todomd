@@ -59,19 +59,20 @@ test('scope binds registered path and malformed cards expose frontmatter diagnos
   writeCard(repo, 'task-0001', { title: 'broken: title' });
   const a = { action: 'cancel', project: 'alpha', card_id: 'task-0001', request_id: 'bad' };
   assert.match((await agent.external(a)).error, /frontmatter parse error.*line/);
-  assert.ok(agent.context().boards[0].cards[0].parseError);
+  assert.ok(agent.context({ board_id: agent.overview().boards[0].board_id }).cards[0].parseError);
   projects[0].path = projects[1].path;
   assert.match((await agent.external({ ...a, request_id: 'moved' })).error, /scope/);
 });
 
-test('rules persist, changes clear proposals, and crash uncertainty never replays a dispatch', async (t) => {
+test('rules persist, unrelated settings preserve proposals, and crash uncertainty never replays a dispatch', async (t) => {
   const { agent, directory, projects, operations, calls } = fixture(t);
   await agent.external({ action: 'resume_queue', project: 'alpha', request_id: 'proposal' });
-  agent.configure(rules()); assert.equal(agent.publicState().pending.length, 0);
+  agent.configure(rules()); assert.equal(agent.publicState().pending.length, 1);
   await agent.external({ action: 'pause_queue', project: 'alpha', request_id: 'receipt' });
   agent.close();
   const file = path.join(directory, 'state.json'), state = JSON.parse(fs.readFileSync(file));
-  state.receipts.receipt.status = 'executing'; delete state.receipts.receipt.result;
+  const receipt = Object.values(state.receipts).find((r) => r.action?.action === 'pause_queue');
+  receipt.status = 'executing'; delete receipt.result;
   fs.writeFileSync(file, JSON.stringify(state));
   const restored = createBoardAgent({ directory, projects: () => projects, operations }); t.after(() => restored.close());
   assert.equal(restored.publicState().uncertain.length, 1);
@@ -129,13 +130,23 @@ test('HTTP and restricted MCP share scope and permissions; viewer and bypass too
   assert.equal(config.status, 200);
   const viewer = await fetch(baseUrl + '/api/board-agent/context', { headers: { 'x-todomd-token': loadToken('token-viewer') } }); assert.equal(viewer.status, 403);
   const mobile = await fetch(baseUrl + '/api/board-agent/context', { headers: { 'x-todomd-token': loadToken('token-mobile') } }); assert.equal(mobile.status, 403);
-  const mcp = createMcpServer({ token, baseUrl, boardAgentOnly: true });
-  assert.deepEqual(mcp.listTools().map((t) => t.name), ['board_agent_context', 'board_agent_propose', 'board_agent_reply']);
+  const scopedToken = loadToken('token-board-agent');
+  const mcp = createMcpServer({ token: scopedToken, baseUrl, boardAgentOnly: true });
+  assert.deepEqual(mcp.listTools().map((t) => t.name), ['board_agent_overview', 'board_agent_context', 'board_agent_message', 'board_agent_propose', 'board_agent_reply', 'board_agent_events']);
   assert.equal((await mcp.callTool('move_card', { project: path.basename(repo), id: 'task-0001', status: 'Done' })).isError, true);
-  const result = await mcp.callTool('board_agent_propose', { project: path.basename(repo), action: 'pause_queue', why: 'Rule', request_id: 'api-pause' });
+  const overview = JSON.parse((await mcp.callTool('board_agent_overview', {})).content[0].text);
+  const board_id = overview.boards[0].board_id, session_id = 'codex-test';
+  assert.equal((await mcp.callTool('board_agent_message', { board_id, session_id, request_id: 'user-1', text: 'Pause this board' })).isError, false);
+  const result = await mcp.callTool('board_agent_propose', { board_id, session_id, action: 'pause_queue', why: 'Rule', request_id: 'api-pause' });
   assert.equal(result.isError, false);
   const state = await (await fetch(baseUrl + '/api/board-agent', { headers: { 'x-todomd-token': token } })).json();
   assert.equal(state.history.at(-1).result.queue_paused, true);
+  for (const route of ['/api/board-agent/config', '/api/board-agent/proposals/nope', '/api/board-agent/connection/revoke', '/api/cards', '/api/projects']) {
+    const denied = await fetch(baseUrl + route, { method: 'POST', headers: { 'x-todomd-token': scopedToken }, body: '{}' });
+    assert.equal(denied.status, 403, route);
+  }
+  assert.equal((await fetch(baseUrl + '/api/board?project=' + path.basename(repo), { headers: { 'x-todomd-token': scopedToken } })).status, 403);
+  assert.equal(createMcpServer({ token, baseUrl, boardAgentOnly: true }).listTools().length, 0);
   const bad = await fetch(baseUrl + '/api/board-agent/proposals/nope', { method: 'POST', headers: { 'x-todomd-token': token }, body: '{"accept":"true"}' }); assert.equal(bad.status, 400);
 });
 
@@ -185,7 +196,7 @@ test('oversized plan context always becomes a human exception', async (t) => {
   const { agent, repo } = fixture(t);
   agent.configure(rules({ allowedActions: ['approve'] }));
   writeCard(repo, 'task-0001', { status: 'Planned', body: 'Long plan '.repeat(1000) });
-  assert.equal(agent.context().boards[0].cards[0].detailsTruncated, true);
+  assert.equal(agent.context({ board_id: agent.overview().boards[0].board_id }).cards[0].detailsTruncated, true);
   const result = await agent.external({ action: 'approve', project: 'alpha', card_id: 'task-0001', request_id: 'long-plan' });
   assert.ok(result.pending);
   assert.match(agent.publicState().pending[0].reason, /review the full card/);

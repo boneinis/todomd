@@ -160,4 +160,4 @@ What local CI can't do: tell you the code works anywhere but your machine. The `
 
 ### Board Agent
 
-Use **board agent** in the desktop toolbar to choose built-in chat or your own external agent as the point of contact for selected boards. Save routine permissions, review exceptions, and optionally enable background checks. See [Board Agent setup and behavior](docs/board-agent.md).
+Use **board agent** in the desktop toolbar to choose built-in chat or your own external agent as the point of contact for selected boards. Each board keeps separate context, routine permissions and a publication policy. Review exceptions, optionally enable per-board background checks, or use the scoped MCP connection from a Codex voice task. See [Board Agent setup and behavior](docs/board-agent.md).

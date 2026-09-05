@@ -130,6 +130,13 @@ export function startServer({ port = 7337, lan = false } = {}) {
   const viewerToken = loadToken('token-viewer');
   const mobileToken = loadToken('token-mobile'); // full control, revocable per device class
 
+  loadToken('token-board-agent');
+  let agentLastSeen = null;
+  const agentAuthed = (req) => {
+    try { return eq(sentToken(req), fs.readFileSync(path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'token-board-agent'), 'utf8').trim()); }
+    catch { return false; }
+  };
+
   const sentToken = (req) => {
     const url = new URL(req.url, 'http://x');
     return url.searchParams.get('token') || req.headers['x-todomd-token'] || '';
@@ -175,29 +182,54 @@ export function startServer({ port = 7337, lan = false } = {}) {
     if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
     // reads work with either token; anything that mutates or spawns
     // requires the full token (the viewer/QR link is monitor-only)
-    if (!viewerAuthed(req)) return json(res, 401, { error: 'bad token' });
+    const agentAccess = agentAuthed(req);
+    if (!viewerAuthed(req) && !agentAccess) return json(res, 401, { error: 'bad token' });
+    if (agentAccess && !url.pathname.startsWith('/api/board-agent/')) return json(res, 403, { error: 'credential is limited to Board Agent tools' });
     const fullAccess = authed(req);
-    if (!fullAccess && req.method !== 'GET') {
+    if (!fullAccess && !agentAccess && req.method !== 'GET') {
       return json(res, 403, { error: 'read-only link — open the board on your computer to make changes' });
     }
 
     if (url.pathname === '/api/board-agent' || url.pathname.startsWith('/api/board-agent/')) {
-      if (!primary(req)) return json(res, 403, { ok: false, error: 'Board Agent requires the primary desktop token' });
+      if (!primary(req) && !agentAccess) return json(res, 403, { ok: false, error: 'Board Agent requires a desktop or scoped agent credential' });
       const route = url.pathname.slice('/api/board-agent'.length);
-      if (req.method === 'GET' && route === '') return json(res, 200, boardAgent.publicState());
-      if (req.method === 'GET' && route === '/context') return json(res, 200, boardAgent.context());
+      const permitted = req.method === 'GET' ? ['/overview', '/context', '/events'] : ['/message', '/actions', '/reply'];
+      if (agentAccess && !permitted.includes(route)) return json(res, 403, { ok: false, error: 'agent credential cannot configure, approve, stop, or access raw board APIs' });
+      const query = Object.fromEntries(url.searchParams); delete query.token;
+      const explicitScope = (body) => (typeof body.board_id === 'string' && body.board_id && !body.scope) || (body.scope === 'portfolio' && !body.board_id);
+      if (agentAccess) agentLastSeen = new Date().toISOString();
+      if (req.method === 'GET' && route === '') return json(res, 200, boardAgent.publicState(query));
+      if (req.method === 'GET' && route === '/overview') return json(res, 200, boardAgent.overview());
+      if (req.method === 'GET' && route === '/connection') return json(res, 200, { ok: true, lastSeen: agentLastSeen, command: 'todomd-mcp', args: ['--board-agent'], credential: 'token-board-agent', voiceVerified: false });
+      if (req.method === 'GET' && route === '/context') {
+        if (agentAccess && (!query.board_id || query.scope)) return json(res, 400, { ok: false, error: 'board_id is required for detailed context; use overview for all boards' });
+        const result = boardAgent.context(query); return json(res, result.ok === false ? 400 : 200, result);
+      }
+      if (req.method === 'GET' && route === '/events') {
+        if (agentAccess && !explicitScope(query)) return json(res, 400, { ok: false, error: 'explicit scope or board_id is required' });
+        const result = boardAgent.events(query); return json(res, result.ok === false ? 400 : 200, result);
+      }
       if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' });
       const raw = await readBody(req);
       if (raw === null) return json(res, 413, { ok: false, error: 'body too large' });
       let body;
       try { body = JSON.parse(raw || '{}'); } catch { return json(res, 400, { ok: false, error: 'invalid JSON' }); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { ok: false, error: 'expected an object' });
+      if (agentAccess && (typeof body.session_id !== 'string' || !body.session_id || typeof body.request_id !== 'string' || !body.request_id ||
+          (route === '/actions' ? !body.board_id || body.project || body.scope : !explicitScope(body)))) return json(res, 400, { ok: false, error: 'session_id, request_id and explicit board scope are required' });
       let result;
       if (route === '/config') result = boardAgent.configure(body);
-      else if (route === '/message') result = await boardAgent.message(body.text);
+      else if (route === '/rebind') result = boardAgent.rebind(body);
+      else if (route === '/board-config') result = boardAgent.configureBoard(body);
+      else if (route === '/message') result = await boardAgent.message({ ...body, source: agentAccess ? 'external' : 'desktop' });
       else if (route === '/actions') result = await boardAgent.external(body);
       else if (route === '/reply') result = boardAgent.reply(body);
-      else if (route === '/stop') result = boardAgent.stop();
+      else if (route === '/stop') result = boardAgent.stop(body);
+      else if (route === '/connection/revoke') {
+        const file = path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'token-board-agent');
+        fs.writeFileSync(file + '.tmp', crypto.randomBytes(16).toString('hex') + '\n', { mode: 0o600 }); fs.renameSync(file + '.tmp', file);
+        agentLastSeen = null; result = { ok: true, message: 'Previous agent credential revoked. Restart the MCP connection to use the new credential.' };
+      }
       else if (route.startsWith('/proposals/') && typeof body.accept === 'boolean') result = await boardAgent.decide(route.slice('/proposals/'.length), body.accept);
       else return json(res, 400, { ok: false, error: 'unknown action or invalid approval' });
       return json(res, result.ok ? 200 : 400, result);

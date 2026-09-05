@@ -9,7 +9,7 @@ import { openPage } from '../browser.js';
 
 test('Board Agent UI persists user choice, executes routine work, and approves concrete exceptions', async (t) => {
   isolateHome(); useFakeAgent(); t.after(clearFakeAgent);
-  const repo = makeRepo(); addProject(repo); const name = path.basename(repo);
+  const repo = makeRepo(); addProject(repo); const secondRepo = makeRepo(); addProject(secondRepo); const name = path.basename(repo);
   const page = await openPage(); if (!page) return t.skip('Chrome unavailable');
   t.after(() => page.close());
   const port = await new Promise((resolve) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
@@ -18,11 +18,13 @@ test('Board Agent UI persists user choice, executes routine work, and approves c
   await until(async () => await page.eval(`document.querySelectorAll('.column').length > 0`), { timeout: BUDGET.stage });
   await page.eval(`document.getElementById('board-agent-open').click()`);
   await until(async () => await page.eval(`document.querySelectorAll('#ba-boards input').length > 0`), { timeout: BUDGET.quick });
-  await page.eval(`document.querySelector('#ba-boards input').checked = true; document.querySelector('#ba-permissions input[value="pause_queue"]').checked = true; document.getElementById('ba-settings').requestSubmit()`);
-  await until(async () => await page.eval(`document.getElementById('ba-history').textContent.includes('rules updated')`), { timeout: BUDGET.quick });
+  await page.eval(`document.querySelectorAll('#ba-boards input').forEach((input) => input.checked = true); document.getElementById('ba-settings').requestSubmit()`);
+  await until(async () => await page.eval(`document.getElementById('ba-history').textContent.includes('settings updated')`), { timeout: BUDGET.quick });
   await page.eval(`document.getElementById('ba-text').value = 'Review my boards'; document.getElementById('ba-message').requestSubmit()`);
   await until(async () => await page.eval(`document.getElementById('ba-history').textContent.includes('Your selected boards are ready')`), { timeout: BUDGET.stage });
-  await page.eval(`document.getElementById('ba-contact').value = 'external'; document.getElementById('ba-contact').dispatchEvent(new Event('change')); document.getElementById('ba-settings').requestSubmit()`);
+  await page.eval(`document.getElementById('ba-scope').selectedIndex = 1; document.getElementById('ba-scope').dispatchEvent(new Event('change'))`);
+  await until(async () => await page.eval(`!document.getElementById('ba-board-rules').hidden`), { timeout: BUDGET.quick });
+  await page.eval(`document.querySelector('#ba-permissions input[value="pause_queue"]').checked = true; document.getElementById('ba-contact').value = 'external'; document.getElementById('ba-contact').dispatchEvent(new Event('change')); document.getElementById('ba-settings').requestSubmit()`);
   await until(async () => await page.eval(`document.getElementById('ba-status').textContent.includes('External agent')`), { timeout: BUDGET.quick });
   assert.equal(await page.eval(`document.getElementById('ba-external').hidden`), false);
   const action = async (body) => (await fetch(`http://127.0.0.1:${port}/api/board-agent/actions`, { method: 'POST', headers: { 'x-todomd-token': server.token }, body: JSON.stringify(body) })).json();
@@ -37,5 +39,13 @@ test('Board Agent UI persists user choice, executes routine work, and approves c
   await page.eval(`document.getElementById('ba-close').click(); document.getElementById('board-agent-open').click()`);
   await until(async () => await page.eval(`document.getElementById('ba-contact').value === 'external'`), { timeout: BUDGET.quick });
   assert.equal(await page.eval(`document.querySelector('#ba-boards input').checked`), true);
+  await page.eval(`document.getElementById('ba-scope').selectedIndex = 2; document.getElementById('ba-scope').dispatchEvent(new Event('change'))`);
+  await until(async () => await page.eval(`document.getElementById('ba-history').textContent.includes('Choose your boards')`), { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`document.querySelector('#ba-permissions input[value="pause_queue"]').checked`), false);
+  await page.eval(`document.getElementById('ba-scope').selectedIndex = 1; document.getElementById('ba-scope').dispatchEvent(new Event('change'))`);
+  await until(async () => await page.eval(`document.getElementById('ba-history').textContent.includes('create_card — accepted by board')`), { timeout: BUDGET.quick });
+  await page.eval(`document.getElementById('ba-close').click(); const originalFetch = window.fetch; window.fetch = (url, options) => String(url).startsWith('/api/board-agent') ? Promise.resolve(new Response(JSON.stringify({ config: {}, history: [], pending: [] }), { status: 200 })) : originalFetch(url, options); document.getElementById('board-agent-open').click()`);
+  await until(async () => await page.eval(`document.getElementById('ba-status').textContent === 'Server update required'`), { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`document.getElementById('ba-save').disabled && document.getElementById('ba-send').disabled`), true);
   assert.deepEqual(page.errors, []);
 });

@@ -401,23 +401,28 @@ todomd init             # scaffolds the board + registers it</code></pre>
 
 <dialog id="board-agent-dialog" aria-labelledby="ba-title">
   <header class="ba-header"><div><h2 id="ba-title">Board Agent</h2><p>One conversation for the boards you choose.</p></div><button id="ba-close" type="button" aria-label="Close Board Agent">✕</button></header>
+  <p id="ba-migration" class="ba-hint" hidden></p>
   <div class="ba-layout">
     <form id="ba-settings">
-      <h3>Your rules</h3>
+      <h3>Context and rules</h3>
+      <label>Conversation scope<select id="ba-scope"><option value="portfolio">All selected boards</option></select></label>
+      <p id="ba-scope-hint" class="ba-hint"></p>
       <label>Point of contact<select id="ba-contact"><option value="built_in">Chat inside To-do MD</option><option value="external">My external agent</option></select></label>
-      <fieldset><legend>Boards this agent can manage</legend><div id="ba-boards"></div></fieldset>
-      <fieldset><legend>Routine actions allowed without asking</legend><div id="ba-permissions"></div></fieldset>
+      <fieldset id="ba-selection"><legend>Boards this agent can manage</legend><div id="ba-boards"></div></fieldset>
+      <fieldset id="ba-board-rules"><legend>Routine actions allowed without asking</legend><div id="ba-permissions"></div></fieldset>
+      <div id="ba-rebind-controls" hidden><p class="ba-hint">This board is unavailable or its identity changed. Rebind only if this registered repo should inherit its saved context.</p><label>Replacement registered board<select id="ba-rebind-project"></select></label><button id="ba-rebind" type="button">Rebind saved context to this repo</button></div>
+      <div id="ba-publication-rules"><label>Publish verified work<select id="ba-publication"><option value="review_required">Hold for human review</option><option value="legacy_auto_merge">Allow the board pipeline to merge</option></select></label><label>Protected branches<input id="ba-protected" value="main, master" /></label><label>Spoken aliases (comma separated)<input id="ba-aliases" /></label><p class="ba-hint">Review mode preserves verified work for review and keeps board metadata commits off protected branches. Existing work continues after the coordinator stops.</p></div>
       <label>Instructions<textarea id="ba-instructions" rows="3" maxlength="4000" placeholder="Priorities and guidance for routine work"></textarea></label>
       <p class="ba-hint">Board selection and action permissions are enforced. Written instructions guide the agent; exceptions require your approval.</p>
+      <label>Maximum actions per turn<input id="ba-limit" type="number" min="1" max="5" value="3" /></label>
       <div id="ba-builtin">
         <label>Agent<select id="ba-agent"><option value="claude">Claude</option></select></label>
         <label>Model (optional)<input id="ba-model" placeholder="CLI default" /></label>
-        <label>Maximum actions per turn<input id="ba-limit" type="number" min="1" max="5" value="3" /></label>
-        <label class="ba-check"><input id="ba-watch" type="checkbox" />Run on board changes while To-do MD is serving</label>
+        <label id="ba-watch-label" class="ba-check"><input id="ba-watch" type="checkbox" />Run on board changes while To-do MD is serving</label>
         <p class="ba-hint">Uses your installed Claude CLI. Choose external mode for other agents. Background checks are at least five minutes apart. Resuming a paused queue during background checks always asks.</p>
       </div>
-      <p id="ba-external" class="ba-hint" hidden>Connect your MCP-capable agent with <code>todomd-mcp --board-agent</code> and the primary token in TODOMD_MCP_TOKEN. Ask it to read board_agent_context, submit board_agent_propose actions, and save board_agent_reply updates. Your external agent must be running; To-do MD does not start or schedule it.</p>
-      <button type="submit" id="ba-save">Save rules</button>
+      <div id="ba-external" class="ba-hint" hidden><p>In Codex Settings → MCP servers, add a STDIO server with command <code>todomd-mcp</code> and argument <code>--board-agent</code>. It reads its own scoped credential locally. Restart the MCP connection, open your coordinator task, and start Codex voice there.</p><pre>{"command":"todomd-mcp","args":["--board-agent"]}</pre><p>Each board must choose external contact. Exceptions stay in this approval inbox. To-do MD does not start or schedule your external agent.</p><button type="button" id="ba-check-connection">Check connection</button><button type="button" id="ba-revoke">Revoke current agent connection</button><p id="ba-connection" role="status"></p></div>
+      <div class="ba-settings-actions"><button type="submit" id="ba-save">Save rules</button></div>
     </form>
     <section class="ba-conversation" aria-label="Board Agent conversation">
       <div class="ba-controls"><span id="ba-status" role="status"></span><button id="ba-stop" type="button">Stop agent &amp; watching</button></div>

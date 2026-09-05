@@ -1012,6 +1012,7 @@ body.viewer .drawer-question { display: none; }
 .ba-header, .ba-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ba-header h2 { margin: 0; } .ba-header p, .ba-hint { color: var(--dim); font-size: 12px; line-height: 1.5; }
 .ba-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 24px; }
+.ba-settings-actions { position: sticky; bottom: 0; padding: 10px 0; background: var(--panel); border-top: 1px solid var(--line); }
 #ba-settings { max-height: 67vh; overflow: auto; padding-right: 12px; }
 #board-agent-dialog label { display: block; margin: 10px 0; font-size: 12px; }
 #board-agent-dialog input:not([type=checkbox]), #board-agent-dialog select, #board-agent-dialog textarea { display: block; box-sizing: border-box; width: 100%; margin-top: 6px; padding: 8px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 5px; font: inherit; }

@@ -3445,7 +3445,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
         `merge refused. Check out ${forkedFrom}, then drag the card back to Planned to retry.`);
     }
     const merged = await withRepoLock(project.path, () => mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`));
-    if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
+    if (!merged.ok) return toNeedsHuman(project, id, 'Verify', merged.reviewRequired ? 'publication_review_required' : 'merge_conflict', merged.reason);
     // A merge that "succeeds" without the branch landing (git reports "Already
     // up to date" while the branch is NOT an ancestor — e.g. a messed-up
     // merge-base) must never mark the card Done: nothing actually merged.
