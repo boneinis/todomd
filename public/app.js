@@ -505,6 +505,7 @@ function renderCard(card, color, i, nestedIds) {
     const pills = [];
     if (card.type) pills.push(`<span class="chip chip-type">${esc(String(card.type))}</span>`);
     if (card.complexity) pills.push(`<span class="chip chip-cx chip-cx-${esc(String(card.complexity))}">cx: ${esc(String(card.complexity))}</span>`);
+    if (card.build_profile) pills.push(`<span class="chip chip-profile">build: ${esc(String(card.build_profile))}</span>`);
     for (const l of asList(card.labels)) pills.push(`<span class="chip chip-c${labelHue(l)}">${esc(l)}</span>`);
     chips.innerHTML = pills.join('');
   }

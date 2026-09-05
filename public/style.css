@@ -265,7 +265,7 @@ body.viewer .col-edit { display: none; }
   font-size: 9.5px; line-height: 1.5; padding: 0 7px;
   border-radius: 999px; border: 1px solid transparent; white-space: nowrap;
 }
-.chip-type { color: var(--dim); border-color: var(--line); }
+.chip-type, .chip-profile { color: var(--dim); border-color: var(--line); }
 /* complexity (cx: …) chip — ordinal difficulty from the Plan stage */
 .chip-cx { color: var(--dim); border-color: var(--line); text-transform: none; }
 .chip-cx-trivial   { color: var(--green);  border-color: color-mix(in srgb, var(--green) 45%, transparent); }
@@ -283,7 +283,7 @@ body.viewer .col-edit { display: none; }
 .chip-c3 { --chip: var(--green); }
 .chip-c4 { --chip: var(--red); }
 .chip-c5 { --chip: var(--accent); }
-.chip[class*="chip-c"] {
+.chip:is(.chip-c0, .chip-c1, .chip-c2, .chip-c3, .chip-c4, .chip-c5) {
   color: var(--chip);
   border-color: color-mix(in srgb, var(--chip) 40%, transparent);
   background: color-mix(in srgb, var(--chip) 12%, transparent);

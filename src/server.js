@@ -860,7 +860,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
       w.on('all', (_event, changedPath) => {
         clearTimeout(timer);
         timer = setTimeout(() => {
+          if (closed || !watchers.has(dir)) return;
           broadcast({ type: 'board-changed', project: name });
+          // File edits under the board lock approve Queue work just like the
+          // move API. Reuse project-scoped admission, including pause/budget gates.
+          if (project) pipeline.kickQueue(project).catch(() => {});
           if (project) pipeline.triageSweep(project); // annotate externally-arrived cards
           if (project) {
             const match = path.basename(changedPath || '').match(/^(task-\d+)/);

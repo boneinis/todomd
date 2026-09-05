@@ -52,8 +52,12 @@ function addUsage(total, raw) {
 export function runStage(opts) {
   const vendor = opts.vendor || 'claude';
   const streamed = normalizeUsage();
+  let initializedModel = '';
   const callerEvent = opts.onEvent || (() => {});
   const wrapped = { ...opts, vendor, onEvent: (event) => {
+    if (event?.type === 'system' && event.subtype === 'init' && typeof event.model === 'string') {
+      initializedModel = event.model;
+    }
     if (event?.type === 'turn.completed') addUsage(streamed, event.usage);
     callerEvent(event);
   } };
@@ -71,7 +75,11 @@ export function runStage(opts) {
     done: run.done.then((result) => {
       const envelopeUsage = normalizeUsage(result?.envelope?.usage);
       const usage = envelopeUsage.available ? envelopeUsage : streamed;
-      const reportedModel = Object.keys(result?.envelope?.modelUsage || {})[0] || opts.model || '';
+      // modelUsage may include auxiliary/subagent calls in arbitrary order.
+      // Init identifies the actual main model (including resolved aliases).
+      const usageModels = Object.keys(result?.envelope?.modelUsage || {});
+      const reportedModel = initializedModel || result?.envelope?.model || opts.model ||
+        (usageModels.length === 1 ? usageModels[0] : '');
       return {
         ...result,
         runId: opts.runId || '',

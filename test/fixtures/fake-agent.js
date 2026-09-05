@@ -56,12 +56,13 @@ const cwd = process.cwd();
 const session = 'fake-session-0001';
 
 const emitStream = (events) => {
-  for (const e of events) process.stdout.write(JSON.stringify({ session_id: session, ...e }) + '\n');
+  for (const e of events) process.stdout.write(JSON.stringify({ session_id: session, ...(e.type === 'system' && e.subtype === 'init' && process.env.FAKE_INIT_MODEL ? { model: process.env.FAKE_INIT_MODEL } : {}), ...e }) + '\n');
 };
 const resultEnvelope = (extra = {}) => ({
   type: 'result', subtype: 'success', is_error: false,
   total_cost_usd: 0.001, num_turns: 1, session_id: session, result: 'ok',
   usage: { input_tokens: 20, cache_read_input_tokens: 10, cache_creation_input_tokens: 2, output_tokens: 5 },
+  ...(process.env.FAKE_MODEL_USAGE ? { modelUsage: JSON.parse(process.env.FAKE_MODEL_USAGE) } : {}),
   ...extra,
 });
 
@@ -105,7 +106,7 @@ if (process.env.FAKE_MAXTURNS === '1') {
 
 // ── raw parsing-test mode: emit a canned sequence incl. a trailing newline-less line ──
 if (process.env.FAKE_MODE === 'parsing') {
-  process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: session }) + '\n');
+  process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: session, model: process.env.FAKE_INIT_MODEL }) + '\n');
   process.stdout.write(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'héllo 日本語' }] }, session_id: session }) + '\n');
   // final result with NO trailing newline — exercises the flush path
   process.stdout.write(JSON.stringify(resultEnvelope()));
@@ -128,7 +129,8 @@ if (process.env.FAKE_RESUME_MISSING && has('--resume')) {
     subtype: 'error_during_execution',
     is_error: true,
     num_turns: 0,
-    errors: ['No conversation found with session ID: fake-session'],
+    result: '',
+    errors: process.env.FAKE_RESUME_MISSING === 'empty' ? [] : ['No conversation found with session ID: fake-session'],
   })]);
   process.exit(0);
 }

@@ -681,7 +681,9 @@ function resumeSessionUnavailable(result) {
   const errors = Array.isArray(result?.envelope?.errors) ? result.envelope.errors.join(' ') : '';
   const text = [result?.envelope?.result, errors, result?.diagnostic?.finalMessage, result?.stderr]
     .filter(Boolean).join(' ');
-  return /no conversation found with session id|conversation(?:\s+session)?[^.]{0,40}not found/i.test(text);
+  return /no conversation found with session id|conversation(?:\s+session)?[^.]{0,40}not found/i.test(text) ||
+    (result?.envelope?.subtype === 'error_during_execution' &&
+      result.envelope.num_turns === 0 && !text.trim());
 }
 
 function diagnosticSnippet(value, max = 220) {
@@ -732,9 +734,9 @@ async function recordRun(project, id, stage, attempt, result, note, { persistSes
   const card = readCard(project.path, id);
   const prevCost = Number(card?.data?.cost_usd) || 0;
   const patch = { cost_usd: Math.round((prevCost + cost) * 10000) / 10000 };
-  // Direct card chat deliberately starts a tool-less disposable session. It
-  // must never replace the resumable Build session stored on the card.
-  if (persistSession && result?.sessionId) patch.session_id = result.sessionId;
+  // Only Build owns the resumable session. Plan, Verify, diagnosis and chat
+  // are independent conversations, potentially on a different provider.
+  if (stage === 'Build' && persistSession && result?.sessionId) patch.session_id = result.sessionId;
   await patchFrontmatter(project.path, id, patch);
   const usage = result?.usage;
   const usageText = usage?.available
@@ -1299,6 +1301,10 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
       observedActivityAt = new Date().toISOString();
       observedActivity = runActivity(event) || observedActivity;
       if (run) {
+        if (event.type === 'system' && event.subtype === 'init' && event.model) {
+          run.model = event.model;
+          persistRuns();
+        }
         run.lastActivityAt = observedActivityAt;
         if (observedActivity) run.activity = observedActivity;
         const nowMs = Date.now();
@@ -1330,6 +1336,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     startedAt: new Date().toISOString(), prevStatus, attempt,
     lastActivityAt: observedActivityAt,
     vendor: stageOpts.vendor || 'claude',
+    model: stageOpts.model || '',
     executable: child.spawnfile || '',
     ...(observedActivity ? { activity: observedActivity } : {}),
     ...(trackingProgress ? { trackingProgress: { ...trackingProgress } } : {}),
@@ -2186,7 +2193,8 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
     const structuredPlan = structuredCodexPlan ? result.envelope?.structured_output : null;
     if (ok && structuredCodexPlan &&
         (!structuredPlan || typeof structuredPlan.plan !== 'string' || !Array.isArray(structuredPlan.chunks)
-          || !BUILD_PROFILES.has(structuredPlan.build_profile))) {
+          || !BUILD_PROFILES.has(structuredPlan.build_profile)
+          || !PLAN_SCHEMA.properties.complexity.enum.includes(structuredPlan.complexity))) {
       await recordRun(project, id, stageName, 0, result, 'failed: invalid structured plan');
       await toNeedsHuman(project, id, stageName, 'bad_plan', 'Codex returned no valid structured implementation plan');
       return;
@@ -2943,7 +2951,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   // only an optimization. If the provider has expired or lost that session,
   // transparently start one fresh Build agent in the SAME worktree and on the
   // SAME attempt instead of bouncing the card straight back to Needs Human.
-  if (!run?.cancelled && !run?.timedOut && recovery && buildOpts.resume && resumeSessionUnavailable(result)) {
+  if (!run?.cancelled && !run?.timedOut && buildOpts.resume && resumeSessionUnavailable(result)) {
     await recordRun(project, id, 'Build', attempt, result,
       'resume session unavailable; retrying fresh in preserved worktree', { persistSession: false });
     const freshOpts = {
@@ -2951,7 +2959,8 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
       prompt: `${stagePrompt(project, vendor, stage, id)}\n\n` +
         `Continue from the existing preserved worktree changes. Do not discard them, recreate the worktree, ` +
         `re-plan, or restart the task from scratch. Finish the remaining acceptance criteria, run the verify ` +
-        `command, and commit the completed work.${humanInstructionBlock}`,
+        `command, and commit the completed work.` +
+        (retry?.findings ? `\n\nPrevious verifier findings to address:\n${retry.findings}` : '') + humanInstructionBlock,
       logFile: runLogFile(project, id, 'Build', `${attempt}-fresh`),
     };
     delete freshOpts.resume;

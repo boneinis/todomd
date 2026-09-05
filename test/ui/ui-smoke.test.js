@@ -44,7 +44,7 @@ function hostileBoard() {
   const card = (name, body) => fs.writeFileSync(path.join(repo, '.todomd/tasks', name), body);
   card('task-0001-scalar-label.md',
     '---\nid: task-0001\ntitle: labels as a bare string\nstatus: Review\ntype: improvement\n' +
-    'labels: ui\nassignee: 12345\ntldr: The card verifies resilient rendering for hand-edited label metadata.\n---\n\n## Description\n\nhand-edited\n');
+    'complexity: very-high\nbuild_profile: long\nlabels: ui\nassignee: 12345\ntldr: The card verifies resilient rendering for hand-edited label metadata.\n---\n\n## Description\n\nhand-edited\n');
   card('task-0002-mapping-label.md',
     '---\nid: task-0002\ntitle: labels as a YAML mapping\nstatus: Queue\ntype: bug\n' +
     'labels: {a: 1}\nneeds_human_reason: 42\nagent: codex\n' +
@@ -133,6 +133,15 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
     assert.equal(count, 8, 'every card rendered (a render throw would blank the board)');
     assert.match(await page.eval(`document.querySelector('[data-id="task-0001"] .card-tldr').textContent`),
       /resilient rendering.*hand-edited label metadata/i, 'cards surface an authored semantic TL;DR');
+    assert.equal(await page.eval(`document.querySelector('[data-id="task-0001"] .chip-cx').textContent`), 'cx: very-high');
+    assert.equal(await page.eval(`document.querySelector('[data-id="task-0001"] .chip-profile').textContent`), 'build: long');
+    assert.equal(await page.eval(`getComputedStyle(document.querySelector('[data-id="task-0001"] .chip-cx')).color`),
+      'rgb(248, 113, 113)', 'label-chip styling must not override the very-high difficulty color');
+    assert.equal(await page.eval(`document.querySelectorAll('[data-id="task-0004"] .chip-cx, [data-id="task-0004"] .chip-profile').length`), 0);
+    await page.eval(`openDrawer('task-0001')`);
+    await until(async () => /build profile/.test(await page.eval(`document.getElementById('drawer-meta').textContent`)), { timeout: BUDGET.quick });
+    assert.match(await page.eval(`document.getElementById('drawer-meta').textContent`), /complexity.*very-high.*build profile.*long/s);
+    await page.eval(`closeDrawer()`);
     const usageText = await page.eval(`document.getElementById('usage').textContent`);
     assert.match(usageText, /2 AI runs/);
     assert.match(usageText, /1\.2K in \/ 50 out/);

@@ -5,8 +5,10 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isolateHome, makeRepo, BUDGET, timeoutScale } from './helpers.js';
+import { isolateHome, makeRepo, BUDGET, timeoutScale, writeCard, useFakeAgent, clearFakeAgent, until, sleep } from './helpers.js';
 import { addProject } from '../src/registry.js';
+import { readCard, withRepoLock } from '../src/board.js';
+import * as pipeline from '../src/pipeline.js';
 import { startServer } from '../src/server.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -81,4 +83,43 @@ test('close() releases every handle — the process exits on its own', async () 
   assert.equal(exited, 0, exited === null
     ? `server process was still alive ${deadline}ms after close() — a handle was leaked (or the machine is too busy; scale was ${timeoutScale().toFixed(1)}x)`
     : `server process exited ${exited} instead of 0 after close(): ${stderr}`);
+});
+
+
+test('locked file edits into Queue auto-admit only their project and respect pause', async () => {
+  isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  const repo = makeRepo();
+  const otherRepo = makeRepo();
+  addProject(repo);
+  addProject(otherRepo);
+  const project = { name: path.basename(repo), path: repo };
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  writeCard(repo, 'task-0002', { status: 'Planned' });
+  writeCard(otherRepo, 'task-0001', { status: 'Planned' });
+  const server = await startServer({ port: await freePort() });
+  const editIntoQueue = (id) => withRepoLock(repo, () => {
+    const card = readCard(repo, id);
+    fs.writeFileSync(path.join(repo, '.todomd/tasks', card.file), card.raw.replace('status: Planned', 'status: Queue'));
+  });
+  try {
+    // Let chokidar finish its initial inventory before editing existing files.
+    await sleep(300);
+    await editIntoQueue('task-0001');
+    await until(() => readCard(repo, 'task-0001').data.status === 'Done', { timeout: BUDGET.chain });
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1, 'watcher refreshes do not duplicate builds');
+    assert.equal(readCard(otherRepo, 'task-0001').data.status, 'Planned');
+    pipeline.pauseQueue(project);
+    await editIntoQueue('task-0002');
+    await sleep(2200);
+    assert.equal(readCard(repo, 'task-0002').data.status, 'Queue');
+    assert.equal(pipeline.hasLiveRun(project.name, 'task-0002'), false);
+    pipeline.resumeQueue(project);
+    await until(() => readCard(repo, 'task-0002').data.status === 'Done', { timeout: BUDGET.chain });
+  } finally {
+    server.close();
+    pipeline.forgetProject(project.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
 });

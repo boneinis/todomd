@@ -676,8 +676,9 @@ test('Verify column routing stays independent from a card Build-agent override',
     const r = await pipeline.humanMove(p, 'task-0001', 'Queue');
     assert.equal(r.ok, true);
     await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
-    assert.equal(readCard(repo, 'task-0001').data.session_id, 'fake-codex-session',
-      'the explicit Verify route ran Codex despite the card-level Claude Build override');
+    assert.equal(readCard(repo, 'task-0001').data.session_id, 'fake-session-0001',
+      'the independent Codex Verify cannot overwrite the Claude Build session');
+    assert.match(readCard(repo, 'task-0001').raw, /Verify.*codex\/gpt-test/);
   } finally {
     clearFakeAgent();
   }
@@ -700,6 +701,8 @@ test('Codex Plan is read-only and TODOMD writes its structured plan into the car
     await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
     assert.match(readCard(repo, 'task-0001').body, /## Implementation Plan\n\n1\. Do the thing\./);
     assert.equal(readCard(repo, 'task-0001').data.build_profile, 'standard');
+    assert.equal(readCard(repo, 'task-0001').data.complexity, 'medium');
+    assert.equal(loadBoard(repo).cards.find((c) => c.id === 'task-0001').complexity, 'medium');
     const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
     assert.deepEqual(argv.slice(argv.indexOf('--sandbox'), argv.indexOf('--sandbox') + 2), ['--sandbox', 'read-only']);
     assert.ok(argv.includes('--output-schema'));
@@ -2908,4 +2911,118 @@ test('stage tools resolve from the committed config (HEAD:), not a working-tree 
   assert.match(tools, /SentinelCommitted/, 'the committed config drives the run');
   assert.doesNotMatch(tools, /SentinelPoisoned/, 'a working-tree config edit is not armed mid-run');
   clearFakeAgent();
+});
+
+
+for (const missing of ['empty', '1']) {
+  test(`cross-vendor verdict retry recovers a missing Build session (${missing}) with findings`, async () => {
+    isolateHome();
+    const dir = tmp('cross-vendor-retry');
+    const argvLog = path.join(dir, 'argv.jsonl');
+    useFakeAgent({ build: 'good', resume_missing: missing, argv_log: argvLog });
+    process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+    process.env.FAKE_CODEX_FAIL_ONCE = path.join(dir, 'failed-once');
+    pipeline.init({ broadcast: noop });
+    const repo = makeRepo();
+    const p = project(repo);
+    await setStageRouting(repo, 'Verify', { agent: 'codex', model: 'gpt-test' });
+    writeCard(repo, 'task-0001', { status: 'Planned' });
+    try {
+      await pipeline.humanMove(p, 'task-0001', 'Queue');
+      await until(() => ['Done', 'Needs Human'].includes(status(repo, 'task-0001')), { timeout: BUDGET.chain });
+      const card = readCard(repo, 'task-0001');
+      assert.equal(card.data.status, 'Done', card.raw);
+      assert.equal(card.data.verification.attempts, 2, 'fresh fallback stays on the same retry attempt');
+      assert.equal(card.data.session_id, 'fake-session-0001');
+      const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
+      const resumed = calls.filter((args) => args.includes('--resume'));
+      assert.equal(resumed.length, 1, 'only one resume attempt');
+      assert.equal(resumed[0][resumed[0].indexOf('--resume') + 1], 'fake-session-0001');
+      const fresh = calls.find((args) => args.some((a) => a.includes('Continue from the existing preserved worktree changes')));
+      assert.ok(fresh && !fresh.includes('--resume'));
+      assert.match(fresh.join(' '), /Repair the edge case/);
+      assert.match(card.raw, /resume session unavailable; retrying fresh/);
+    } finally {
+      delete process.env.TODOMD_CODEX_BIN;
+      clearFakeAgent();
+    }
+  });
+}
+
+test('Build telemetry uses init model despite auxiliary modelUsage entries', async () => {
+  const home = isolateHome();
+  useFakeAgent({ build: 'good', verdict: 'pass', init_model: 'claude-fable-5-1',
+    model_usage: JSON.stringify({ 'claude-haiku-4-5-20251001': {}, 'claude-fable-5-1': {} }) });
+  const mirroredModels = [];
+  pipeline.init({ broadcast: (event) => {
+    if (event.type === 'run-event' && event.event?.subtype === 'init') {
+      const runs = JSON.parse(fs.readFileSync(path.join(home, '.todomd/runs.json'), 'utf8'));
+      mirroredModels.push(...runs.filter((run) => run.stage === 'Build').map((run) => run.model));
+    }
+  } });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    const card = readCard(repo, 'task-0001');
+    assert.match(card.raw, /Build attempt 1.*claude\/claude-fable-5-1/);
+    const usage = fs.readFileSync(path.join(home, '.todomd/usage.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(usage.find((r) => r.stage === 'Build').model, 'claude-fable-5-1');
+    assert.deepEqual(mirroredModels, ['claude-fable-5-1'], 'runs.json records the actual initialized model');
+  } finally { clearFakeAgent(); }
+});
+
+for (const complexity of ['trivial', 'low', 'medium', 'high', 'very-high', 'extreme', '', 3, null, undefined]) {
+  test(`structured Plan validates complexity ${JSON.stringify(complexity)}`, async () => {
+    isolateHome();
+    process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+    process.env.FAKE_CODEX_LAST_MESSAGE = JSON.stringify({ plan: '1. Focused plan.', chunks: [], build_profile: 'long', complexity });
+    const schemaLog = path.join(tmp('plan-schema'), 'schema.json');
+    process.env.FAKE_CODEX_SCHEMA_LOG = schemaLog;
+    pipeline.init({ broadcast: noop });
+    const repo = makeRepo();
+    const p = project(repo);
+    await setStageRouting(repo, 'Plan', { agent: 'codex', model: 'gpt-test' });
+    writeCard(repo, 'task-0001', { extra: 'session_id: existing-build-session\n' });
+    try {
+      await pipeline.humanMove(p, 'task-0001', 'Plan');
+      await until(() => ['Planned', 'Needs Human'].includes(status(repo, 'task-0001')), { timeout: BUDGET.stage });
+      const schema = JSON.parse(fs.readFileSync(schemaLog, 'utf8'));
+      assert.deepEqual(schema.properties.complexity, { type: 'string', enum: ['trivial', 'low', 'medium', 'high', 'very-high'] });
+      assert.ok(schema.required.includes('complexity'));
+      const valid = schema.properties.complexity.enum.includes(complexity);
+      const card = readCard(repo, 'task-0001');
+      assert.equal(card.data.status, valid ? 'Planned' : 'Needs Human');
+      assert.equal(card.data.complexity, valid ? complexity : undefined);
+      assert.equal(card.data.session_id, 'existing-build-session');
+      if (valid) assert.equal(loadBoard(repo).cards[0].complexity, complexity);
+    } finally {
+      delete process.env.TODOMD_CODEX_BIN;
+      clearFakeAgent();
+    }
+  });
+}
+
+test('Gemini Plan preserves agent-written complexity through parseCard/loadBoard', async () => {
+  isolateHome();
+  process.env.TODOMD_GEMINI_BIN = path.join(path.dirname(FAKE_CODEX), 'fake-gemini.js');
+  process.env.FAKE_GEMINI_PLAN_COMPLEXITY = 'high';
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  await setStageRouting(repo, 'Plan', { agent: 'gemini', model: 'gemini-3.7-flash-high' });
+  writeCard(repo, 'task-0001', { extra: 'session_id: existing-build-session\n' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+    assert.equal(readCard(repo, 'task-0001').data.complexity, 'high');
+    assert.equal(loadBoard(repo).cards[0].complexity, 'high');
+    assert.equal(loadBoard(repo).cards[0].build_profile, 'long');
+    assert.equal(readCard(repo, 'task-0001').data.session_id, 'existing-build-session');
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    clearFakeAgent();
+  }
 });
