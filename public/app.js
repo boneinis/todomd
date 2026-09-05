@@ -504,6 +504,7 @@ function renderCard(card, color, i, nestedIds) {
   } else {
     const pills = [];
     if (card.type) pills.push(`<span class="chip chip-type">${esc(String(card.type))}</span>`);
+    if (card.complexity) pills.push(`<span class="chip chip-cx chip-cx-${esc(String(card.complexity))}">cx: ${esc(String(card.complexity))}</span>`);
     for (const l of asList(card.labels)) pills.push(`<span class="chip chip-c${labelHue(l)}">${esc(l)}</span>`);
     chips.innerHTML = pills.join('');
   }
@@ -873,6 +874,7 @@ async function openDrawer(id) {
   $('#drawer-meta').innerHTML = [
     ['status', card.data.status], ['type', card.data.type], ['priority', card.data.priority],
     ['agent', card.data.agent], ['source', card.data.source],
+    ['complexity', card.data.complexity], ['build profile', card.data.build_profile],
     // asList, not `|| []`: a hand-edited/agent-written card can make labels a
     // bare string or a mapping, and .join on that throws — which aborts
     // openDrawer entirely, leaving the card silently un-openable (no drawer, so

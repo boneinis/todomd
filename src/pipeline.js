@@ -56,10 +56,14 @@ const ESCALATION_SCHEMA = {
 const PLAN_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['plan', 'chunks', 'build_profile'],
+  required: ['plan', 'chunks', 'build_profile', 'complexity'],
   properties: {
     plan: { type: 'string' },
     build_profile: { type: 'string', enum: ['standard', 'long', 'split_required'] },
+    // Implementation DIFFICULTY, judged independently of size (which build_profile
+    // covers): unfamiliarity, blast radius across consumers, coordination, and
+    // tricky edge cases. Ordinal, not a points estimate.
+    complexity: { type: 'string', enum: ['trivial', 'low', 'medium', 'high', 'very-high'] },
     chunks: {
       type: 'array',
       items: {
@@ -2118,14 +2122,19 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   if (structuredCodexPlan) {
     prompt += '\n\nDo not edit files. Return the implementation plan as the required structured output. ' +
       'Set build_profile to standard for an ordinary cohesive task, long for a cohesive task that is likely to need more than three build checkpoints, or split_required when it must become child cards. ' +
-      'Use chunks only when the work genuinely needs two or more independently verifiable child cards.';
+      'Use chunks only when the work genuinely needs two or more independently verifiable child cards. ' +
+      'Set complexity to one of trivial|low|medium|high|very-high: your judgment of implementation difficulty ' +
+      '(unfamiliarity, blast radius across consumers, coordination, tricky edge cases), independent of size.';
   } else if (stageName === 'Plan' && !skill) {
     // Existing project command files may predate build profiles. Carry the
     // contract in the orchestrator prompt too, so upgrading TODOMD upgrades
     // Plan behavior without rewriting a project's customized command file.
-    prompt += '\n\nRequired Build sizing: update only the task card frontmatter key build_profile. ' +
+    prompt += '\n\nRequired Build sizing: update the task card frontmatter key build_profile. ' +
       'Use standard for a cohesive task expected within three Build checkpoints, long for a cohesive task likely to need more than three, or split_required when child cards are required. ' +
-      'The board owns the actual limits; do not invent per-task timeout values.';
+      'The board owns the actual limits; do not invent per-task timeout values.' +
+      '\n\nAlso set the frontmatter key complexity to one of trivial|low|medium|high|very-high: the implementation difficulty ' +
+      '(unfamiliarity, blast radius across consumers, coordination, tricky edge cases), judged independently of size. ' +
+      'build_profile sizes the effort; complexity rates the difficulty. These two frontmatter keys are the only ones you may set.';
   }
   const { result, run, finishTracking } = await spawnTracked(project, id, stageName, 'Review', 0, {
     retainUntilFinalized: true,
@@ -2198,7 +2207,7 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
           const plannedProfile = chunks.length >= 2
             ? 'split_required'
             : normalizeBuildProfile(structuredPlan?.build_profile || plannedCard?.data?.build_profile);
-          await patchFrontmatter(project.path, id, { build_profile: plannedProfile, build_limits: {} });
+          await patchFrontmatter(project.path, id, { build_profile: plannedProfile, build_limits: {}, ...(structuredPlan?.complexity ? { complexity: structuredPlan.complexity } : {}) });
           if (structuredPlan) {
             const plan = chunks.length === 1 ? chunks[0].plan : structuredPlan.plan;
             if (plan) await writeImplementationPlan(project, id, plan);

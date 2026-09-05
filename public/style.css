@@ -266,6 +266,13 @@ body.viewer .col-edit { display: none; }
   border-radius: 999px; border: 1px solid transparent; white-space: nowrap;
 }
 .chip-type { color: var(--dim); border-color: var(--line); }
+/* complexity (cx: …) chip — ordinal difficulty from the Plan stage */
+.chip-cx { color: var(--dim); border-color: var(--line); text-transform: none; }
+.chip-cx-trivial   { color: var(--green);  border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+.chip-cx-low       { color: var(--cyan);   border-color: color-mix(in srgb, var(--cyan) 45%, transparent); }
+.chip-cx-medium    { color: var(--amber);  border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+.chip-cx-high      { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.chip-cx-very-high { color: var(--red);    border-color: color-mix(in srgb, var(--red) 55%, transparent); background: color-mix(in srgb, var(--red) 10%, transparent); }
 .chip-warn {
   color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent);
   background: color-mix(in srgb, var(--red) 12%, transparent);
