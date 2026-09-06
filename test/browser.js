@@ -171,7 +171,7 @@ export async function openPage() {
     async eval(expression) {
       const r = await cdp.send('Runtime.evaluate',
         { expression, returnByValue: true, awaitPromise: true }, sessionId);
-      if (r.exceptionDetails) throw new Error(r.exceptionDetails.text);
+      if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
       return r.result?.value;
     },
     async close() {
