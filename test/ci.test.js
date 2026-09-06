@@ -627,8 +627,8 @@ for(const orphanStage of ['CI','Verify']) {
 }
 
 test('source changed during Verify cannot merge using earlier remote evidence',async()=>{
-  isolateHome();scheduler.resetState();const argvLog=path.join(tmp('verify-source-change'),'argv.jsonl');
-  useFakeAgent({build:'good',verdict:'pass',exit_delay_ms:750,argv_log:argvLog});pipeline.init({broadcast:noop});
+  isolateHome();scheduler.resetState();const dir=tmp('verify-source-change'),argvLog=path.join(dir,'argv.jsonl'),release=path.join(dir,'release');
+  useFakeAgent({build:'good',verdict:'pass',verify_release:release,argv_log:argvLog});pipeline.init({broadcast:noop});
   const repo=makeRepo();configureCi(repo,{execution:'remote',quick:'node --version'});
   const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});const wt=path.join(repo,'.todomd/worktrees/task-0001');
   try {
@@ -636,6 +636,7 @@ test('source changed during Verify cannot merge using earlier remote evidence',a
     await until(()=>fs.existsSync(argvLog)&&fs.readFileSync(argvLog,'utf8').trim().split('\n').some(line=>JSON.parse(line).some(arg=>arg.includes('todomd-verify'))),{timeout:BUDGET.chain});
     fs.appendFileSync(path.join(wt,'src/calc.js'),'\n// after CI\n');git(wt,['add','src/calc.js']);git(wt,['commit','-qm','source changed after CI']);
     const changed=git(wt,['rev-parse','HEAD']);
+    fs.writeFileSync(release,'complete review');
     await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
     assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_evidence_invalid');
     assert.notEqual(git(repo,['rev-parse','HEAD']),changed);

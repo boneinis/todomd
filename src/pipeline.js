@@ -2675,13 +2675,17 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     }
     const merged = await withRepoLock(project.path, async () => {
       const latest = await execConfig(project.path);
+      let mergeTarget = branch;
       if (config.ci?.execution === 'remote' || latest.ci?.execution === 'remote') {
         const command = ciBoardColumn(latest) ? ciCommandForProfile(latest) : String(latest.verify_command || '').trim();
-        if (!command || !(await trustedCiEvidence(readCard(project.path, id), worktreeAbs, command, latest.ci?.execution || 'local'))) {
+        const evidence = command && await trustedCiEvidence(readCard(project.path, id), worktreeAbs, command, latest.ci?.execution || 'local');
+        if (!evidence) {
           return { ok: false, ciInvalid: true, reason: 'Candidate or CI policy changed after the gate passed; remote evidence no longer authorizes this merge.' };
         }
+        // Merge the checked commit, never a branch ref that can move after validation.
+        mergeTarget = evidence.head;
       }
-      return mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`);
+      return mergeBranch(project.path, mergeTarget, `chore(todomd): merge ${id} (verified, attempt ${attempt})`);
     });
     if (merged.ciInvalid) {
       await patchFrontmatter(project.path, id, { ci_evidence: {} });

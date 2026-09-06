@@ -185,6 +185,10 @@ if (hangNow &&
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
   process.exit(0);
 } else if (stage === 'verify') {
+  // A deterministic checkpoint for source changes while Verify is in flight.
+  while (process.env.FAKE_VERIFY_RELEASE && !fs.existsSync(process.env.FAKE_VERIFY_RELEASE)) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   // simulate the user switching branches in the main repo mid-run, just before
   // the orchestrator would merge
   if (process.env.FAKE_SWITCH_REPO && process.env.FAKE_SWITCH_BRANCH) {
