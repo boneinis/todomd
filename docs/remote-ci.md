@@ -31,3 +31,40 @@ This is an opt-in runtime capability, not a migration of any existing board.
 Before enabling it, qualify the adapter's success, failure, blocked, source
 change, disconnect/recovery, and pressure behavior. Keep existing database
 workloads isolated from all CI reset commands.
+
+## Interrupted runs and explicit recovery
+
+The runtime preserves the candidate worktree and its Git directory on remote-CI
+cancel, shutdown, timeout, or boot recovery. It clears evidence and holds the
+card as `ci_blocked`, with recovery stage `CI`. Use **retry verification** to
+reconcile CI on the same candidate and attempt. This action still respects a
+paused queue; resume only when the board owner has cleared the prerequisite.
+Concurrent retry requests cannot launch two waiters for the same card.
+
+The adapter owns durable submission identity. It must journal an idempotent
+request before submission and reconcile an interrupted acknowledgement with the
+controller before submitting again. Saving a run ID only after the submission
+command exits leaves a duplicate-submission window. Runtime preservation alone
+does not fix that protocol gap. Local process termination must never cancel the
+accepted remote job. Lost or uncertain identity must block for reconciliation.
+
+A remote candidate must be clean and committed before submission and unchanged
+at completion. Verify and merge recheck candidate HEAD, cleanliness, command,
+and execution mode. A policy change while CI admission is queued holds the
+candidate for review. Source changes invalidate evidence and hold the candidate
+as `ci_evidence_invalid`; this hold does not grant approval to the new source.
+Missing or malformed committed configuration cannot enable remote handling.
+
+## Runtime regression evidence and rollout boundary
+
+`test/ci.test.js` uses a durable fake adapter and an independently running worker
+to exercise interruption before acknowledgement, preserved journals, explicit
+retry without resubmission, pause, resource pressure, mode changes, and stale
+source rejection. These tests qualify the runtime contract only. They do not
+qualify a real controller, repository adapter, worker recipe, or database reset.
+
+Before installing into a shared service, review compatibility with other
+pending runtime changes, pass the required gates, inspect active work on every
+registered board, and obtain the coordinated restart window. Keep a record of
+the installed commit and rollback path. Installation does not authorize enabling
+remote mode, approving generated source, or resuming held cards.

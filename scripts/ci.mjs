@@ -41,7 +41,7 @@ async function stage(name, fn, { fatal = true } = {}) {
     const ms = Date.now() - t0;
     results.push({ name, status: fatal ? 'fail' : 'warn', ms, error: e.message });
     console.log((fatal ? c.red('FAILED') : c.yellow('warn')) + c.dim(` (${(ms / 1000).toFixed(1)}s)`));
-    console.log(`  ${e.message.split('\n').slice(0, 12).join('\n  ')}`);
+    console.log(`  ${e.message.split('\n').join('\n  ')}`);
     if (fatal) failed = true;
   }
 }
@@ -60,7 +60,7 @@ function run(cmd, args, opts = {}) {
     r.stderr?.on('data', (d) => { err += d; });
     r.on('error', reject);
     r.on('close', (code) => (code === 0 ? resolve(out)
-      : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}\n${tail(err || out)}`))));
+      : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}\n${err.trim()}\n${out.trim()}`))));
   });
 }
 const tail = (s, n = 25) => s.trim().split('\n').slice(-n).join('\n');

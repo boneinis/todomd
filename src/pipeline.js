@@ -452,13 +452,13 @@ async function execConfig(repoPath) {
   const workingTree = loadConfig(repoPath);
   const res = await git(repoPath, ['show', 'HEAD:.todomd/config.yml']);
   // no committed config at all (fresh `init` before the first commit) — the
-  // working tree is all there is
-  if (!res.ok || !res.stdout) return workingTree;
+  // working tree is all there is, but it cannot opt into remote handling
+  if (!res.ok || !res.stdout) return { ...workingTree, ci: { ...workingTree.ci, execution: 'local' } };
   let committed;
   try {
     committed = normalizeConfig(yaml.load(res.stdout) || {});
   } catch {
-    return workingTree; // an unparseable committed config must not crash a run
+    return { ...workingTree, ci: { ...workingTree.ci, execution: 'local' } }; // remote handling requires a valid committed opt-in
   }
   // Operational keys (mode, concurrency, max_attempts, columns …) still let an
   // uncommitted edit through, so the board behaves as it displays — and so an
@@ -634,6 +634,7 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
   const recoverableStage = reason === 'orphaned_run'
+    || (from === 'CI' && ['ci_blocked', 'ci_evidence_invalid'].includes(reason))
     || (['build_budget', 'stalled_build'].includes(reason) && from === 'Build')
     || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
     || (reason === 'agent_error' && from === 'Build');
@@ -1035,8 +1036,8 @@ async function preservedWorktree(project, card) {
 
 function canRetryVerification(card) {
   const reason = card?.data?.needs_human_reason;
-  return ['bad_verdict', 'hook_cancelled', 'attempts_exhausted'].includes(reason)
-    || (reason === 'orphaned_run' && card?.data?.recovery_stage === 'Verify')
+  return ['bad_verdict', 'hook_cancelled', 'attempts_exhausted', 'ci_blocked', 'ci_evidence_invalid'].includes(reason)
+    || (reason === 'orphaned_run' && ['CI', 'Verify'].includes(card?.data?.recovery_stage))
     || (reason === 'run_timeout' && card?.data?.recovery_stage === 'Verify')
     // A real fail followed by an infrastructure error in the repair Build can
     // be fixed manually in the preserved worktree, then re-verified in place.
@@ -1174,12 +1175,9 @@ export async function retryVerification(project, id) {
   const verification = card.data.verification || {};
   const attempt = Math.max(1, Number(verification.attempts) || 1);
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
-  await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
-  const moved = await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
-  if (!moved.ok) return moved;
   const key = runKey(project.name, id);
   const claim = {
-    project: project.name, card: id, stage: 'Verify',
+    project: project.name, card: id, stage: config.ci?.execution === 'remote' || card.data.recovery_stage === 'CI' ? 'CI' : 'Verify',
     cancelled: false, revertTo: 'Queue', noRequeue: false,
     worktreeAbs, branch: card.data.worktree, attempt, maxAttempts,
     lastVerdict: verification.last_verdict || '',
@@ -1190,6 +1188,10 @@ export async function retryVerification(project, id) {
   // the card remains live across Verify -> queued Build.
   pending.set(key, claim);
   bumpRunGeneration(project.name, id);
+  await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
+  const moved = await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
+  if (!moved.ok) { sendState(project, id, 'idle', undefined, undefined, claim); return moved; }
+
   // A human-triggered retry is still a Verify: it asks the scheduler for a
   // Verify-column admission like every other start point, so the global,
   // column, per-project and governor gates all apply to it. CPU pressure may
@@ -1200,6 +1202,19 @@ export async function retryVerification(project, id) {
   // that window flips claim.cancelled, which verify() unwinds at admission.
   // No explicit withoutRepoLockContext here: scheduler.admitEntry() already
   // wraps run().
+  const ciCommand = ciBoardColumn(config) ? ciCommandForProfile(config) : String(config.verify_command || '').trim();
+  if (config.ci?.execution === 'remote' && !ciCommand) {
+    await toNeedsHuman(project, id, 'CI', 'ci_blocked', 'Remote CI has no configured adapter command.', claim);
+    return { ok: false, error: 'Remote CI has no configured adapter command' };
+  }
+  if (ciCommand && (card.data.recovery_stage === 'CI' || config.ci?.execution === 'remote') &&
+      !(await trustedCiEvidence(card, worktreeAbs, ciCommand, config.ci?.execution || 'local'))) {
+    if (ciBoardColumn(config)) await orchMove(project, id, 'CI', 'resuming the preserved candidate CI gate');
+    scheduleCi(project, id, ciCommand, { attempt, maxAttempts, buildSession: card.data.session_id || '',
+      worktreeAbs, branch: card.data.worktree, findings: '', config, lastVerdict: verification.last_verdict || '',
+      blocked: () => quotaPaused.has(project.name) || isQueuePaused(project) });
+    return { ok: true };
+  }
   sendState(project, id, 'queued', 'Verify');
   scheduler.schedule(project, id, 'Verify',
     (admission) => verify(
@@ -1789,10 +1804,10 @@ function ciBoardColumn(config) {
   return config.columns.includes('CI') && config.ci.enabled;
 }
 
-async function captureCiEvidence(project, id, worktreeAbs, command, execution = 'local') {
+async function captureCiEvidence(project, id, worktreeAbs, command, execution = 'local', expectedHead = '') {
   const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
   const dirty = await git(worktreeAbs, ['status', '--porcelain']);
-  const evidence = head.ok && dirty.ok && !dirty.stdout
+  const evidence = head.ok && dirty.ok && !dirty.stdout && (execution !== 'remote' || (expectedHead && expectedHead === head.stdout))
     ? { head: head.stdout, command, execution, passed_at: new Date().toISOString(), clean: true }
     : {};
   await patchFrontmatter(project.path, id, { ci_evidence: evidence });
@@ -1826,7 +1841,7 @@ function scheduleCi(project, id, command, next) {
   scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next, owner), {
     onDefer: onDeferState(project, id, 'CI'),
     blocked: next.config.ci?.execution === 'remote'
-      ? () => quotaPaused.has(project.name) || isQueuePaused(project) : undefined,
+      ? () => quotaPaused.has(project.name) || isQueuePaused(project) : next.blocked,
     resourceClass: next.config.ci?.execution === 'remote' ? 'light' : 'heavy',
   }).catch((err) => pipelineError(project, id, err, owner));
 }
@@ -1844,6 +1859,26 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   const pc = pendingCancelled(project, id);
   if (pc) return revertPendingCancel(project, id, pc, revertArgs);
 
+  const currentConfig = await execConfig(project.path);
+  const currentCommand = ciBoardColumn(currentConfig) ? ciCommandForProfile(currentConfig) : String(currentConfig.verify_command || '').trim();
+  if ((currentConfig.ci?.execution || 'local') !== (config.ci?.execution || 'local') || currentCommand !== command) {
+    await patchFrontmatter(project.path, id, { ci_evidence: {} });
+    return toNeedsHuman(project, id, 'CI', 'ci_blocked', 'CI execution policy changed while admission was queued; review and retry the preserved candidate.', pendingOwner);
+  }
+  const remote = config.ci?.execution === 'remote';
+  const startingHead = remote ? await git(worktreeAbs, ['rev-parse', 'HEAD']) : null;
+  if (remote) {
+    const clean = await git(worktreeAbs, ['status', '--porcelain']);
+    if (!startingHead.ok || !clean.ok || clean.stdout) {
+      await patchFrontmatter(project.path, id, { ci_evidence: {} });
+      return toNeedsHuman(project, id, 'CI', 'ci_evidence_invalid', 'Remote CI requires a clean committed candidate before submission; review and commit it before retrying.', pendingOwner);
+    }
+    // This is runtime recovery metadata, never an approval or a remote receipt.
+    // Canonical job IDs remain owned by the reviewed adapter's durable journal.
+    await patchFrontmatter(project.path, id, { ci_evidence: {}, ci_execution: 'remote' });
+  }
+  const beforeSpawnCancel = pendingCancelled(project, id);
+  if (beforeSpawnCancel) return revertPendingCancel(project, id, beforeSpawnCancel, revertArgs);
   sendState(project, id, 'running', 'CI');
   const startedAt = Date.now();
   const outcome = await runVerifyCommand(project, id, command, worktreeAbs, config);
@@ -1874,8 +1909,15 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   // recordRun() is shaped around an agent envelope (turns, cost, session); a
   // shell command has none, so the card history gets the same run-log line
   // without the meaningless columns.
+  if (remote && (outcome.timedOut || outcome.spawnError || outcome.signal || outcome.code === 2)) {
+    await patchFrontmatter(project.path, id, { ci_evidence: {} });
+    const detail = outcome.timedOut ? 'Local remote-CI waiting timed out; accepted fleet jobs are retained.' : outcome.spawnError || outcome.output.slice(-CI_DETAIL_MAX) || 'Remote prerequisite or local waiting was interrupted.';
+    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · blocked (remote prerequisite/interruption)`);
+    return toNeedsHuman(project, id, 'CI', 'ci_blocked', detail, pendingOwner);
+  }
   if (outcome.ok) {
-    const evidence = await captureCiEvidence(project, id, worktreeAbs, command, config.ci?.execution || 'local');
+    const evidence = await captureCiEvidence(project, id, worktreeAbs, command, config.ci?.execution || 'local', startingHead?.stdout);
+    if (remote && !evidence.clean) return toNeedsHuman(project, id, 'CI', 'ci_evidence_invalid', 'Candidate source changed during remote CI; no verification or automatic repair was started.', pendingOwner);
     await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` passed`);
     if (!evidence.clean) {
       await appendRunLog(project.path, id, '  - CI evidence not reusable: candidate worktree is dirty or HEAD could not be resolved');
@@ -1885,12 +1927,6 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
     return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, findings);
   }
   await patchFrontmatter(project.path, id, { ci_evidence: {} });
-  // Remote adapters reserve exit 2 for an unmet prerequisite. It cannot
-  // trigger a repair Build: missing approval/capacity is not a code failure.
-  if (config.ci?.execution === 'remote' && outcome.code === 2 && !outcome.signal && !outcome.timedOut && !outcome.spawnError) {
-    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · blocked (remote prerequisite)`);
-    return toNeedsHuman(project, id, 'CI', 'ci_blocked', outcome.output.slice(-CI_DETAIL_MAX), pendingOwner);
-  }
   await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` failed`);
   sendState(project, id, 'failed', 'CI');
   // CI is the first thing to enter the worktree after Build. A worktree the
@@ -1987,7 +2023,7 @@ function runVerifyCommand(project, id, command, cwd, config) {
   const timeoutMin = ciTimeoutSecs > 0 ? ciTimeoutSecs / 60 : stageTimeoutMinutes(project);
   let stageTimer;
   if (timeoutMin > 0) {
-    stageTimer = setTimeout(() => { entry.timedOut = true; killWithEscalation(child); }, timeoutMin * 60_000);
+    stageTimer = setTimeout(() => { entry.timedOut = true; killWithEscalation(child, { processGroup: true }); }, timeoutMin * 60_000);
     stageTimer.unref?.();
   }
   return new Promise((resolve) => {
@@ -1995,7 +2031,7 @@ function runVerifyCommand(project, id, command, cwd, config) {
       clearTimeout(stageTimer);
       if (ciRuns.get(key) === entry) ciRuns.delete(key);
       maybeStopCriticalWatch();
-      resolve({ ...result, cancelled: entry.cancelled, loadCancelled: entry.loadCancelled, timedOut: entry.timedOut, timeoutMin, output });
+      resolve({ ...result, ok: result.ok && !entry.timedOut && !entry.cancelled && !entry.loadCancelled, cancelled: entry.cancelled, loadCancelled: entry.loadCancelled, timedOut: entry.timedOut, timeoutMin, output });
     };
     child.on('error', (err) => settle({ ok: false, code: -1, signal: null, spawnError: String(err?.message || err) }));
     child.on('close', (code, signal) => settle({ ok: code === 0 && !signal, code, signal, spawnError: null }));
@@ -2037,8 +2073,14 @@ function attemptsAfterAbort(attempt, attemptOpened) {
 // shutdown (noRequeue) or budget mode opted out.
 async function revertPendingCancel(project, id, pc,
   { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict, attemptOpened = pc.attemptOpened }) {
+  if (config.ci?.execution === 'remote' && pc.stage === 'CI') {
+    await patchFrontmatter(project.path, id, { ci_evidence: {} });
+    return toNeedsHuman(project, id, 'CI', 'ci_blocked',
+      'Local remote-CI waiting stopped. Candidate and accepted remote jobs are preserved; explicitly retry CI to reconcile the adapter journal.', pc);
+  }
   if (pc.preserveWorktree) {
-    const stage = readCard(project.path, id)?.data?.status === 'Verify' ? 'Verify' : 'Build';
+    const status = readCard(project.path, id)?.data?.status;
+    const stage = ['CI', 'Verify'].includes(status) ? status : 'Build';
     return toNeedsHuman(project, id, stage, 'orphaned_run',
       'server stopped during a run — unmerged work is preserved in the worktree/branch', pc);
   }
@@ -2387,6 +2429,13 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (!route.ok) return toNeedsHuman(project, id, 'Verify', 'routing_error', route.error, pendingOwner);
   const ciCommand = ciBoardColumn(config) ? ciCommandForProfile(config) : String(config.verify_command || '').trim();
   const ciEvidence = ciCommand ? await trustedCiEvidence(card, worktreeAbs, ciCommand, config.ci?.execution || 'local') : null;
+  if (config.ci?.execution === 'remote' && !ciEvidence) {
+    await patchFrontmatter(project.path, id, { ci_evidence: {} });
+    if (!ciCommand) return toNeedsHuman(project, id, 'CI', 'ci_blocked', 'Remote CI has no configured adapter command.', pendingOwner);
+    if (ciBoardColumn(config)) await orchMove(project, id, 'CI', 'remote CI evidence must be refreshed');
+    return scheduleCi(project, id, ciCommand, { attempt, maxAttempts, buildSession, worktreeAbs, branch,
+      findings: priorFindings, config, lastVerdict: card.data.verification?.last_verdict || '' });
+  }
   let verifyPrompt = stagePrompt(project, vendor, stage, id);
   if (ciEvidence) {
     verifyPrompt += `\n\nTrusted CI evidence: the exact clean candidate HEAD ${ciEvidence.head} passed ` +
@@ -2624,7 +2673,20 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
         `repo is on "${head || 'detached HEAD'}" but this run forked from "${forkedFrom}" — ` +
         `merge refused. Check out ${forkedFrom}, then drag the card back to Planned to retry.`);
     }
-    const merged = await withRepoLock(project.path, () => mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`));
+    const merged = await withRepoLock(project.path, async () => {
+      const latest = await execConfig(project.path);
+      if (config.ci?.execution === 'remote' || latest.ci?.execution === 'remote') {
+        const command = ciBoardColumn(latest) ? ciCommandForProfile(latest) : String(latest.verify_command || '').trim();
+        if (!command || !(await trustedCiEvidence(readCard(project.path, id), worktreeAbs, command, latest.ci?.execution || 'local'))) {
+          return { ok: false, ciInvalid: true, reason: 'Candidate or CI policy changed after the gate passed; remote evidence no longer authorizes this merge.' };
+        }
+      }
+      return mergeBranch(project.path, branch, `chore(todomd): merge ${id} (verified, attempt ${attempt})`);
+    });
+    if (merged.ciInvalid) {
+      await patchFrontmatter(project.path, id, { ci_evidence: {} });
+      return toNeedsHuman(project, id, 'CI', 'ci_evidence_invalid', merged.reason);
+    }
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', 'merge_conflict', merged.reason);
     // A merge that "succeeds" without the branch landing (git reports "Already
     // up to date" while the branch is NOT an ancestor — e.g. a messed-up
@@ -2898,6 +2960,16 @@ export async function reconcileOnBoot() {
           if (buildish && fs.existsSync(wtAbs)) {
             const status = await git(wtAbs, ['status', '--porcelain']);
             worktreeHasChanges = !status.ok || !!status.stdout;
+          }
+          const executionConfig = await execConfig(project.path);
+          const remoteCommand = ciBoardColumn(executionConfig) ? ciCommandForProfile(executionConfig) : String(executionConfig.verify_command || '').trim();
+          const remoteInterrupted = executionConfig.ci?.execution === 'remote' &&
+            (card.status === 'CI' || (card.status === 'Verify' &&
+              (!remoteCommand || !(await trustedCiEvidence(readCard(project.path, card.id), wtAbs, remoteCommand, 'remote')))));
+          if (remoteInterrupted) {
+            await patchFrontmatter(project.path, card.id, { ci_evidence: {} });
+            await toNeedsHuman(project, card.id, 'CI', 'ci_blocked', 'Server restarted during remote CI; candidate and adapter run IDs are preserved for explicit reconciliation.');
+            continue;
           }
           const landed = buildish &&
             !worktreeHasChanges &&
