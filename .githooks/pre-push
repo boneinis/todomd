@@ -5,4 +5,11 @@
 #
 # Bypass once:  git push --no-verify
 # Disable:      git config --unset core.hooksPath
+# Git exports repository-local variables into hooks. Our tests create other
+# repositories; inheriting GIT_DIR/GIT_INDEX_FILE would redirect their writes
+# into the branch being pushed. Keep the working directory, clear that context.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+for git_env_name in $(git rev-parse --local-env-vars); do
+  unset "$git_env_name"
+done
 exec npm run ci -- --quick
