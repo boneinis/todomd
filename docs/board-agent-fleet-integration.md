@@ -1,7 +1,7 @@
 # Board Agent and remote CI runtime integration
 
 This candidate combines Board Agent commit `c0cc777` with the focused remote-CI
-review at `b115347` (PR #2). It preserves per-board context, the separate scoped
+review at `422787e` (PR #2). It preserves per-board context, the separate scoped
 Codex connection, policy-controlled routine actions, and review-before-publish
 behavior. The viewer connection remains read-only.
 
@@ -25,8 +25,8 @@ Pipeline conflicts were resolved to retain both sets of behavior:
 The combined runtime passed 682 core/integration tests and 36 browser tests
 with no skips. After adding commit-pinned remote merges, 29 focused CI tests
 passed, including an end-to-end assertion that passing remote CI and Verify
-still stop at the Board Agent publication-review hold. Required pre-push gates
-run again on the final branch. Real spoken acceptance remains an operator step.
+still stop at the Board Agent publication-review hold. The full pre-push core, audit, and packaged-install gates also passed. The
+final browser routing synchronization fix passed all ten integration smoke tests. Real spoken acceptance remains an operator step.
 
 ## Installation boundary
 
