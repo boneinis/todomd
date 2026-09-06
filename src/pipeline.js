@@ -1789,19 +1789,20 @@ function ciBoardColumn(config) {
   return config.columns.includes('CI') && config.ci.enabled;
 }
 
-async function captureCiEvidence(project, id, worktreeAbs, command) {
+async function captureCiEvidence(project, id, worktreeAbs, command, execution = 'local') {
   const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
   const dirty = await git(worktreeAbs, ['status', '--porcelain']);
   const evidence = head.ok && dirty.ok && !dirty.stdout
-    ? { head: head.stdout, command, passed_at: new Date().toISOString(), clean: true }
+    ? { head: head.stdout, command, execution, passed_at: new Date().toISOString(), clean: true }
     : {};
   await patchFrontmatter(project.path, id, { ci_evidence: evidence });
   return evidence;
 }
 
-async function trustedCiEvidence(card, worktreeAbs, command) {
+async function trustedCiEvidence(card, worktreeAbs, command, execution = 'local') {
   const evidence = card?.data?.ci_evidence;
   if (!evidence?.clean || !evidence.head || evidence.command !== command) return null;
+  if ((evidence.execution || 'local') !== execution) return null;
   const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
   const dirty = await git(worktreeAbs, ['status', '--porcelain']);
   return head.ok && dirty.ok && !dirty.stdout && head.stdout === evidence.head ? evidence : null;
@@ -1824,6 +1825,9 @@ function scheduleCi(project, id, command, next) {
   sendState(project, id, 'queued', 'CI');
   scheduler.schedule(project, id, 'CI', () => ciStage(project, id, command, next, owner), {
     onDefer: onDeferState(project, id, 'CI'),
+    blocked: next.config.ci?.execution === 'remote'
+      ? () => quotaPaused.has(project.name) || isQueuePaused(project) : undefined,
+    resourceClass: next.config.ci?.execution === 'remote' ? 'light' : 'heavy',
   }).catch((err) => pipelineError(project, id, err, owner));
 }
 
@@ -1871,7 +1875,7 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   // shell command has none, so the card history gets the same run-log line
   // without the meaningless columns.
   if (outcome.ok) {
-    const evidence = await captureCiEvidence(project, id, worktreeAbs, command);
+    const evidence = await captureCiEvidence(project, id, worktreeAbs, command, config.ci?.execution || 'local');
     await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` passed`);
     if (!evidence.clean) {
       await appendRunLog(project.path, id, '  - CI evidence not reusable: candidate worktree is dirty or HEAD could not be resolved');
@@ -1881,6 +1885,12 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
     return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch, false, findings);
   }
   await patchFrontmatter(project.path, id, { ci_evidence: {} });
+  // Remote adapters reserve exit 2 for an unmet prerequisite. It cannot
+  // trigger a repair Build: missing approval/capacity is not a code failure.
+  if (config.ci?.execution === 'remote' && outcome.code === 2 && !outcome.signal && !outcome.timedOut && !outcome.spawnError) {
+    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · blocked (remote prerequisite)`);
+    return toNeedsHuman(project, id, 'CI', 'ci_blocked', outcome.output.slice(-CI_DETAIL_MAX), pendingOwner);
+  }
   await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${secs}s · \`${command}\` failed`);
   sendState(project, id, 'failed', 'CI');
   // CI is the first thing to enter the worktree after Build. A worktree the
@@ -1921,6 +1931,7 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
 function cancelCiForLoad(state) {
   if (!state?.critical) return;
   for (const entry of ciRuns.values()) {
+    if (entry.execution === 'remote') continue; // Only the local submit/wait is here; work survives remotely.
     if (entry.cancelled || entry.loadCancelled) continue; // already being torn down some other way
     entry.loadCancelled = true;
     killWithEscalation(entry.child, { processGroup: true });
@@ -1956,7 +1967,7 @@ function runVerifyCommand(project, id, command, cwd, config) {
   // descendant a compound command (`tsc && npm test && npm run e2e`) forked,
   // not just the top-level shell.
   const child = spawn(command, { cwd, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  const entry = { project: project.name, card: id, child, cancelled: false, loadCancelled: false, timedOut: false };
+  const entry = { project: project.name, card: id, child, execution: config.ci?.execution || 'local', cancelled: false, loadCancelled: false, timedOut: false };
   ciRuns.set(key, entry);
   ensureCriticalWatch();
   let output = '';
@@ -2375,7 +2386,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   const route = validateModelRoute(vendor, stage.model, config);
   if (!route.ok) return toNeedsHuman(project, id, 'Verify', 'routing_error', route.error, pendingOwner);
   const ciCommand = ciBoardColumn(config) ? ciCommandForProfile(config) : String(config.verify_command || '').trim();
-  const ciEvidence = ciCommand ? await trustedCiEvidence(card, worktreeAbs, ciCommand) : null;
+  const ciEvidence = ciCommand ? await trustedCiEvidence(card, worktreeAbs, ciCommand, config.ci?.execution || 'local') : null;
   let verifyPrompt = stagePrompt(project, vendor, stage, id);
   if (ciEvidence) {
     verifyPrompt += `\n\nTrusted CI evidence: the exact clean candidate HEAD ${ciEvidence.head} passed ` +
