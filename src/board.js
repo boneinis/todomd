@@ -94,6 +94,7 @@ function ciConfig(cfg) {
   const c = cfg.ci || {};
   return {
     enabled: c.enabled !== false,
+    execution: c.execution === 'remote' ? 'remote' : 'local',
     profile: c.profile === 'full' ? 'full' : 'quick',
     quick: typeof c.quick === 'string' && c.quick.trim() ? c.quick.trim() : 'npm run typecheck',
     full: typeof c.full === 'string' && c.full.trim() ? c.full.trim() : 'npm run typecheck && npm test && npm run e2e',

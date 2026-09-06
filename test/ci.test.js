@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
-import { readCard, normalizeConfig } from '../src/board.js';
+import { readCard, normalizeConfig, patchFrontmatter } from '../src/board.js';
 import { createGovernor, resourcesConfig } from '../src/resources.js';
 import * as pipeline from '../src/pipeline.js';
 import * as scheduler from '../src/scheduler.js';
@@ -15,7 +15,7 @@ const status = (repo, id) => readCard(repo, id).data.status;
 // Rewrites the fixture's config.yml to add 'CI' between Build and Verify plus
 // a ci: block, then commits — ci: (like verify_command) is an EXEC_KEY, read
 // from HEAD, so an uncommitted edit would never actually arm it.
-function configureCi(repo, { profile = 'quick', quick, full, enabled = true, maxAttempts, timeoutSeconds, concurrency = 2 } = {}) {
+function configureCi(repo, { profile = 'quick', quick, full, enabled = true, maxAttempts, timeoutSeconds, execution, concurrency = 2 } = {}) {
   const cfgPath = path.join(repo, '.todomd/config.yml');
   let cfg = fs.readFileSync(cfgPath, 'utf8')
     .replace('columns: [Review, Plan, Planned, Queue, Build, Verify, Needs Human, Done]',
@@ -23,6 +23,7 @@ function configureCi(repo, { profile = 'quick', quick, full, enabled = true, max
     .replace('concurrency: 1', `concurrency: ${concurrency}`);
   if (maxAttempts) cfg = cfg.replace('max_attempts: 3', `max_attempts: ${maxAttempts}`);
   cfg += `ci:\n  enabled: ${enabled}\n  profile: ${profile}\n`;
+  if (execution !== undefined) cfg += `  execution: ${execution}\n`;
   if (quick !== undefined) cfg += `  quick: ${quick}\n`;
   if (full !== undefined) cfg += `  full: ${full}\n`;
   if (timeoutSeconds !== undefined) cfg += `  timeout_seconds: ${timeoutSeconds}\n`;
@@ -39,6 +40,7 @@ test('normalizeConfig fills the ci: defaults for a board that never sets the key
   const cfg = normalizeConfig({ columns: ['Review', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'] });
   assert.deepEqual(cfg.ci, {
     enabled: true,
+    execution: 'local',
     profile: 'quick',
     quick: 'npm run typecheck',
     full: 'npm run typecheck && npm test && npm run e2e',
@@ -51,7 +53,7 @@ test('normalizeConfig honors an explicit ci: block, including disabling it', () 
     ci: { enabled: false, profile: 'full', quick: 'npm run lint', full: 'npm run lint && npm test', timeout_seconds: 120 },
   });
   assert.deepEqual(cfg.ci, {
-    enabled: false, profile: 'full', quick: 'npm run lint', full: 'npm run lint && npm test', timeoutSeconds: 120,
+    enabled: false, execution: 'local', profile: 'full', quick: 'npm run lint', full: 'npm run lint && npm test', timeoutSeconds: 120,
   });
 });
 
@@ -360,4 +362,310 @@ test('critical resource pressure gracefully cancels a running CI job (including 
     clearFakeAgent();
     scheduler.resetState();
   }
+});
+
+
+test('remote exit 2 holds the candidate without repair Build or trusted evidence', async () => {
+  isolateHome(); scheduler.resetState();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  writeScript(repo, 'remote.mjs', "console.log('fleet prerequisite unavailable'); process.exit(2);\n");
+  configureCi(repo, { execution: 'remote', quick: 'node remote.mjs' });
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.chain });
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'ci_blocked');
+    assert.equal(card.data.verification.attempts, 1);
+    assert.deepEqual(card.data.ci_evidence, {});
+    await sleep(300); scheduler.tick();
+    assert.equal(status(repo, 'task-0001'), 'Needs Human');
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1);
+  } finally {
+    pipeline.forgetProject(p.name); await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent(); scheduler.resetState();
+  }
+});
+
+test('remote CI survives critical memory pressure without cancellation or resubmission', async () => {
+  isolateHome(); await sleep(300); scheduler.resetState();
+  useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo(); const dir = tmp('remote-pressure');
+  const started = path.join(dir, 'started'); const release = path.join(dir, 'release');
+  writeScript(repo, 'remote.mjs', `import fs from 'node:fs';
+    fs.appendFileSync(${JSON.stringify(started)}, String(process.pid)+'\\n');
+    const t=setInterval(()=>{ if(fs.existsSync(${JSON.stringify(release)})){clearInterval(t);process.exit(0);} },50);
+  `);
+  configureCi(repo, { execution: 'remote', quick: 'node remote.mjs' });
+  const p = project(repo); writeCard(repo, 'task-0001', { status: 'Planned' });
+  let sample = { memoryPressure: 0.1, cpuLoad: 0.1 };
+  scheduler.setGovernor(createGovernor({ thresholds: resourcesConfig({ resources: { recovery_samples: 1 } }), sample: () => sample }));
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(started), { timeout: BUDGET.chain });
+    const pid = Number(fs.readFileSync(started, 'utf8').trim());
+    sample = { memoryPressure: 0.99, cpuLoad: 0.1 }; scheduler.tick();
+    await sleep(400);
+    assert.doesNotThrow(() => process.kill(pid, 0));
+    assert.equal(fs.readFileSync(started, 'utf8').trim().split('\n').length, 1);
+    assert.equal(status(repo, 'task-0001'), 'CI');
+    assert.doesNotMatch(readCard(repo, 'task-0001').raw, /cancelled \(critical resource pressure\)/);
+    sample = { memoryPressure: 0.1, cpuLoad: 0.1 }; scheduler.tick();
+    fs.writeFileSync(release, 'go');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+    assert.equal(readCard(repo, 'task-0001').data.ci_evidence.execution, 'remote');
+  } finally {
+    pipeline.forgetProject(p.name); await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent(); scheduler.resetState();
+  }
+});
+
+test('an uncommitted remote opt-in cannot change the committed local exit-2 policy', async () => {
+  isolateHome(); scheduler.resetState(); useFakeAgent({ build: 'good', verdict: 'pass' });
+  pipeline.init({ broadcast: noop });
+  const repo=makeRepo();
+  writeScript(repo,'gate.mjs',"process.exit(2);\n");
+  configureCi(repo,{quick:'node gate.mjs', maxAttempts:1});
+  const configPath=path.join(repo,'.todomd/config.yml');
+  fs.appendFileSync(configPath,'  execution: remote\n');
+  const p=project(repo); writeCard(repo,'task-0001',{status:'Planned'});
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');
+    await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+    assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_attempts_exhausted');
+  } finally {
+    pipeline.forgetProject(p.name); await pipeline.killAllChildren({graceMs:1000});
+    clearFakeAgent(); scheduler.resetState();
+  }
+});
+
+test('pausing before remote CI admission parks the submission until explicit resume', async () => {
+  isolateHome(); scheduler.resetState();
+  useFakeAgent({ build:'good', verdict:'pass', exit_delay_ms:500 }); pipeline.init({broadcast:noop});
+  const repo=makeRepo();const marker=path.join(tmp('remote-paused'),'submitted');
+  writeScript(repo,'remote.mjs',`import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)},'submitted');\n`);
+  configureCi(repo,{execution:'remote',quick:'node remote.mjs'});
+  const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');
+    await until(()=>status(repo,'task-0001')==='Build',{timeout:BUDGET.stage});
+    pipeline.pauseQueue(p);
+    await until(()=>status(repo,'task-0001')==='CI',{timeout:BUDGET.chain});
+    await sleep(300);assert.equal(fs.existsSync(marker),false);
+    pipeline.resumeQueue(p);
+    await until(()=>status(repo,'task-0001')==='Done',{timeout:BUDGET.chain});
+    assert.equal(fs.existsSync(marker),true);
+  } finally {
+    pipeline.resumeQueue(p);pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});
+    clearFakeAgent();scheduler.resetState();
+  }
+});
+
+// Contract-compliant test adapter: journals the accepted canonical job before
+// waiting/printing acknowledgement. The real fleet adapter must independently
+// qualify this property; this fixture is not evidence that it already does.
+function seedDurableRemote(repo, dir) {
+  writeScript(repo, 'remote-worker.mjs', `import fs from 'node:fs';
+    const dir=${JSON.stringify(dir)};
+    fs.writeFileSync(dir+'/worker-pid', String(process.pid));
+    const timer=setInterval(()=>{
+      if(fs.existsSync(dir+'/release')) { fs.writeFileSync(dir+'/result','SUCCESS'); clearInterval(timer); }
+    },30);
+    setTimeout(()=>process.exit(0),30000).unref();
+  `);
+  writeScript(repo, 'remote-adapter.mjs', `import fs from 'node:fs'; import path from 'node:path';
+    import {execFileSync,spawn} from 'node:child_process';
+    const dir=${JSON.stringify(dir)}, id='0123456789abcdef0123456789abcdef';
+    const gitdir=execFileSync('git',['rev-parse','--absolute-git-dir'],{encoding:'utf8'}).trim();
+    const journal=path.join(gitdir,'fleet-fixture-run.json');
+    if(!fs.existsSync(journal)) {
+      fs.writeFileSync(journal,JSON.stringify({run_id:id, head:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()}),{flag:'wx'});
+      fs.appendFileSync(dir+'/submissions',id+'\\n');
+      const worker=spawn(process.execPath,['remote-worker.mjs'],{detached:true,stdio:'ignore'}); worker.unref();
+    }
+    fs.appendFileSync(dir+'/waits',id+'\\n');
+    const timer=setInterval(()=>{
+      if(fs.existsSync(dir+'/result')) { clearInterval(timer); console.log(JSON.stringify({run_id:id})); process.exit(0); }
+    },30);
+  `);
+}
+
+for (const interruption of ['cancel', 'shutdown', 'timeout']) {
+  test(`remote ${interruption} preserves the candidate and reconciles one accepted job on explicit retry`, async () => {
+    isolateHome(); scheduler.resetState(); useFakeAgent({ build: 'good', verdict: 'pass' });
+    pipeline.init({ broadcast: noop });
+    const repo=makeRepo(), dir=tmp('remote-recovery');
+    seedDurableRemote(repo,dir);
+    configureCi(repo,{execution:'remote',quick:'node remote-adapter.mjs',timeoutSeconds:interruption==='timeout'?1:10});
+    const p=project(repo); writeCard(repo,'task-0001',{status:'Planned'});
+    const wt=path.join(repo,'.todomd/worktrees/task-0001');
+    try {
+      await pipeline.humanMove(p,'task-0001','Queue');
+      await until(()=>fs.existsSync(path.join(dir,'waits')) && fs.existsSync(path.join(dir,'worker-pid')),{timeout:BUDGET.chain});
+      const head=git(wt,['rev-parse','HEAD']);
+      const journal=path.join(git(wt,['rev-parse','--absolute-git-dir']),'fleet-fixture-run.json');
+      const originalJournal=fs.readFileSync(journal,'utf8');
+      pipeline.pauseQueue(p);
+      if(interruption==='cancel') await pipeline.cancel(p,'task-0001');
+      if(interruption==='shutdown') await pipeline.killAllChildren({preserveWorktrees:true,graceMs:1000});
+      await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.stage});
+      const held=readCard(repo,'task-0001');
+      assert.equal(held.data.needs_human_reason,'ci_blocked');
+      assert.equal(held.data.recovery_stage,'CI');
+      assert.deepEqual(held.data.ci_evidence,{});
+      assert.equal(held.data.verification.attempts,1);
+      assert.equal(git(wt,['rev-parse','HEAD']),head);
+      assert.equal(fs.readFileSync(journal,'utf8'),originalJournal);
+      assert.doesNotThrow(()=>process.kill(Number(fs.readFileSync(path.join(dir,'worker-pid'))),0), 'accepted remote worker survived the local waiter');
+      assert.equal(fs.existsSync(path.join(repo,'.todomd/runs/task-0001/build-2.jsonl')),false);
+      if(interruption==='shutdown') {
+        const {addProject}=await import('../src/registry.js'); addProject(repo);
+        pipeline.forgetProject(p.name); pipeline.init({broadcast:noop}); await pipeline.reconcileOnBoot();
+        assert.equal(status(repo,'task-0001'),'Needs Human');
+      }
+      fs.writeFileSync(path.join(dir,'release'),'complete remotely');
+      await until(()=>fs.existsSync(path.join(dir,'result')));
+      const retries=await Promise.all([pipeline.retryVerification(p,'task-0001'),pipeline.retryVerification(p,'task-0001')]);
+      assert.equal(retries.filter((r)=>r.ok).length,1, 'simultaneous recovery cannot start two CI waiters');
+      await sleep(150);
+      assert.equal(fs.readFileSync(path.join(dir,'waits'),'utf8').trim().split('\n').length,1,'pause still gates recovery admission');
+      pipeline.resumeQueue(p);
+      await until(()=>status(repo,'task-0001')==='Done',{timeout:BUDGET.chain});
+      assert.equal(fs.readFileSync(path.join(dir,'submissions'),'utf8').trim().split('\n').length,1);
+      assert.equal(fs.readFileSync(path.join(dir,'waits'),'utf8').trim().split('\n').length,2);
+      assert.equal(readCard(repo,'task-0001').data.verification.attempts,1);
+      assert.equal(readCard(repo,'task-0001').data.ci_evidence.execution,'remote');
+    } finally {
+      fs.writeFileSync(path.join(dir,'release'),'cleanup fixture worker');
+      pipeline.forgetProject(p.name); await pipeline.killAllChildren({graceMs:1000});
+      clearFakeAgent(); scheduler.resetState();
+    }
+  });
+}
+
+test('local evidence cannot bypass a newly committed remote gate on verification retry', async () => {
+  isolateHome(); scheduler.resetState(); useFakeAgent({build:'good',verdict:'pass',hang:'verify'});
+  pipeline.init({broadcast:noop}); const repo=makeRepo(), dir=tmp('mode-cutover'), marker=path.join(dir,'remote');
+  writeScript(repo,'remote.mjs',`import fs from 'node:fs';fs.appendFileSync(${JSON.stringify(marker)},'remote\\n');process.exit(2);\n`);
+  configureCi(repo,{quick:'node --version'}); const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');
+    await until(()=>pipeline.getRunStates(p.name)['task-0001']?.stage==='Verify' && readCard(repo,'task-0001').data.ci_evidence?.clean,{timeout:BUDGET.chain});
+    await pipeline.killAllChildren({preserveWorktrees:true,graceMs:1000});
+    await until(()=>status(repo,'task-0001')==='Needs Human');
+    const cfg=path.join(repo,'.todomd/config.yml');
+    fs.writeFileSync(cfg,fs.readFileSync(cfg,'utf8').replace('quick: node --version','quick: node remote.mjs')+'  execution: remote\n');
+    git(repo,['add','.todomd/config.yml']);git(repo,['commit','-qm','explicit remote cutover']);
+    delete process.env.FAKE_HANG;
+    await pipeline.retryVerification(p,'task-0001');
+    await until(()=>fs.existsSync(marker) && status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+    assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_blocked');
+    assert.deepEqual(readCard(repo,'task-0001').data.ci_evidence,{});
+  } finally { pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState(); }
+});
+
+test('a remote adapter cannot attest source that it modified during the run', async () => {
+  isolateHome();scheduler.resetState();const argvLog=path.join(tmp('remote-source-change'),'argv.jsonl');
+  useFakeAgent({build:'good',verdict:'pass',argv_log:argvLog});pipeline.init({broadcast:noop});
+  const repo=makeRepo();
+  writeScript(repo,'remote.mjs',"import fs from 'node:fs';fs.appendFileSync('src/calc.js','\\n// changed during CI');process.exit(0);\n");
+  configureCi(repo,{execution:'remote',quick:'node remote.mjs'});const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+    assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_evidence_invalid');
+    assert.deepEqual(readCard(repo,'task-0001').data.ci_evidence,{});
+    assert.equal(fs.readFileSync(argvLog,'utf8').trim().split('\n').some(line=>JSON.parse(line).some(arg=>arg.includes('todomd-verify'))),false);
+  } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
+});
+
+for (const committedConfig of ['absent', 'malformed']) {
+  test(`${committedConfig} committed config cannot enable remote handling from a working edit`, async () => {
+    isolateHome(); scheduler.resetState(); useFakeAgent({build:'good',verdict:'pass'}); pipeline.init({broadcast:noop});
+    const repo=makeRepo(); writeScript(repo,'gate.mjs','process.exit(2);\n');
+    configureCi(repo,{execution:'remote',quick:'node gate.mjs',maxAttempts:1});
+    const cfg=path.join(repo,'.todomd/config.yml'), working=fs.readFileSync(cfg,'utf8');
+    if(committedConfig==='absent') git(repo,['rm','--cached','.todomd/config.yml']);
+    else { fs.writeFileSync(cfg,'ci: [unterminated\n');git(repo,['add','.todomd/config.yml']); }
+    git(repo,['commit','-qm','remove valid committed opt-in']); fs.writeFileSync(cfg,working);
+    const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+    try {
+      await pipeline.humanMove(p,'task-0001','Queue');
+      await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+      assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_attempts_exhausted');
+    } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
+  });
+}
+
+test('an actual remote check failure retains the bounded repair policy', async () => {
+  isolateHome();scheduler.resetState();useFakeAgent({build:'good',verdict:'pass'});pipeline.init({broadcast:noop});
+  const repo=makeRepo();writeScript(repo,'remote.mjs','process.exit(1);\n');
+  configureCi(repo,{execution:'remote',quick:'node remote.mjs',maxAttempts:2});
+  const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+  await patchFrontmatter(repo,'task-0001',{verification:{attempts:0,max_attempts:2,last_verdict:''}});
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+    assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_attempts_exhausted');
+    assert.equal(readCard(repo,'task-0001').data.verification.attempts,2);
+    assert.deepEqual(readCard(repo,'task-0001').data.ci_evidence,{});
+  } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
+});
+
+for(const pressure of ['cpu','memory','disk']) {
+  test(`remote CI admission ${pressure==='cpu'?'passes':'waits'} under ${pressure} pressure`,async()=>{
+    isolateHome();scheduler.resetState();useFakeAgent({build:'good',verdict:'pass',exit_delay_ms:500});pipeline.init({broadcast:noop});
+    const repo=makeRepo(),dir=tmp('remote-admission'),marker=path.join(dir,'submitted');
+    writeScript(repo,'remote.mjs',`import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(marker)},'submitted');\n`);
+    configureCi(repo,{execution:'remote',quick:'node remote.mjs'});const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+    const safe={cpuLoad:0.1,memoryPressure:0.1,diskFreeBytes:10*1024**3,diskFreePct:0.5};let sample=safe;
+    scheduler.setGovernor(createGovernor({thresholds:resourcesConfig({resources:{recovery_samples:1}}),sample:()=>sample}));
+    try {
+      await pipeline.humanMove(p,'task-0001','Queue');await until(()=>status(repo,'task-0001')==='Build');
+      sample={...safe,...({cpu:{cpuLoad:2},memory:{memoryPressure:0.99},disk:{diskFreeBytes:1024**3,diskFreePct:0.01}}[pressure])};scheduler.tick();
+      await until(()=>status(repo,'task-0001')==='CI'||fs.existsSync(marker),{timeout:BUDGET.chain});
+      if(pressure==='cpu') await until(()=>fs.existsSync(marker));
+      else {await sleep(250);assert.equal(fs.existsSync(marker),false);}
+      sample=safe;scheduler.tick();await until(()=>status(repo,'task-0001')==='Done',{timeout:BUDGET.chain});
+      assert.equal(fs.existsSync(marker),true);
+    } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
+  });
+}
+
+for(const orphanStage of ['CI','Verify']) {
+  test(`boot preserves an orphaned remote ${orphanStage} candidate even when its branch is already an ancestor`,async()=>{
+    isolateHome();scheduler.resetState();useFakeAgent({build:'good',verdict:'pass'});pipeline.init({broadcast:noop});
+    const repo=makeRepo();configureCi(repo,{execution:'remote',quick:'node --version'});
+    const p=project(repo),wt=path.join(repo,'.todomd/worktrees/task-0001'),branch='todomd/task-0001';
+    git(repo,['worktree','add','-q','-b',branch,wt]);
+    const head=git(wt,['rev-parse','HEAD']);
+    writeCard(repo,'task-0001',{status:orphanStage,extra:`worktree: ${branch}\nci_evidence: {head: ${head}, command: node --version, execution: local, clean: true}\n`});
+    try {
+      const {addProject}=await import('../src/registry.js');addProject(repo);
+      await pipeline.reconcileOnBoot();
+      assert.equal(status(repo,'task-0001'),'Needs Human');
+      assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_blocked');
+      assert.deepEqual(readCard(repo,'task-0001').data.ci_evidence,{});
+      assert.equal(fs.existsSync(wt),true);
+    } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
+  });
+}
+
+test('source changed during Verify cannot merge using earlier remote evidence',async()=>{
+  isolateHome();scheduler.resetState();const argvLog=path.join(tmp('verify-source-change'),'argv.jsonl');
+  useFakeAgent({build:'good',verdict:'pass',exit_delay_ms:750,argv_log:argvLog});pipeline.init({broadcast:noop});
+  const repo=makeRepo();configureCi(repo,{execution:'remote',quick:'node --version'});
+  const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});const wt=path.join(repo,'.todomd/worktrees/task-0001');
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');
+    await until(()=>fs.existsSync(argvLog)&&fs.readFileSync(argvLog,'utf8').trim().split('\n').some(line=>JSON.parse(line).some(arg=>arg.includes('todomd-verify'))),{timeout:BUDGET.chain});
+    fs.appendFileSync(path.join(wt,'src/calc.js'),'\n// after CI\n');git(wt,['add','src/calc.js']);git(wt,['commit','-qm','source changed after CI']);
+    const changed=git(wt,['rev-parse','HEAD']);
+    await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+    assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_evidence_invalid');
+    assert.notEqual(git(repo,['rev-parse','HEAD']),changed);
+    assert.deepEqual(readCard(repo,'task-0001').data.ci_evidence,{});
+  } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
 });
