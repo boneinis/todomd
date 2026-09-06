@@ -362,8 +362,11 @@ test('UI smoke: column agent and model selections persist and stay synchronized'
 
   page.errors.length = 0;
   await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(routingProject)}`);
-  await until(async () => (await page.eval(`currentProject`)) === routingProject || null,
-    { timeout: BUDGET.stage, label: 'routing test project selected' });
+  // Project selection is set before its board request finishes. Wait for the
+  // actual routing control, not just the selected name, before clicking it.
+  await until(async () => (await page.eval(`currentProject`)) === routingProject &&
+    await page.eval(`!!document.querySelector('.column[data-status="Plan"] .col-edit')`),
+    { timeout: BUDGET.stage, label: 'routing test board rendered' });
   await page.eval(`document.querySelector('.column[data-status="Plan"] .col-edit').click()`);
   await until(async () => (await page.eval(
     `!document.getElementById('prompts-backdrop').hidden && document.querySelectorAll('#stage-model option').length > 1`)) || null,
