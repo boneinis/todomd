@@ -15,6 +15,7 @@ const port = flag('--port');
 try {
   await startMcpServer({
     token: flag('--token'),
+    boardAgentOnly: args.includes('--board-agent'),
     baseUrl: flag('--url') || (port ? `http://127.0.0.1:${port}` : undefined),
   });
 } catch (e) {

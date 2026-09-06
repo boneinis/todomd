@@ -15,9 +15,14 @@ const defaultVerdict = JSON.stringify({
   question: null,
   checks_requested: [],
 });
-const defaultPlan = JSON.stringify({ plan: '1. Do the thing.', chunks: [], build_profile: 'standard' });
-const finalMessage = process.env.FAKE_CODEX_LAST_MESSAGE ??
+const defaultPlan = JSON.stringify({ plan: '1. Do the thing.', chunks: [], build_profile: 'standard', complexity: 'medium' });
+let finalMessage = process.env.FAKE_CODEX_LAST_MESSAGE ??
   (args.join(' ').includes('implementation plan') ? defaultPlan : defaultVerdict);
+if (process.env.FAKE_CODEX_FAIL_ONCE && !fs.existsSync(process.env.FAKE_CODEX_FAIL_ONCE)) {
+  fs.writeFileSync(process.env.FAKE_CODEX_FAIL_ONCE, '1');
+  finalMessage = JSON.stringify({ ...JSON.parse(defaultVerdict), verdict: 'fail', findings: 'Repair the edge case', criteria: [] });
+}
+if (process.env.FAKE_CODEX_SCHEMA_LOG && schemaFile) fs.copyFileSync(schemaFile, process.env.FAKE_CODEX_SCHEMA_LOG);
 const stderr = process.env.FAKE_CODEX_STDERR || '';
 const exitCode = Number(process.env.FAKE_CODEX_EXIT || 0);
 

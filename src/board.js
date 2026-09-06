@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import matter from 'gray-matter';
@@ -10,19 +11,44 @@ import { resourcesConfig } from './resources.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'];
 
-// gray-matter (v4) caches parse results keyed by the input string — AND caches
-// an empty result even after the first parse THREW. So once loadBoard hits a
-// card with malformed frontmatter (throws, caught → "(unparseable)"), a later
-// matter() on that same string returns {data:{}, content:<entire raw>} without
-// throwing — silently losing the card's id/status. Detect that poisoned shape
-// (a frontmatter block that wasn't consumed and yielded no keys) and re-throw,
-// so every read path treats the bad card consistently as a parse failure.
+// Pass options to disable gray-matter's cache: a thrown parse otherwise leaves
+// an empty cached result, losing the original YAML reason and source location.
 function parseCard(raw) {
-  const parsed = matter(raw);
-  if (/^---\r?\n/.test(raw) && parsed.content === raw && Object.keys(parsed.data).length === 0) {
-    throw new Error('frontmatter failed to parse');
+  return matter(raw, {});
+}
+
+const fallbackCardId = (file) => file.match(/^(task-\d+)(?:-|\.md$)/)?.[1] || file.replace(/\.md$/, '');
+function frontmatterError(file, error) {
+  const id = fallbackCardId(file);
+  // gray-matter retains the newline after the opening delimiter in its YAML
+  // input, so the parser's zero-based line maps to the file with +1.
+  const line = Number.isInteger(error.mark?.line) ? error.mark.line + 1 : null;
+  const column = Number.isInteger(error.mark?.column) ? error.mark.column + 1 : null;
+  const reason = error.reason || String(error.message || error);
+  return {
+    parseError: `card ${id} has a frontmatter parse error${line ? ` at line ${line}` : ''} (${file}): ${reason}`,
+    parseErrorDetail: { line, column, reason },
+  };
+}
+
+export function cardParseFailure(card) {
+  return card?.parseError ? {
+    ok: false, code: 'frontmatter_parse_error', error: card.parseError,
+    file: card.file, parseErrorDetail: card.parseErrorDetail,
+  } : null;
+}
+
+// Resolve against the complete board, including archived Done cards. Missing
+// references are configuration errors; existing unfinished cards are normal waits.
+export function dependencyIssues(card, cards) {
+  const missing = [], waiting = [], unparseable = [];
+  for (const id of asArray(card?.dependencies).map(String)) {
+    const dependency = cards.find((c) => c.id === id);
+    if (!dependency) missing.push(id);
+    else if (dependency.unparseable) unparseable.push(id);
+    else if (dependency.status !== 'Done') waiting.push({ id, status: dependency.status });
   }
-  return parsed;
+  return { missing, waiting, unparseable };
 }
 
 // Columns the pipeline hard-requires — if a config edit drops one, its cards
@@ -247,6 +273,90 @@ function criteriaProgress(body) {
   return total ? { done, total } : null;
 }
 
+const TLDR_MAX = 480;
+const SUMMARY_CACHE_VERSION = 2;
+
+function cleanSummaryText(value) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^\s*(?:[-*+] |\d+[.)] |>+ |#{1,6}\s+)/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sectionText(body, name) {
+  const sections = String(body || '').split(/^## /m);
+  const section = sections.find((part) => new RegExp(`^${name}\\s*(?:\\r?\\n|$)`, 'i').test(part));
+  return section ? section.replace(new RegExp(`^${name}\\s*(?:\\r?\\n)?`, 'i'), '').trim() : '';
+}
+
+export function descriptionSummarySource(body) {
+  const description = sectionText(body, 'Description');
+  if (description) return description;
+  const raw = String(body || '').trim();
+  return /^## /m.test(raw) ? '' : raw;
+}
+
+export function summaryDigest(value) {
+  return createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+export function descriptionSummaryHash(body) {
+  return summaryDigest(descriptionSummarySource(body));
+}
+
+export function runSummaryHash(stage, events) {
+  return summaryDigest(JSON.stringify({ stage: stage || '', events: events || [] }));
+}
+
+export function summaryCachePath(repoPath, id) {
+  return path.join(repoPath, '.todomd', 'runs', String(id || ''), 'summaries.json');
+}
+
+export function readSummaryCache(repoPath, id) {
+  if (!id) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(summaryCachePath(repoPath, id), 'utf8'));
+    return parsed && typeof parsed === 'object' && parsed.version === SUMMARY_CACHE_VERSION ? parsed : null;
+  } catch { return null; }
+}
+
+export function writeSummaryCache(repoPath, id, value) {
+  const file = summaryCachePath(repoPath, id);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(tmp, file);
+}
+
+export function explicitCardTldr(body, data = {}) {
+  const source = typeof data.tldr === 'string' ? data.tldr : sectionText(body, 'TL;DR');
+  return cleanSummaryText(source);
+}
+
+// A TL;DR is an authored or synthesized summary—not the first paragraph under
+// Description. Falling back to an excerpt made the label misleading. Generated
+// summaries are cached outside Git and passed in by board/read-card callers.
+export function cardTldr(body, data = {}, generated = '') {
+  const source = explicitCardTldr(body, data) || generated;
+  const text = cleanSummaryText(source);
+  if (text.length <= TLDR_MAX) return text;
+  return `${text.slice(0, TLDR_MAX - 1).trimEnd()}…`;
+}
+
+function cachedDescriptionTldr(repoPath, body, data = {}) {
+  const explicit = explicitCardTldr(body, data);
+  if (explicit) return cardTldr(body, data);
+  const cache = readSummaryCache(repoPath, data.id);
+  const generated = cache?.description_hash === descriptionSummaryHash(body)
+    ? cache.description_tldr : '';
+  return cardTldr(body, data, generated);
+}
+
 // Parse the Plan agent's optional `## Chunks` breakdown — a single fenced yaml
 // block listing ordered, independently-buildable sub-tasks. The orchestrator
 // turns each into a child card. Returns a validated array of
@@ -312,19 +422,22 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
         const parsed = parseCard(fs.readFileSync(path.join(dir, file), 'utf8'));
         // archived cards are hidden from the board (and skipped by the pipeline)
         // unless explicitly requested — the "show archived" view passes the flag
-        if (!includeArchived && parsed.data.archived) continue;
+        // Keep archived dependencies available until reference resolution below.
         cards.push({
           file,
           ...parsed.data,
           ...listFields(parsed.data),
+          tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data),
           criteria: criteriaProgress(parsed.content),
         });
-      } catch {
-        cards.push({ file, id: file.replace(/\.md$/, ''), title: `(unparseable) ${file}`, status: 'Review', unparseable: true });
+      } catch (error) {
+        cards.push({ file, id: fallbackCardId(file), title: `(unparseable) ${file}`, status: 'Review', unparseable: true,
+          ...frontmatterError(file, error) });
       }
     }
   }
-  return { config, cards };
+  for (const card of cards) card.dependencyIssues = dependencyIssues(card, cards);
+  return { config, cards: includeArchived ? cards : cards.filter((card) => !card.archived) };
 }
 
 // Manual priority within a column. Cards without an explicit order retain the
@@ -356,7 +469,12 @@ export function readRunLog(repoPath, id, { maxEvents = 800 } = {}) {
     if (!line.trim()) continue;
     try { events.push(JSON.parse(line)); } catch { /* skip a garbled line */ }
   }
-  return { stage: latest.replace(/-\d+\.jsonl$/, ''), events: events.slice(-maxEvents) };
+  const stage = latest.replace(/-\d+\.jsonl$/, '');
+  const visibleEvents = events.slice(-maxEvents);
+  const summaryHash = runSummaryHash(stage, visibleEvents);
+  const cache = readSummaryCache(repoPath, id);
+  const tldr = cache?.run_hash === summaryHash ? cardTldr('', {}, cache.last_run_tldr) : '';
+  return { stage, events: visibleEvents, tldr, summary_hash: summaryHash };
 }
 
 // The repo's invocable commands (.claude/commands/*.md) — the values a card's
@@ -378,9 +496,10 @@ export function readCard(repoPath, id) {
   const raw = fs.readFileSync(path.join(dir, file), 'utf8');
   try {
     const parsed = parseCard(raw);
-    return { file, raw, data: parsed.data, body: parsed.content };
+    return { file, raw, data: parsed.data, body: parsed.content,
+      tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data) };
   } catch (e) {
-    return { file, raw, data: {}, body: raw, parseError: String(e.message || e) };
+    return { file, raw, data: {}, body: raw, ...frontmatterError(file, e) };
   }
 }
 
@@ -459,6 +578,7 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
     }
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     const oldStatus = card.data.status;
     if (oldStatus === newStatus) return { ok: true, unchanged: true };
 
@@ -536,6 +656,7 @@ export function setArchived(repoPath, id, on) {
   return withRepoLock(repoPath, async () => {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     const m = card.raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!m) return { ok: false, error: `${id} has no frontmatter block; fix the file manually` };
     let fm = m[1];
@@ -596,6 +717,7 @@ export function patchFrontmatter(repoPath, id, updates) {
   return withRepoLock(repoPath, async () => {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     const m = card.raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!m) return { ok: false, error: 'no frontmatter' };
     let fm = m[1];
@@ -843,6 +965,7 @@ export function attachCard(repoPath, id, filename, buffer) {
     if (buffer.length > MAX_ATTACHMENT) return { ok: false, error: 'file too large (25 MB max)' };
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
 
     // no spaces/special chars — keep attachment names URL-safe for markdown links
     let safe = path.basename(String(filename || 'file')).replace(/[^\w.\-]/g, '_').replace(/^\.+/, '');
@@ -883,6 +1006,7 @@ export function appendRunLog(repoPath, id, line) {
   return withRepoLock(repoPath, async () => {
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
+    if (card.parseError) return cardParseFailure(card);
     let raw = card.raw;
     // Anchor to the REAL "## Run Log" heading — not a line-start mention inside a
     // fenced code block (a self-documenting todomd card can quote the heading

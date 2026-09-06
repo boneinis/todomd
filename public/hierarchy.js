@@ -62,6 +62,12 @@
   // blocked when any dependency id is missing from the board or not Done;
   // waitingOn lists just those blocking dependencies (status: null if the id has no card)
   function dependencyState(card, cards) {
+    if (card?.dependencyIssues) {
+      const issues = card.dependencyIssues;
+      const waitingOn = [...issues.waiting, ...issues.missing.map((id) => ({ id, status: null })),
+        ...issues.unparseable.map((id) => ({ id, status: 'frontmatter error' }))];
+      return { blocked: waitingOn.length > 0, waitingOn };
+    }
     const list = Array.isArray(cards) ? cards : [];
     const waitingOn = [];
     for (const id of asList(card && card.dependencies)) {

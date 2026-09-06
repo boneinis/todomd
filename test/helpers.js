@@ -88,6 +88,7 @@ export function writeCard(repo, id, { status = 'Review', title = 'Test card', bo
 // Point the runner at the deterministic fake agent.
 export function useFakeAgent(opts = {}) {
   process.env.TODOMD_CLAUDE_BIN = path.join(ROOT, 'test/fixtures/fake-agent.js');
+  for (const k of Object.keys(process.env)) if (k.startsWith('FAKE_')) delete process.env[k];
   for (const [k, v] of Object.entries(opts)) process.env[`FAKE_${k.toUpperCase()}`] = String(v);
 }
 

@@ -17,13 +17,10 @@
 //    contributes its configured caps, and reconcileOnBoot's sequential
 //    per-project processing at startup can't admit work before a
 //    later-processed project's stricter limit is known.
-//  - The governor is a persistent singleton (its hysteresis state must
-//    survive across ticks — see resources.js) built once, lazily, but its
-//    THRESHOLDS are re-resolved from the complete project set on every
-//    check() (a live provider function, not a value captured at
-//    construction) — so a project registered or reconfigured after the
-//    governor already exists still affects enablement/thresholds/recovery
-//    samples/sampling interval, not just the combined global/column caps.
+//  - Host resource thresholds are combined only across projects with queued
+//    or running work. An idle registered board must not throttle an unrelated
+//    active board with dormant/default thresholds. Global and column caps are
+//    still combined across the complete registry as described above.
 //  - admit() only ever gates the START of an entry. Nothing here ever touches
 //    a `run()` that has already started — nothing to signal, nothing to kill.
 import { loadConfig, withoutRepoLockContext } from './board.js';
@@ -70,9 +67,17 @@ function projectConfigs() {
   return out;
 }
 
+function workloadProjectNames() {
+  const names = new Set(queue.map((entry) => entry.project.name));
+  for (const [name, count] of runningByProject) if (count > 0) names.add(name);
+  return names;
+}
+
 function enabledResourceProjects() {
   const out = [];
+  const active = workloadProjectNames();
   for (const project of allKnownProjects()) {
+    if (!active.has(project.name)) continue;
     try {
       const resources = loadConfig(project.path).resources;
       if (resources?.enabled !== false) out.push({ project, resources });
@@ -107,7 +112,7 @@ function projectConcurrencyLimit(project) {
   }
 }
 
-// Combine every known project's resources: block into one set of governor
+// Combine every active project's resources: block into one set of governor
 // thresholds. Each field is folded independently by "stricter wins" (lower
 // defer/resume/critical, higher required-free-disk, more recovery samples,
 // shorter sample interval), then re-run through resourcesConfig() — which is
@@ -140,9 +145,9 @@ let lastCheckSignature = null;
 
 // The governor object itself (hysteresis state) is a persistent singleton,
 // but its thresholds and sample root are LIVE — resolved fresh on every
-// check()/sample() call from the CURRENT complete project set — so a project
-// registered, removed, or reconfigured after this first construction still
-// takes effect immediately, with no restart and no lost hysteresis history.
+// check()/sample() call from the CURRENT active project set — so queued work,
+// completion, and config changes take effect immediately, with no restart and
+// no lost hysteresis history.
 function ensureGovernor() {
   if (governor) return governor;
   governor = createGovernor({

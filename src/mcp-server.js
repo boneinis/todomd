@@ -33,7 +33,12 @@ const eq = (a, b) => {
 // token. The tier decides which tools a session sees *and* is re-checked in
 // callTool() before dispatch; server.js's viewerAuthed()/fullAccess checks on
 // the HTTP request itself remain the backstop behind both.
-export function resolveTier(suppliedToken) {
+export function resolveTier(suppliedToken, boardAgentOnly = false) {
+  try {
+    const scoped = fs.readFileSync(path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'token-board-agent'), 'utf8').trim();
+    if (scoped && eq(suppliedToken, scoped)) return 'agent';
+  } catch { /* a running v2 server creates this credential */ }
+  if (boardAgentOnly) return null;
   const full = loadToken('token');
   const viewer = loadToken('token-viewer');
   if (eq(suppliedToken, full)) return 'full';
@@ -93,7 +98,38 @@ async function fetchFile(ctx, project, rel) {
   return { status: 200, json: { ok: true, path: rel, contentType: res.headers.get('content-type') || '', base64: buf.toString('base64') } };
 }
 
+const string = { type: 'string' };
+const scopedProperties = { session_id: string, request_id: string, scope: { type: 'string', enum: ['portfolio'] }, board_id: string };
 const TOOLS = [
+  { name: 'board_agent_overview', tier: 'agent',
+    description: 'List every selected board with stable board_id, status, policy and connection health. Resolve names or aliases here; ask the user when the target is ambiguous. Installing another board never grants access.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    call: (ctx) => apiCall(ctx, 'GET', '/api/board-agent/overview') },
+  { name: 'board_agent_context', tier: 'agent',
+    description: 'Read one board’s separate memory, policy, committed repository rules, diagnostics and paginated cards. Supply session_id to record which full plans you reviewed. Follow next_cursor with card_revision as revision; fetch a card with card_id and next_detail_cursor as detail_cursor. Never infer omitted cards are absent.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['board_id', 'session_id'],
+      properties: { board_id: string, session_id: string, card_id: string, cursor: string, detail_cursor: string, revision: string, limit: { type: 'integer' } } },
+    call: (ctx, args) => apiCall(ctx, 'GET', '/api/board-agent/context', { query: args }) },
+  { name: 'board_agent_message', tier: 'agent',
+    description: 'Save the user’s request and establish session focus. Provide either board_id or scope=portfolio. Keep one stable session_id for this Codex conversation. A new user request resets its action budget; do not invent user messages to evade limits. Ending voice does not cancel board work.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['session_id', 'request_id', 'text'], properties: { ...scopedProperties, text: string } },
+    call: (ctx, args) => apiCall(ctx, 'POST', '/api/board-agent/message', { body: args }) },
+  { name: 'board_agent_propose', tier: 'agent',
+    description: 'Submit an explicit board action after saving the user request. Routine actions follow that board’s rules; exceptions wait for visible desktop approval. Reuse request_id only for an identical retry. Report each actual result, including partial outcomes. No spoken or agent-supplied approval bypass exists.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['session_id', 'request_id', 'action', 'board_id', 'why'],
+      properties: { session_id: string, request_id: string, board_id: string,
+        action: { type: 'string', enum: ['create_card', 'plan', 'approve', 'kick_queue', 'resume_build', 'retry_verification', 'pause_queue', 'resume_queue', 'cancel', 'archive', 'restart_build', 'retriage', 'retry_planned'] },
+        card_id: string, title: string, description: string, why: string } },
+    call: (ctx, args) => apiCall(ctx, 'POST', '/api/board-agent/actions', { body: args }) },
+  { name: 'board_agent_reply', tier: 'agent',
+    description: 'Save a response in portfolio or one board’s history. Report actual receipts and pending exceptions; keep repo-specific decisions in that board’s context.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['session_id', 'request_id', 'text'], properties: { ...scopedProperties, text: string } },
+    call: (ctx, args) => apiCall(ctx, 'POST', '/api/board-agent/reply', { body: args }) },
+  { name: 'board_agent_events', tier: 'agent',
+    description: 'Resume recent results and exceptions using a cursor and explicit board_id or scope=portfolio. If reset_required, refresh context and inspect uncertain receipts before retrying. This is a read, not a background scheduler.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: { board_id: string, scope: { type: 'string', enum: ['portfolio'] }, cursor: string } },
+    call: (ctx, args) => apiCall(ctx, 'GET', '/api/board-agent/events', { query: args }) },
+
   {
     name: 'list_projects', tier: 'viewer',
     description: 'List registered To-do MD project names.',
@@ -256,8 +292,8 @@ const TOOLS = [
 
 const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 
-function listToolsFor(tier) {
-  return TOOLS.filter((t) => tier === 'full' || t.tier === 'viewer').map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+function listToolsFor(tier, boardAgentOnly = false) {
+  return TOOLS.filter((t) => (!boardAgentOnly || t.tier === 'agent') && (tier === 'full' || (tier === 'agent' ? t.tier === 'agent' : tier === 'viewer' && t.tier === 'viewer'))).map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 }
 
 function toolResult(status, json) {
@@ -274,6 +310,8 @@ function errorResult(message) {
 // card the caller asked to *un*archive. Only string, boolean and
 // array-of-string appear across the schemas above.
 function typeError(spec, value) {
+  if (spec.enum && !spec.enum.includes(value)) return 'must be one of the advertised values';
+  if (spec.type === 'integer') return Number.isInteger(value) ? null : 'must be an integer';
   if (spec.type === 'array') {
     if (!Array.isArray(value)) return 'must be an array';
     if (spec.items?.type === 'string' && !value.every((v) => typeof v === 'string')) return 'must be an array of strings';
@@ -307,7 +345,9 @@ function validateArgs(schema, args) {
 
 async function callTool(ctx, name, args = {}) {
   const tool = TOOLS_BY_NAME.get(name);
+  if ((ctx.boardAgentOnly || ctx.tier === 'agent') && (typeof name !== 'string' || !name.startsWith('board_agent_'))) return errorResult('tool unavailable in Board Agent mode');
   if (!tool) return errorResult(`unknown tool: ${name}`);
+  if (!ctx.tier || (tool.tier === 'agent' && !['agent', 'full'].includes(ctx.tier))) return errorResult('Board Agent access required');
   if (tool.tier === 'full' && ctx.tier !== 'full') return errorResult('full access required');
   // The advertised schemas ARE the trust boundary for MCP callers. The HTTP
   // API behind them is a trusted-caller interface — POST /api/cards honours
@@ -328,9 +368,9 @@ async function callTool(ctx, name, args = {}) {
 // Builds a tier- and server-bound MCP request handler. `baseUrl` defaults to
 // discoverBaseUrl() but is overridable so tests can point it at a throwaway
 // `startServer()` instance instead of a real, already-running `todomd serve`.
-export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
-  const tier = resolveTier(token);
-  const ctx = { token, tier, baseUrl };
+export function createMcpServer({ token, baseUrl = discoverBaseUrl(), boardAgentOnly = false }) {
+  const tier = resolveTier(token, boardAgentOnly);
+  const ctx = { token, tier, baseUrl, boardAgentOnly };
 
   // handleMessage: given one parsed JSON-RPC request/notification, returns
   // the JSON-RPC response object, or null for a notification (no reply).
@@ -350,7 +390,7 @@ export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
         case 'ping':
           return respond({});
         case 'tools/list':
-          return respond({ tools: listToolsFor(tier) });
+          return respond({ tools: listToolsFor(tier, boardAgentOnly) });
         case 'tools/call': {
           const result = await callTool(ctx, params?.name, params?.arguments || {});
           return respond(result);
@@ -365,19 +405,23 @@ export function createMcpServer({ token, baseUrl = discoverBaseUrl() }) {
 
   // Exposed for tests that want to skip JSON-RPC framing and call a tool
   // directly; startMcpServer() only ever goes through handleMessage.
-  return { handleMessage, listTools: () => listToolsFor(tier), callTool: (name, args) => callTool(ctx, name, args), tier };
+  return { handleMessage, listTools: () => listToolsFor(tier, boardAgentOnly), callTool: (name, args) => callTool(ctx, name, args), tier };
 }
 
 // Entry point used by bin/todomd-mcp.js: validates the token, then reads
 // newline-delimited JSON-RPC requests from stdin and writes responses to
 // stdout — the MCP stdio transport. Never returns while stdin stays open.
-export async function startMcpServer({ token, baseUrl, input = process.stdin, output = process.stdout } = {}) {
-  const resolvedToken = token || process.env.TODOMD_MCP_TOKEN || '';
-  const tier = resolveTier(resolvedToken);
+export async function startMcpServer({ token, baseUrl, boardAgentOnly = false, input = process.stdin, output = process.stdout } = {}) {
+  let resolvedToken = token || process.env.TODOMD_MCP_TOKEN || '';
+  if (boardAgentOnly && !resolvedToken) {
+    try { resolvedToken = fs.readFileSync(path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'token-board-agent'), 'utf8').trim(); } catch { /* actionable error below */ }
+  }
+  const tier = resolveTier(resolvedToken, boardAgentOnly);
   if (!tier) {
+    if (boardAgentOnly) throw new Error('Board Agent requires a running v2 todomd server and its scoped token-board-agent credential; primary/viewer tokens are refused in --board-agent mode');
     throw new Error('bad or missing token — set TODOMD_MCP_TOKEN (or pass --token) to the value in ~/.todomd/token or ~/.todomd/token-viewer');
   }
-  const server = createMcpServer({ token: resolvedToken, baseUrl });
+  const server = createMcpServer({ token: resolvedToken, baseUrl, boardAgentOnly });
   const rl = readline.createInterface({ input, terminal: false });
   rl.on('line', async (line) => {
     line = line.trim();

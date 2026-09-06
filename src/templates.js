@@ -211,7 +211,7 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
 1. Locate the task file \`.todomd/tasks/<task-id>-*.md\` and read it: Description and Acceptance Criteria define the goal.
 2. **If the card has a \`## Triage\` section, start from its Decision and Next step.** Do not re-do triage. A Technical spike or Needs human decision must be surfaced as a risk rather than researched indefinitely.
 3. Write a short working plan immediately after reading the card. Then use only targeted, read-only inspection to validate or correct it: inspect the named files, or use at most six focused Glob/Grep/Read calls to find directly related code. Do not use Bash, repo-wide inventories, or broad architecture mapping.
-4. **Choose a Build profile and decide whether to split into sequential chunks.** Update only the frontmatter key \`build_profile:\`: use \`standard\` for a cohesive task expected to finish within three Build checkpoints, \`long\` for a cohesive task likely to need more than three checkpoints, or \`split_required\` when it must become child cards. Do not add arbitrary limits; the board owns those. If the work naturally breaks into **2 or more independent steps that each build and verify on their own** — typically because it spans separable files or layers (e.g. a DB migration, then the API wiring, then the UI + tests) — produce a chunk breakdown (step 5). If it is a broad architectural change, split it immediately rather than continuing discovery.
+4. **Choose a Build profile and decide whether to split into sequential chunks.** Update only the frontmatter key \`build_profile:\`: use \`standard\` for a cohesive task expected to finish within three Build checkpoints, \`long\` for a cohesive task likely to need more than three checkpoints, or \`split_required\` when it must become child cards. Do not add arbitrary limits; the board owns those. **Also set the frontmatter key \`complexity:\`** to one of \`trivial|low|medium|high|very-high\` — your judgment of implementation *difficulty* (unfamiliarity, blast radius across consumers, coordination, tricky edge cases), judged independently of size. \`build_profile\` sizes the effort; \`complexity\` rates the difficulty. If the work naturally breaks into **2 or more independent steps that each build and verify on their own** — typically because it spans separable files or layers (e.g. a DB migration, then the API wiring, then the UI + tests) — produce a chunk breakdown (step 5). If it is a broad architectural change, split it immediately rather than continuing discovery.
 5. **To split** — edit the task file (the only file you may modify), filling a \`## Chunks\` section (add it just before \`## Run Log\` if absent) and leaving \`## Implementation Plan\` empty. The section must contain exactly ONE fenced \`\`\`yaml block holding an ordered list; each item has:
    - \`title:\` a short imperative title for the chunk
    - \`plan:\` a block scalar (\`|\`) with that chunk's own numbered, concrete implementation steps (files to change, what to add where, tests to write)
@@ -223,7 +223,7 @@ You are the todomd PLAN agent. The task id is: $ARGUMENTS
    - Numbered, concrete steps (files to change, what to add where, tests to write)
    - A \`Risks:\` line if anything could break existing behavior (include unresolved triage Flags / human decisions)
    Leave \`## Chunks\` empty or absent.
-7. Other than the single \`build_profile:\` key, do NOT modify YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
+7. Preserve the existing title. Quote YAML strings containing a colon followed by a space (use a YAML serializer), and validate the final frontmatter. Other than the \`build_profile:\` and \`complexity:\` keys, do NOT modify YAML frontmatter, any source file, or any other task file. Do NOT implement anything. Status changes are not your job.
 
 Finish with a one-line summary (say whether you split into N chunks or wrote a single plan). Produce the card edit before spending the rest of the turn budget on investigation.
 `;
@@ -320,7 +320,7 @@ You are the todomd TRIAGE agent. A new card just arrived for human review. The t
    - **Rationale:** 1-2 short sentences.
    - **Risks or questions:** concise, or "none".
    - **Next step:** Plan, create a technical spike, split, or ask the human.
-5. Never modify the YAML frontmatter, any other section, or any other file. Do not implement anything.
+5. Never modify the YAML frontmatter (including title), any other section, or any other file. Validate the final frontmatter; quote any YAML strings in permitted output that contain a colon followed by a space. Do not implement anything.
 
 Finish with a one-line routing summary. Complete the decision before additional investigation.
 `;

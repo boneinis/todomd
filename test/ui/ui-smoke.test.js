@@ -24,7 +24,7 @@ import { addProject } from '../../src/registry.js';
 import { startServer } from '../../src/server.js';
 import { appendIntakeAudit } from '../../src/screen.js';
 import { recordUsage } from '../../src/runstore.js';
-import { loadConfig, readCard } from '../../src/board.js';
+import { loadConfig, readCard, runSummaryHash, writeSummaryCache } from '../../src/board.js';
 import { openPage } from '../browser.js';
 
 function freePort() {
@@ -44,10 +44,11 @@ function hostileBoard() {
   const card = (name, body) => fs.writeFileSync(path.join(repo, '.todomd/tasks', name), body);
   card('task-0001-scalar-label.md',
     '---\nid: task-0001\ntitle: labels as a bare string\nstatus: Review\ntype: improvement\n' +
-    'labels: ui\nassignee: 12345\n---\n\n## Description\n\nhand-edited\n');
+    'dependencies: [P1-01, task-0002]\ncomplexity: very-high\nbuild_profile: long\nlabels: ui\nassignee: 12345\ntldr: The card verifies resilient rendering for hand-edited label metadata.\n---\n\n## Description\n\nhand-edited\n');
   card('task-0002-mapping-label.md',
     '---\nid: task-0002\ntitle: labels as a YAML mapping\nstatus: Queue\ntype: bug\n' +
-    'labels: {a: 1}\nneeds_human_reason: 42\nagent: codex\n---\n\n## Description\n\nhand-edited\n');
+    'labels: {a: 1}\nneeds_human_reason: 42\nagent: codex\n' +
+    'tldr: The card verifies that malformed label metadata cannot break its drawer.\n---\n\n## Description\n\nhand-edited\n');
   card('task-0003-scalar-children.md',
     '---\nid: task-0003\ntitle: epic with scalar children\nstatus: Review\ntype: module\n' +
     'epic: true\nchildren: task-0004\n---\n\n## Description\n\nhand-edited\n');
@@ -66,9 +67,14 @@ function hostileBoard() {
   card('task-0007-restartable.md',
     '---\nid: task-0007\ntitle: restartable orphaned build\nstatus: Needs Human\ntype: bug\n' +
     'labels: []\nneeds_human_reason: orphaned_run\nworktree: todomd/task-0007\n---\n\n## Description\n\nmissing worktree\n');
+  card('task-0008-exhausted.md',
+    '---\nid: task-0008\ntitle: exhausted repair with preserved work\nstatus: Needs Human\ntype: bug\n' +
+    'labels: []\nneeds_human_reason: attempts_exhausted\nworktree: todomd/task-0008\n' +
+    'verification: { attempts: 3, max_attempts: 3, last_verdict: fail }\n---\n\n## Description\n\nrepair the verifier findings\n');
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', 'hostile UI fixtures']);
   git(repo, ['worktree', 'add', '-q', '-b', 'todomd/task-0006', path.join(repo, '.todomd/worktrees/task-0006')]);
+  git(repo, ['worktree', 'add', '-q', '-b', 'todomd/task-0008', path.join(repo, '.todomd/worktrees/task-0008')]);
   const runDir = path.join(repo, '.todomd', 'runs', 'task-0002');
   fs.mkdirSync(runDir, { recursive: true });
   const runEvents = [
@@ -80,6 +86,13 @@ function hostileBoard() {
     { type: 'turn.completed', usage: { input_tokens: 120, output_tokens: 24 } },
   ];
   fs.writeFileSync(path.join(runDir, 'Build-1.jsonl'), runEvents.map((event) => JSON.stringify(event)).join('\n') + '\n');
+  writeSummaryCache(repo, 'task-0002', {
+    version: 2,
+    description_hash: '',
+    description_tldr: '',
+    run_hash: runSummaryHash('Build', runEvents),
+    last_run_tldr: 'The run validated focused drawer behavior and left complete-flow verification as the next action.',
+  });
   return repo;
 }
 
@@ -113,16 +126,33 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
   {
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
 
-    // all seven cards render — a throw anywhere in the render path drops the
+    // all eight cards render — a throw anywhere in the render path drops the
     // whole board, so the COUNT is the assertion that catches it
     const count = await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null,
       { timeout: BUDGET.stage });
-    assert.equal(count, 7, 'every card rendered (a render throw would blank the board)');
+    assert.equal(count, 8, 'every card rendered (a render throw would blank the board)');
+    assert.match(await page.eval(`document.querySelector('[data-id="task-0001"] .card-tldr').textContent`),
+      /resilient rendering.*hand-edited label metadata/i, 'cards surface an authored semantic TL;DR');
+    assert.equal(await page.eval(`document.querySelector('[data-id="task-0001"] .chip-cx').textContent`), 'cx: very-high');
+    assert.equal(await page.eval(`document.querySelector('[data-id="task-0001"] .chip-profile').textContent`), 'build: long');
+    assert.equal(await page.eval(`getComputedStyle(document.querySelector('[data-id="task-0001"] .chip-cx')).color`),
+      'rgb(248, 113, 113)', 'label-chip styling must not override the very-high difficulty color');
+    assert.equal(await page.eval(`document.querySelectorAll('[data-id="task-0004"] .chip-cx, [data-id="task-0004"] .chip-profile').length`), 0);
+    await page.eval(`openDrawer('task-0001')`);
+    await until(async () => /build profile/.test(await page.eval(`document.getElementById('drawer-meta').textContent`)), { timeout: BUDGET.quick });
+    assert.match(await page.eval(`document.getElementById('drawer-meta').textContent`), /complexity.*very-high.*build profile.*long/s);
+    await page.eval(`closeDrawer()`);
+    assert.match(await page.eval(`document.querySelector('[data-id="task-0001"] .card-diagnostics').textContent`), /Unknown dependencies: P1-01.*Waiting for: task-0002/s);
+    assert.match(await page.eval(`document.querySelector('[data-id="task-0005"] .card-diagnostics').textContent`), /frontmatter parse error at line/);
+    await page.eval(`openDrawer('task-0005')`);
+    await until(async () => /frontmatter parse error/.test(await page.eval(`document.getElementById('drawer-diagnostics').textContent`)), { timeout: BUDGET.quick });
+    assert.equal(await page.eval(`document.getElementById('drawer-title').textContent`), 'task-0005-broken.md');
+    await page.eval(`closeDrawer()`);
     const usageText = await page.eval(`document.getElementById('usage').textContent`);
     assert.match(usageText, /2 AI runs/);
     assert.match(usageText, /1\.2K in \/ 50 out/);
     assert.match(usageText, /1 usage unavailable/);
-    assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0005-broken"]')`), true,
+    assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0005"]')`), true,
       'the unparseable card is surfaced rather than swallowed');
 
     // the epic/chunk badges are computed FROM the scalar fields — the exact
@@ -144,7 +174,7 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       renderBoard();
       return document.querySelectorAll('.card').length;
     })()`);
-    assert.equal(survived, 7, 'the client survives a raw scalar on its own, independent of the server');
+    assert.equal(survived, 8, 'the client survives a raw scalar on its own, independent of the server');
 
     // In-column drag uses the reorder endpoint (not the status-move endpoint),
     // persists the rank, then reloads the column in that same order.
@@ -179,33 +209,53 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       const state = await page.eval(`({
         descriptionOpen: document.getElementById('drawer-description').open,
         descriptionMeta: document.getElementById('description-summary').textContent,
+        descriptionTldr: document.getElementById('description-tldr').textContent,
         runHidden: document.getElementById('drawer-run').hidden,
         runOpen: document.getElementById('drawer-run').open,
         runTitle: document.getElementById('run-title').textContent,
         runMeta: document.getElementById('run-summary').textContent,
+        runTldr: document.getElementById('run-tldr').textContent,
         messages: document.querySelectorAll('#run-log .chat-assistant').length,
         tools: document.querySelectorAll('#run-log .chat-tool').length,
         reasoning: document.querySelectorAll('#run-log .chat-reasoning').length,
       })`);
       return !state.runHidden && state.messages ? state : null;
     }, { timeout: BUDGET.quick, label: 'last run rendered as agent chat' });
-    assert.equal(rollups.descriptionOpen, true, 'description is an open, collapsible rollup');
+    assert.equal(rollups.descriptionOpen, false, 'description is collapsed by default');
+    assert.match(rollups.descriptionTldr, /malformed label metadata cannot break its drawer/i,
+      'the collapsed Description header shows a semantic card summary');
+    assert.equal(await page.eval(`document.getElementById('drawer-prompt').getClientRects().length > 0`), true,
+      'full-access drawers include the advisory agent prompt composer');
     assert.match(rollups.descriptionMeta, /words/);
-    assert.equal(rollups.runOpen, true, 'the last run is open but can be collapsed');
+    assert.equal(rollups.runOpen, false, 'the last run is collapsed by default');
     assert.equal(rollups.runTitle, 'last run');
     assert.match(rollups.runMeta, /Build · codex · 5 updates/);
+    assert.match(rollups.runTldr, /validated focused drawer behavior.*complete-flow verification/i,
+      'the collapsed Last Run header shows a semantic summary of the complete run');
+    assert.deepEqual(await page.eval(`(() => {
+      const drawerStyle = getComputedStyle(document.getElementById('run-tldr'));
+      const cardStyle = getComputedStyle(document.querySelector('[data-id="task-0001"] .card-tldr'));
+      return { drawerOverflow: drawerStyle.overflow, cardOverflow: cardStyle.overflow };
+    })()`), { drawerOverflow: 'visible', cardOverflow: 'visible' },
+    'TL;DR text is not line-clamped in either the drawer or board card');
     assert.deepEqual({ messages: rollups.messages, tools: rollups.tools, reasoning: rollups.reasoning },
       { messages: 1, tools: 1, reasoning: 1 }, 'CLI start/complete pairs collapse into one activity row');
     assert.match(await page.eval(`document.querySelector('#run-log .chat-assistant').textContent`), /focused UI checks pass/);
+    await page.eval(`document.querySelector('#run-log .chat-assistant .chat-message-actions button').click()`);
+    assert.match(await page.eval(`document.getElementById('agent-prompt').value`), /focused UI checks pass/,
+      'an advisor response can become the next agent handoff without copy/paste');
     assert.equal(await page.eval(`document.querySelector('#run-log .chat-tool').open`), false,
       'tool output is folded until requested');
     assert.equal(await page.eval(`document.querySelector('#run-log .chat-reasoning').open`), false,
       'reasoning is folded until requested');
-    await page.eval(`document.getElementById('drawer-description').open = false; document.getElementById('drawer-run').open = false`);
+    await page.eval(`appendRunEvent({ type: 'human_message', text: 'What should happen next?' })`);
+    assert.match(await page.eval(`document.querySelector('#run-log .chat-user').textContent`),
+      /What should happen next\?/, 'human prompts render as a distinct chat message');
+    await page.eval(`document.getElementById('drawer-description').open = true; document.getElementById('drawer-run').open = true`);
     assert.deepEqual(await page.eval(`({
       description: document.getElementById('drawer-description').open,
       run: document.getElementById('drawer-run').open,
-    })`), { description: false, run: false }, 'both rollups can be collapsed independently');
+    })`), { description: true, run: true }, 'both collapsed rollups can be expanded independently');
 
     await page.eval(`document.querySelector('[data-id="task-0006"]').click()`);
     await until(async () => /resumable orphaned build/.test(
@@ -228,6 +278,22 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       await page.eval(`document.getElementById('drawer-title').textContent`)) || null, { timeout: BUDGET.quick });
     assert.equal(await page.eval(`document.getElementById('drawer-restart-build').hidden`), false,
       'an orphan whose preserved assets are gone shows Restart Build');
+
+    await page.eval(`document.querySelector('[data-id="task-0008"]').click()`);
+    await until(async () => /exhausted repair with preserved work/.test(
+      await page.eval(`document.getElementById('drawer-title').textContent`)) || null, { timeout: BUDGET.quick });
+    assert.equal(await page.eval(`document.getElementById('drawer-return-build').hidden`), false,
+      'a verifier-exhausted card with preserved work shows Return to Build');
+    assert.equal(await page.eval(`document.getElementById('agent-return-build').hidden`), false,
+      'the card-agent composer can carry its handoff into the guarded repair Build');
+    assert.equal(await page.eval(`document.getElementById('drawer-recovery-agent').hidden`), false,
+      'a full-access Needs Human drawer offers one-click guarded recovery review');
+    assert.deepEqual(await page.eval(`({
+      buildAllowed: ![...document.getElementById('move-select').options].find((o) => o.value === 'Build').disabled,
+      queueAllowed: ![...document.getElementById('move-select').options].find((o) => o.value === 'Queue').disabled,
+      agentStatus: document.getElementById('agent-prompt-status').textContent,
+    })`), { buildAllowed: true, queueAllowed: true, agentStatus: 'advisor · handoff ready' },
+    'dropdown recovery and the card-agent handoff are both enabled');
 
     assert.deepEqual(page.errors, [], 'no uncaught exception or console error anywhere in the flow');
   }
@@ -390,6 +456,57 @@ test('UI smoke: all five CI job states render their own card class and visible t
   }
 });
 
+test('UI smoke: an opened Build card shows live continuation progress', async (t) => {
+  if (!page) return t.skip(SKIP);
+  page.errors.length = 0;
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null,
+    { timeout: BUDGET.stage });
+  const startedAt = new Date(Date.now() - 18 * 60_000).toISOString();
+  const lastActivityAt = new Date(Date.now() - 3 * 60_000).toISOString();
+  await page.eval(`document.querySelector('[data-id="task-0002"]').click()`);
+  await until(async () => (await page.eval(
+    `document.getElementById('drawer-id').textContent === 'task-0002'`)) || null,
+  { timeout: BUDGET.quick });
+  await page.eval(`(() => {
+    runStates['task-0002'] = {
+      state: 'running', stage: 'Build', progress: {
+        profile: 'long', slice: 3, maxSlices: 6, budgetMinutes: 120,
+        startedAt: ${JSON.stringify(startedAt)}, lastActivityAt: ${JSON.stringify(lastActivityAt)},
+        changedPaths: 7, noProgressSlices: 0,
+        activity: 'Running npm run test:unit',
+        lastCheckpoint: { slice: 2, progressed: true, changedPaths: 5 },
+      },
+    };
+    renderBuildProgress('task-0002');
+  })()`);
+  await until(async () => (await page.eval(
+    `!document.getElementById('drawer-build-progress').hidden`)) || null, { timeout: BUDGET.quick });
+  const progress = await page.eval(`(() => {
+    const panel = document.getElementById('drawer-build-progress');
+    return {
+      classes: [...panel.classList],
+      state: document.getElementById('build-progress-state').textContent,
+      slice: document.getElementById('build-progress-slice').textContent,
+      elapsed: document.getElementById('build-progress-elapsed').textContent,
+      files: document.getElementById('build-progress-files').textContent,
+      activity: document.getElementById('build-progress-current').textContent,
+      checkpoint: document.getElementById('build-progress-checkpoint').textContent,
+      fill: document.getElementById('build-progress-fill').style.width,
+    };
+  })()`);
+  assert.ok(progress.classes.includes('quiet'));
+  assert.equal(progress.state, 'quiet');
+  assert.equal(progress.slice, 'slice 3/6');
+  assert.match(progress.elapsed, /18m/);
+  assert.equal(progress.files, '7');
+  assert.match(progress.activity, /npm run test:unit/);
+  assert.match(progress.checkpoint, /Progress detected at checkpoint 2\/6 · 5 changed paths/);
+  assert.notEqual(progress.fill, '0%');
+  assert.deepEqual(page.errors, [], 'the progress panel renders without browser errors');
+  await page.eval(`(() => { closeDrawer(); delete runStates['task-0002']; })()`);
+});
+
 test('UI smoke: a viewer is not told its session expired when it opens a card', async (t) => {
   if (!page) return t.skip(SKIP);
   {
@@ -402,6 +519,8 @@ test('UI smoke: a viewer is not told its session expired when it opens a card', 
     // todomd", which nagged every viewer on the default QR link.
     await page.eval(`document.querySelector('[data-id="task-0001"]').click()`);
     await until(async () => (await page.eval(`!document.getElementById('drawer').hidden`)) || null, { timeout: BUDGET.quick });
+    assert.equal(await page.eval(`document.getElementById('drawer-prompt').getClientRects().length`), 0,
+      'viewer drawers do not expose the agent prompt composer');
     await until(async () => (await page.eval(
       `document.activeElement === document.getElementById('drawer-close')`)) || null,
     { timeout: BUDGET.quick });

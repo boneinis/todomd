@@ -1,3 +1,4 @@
+import { createBoardAgent } from './board-agent.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
+import { loadBoard, readCard, cardParseFailure, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
 import { listModels, SUPPORTED_VENDORS, validateModelRoute } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
@@ -129,6 +130,13 @@ export function startServer({ port = 7337, lan = false } = {}) {
   const viewerToken = loadToken('token-viewer');
   const mobileToken = loadToken('token-mobile'); // full control, revocable per device class
 
+  loadToken('token-board-agent');
+  let agentLastSeen = null;
+  const agentAuthed = (req) => {
+    try { return eq(sentToken(req), fs.readFileSync(path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'token-board-agent'), 'utf8').trim()); }
+    catch { return false; }
+  };
+
   const sentToken = (req) => {
     const url = new URL(req.url, 'http://x');
     return url.searchParams.get('token') || req.headers['x-todomd-token'] || '';
@@ -165,6 +173,8 @@ export function startServer({ port = 7337, lan = false } = {}) {
     res.end(JSON.stringify(obj));
   };
 
+  const boardAgent = createBoardAgent();
+
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
   async function handleApi(req, res, url) {
@@ -172,10 +182,57 @@ export function startServer({ port = 7337, lan = false } = {}) {
     if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
     // reads work with either token; anything that mutates or spawns
     // requires the full token (the viewer/QR link is monitor-only)
-    if (!viewerAuthed(req)) return json(res, 401, { error: 'bad token' });
+    const agentAccess = agentAuthed(req);
+    if (!viewerAuthed(req) && !agentAccess) return json(res, 401, { error: 'bad token' });
+    if (agentAccess && !url.pathname.startsWith('/api/board-agent/')) return json(res, 403, { error: 'credential is limited to Board Agent tools' });
     const fullAccess = authed(req);
-    if (!fullAccess && req.method !== 'GET') {
+    if (!fullAccess && !agentAccess && req.method !== 'GET') {
       return json(res, 403, { error: 'read-only link — open the board on your computer to make changes' });
+    }
+
+    if (url.pathname === '/api/board-agent' || url.pathname.startsWith('/api/board-agent/')) {
+      if (!primary(req) && !agentAccess) return json(res, 403, { ok: false, error: 'Board Agent requires a desktop or scoped agent credential' });
+      const route = url.pathname.slice('/api/board-agent'.length);
+      const permitted = req.method === 'GET' ? ['/overview', '/context', '/events'] : ['/message', '/actions', '/reply'];
+      if (agentAccess && !permitted.includes(route)) return json(res, 403, { ok: false, error: 'agent credential cannot configure, approve, stop, or access raw board APIs' });
+      const query = Object.fromEntries(url.searchParams); delete query.token;
+      const explicitScope = (body) => (typeof body.board_id === 'string' && body.board_id && !body.scope) || (body.scope === 'portfolio' && !body.board_id);
+      if (agentAccess) agentLastSeen = new Date().toISOString();
+      if (req.method === 'GET' && route === '') return json(res, 200, boardAgent.publicState(query));
+      if (req.method === 'GET' && route === '/overview') return json(res, 200, boardAgent.overview());
+      if (req.method === 'GET' && route === '/connection') return json(res, 200, { ok: true, lastSeen: agentLastSeen, command: 'todomd-mcp', args: ['--board-agent'], credential: 'token-board-agent', voiceVerified: false });
+      if (req.method === 'GET' && route === '/context') {
+        if (agentAccess && (!query.board_id || query.scope)) return json(res, 400, { ok: false, error: 'board_id is required for detailed context; use overview for all boards' });
+        const result = boardAgent.context(query); return json(res, result.ok === false ? 400 : 200, result);
+      }
+      if (req.method === 'GET' && route === '/events') {
+        if (agentAccess && !explicitScope(query)) return json(res, 400, { ok: false, error: 'explicit scope or board_id is required' });
+        const result = boardAgent.events(query); return json(res, result.ok === false ? 400 : 200, result);
+      }
+      if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' });
+      const raw = await readBody(req);
+      if (raw === null) return json(res, 413, { ok: false, error: 'body too large' });
+      let body;
+      try { body = JSON.parse(raw || '{}'); } catch { return json(res, 400, { ok: false, error: 'invalid JSON' }); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, 400, { ok: false, error: 'expected an object' });
+      if (agentAccess && (typeof body.session_id !== 'string' || !body.session_id || typeof body.request_id !== 'string' || !body.request_id ||
+          (route === '/actions' ? !body.board_id || body.project || body.scope : !explicitScope(body)))) return json(res, 400, { ok: false, error: 'session_id, request_id and explicit board scope are required' });
+      let result;
+      if (route === '/config') result = boardAgent.configure(body);
+      else if (route === '/rebind') result = boardAgent.rebind(body);
+      else if (route === '/board-config') result = boardAgent.configureBoard(body);
+      else if (route === '/message') result = await boardAgent.message({ ...body, source: agentAccess ? 'external' : 'desktop' });
+      else if (route === '/actions') result = await boardAgent.external(body);
+      else if (route === '/reply') result = boardAgent.reply(body);
+      else if (route === '/stop') result = boardAgent.stop(body);
+      else if (route === '/connection/revoke') {
+        const file = path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'token-board-agent');
+        fs.writeFileSync(file + '.tmp', crypto.randomBytes(16).toString('hex') + '\n', { mode: 0o600 }); fs.renameSync(file + '.tmp', file);
+        agentLastSeen = null; result = { ok: true, message: 'Previous agent credential revoked. Restart the MCP connection to use the new credential.' };
+      }
+      else if (route.startsWith('/proposals/') && typeof body.accept === 'boolean') result = await boardAgent.decide(route.slice('/proposals/'.length), body.accept);
+      else return json(res, 400, { ok: false, error: 'unknown action or invalid approval' });
+      return json(res, result.ok ? 200 : 400, result);
     }
 
     if (url.pathname === '/api/projects') {
@@ -417,7 +474,13 @@ export function startServer({ port = 7337, lan = false } = {}) {
         // remains desktop-only, so expose the narrower tier separately and
         // let the client hide controls that its token cannot actually use.
         primary: primary(req),
-        runStates: pipeline.getRunStates(project.name),
+        runStates: pipeline.getRunStates(project.name, {
+          includeProgress: true,
+          // Activity can include an agent message or command. The full desktop
+          // token can already read the raw run log; monitor links receive only
+          // safe timing/checkpoint metadata.
+          includeDetails: fullAccess,
+        }),
         banners: pipeline.getBanners(),
         usage: pipeline.usage(project),
         skills: listSkills(project.path), // available command/skill names for the picker
@@ -532,12 +595,18 @@ export function startServer({ port = 7337, lan = false } = {}) {
       let cid = cardIdInPath[1];
       try { cid = decodeURIComponent(cid); } catch { return json(res, 400, { error: 'invalid card id' }); }
       if (!CARD_ID.test(cid)) return json(res, 400, { error: 'invalid card id' });
+      if (req.method === 'POST' && !url.pathname.endsWith('/cancel')) {
+        const invalid = cardParseFailure(readCard(project.path, cid));
+        if (invalid) return json(res, 400, invalid);
+      }
     }
     const cardMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)$/);
     if (cardMatch && req.method === 'GET') {
       const card = readCard(project.path, cardMatch[1]);
       if (!card) return json(res, 404, { error: 'card not found' });
-      return json(res, 200, { ...card, recovery: await pipeline.recoveryActions(project, cardMatch[1]) });
+      const summary = loadBoard(project.path, { includeArchived: true }).cards.find((c) => c.file === card.file);
+      return json(res, 200, { ...card, dependencyIssues: summary?.dependencyIssues,
+        recovery: card.parseError ? {} : await pipeline.recoveryActions(project, cardMatch[1]) });
     }
     // the streamed events of the card's most recent run, to back-fill the drawer
     const runlogMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/runlog$/);
@@ -584,13 +653,14 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const body = await readBody(req);
       if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
       let status;
+      let instruction = '';
       try {
-        ({ status } = JSON.parse(body || '{}'));
+        ({ status, instruction = '' } = JSON.parse(body || '{}'));
       } catch {
         return json(res, 400, { error: 'invalid JSON body' });
       }
       // every API move is a human move: the §3.1 table is enforced here
-      const result = await pipeline.humanMove(project, moveMatch[1], status);
+      const result = await pipeline.humanMove(project, moveMatch[1], status, { instruction });
       return json(res, result.ok ? 200 : 400, result);
     }
     const reorderMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/reorder$/);
@@ -659,6 +729,46 @@ export function startServer({ port = 7337, lan = false } = {}) {
     if (cancelMatch && req.method === 'POST') {
       const result = await pipeline.cancel(project, cancelMatch[1]);
       return json(res, result.ok ? 200 : 400, result);
+    }
+    const summariesMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/summaries$/);
+    if (summariesMatch && req.method === 'POST') {
+      const result = await pipeline.summarizeCard(project, summariesMatch[1]);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    const recoveryReviewMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/recover$/);
+    if (recoveryReviewMatch && req.method === 'POST') {
+      const result = await pipeline.reviewAndProcessRecovery(project, recoveryReviewMatch[1]);
+      return json(res, result.ok ? 202 : 400, result);
+    }
+    const promptMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/prompt$/);
+    if (promptMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let prompt;
+      try { ({ prompt } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = await pipeline.promptCard(project, promptMatch[1], prompt);
+      return json(res, result.ok ? 202 : 400, result);
+    }
+    const instructionMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/instruction$/);
+    if (instructionMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let instruction;
+      try { ({ instruction } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      if (pipeline.hasLiveRun(project.name, instructionMatch[1])) {
+        return json(res, 400, { error: 'run in progress — save instructions after it finishes' });
+      }
+      const result = pipeline.setCardInstruction(project, instructionMatch[1], instruction);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    const returnBuildMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/return-build$/);
+    if (returnBuildMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let instruction = '';
+      try { ({ instruction = '' } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = await pipeline.returnToBuild(project, returnBuildMatch[1], instruction);
+      return json(res, result.ok ? 202 : 400, result);
     }
     const retryVerifyMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/retry-verify$/);
     if (retryVerifyMatch && req.method === 'POST') {
@@ -813,7 +923,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
       w.on('all', (_event, changedPath) => {
         clearTimeout(timer);
         timer = setTimeout(() => {
+          if (closed || !watchers.has(dir)) return;
           broadcast({ type: 'board-changed', project: name });
+          boardAgent.changed(name);
+          // File edits under the board lock approve Queue work just like the
+          // move API. Reuse project-scoped admission, including pause/budget gates.
+          if (project) pipeline.kickQueue(project).catch(() => {});
           if (project) pipeline.triageSweep(project); // annotate externally-arrived cards
           if (project) {
             const match = path.basename(changedPath || '').match(/^(task-\d+)/);
@@ -845,6 +960,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
   // (and the 10s rescan would re-open the watchers we just released).
   const close = () => {
     closed = true;
+    boardAgent.close();
     clearInterval(watchTimer);
     clearInterval(pingTimer);
     try { server.close(); server.closeAllConnections?.(); } catch {}

@@ -333,3 +333,22 @@ test('Gemini real stream result preserves the primary infrastructure error', asy
   assert.equal(result.diagnostic.stderr, 'warning: conversation not found\n');
   assert.equal(result.sessionId, null);
 });
+
+
+test('Claude main model comes from init, not the first auxiliary modelUsage entry', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  process.env.FAKE_INIT_MODEL = 'claude-fable-5-1';
+  process.env.FAKE_MODEL_USAGE = JSON.stringify({ 'claude-haiku-4-5-20251001': {}, 'claude-fable-5-1': {} });
+  try {
+    const result = await runStage({ cwd: process.cwd(), prompt: 'x', model: 'opus' }).done;
+    assert.equal(result.model, 'claude-fable-5-1');
+    delete process.env.FAKE_INIT_MODEL;
+    const fallback = await runStage({ cwd: process.cwd(), prompt: 'x', model: 'opus' }).done;
+    assert.equal(fallback.model, 'opus', 'ambiguous usage cannot override the configured model');
+    const unknown = await runStage({ cwd: process.cwd(), prompt: 'x' }).done;
+    assert.equal(unknown.model, '', 'ambiguous usage is not proof of a main model');
+  } finally {
+    for (const key of ['TODOMD_CLAUDE_BIN', 'FAKE_MODE', 'FAKE_INIT_MODEL', 'FAKE_MODEL_USAGE']) delete process.env[key];
+  }
+});

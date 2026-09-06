@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { makeRepo, writeCard, git } from './helpers.js';
-import { loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, normalizeConfig, parseChunks, withRepoLock, withoutRepoLockContext } from '../src/board.js';
+import { loadBoard, readCard, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, createCard, attachCard, setArchived, deleteCard, listSkills, readRunLog, setStageRouting, loadConfig, normalizeConfig, parseChunks, withRepoLock, withoutRepoLockContext, cardTldr, descriptionSummaryHash, writeSummaryCache } from '../src/board.js';
 import { DEFAULT_RESOURCES_CONFIG } from '../src/resources.js';
 
 test('reorderCards persists deterministic in-column priority in one commit', async () => {
@@ -121,6 +121,42 @@ test('loadBoard parses cards and criteria progress', () => {
   const c = cards.find((x) => x.id === 'task-0001');
   assert.equal(c.status, 'Review');
   assert.deepEqual(c.criteria, { done: 0, total: 2 });
+});
+
+test('cardTldr uses only explicit or generated summaries, never a Description excerpt', () => {
+  assert.equal(cardTldr('## Description\n\nFallback description.', { tldr: 'Explicit summary.' }), 'Explicit summary.');
+  assert.equal(cardTldr('## TL;DR\n\n**Short answer.**\n\n## Description\n\nLong answer.'), 'Short answer.');
+  assert.equal(cardTldr('## Description\n\nFix the queue and retry flow.'), '');
+  assert.equal(cardTldr('', {}, 'Synthesizes the complete card rather than copying its opening line.'),
+    'Synthesizes the complete card rather than copying its opening line.');
+  const clipped = cardTldr('', {}, 'word '.repeat(200));
+  assert.ok(clipped.length <= 480);
+  assert.match(clipped, /…$/);
+});
+
+test('readCard and loadBoard use a matching cached semantic summary', () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001', { body: 'Several details that require synthesis rather than extraction.' });
+  let card = readCard(repo, 'task-0001');
+  assert.equal(card.tldr, '', 'an unsummarized description is not mislabeled as a TL;DR');
+  writeSummaryCache(repo, 'task-0001', {
+    version: 1,
+    description_hash: descriptionSummaryHash(card.body),
+    description_tldr: 'A stale short-format summary.',
+    run_hash: '',
+    last_run_tldr: '',
+  });
+  assert.equal(readCard(repo, 'task-0001').tldr, '', 'old short-format caches are regenerated');
+  writeSummaryCache(repo, 'task-0001', {
+    version: 2,
+    description_hash: descriptionSummaryHash(card.body),
+    description_tldr: 'The card requires a synthesized semantic summary.',
+    run_hash: '',
+    last_run_tldr: '',
+  });
+  card = readCard(repo, 'task-0001');
+  assert.equal(card.tldr, 'The card requires a synthesized semantic summary.');
+  assert.equal(loadBoard(repo).cards.find((item) => item.id === 'task-0001').tldr, card.tldr);
 });
 
 test('findCardFile is exact: task-0001 does not match task-00010', () => {
@@ -854,4 +890,39 @@ test('loadConfig discards a hand-edited resources band whose resume is looser th
   // feeds must not be left flapping — the whole cpu band reverts to the defaults
   const cfg = loadConfig(repo);
   assert.deepEqual(cfg.resources.cpu, DEFAULT_RESOURCES_CONFIG.cpu);
+});
+
+
+test('embedded colon parse errors retain canonical id and file location across repeated reads', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/tasks/task-0001-colon.md');
+  const raw = '---\nid: task-0001\ntitle: Broken: title\nstatus: Planned\n---\nBody\n';
+  fs.writeFileSync(file, raw);
+  for (let i = 0; i < 3; i++) {
+    const card = loadBoard(repo).cards[0];
+    assert.equal(card.id, 'task-0001');
+    assert.equal(card.parseErrorDetail.line, 3);
+    assert.equal(card.parseErrorDetail.column, 14);
+    assert.match(card.parseError, /card task-0001 has a frontmatter parse error at line 3/);
+    assert.equal(readCard(repo, 'task-0001').parseError, card.parseError);
+  }
+  const moved = await moveCard(repo, 'task-0001', 'Queue');
+  assert.equal(moved.code, 'frontmatter_parse_error');
+  assert.equal(fs.readFileSync(file, 'utf8'), raw, 'failed approval cannot rewrite malformed YAML');
+  fs.writeFileSync(file, raw.replace('title: Broken: title', 'title: "Broken: title"'));
+  assert.equal(loadBoard(repo).cards[0].title, 'Broken: title');
+  assert.equal(readCard(repo, 'task-0001').parseError, undefined);
+});
+
+test('dependency diagnostics distinguish unknown, unfinished, malformed and archived Done references', () => {
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001', { deps: ['P1-01', 'task-0002', 'task-0003', 'task-0004'] });
+  writeCard(repo, 'task-0002', { status: 'Build' });
+  writeCard(repo, 'task-0003', { status: 'Done', extra: 'archived: true\n' });
+  fs.writeFileSync(path.join(repo, '.todomd/tasks/task-0004-bad.md'), '---\ntitle: Bad: title\n---\n');
+  const board = loadBoard(repo);
+  assert.deepEqual(board.cards.find((c) => c.id === 'task-0001').dependencyIssues, {
+    missing: ['P1-01'], waiting: [{ id: 'task-0002', status: 'Build' }], unparseable: ['task-0004'],
+  });
+  assert.equal(board.cards.some((c) => c.id === 'task-0003'), false, 'archived dependency stays hidden');
 });

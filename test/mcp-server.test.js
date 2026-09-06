@@ -278,3 +278,33 @@ test('a separate MCP process sees run state and live-run guards owned by the ser
     clearFakeAgent();
   }
 });
+
+test('Board Agent STDIO discovers only its scoped credential and revocation denies existing clients', async () => {
+  isolateHome(); useFakeAgent();
+  const { srv, name, baseUrl } = await boot();
+  let child;
+  try {
+    const headers = { 'x-todomd-token': srv.token };
+    await fetch(baseUrl + '/api/board-agent/config', { method: 'POST', headers, body: JSON.stringify({ boards: [name], contact: 'external', agent: 'claude', model: '', maxActionsPerTurn: 3, watch: false, instructions: '' }) });
+    child = spawn(process.execPath, [path.join(ROOT, 'bin/todomd-mcp.js'), '--board-agent', '--port', String(srv.port)], {
+      env: { ...process.env, TODOMD_MCP_TOKEN: '', TODOMD_MCP_PORT: '', TODOMD_MCP_URL: '' }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const responses = new Map();
+    const rl = readline.createInterface({ input: child.stdout });
+    rl.on('line', (line) => { const msg = JSON.parse(line); responses.set(msg.id, msg); });
+    const send = (id, tool, args = {}) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: tool, arguments: args } }) + '\n');
+    send(1, 'board_agent_overview'); await until(() => responses.has(1), { timeout: BUDGET.stage });
+    assert.equal(responses.get(1).result.isError, false);
+    const board = JSON.parse(responses.get(1).result.content[0].text).boards[0];
+    send(2, 'board_agent_context', { board_id: board.board_id, session_id: 'codex-voice-test' });
+    await until(() => responses.has(2)); assert.equal(responses.get(2).result.isError, false);
+    send(3, 'board_agent_propose', { board_id: board.board_id, session_id: 'test', request_id: 'bad', action: 'deploy', why: 'bad enum' });
+    await until(() => responses.has(3)); assert.equal(responses.get(3).result.isError, true);
+    const revoke = await fetch(baseUrl + '/api/board-agent/connection/revoke', { method: 'POST', headers, body: '{}' }); assert.equal(revoke.status, 200);
+    send(4, 'board_agent_overview'); await until(() => responses.has(4)); assert.equal(responses.get(4).result.isError, true);
+    const fresh = createMcpServer({ token: loadToken('token-board-agent'), baseUrl });
+    assert.equal(fresh.tier, 'agent'); assert.equal(fresh.listTools().length, 6);
+    assert.equal((await fresh.callTool('board_agent_overview', {})).isError, false);
+    assert.equal((await fresh.callTool('get_board', { project: name })).isError, true);
+  } finally { child?.kill(); srv.close(); clearFakeAgent(); }
+});

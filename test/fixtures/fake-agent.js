@@ -26,6 +26,8 @@
 //                             so a test can assert what the runner passed
 //   FAKE_REQUIRE_FILE=<relpath> — a build fails unless this existing worktree
 //                             file survived (used by orphan recovery tests)
+//   FAKE_LEAVE_DIRTY=1      — leave an untracked candidate file after commit
+//   FAKE_FINDINGS=<text>    — override verifier findings (empty is allowed)
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -54,12 +56,13 @@ const cwd = process.cwd();
 const session = 'fake-session-0001';
 
 const emitStream = (events) => {
-  for (const e of events) process.stdout.write(JSON.stringify({ session_id: session, ...e }) + '\n');
+  for (const e of events) process.stdout.write(JSON.stringify({ session_id: session, ...(e.type === 'system' && e.subtype === 'init' && process.env.FAKE_INIT_MODEL ? { model: process.env.FAKE_INIT_MODEL } : {}), ...e }) + '\n');
 };
 const resultEnvelope = (extra = {}) => ({
   type: 'result', subtype: 'success', is_error: false,
   total_cost_usd: 0.001, num_turns: 1, session_id: session, result: 'ok',
   usage: { input_tokens: 20, cache_read_input_tokens: 10, cache_creation_input_tokens: 2, output_tokens: 5 },
+  ...(process.env.FAKE_MODEL_USAGE ? { modelUsage: JSON.parse(process.env.FAKE_MODEL_USAGE) } : {}),
   ...extra,
 });
 
@@ -75,6 +78,13 @@ function findCard(id) {
   return f ? path.join(dir, f) : null;
 }
 const taskId = (prompt.match(/task-\d+/) || [])[0];
+
+if (process.env.FAKE_CORRUPT_CARD) {
+  const file = findCard(taskId);
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^title:.*$/m, 'title: Broken: agent title'));
+  emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
+  process.exit(0);
+}
 
 // ── quota-once: emit a usage-limit error on the first BUILD run, then behave ──
 if (process.env.FAKE_QUOTA_MARKER && prompt.includes('build') && !fs.existsSync(process.env.FAKE_QUOTA_MARKER)) {
@@ -103,17 +113,57 @@ if (process.env.FAKE_MAXTURNS === '1') {
 
 // ── raw parsing-test mode: emit a canned sequence incl. a trailing newline-less line ──
 if (process.env.FAKE_MODE === 'parsing') {
-  process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: session }) + '\n');
+  process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: session, model: process.env.FAKE_INIT_MODEL }) + '\n');
   process.stdout.write(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'héllo 日本語' }] }, session_id: session }) + '\n');
   // final result with NO trailing newline — exercises the flush path
   process.stdout.write(JSON.stringify(resultEnvelope()));
   process.exit(0);
 }
 
-const stage = has('--resume') ? 'build' // only retry builds resume a session
-  : prompt.includes('plan') ? 'plan'
-  : prompt.includes('build') ? 'build'
-  : prompt.includes('verify') ? 'verify' : 'other';
+const promptLower = prompt.toLowerCase();
+const stage = (promptLower.includes('read-only agent attached') || promptLower.includes('advisory agent attached')) ? 'other'
+  : has('--resume') ? 'build' // only retry builds resume a session
+  : promptLower.includes('todomd-verify') ? 'verify'
+  : promptLower.includes('todomd-build') ? 'build'
+  : promptLower.includes('todomd-plan') ? 'plan'
+  : has('--json-schema') ? 'verify'
+  : promptLower.includes('plan') ? 'plan'
+  : promptLower.includes('build') ? 'build'
+  : promptLower.includes('verify') ? 'verify' : 'other';
+
+if (process.env.FAKE_RESUME_MISSING && has('--resume')) {
+  emitStream([resultEnvelope({
+    subtype: 'error_during_execution',
+    is_error: true,
+    num_turns: 0,
+    result: '',
+    errors: process.env.FAKE_RESUME_MISSING === 'empty' ? [] : ['No conversation found with session ID: fake-session'],
+  })]);
+  process.exit(0);
+}
+
+if (prompt.startsWith('TODOMD BOARD AGENT\n')) {
+  process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: JSON.parse(process.env.FAKE_BOARD_AGENT_OUTPUT || '{"reply":"Your selected boards are ready for review.","actions":[]}') })));
+  process.exit(0);
+}
+
+if (prompt.includes('TODOMD CARD SUMMARY REQUEST')) {
+  emitStream([resultEnvelope({ structured_output: {
+    description_tldr: process.env.FAKE_DESCRIPTION_TLDR || 'The card needs a concise semantic description summary.',
+    last_run_tldr: process.env.FAKE_LAST_RUN_TLDR || 'The latest run completed and left a concrete next action.',
+  } })]);
+  process.exit(0);
+}
+
+if (prompt.includes('TODOMD RECOVERY REVIEW')) {
+  process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: {
+    action: process.env.FAKE_RECOVERY_ACTION || 'hold_for_human',
+    confidence: process.env.FAKE_RECOVERY_CONFIDENCE || 'high',
+    diagnosis: process.env.FAKE_RECOVERY_DIAGNOSIS || 'The evidence requires an explicit human decision.',
+    handoff: process.env.FAKE_RECOVERY_HANDOFF || '',
+  } })));
+  process.exit(0);
+}
 
 // ── hang a stage until SIGTERM, so a test can cancel/timeout a LIVE run ──
 // FAKE_HANG=1 hangs the build (legacy); FAKE_HANG=<stage> hangs that stage.
@@ -179,6 +229,9 @@ if (hangNow &&
     execFileSync('git', ['add', '-A'], { cwd });
     execFileSync('git', ['commit', '-qm', `${taskId}: add prod`], { cwd });
   }
+  if (process.env.FAKE_LEAVE_DIRTY) {
+    fs.writeFileSync(path.join(cwd, 'src/uncommitted.js'), 'export const dirty = true;\n');
+  }
   // delete the worktree from under the run: the NEXT stage (verify) then fails
   // to spawn with ENOENT on its cwd — distinct from a missing CLI binary
   if (process.env.FAKE_RM_WORKTREE) fs.rmSync(cwd, { recursive: true, force: true });
@@ -199,7 +252,9 @@ if (hangNow &&
   const structured = {
     verdict,
     criteria: [{ criterion: 'works', met: verdict === 'pass' }],
-    findings: verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
+    findings: Object.hasOwn(process.env, 'FAKE_FINDINGS')
+      ? process.env.FAKE_FINDINGS
+      : verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
     setup_error: null,
     question: null,
     checks_requested: [],
@@ -221,5 +276,11 @@ if (hangNow &&
   process.exit(0);
 } else {
   await waitBeforeExit();
-  emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
+  emitStream([
+    { type: 'system', subtype: 'init' },
+    ...(process.env.FAKE_OTHER_MESSAGE
+      ? [{ type: 'assistant', message: { content: [{ type: 'text', text: process.env.FAKE_OTHER_MESSAGE }] } }]
+      : []),
+    resultEnvelope(),
+  ]);
 }

@@ -125,7 +125,7 @@ test('clean exact-HEAD CI evidence reaches Verify and suppresses the duplicate f
   }
 });
 
-test('a passing CI command that leaves the candidate dirty is not trusted by Verify', async () => {
+test('a passing CI command that leaves the candidate dirty is rejected before Verify', async () => {
   isolateHome();
   const argvLog = path.join(tmp('ci-dirty'), 'argv.jsonl');
   useFakeAgent({ build: 'good', verdict: 'pass', argv_log: argvLog });
@@ -138,8 +138,10 @@ test('a passing CI command that leaves the candidate dirty is not trusted by Ver
 
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');
-    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
-    assert.deepEqual(readCard(repo, 'task-0001').data.ci_evidence, {});
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.chain });
+    const card = readCard(repo, 'task-0001');
+    assert.deepEqual(card.data.ci_evidence, {});
+    assert.equal(card.data.needs_human_reason, 'ci_evidence_invalid');
     const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(calls.flat().some((arg) => typeof arg === 'string' && arg.includes('Trusted CI evidence:')), false);
   } finally {
@@ -186,6 +188,7 @@ test('CI board column: a failing gate retries the build up to max_attempts, then
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');
     await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.chain });
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.stage });
 
     const card = readCard(repo, 'task-0001');
     assert.equal(card.data.needs_human_reason, 'ci_attempts_exhausted');
@@ -197,6 +200,30 @@ test('CI board column: a failing gate retries the build up to max_attempts, then
     }
     assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/verify-1.jsonl')), false,
       'the gate never passed, so Verify never ran');
+
+    // The human repairs the preserved candidate directly after the automatic
+    // Build/CI budget is exhausted. This must rerun CI on attempt 3, not force
+    // a fourth Build/verification allowance merely to clear a stale terminal
+    // flag (the live Phase-1 failure mode this guards).
+    const worktree = path.join(repo, '.todomd/worktrees/task-0001');
+    writeScript(worktree, 'ci-bad.mjs', `process.exit(0);\n`);
+    git(worktree, ['add', 'ci-bad.mjs']);
+    git(worktree, ['commit', '-qm', 'repair CI candidate outside the agent loop']);
+
+    const recovery = await pipeline.recoveryActions(p, 'task-0001');
+    assert.equal(recovery.retry_verification, true,
+      'CI exhaustion exposes same-candidate CI/verification recovery');
+    assert.equal(recovery.return_to_build, true,
+      'a substantive failure can still choose a new repair Build instead');
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
+
+    const recovered = readCard(repo, 'task-0001');
+    assert.equal(recovered.data.verification.attempts, 3,
+      'the repaired CI rerun reuses the approved attempt instead of extending the cap');
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001/build-4.jsonl')), false,
+      'same-candidate recovery never manufactures another Build');
+    assert.match(recovered.raw, /CI attempt 3 · [\d.]+s · `node ci-bad\.mjs` passed/);
   } finally {
     pipeline.forgetProject(p.name);
     await pipeline.killAllChildren({ graceMs: 1000 });
@@ -641,5 +668,26 @@ test('source changed during Verify cannot merge using earlier remote evidence',a
     assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_evidence_invalid');
     assert.notEqual(git(repo,['rev-parse','HEAD']),changed);
     assert.deepEqual(readCard(repo,'task-0001').data.ci_evidence,{});
+  } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
+});
+
+test('passing remote CI and Verify preserve the Board Agent publication review hold',async()=>{
+  const home=isolateHome();scheduler.resetState();useFakeAgent({build:'good',verdict:'pass'});pipeline.init({broadcast:noop});
+  const repo=makeRepo();configureCi(repo,{execution:'remote',quick:'node --version'});
+  const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+  const {savePublicationPolicies}=await import('../src/board-agent-policy.js');
+  savePublicationPolicies(path.join(home,'.todomd/board-agent'),[{
+    path:fs.realpathSync(repo),worktreeRoot:path.join(fs.realpathSync(repo),'.todomd/worktrees'),
+    policy:{publication:'review_required',protectedBranches:['main','master']},
+  }]);
+  const originalSource=git(repo,['show','HEAD:src/calc.js']);
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+    const card=readCard(repo,'task-0001');
+    assert.equal(card.data.needs_human_reason,'publication_review_required');
+    assert.equal(card.data.ci_evidence.execution,'remote');
+    assert.equal(card.data.verification.last_verdict,'pass');
+    assert.equal(git(repo,['show','HEAD:src/calc.js']),originalSource);
+    assert.equal(fs.existsSync(path.join(repo,'.todomd/worktrees/task-0001')),true);
   } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
 });

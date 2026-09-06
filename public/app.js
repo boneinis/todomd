@@ -44,6 +44,31 @@ let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
 let draggedCardId = null;
 
+function compactActivity(value, max = 240) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+function activityFromRunEvent(event) {
+  const content = event?.message?.content || (Array.isArray(event?.content) ? event.content : []);
+  for (const block of [...content].reverse()) {
+    if (block?.type === 'tool_use') {
+      const target = block.input?.path || block.input?.command || block.input?.pattern || '';
+      return compactActivity(`${block.name || 'tool'}${target ? ` · ${target}` : ''}`);
+    }
+    if (block?.type === 'text' && block.text) return compactActivity(block.text);
+    if (block?.type === 'thinking') return 'Reasoning through the next step';
+  }
+  const item = event?.item || {};
+  if (item.type === 'command_execution') return compactActivity(item.command || 'Running a command');
+  if (item.type === 'mcp_tool_call') return compactActivity(
+    [item.server, item.tool].filter(Boolean).join('.') || item.name || 'Running a tool');
+  if (item.type === 'file_change') return 'Updating files';
+  if (item.type === 'reasoning') return 'Reasoning through the next step';
+  if (item.type === 'agent_message' && item.text) return compactActivity(item.text);
+  return '';
+}
+
 // The classic board script can finish its async load before the voice module
 // graph has registered a context listener. Retain the latest safe UI context
 // and replay it when voice announces readiness so that one lost event cannot
@@ -254,7 +279,9 @@ $('#queue-run').addEventListener('click', async () => {
       { method: 'POST', headers });
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not run queue');
-    toast(out.enqueued ? `queued ${out.enqueued} card${out.enqueued === 1 ? '' : 's'}` : 'queue already up to date');
+    const reasons = (out.cards || []).filter((card) => !card.enqueued).map((card) => `${card.id}: ${card.reason}`);
+    toast([out.enqueued ? `queued ${out.enqueued} card${out.enqueued === 1 ? '' : 's'}` : '',
+      ...reasons].filter(Boolean).join(' · ') || 'no Queue cards');
     await loadBoard();
   } catch {
     toast('server unreachable');
@@ -457,6 +484,24 @@ function renderSubtaskRow(kid) {
   return el;
 }
 
+function cardDiagnostic(card) {
+  if (card.parseError) return { text: card.parseError, error: true };
+  const issues = card.dependencyIssues;
+  if (!issues) return { text: '', error: false };
+  const messages = [];
+  if (issues.missing.length) messages.push(`Unknown dependencies: ${issues.missing.join(', ')} — no matching card ID`);
+  if (issues.unparseable.length) messages.push(`Dependencies have frontmatter errors: ${issues.unparseable.join(', ')}`);
+  if (issues.waiting.length) messages.push(`Waiting for: ${issues.waiting.map((d) => `${d.id} (${d.status})`).join(', ')}`);
+  return { text: messages.join('\n'), error: !!(issues.missing.length || issues.unparseable.length) };
+}
+
+function renderCardDiagnostic(element, card) {
+  const diagnostic = cardDiagnostic(card);
+  element.textContent = diagnostic.text;
+  element.hidden = !diagnostic.text;
+  element.dataset.error = String(diagnostic.error);
+}
+
 function renderCard(card, color, i, nestedIds) {
   const el = $('#card-tpl').content.firstElementChild.cloneNode(true);
   if (boardData.access === 'viewer') el.draggable = false;
@@ -469,6 +514,10 @@ function renderCard(card, color, i, nestedIds) {
   prio.textContent = card.priority || '';
   prio.className = `card-prio ${card.priority || ''}`;
   el.querySelector('.card-title').textContent = card.title || card.file;
+  const tldr = el.querySelector('.card-tldr');
+  tldr.textContent = card.tldr || '';
+  tldr.hidden = !card.tldr;
+  renderCardDiagnostic(el.querySelector('.card-diagnostics'), card);
   // label pills — a needs-human flag replaces them with a warning pill
   const chips = el.querySelector('.card-chips');
   if (card.needs_human_reason) {
@@ -476,6 +525,8 @@ function renderCard(card, color, i, nestedIds) {
   } else {
     const pills = [];
     if (card.type) pills.push(`<span class="chip chip-type">${esc(String(card.type))}</span>`);
+    if (card.complexity) pills.push(`<span class="chip chip-cx chip-cx-${esc(String(card.complexity))}">cx: ${esc(String(card.complexity))}</span>`);
+    if (card.build_profile) pills.push(`<span class="chip chip-profile">build: ${esc(String(card.build_profile))}</span>`);
     for (const l of asList(card.labels)) pills.push(`<span class="chip chip-c${labelHue(l)}">${esc(l)}</span>`);
     chips.innerHTML = pills.join('');
   }
@@ -571,6 +622,7 @@ function isHumanMoveAllowed(from, to, card, boardData) {
   if (!from || !to || from === to) return false;
   if (to === 'Review') return true;
   if (to === 'Planned' && from === 'Needs Human') return true;
+  if (from === 'Needs Human' && (to === 'Queue' || to === 'Build')) return true;
   if (to === 'Queue' && from === 'Planned') return true;
 
   const stages = boardData?.config?.stages || {};
@@ -681,7 +733,7 @@ function relChip(id, label) {
 function depChip(id, state) {
   const waiting = state.waitingOn.find((w) => w.id === id);
   const done = !waiting;
-  const status = done ? 'Done' : (waiting.status || '?');
+  const status = done ? 'Done' : (waiting.status || 'missing card');
   return `<span class="dep-chip ${done ? 'dep-done' : 'dep-blocked'}">${done ? '' : '🔒 '}${esc(id)} <span class="rel-status">${esc(status)}</span></span>`;
 }
 
@@ -756,6 +808,59 @@ $('#drawer-tabs').addEventListener('click', (e) => {
 });
 
 /* ── drawer ── */
+function relativeRunTime(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 60_000) return ms < 10_000 ? 'now' : `${Math.max(1, Math.floor(ms / 1000))}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  const hours = Math.floor(ms / 3_600_000);
+  const minutes = Math.floor((ms % 3_600_000) / 60_000);
+  return `${hours}h${minutes ? ` ${minutes}m` : ''}`;
+}
+
+function renderBuildProgress(id = drawerCard) {
+  const panel = $('#drawer-build-progress');
+  if (!panel) return;
+  const state = id ? runStates[id] : null;
+  const visible = state?.state === 'running' && state?.stage === 'Build';
+  panel.hidden = !visible;
+  if (!visible) return;
+
+  const progress = state.progress || {};
+  const nowMs = Date.now();
+  const startedMs = Date.parse(progress.startedAt || '');
+  const activityMs = Date.parse(progress.lastActivityAt || progress.startedAt || '');
+  const elapsedMs = Number.isFinite(startedMs) ? Math.max(0, nowMs - startedMs) : 0;
+  const quietMs = Number.isFinite(activityMs) ? Math.max(0, nowMs - activityMs) : elapsedMs;
+  const health = quietMs >= 10 * 60_000 ? 'at-risk' : quietMs >= 2 * 60_000 ? 'quiet' : 'active';
+  panel.classList.toggle('quiet', health === 'quiet');
+  panel.classList.toggle('at-risk', health === 'at-risk');
+  $('#build-progress-state').textContent = health === 'at-risk' ? 'check agent' : health;
+
+  const slice = Number(progress.slice) || 1;
+  const maxSlices = Number(progress.maxSlices) || 1;
+  const budgetMinutes = Number(progress.budgetMinutes) || 0;
+  $('#build-progress-slice').textContent = `slice ${slice}/${maxSlices}`;
+  $('#build-progress-elapsed').textContent = relativeRunTime(elapsedMs);
+  $('#build-progress-activity-age').textContent = relativeRunTime(quietMs);
+  $('#build-progress-files').textContent = Number.isFinite(Number(progress.changedPaths))
+    ? String(Number(progress.changedPaths)) : '—';
+  const budgetMs = budgetMinutes * 60_000;
+  $('#build-progress-fill').style.width = `${budgetMs ? Math.min(100, (elapsedMs / budgetMs) * 100) : 0}%`;
+  $('#build-progress-current').textContent = progress.activity ||
+    (health === 'at-risk' ? 'No agent event has arrived recently. The stage watchdog is still monitoring the process.'
+      : 'Agent process is running; waiting for its next visible update.');
+
+  const checkpoint = progress.lastCheckpoint;
+  $('#build-progress-checkpoint').textContent = checkpoint
+    ? `${checkpoint.progressed ? 'Progress detected' : 'No worktree progress'} at checkpoint ${checkpoint.slice}/${maxSlices}` +
+      `${Number.isFinite(Number(checkpoint.changedPaths)) ? ` · ${Number(checkpoint.changedPaths)} changed paths` : ''}` +
+      `${progress.noProgressSlices ? ` · ${progress.noProgressSlices} consecutive quiet checkpoint${progress.noProgressSlices === 1 ? '' : 's'}` : ''}.`
+    : `No checkpoint yet. Productive turn-limit checkpoints continue automatically` +
+      `${budgetMinutes ? ` within this ${budgetMinutes}-minute window` : ''}.`;
+}
+
+setInterval(() => renderBuildProgress(), 15_000);
+
 async function openDrawer(id) {
   const seq = ++drawerOpenSeq;
   const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
@@ -774,18 +879,25 @@ async function openDrawer(id) {
   $('#run-log').textContent = '';
   const drawerRun = $('#drawer-run');
   drawerRun.hidden = true;
-  drawerRun.open = true;
+  drawerRun.open = false;
   drawerRun.classList.remove('is-live');
   drawerRun.dataset.agent = card.data.agent || 'claude';
   drawerRun.dataset.stage = runStates[id]?.stage || '';
-  $('#drawer-description').open = true;
+  renderBuildProgress(id);
+  $('#run-tldr').textContent = '';
+  $('#run-tldr').hidden = true;
+  $('#run-tldr').classList.remove('is-pending');
+  $('#drawer-description').open = false;
   $('#drawer-cancel').hidden = !runStates[id];
   backfillRunLog(id); // fill the log with the run-so-far (and keep it for finished runs)
-  $('#drawer-id').textContent = card.data.id;
-  $('#drawer-title').textContent = card.data.title;
+  $('#drawer-id').textContent = card.data.id || id;
+  $('#drawer-title').textContent = card.data.title || card.file;
+  renderCardDiagnostic($('#drawer-diagnostics'), card);
+  const tldr = String(card.tldr || '').trim();
   $('#drawer-meta').innerHTML = [
     ['status', card.data.status], ['type', card.data.type], ['priority', card.data.priority],
     ['agent', card.data.agent], ['source', card.data.source],
+    ['complexity', card.data.complexity], ['build profile', card.data.build_profile],
     // asList, not `|| []`: a hand-edited/agent-written card can make labels a
     // bare string or a mapping, and .join on that throws — which aborts
     // openDrawer entirely, leaving the card silently un-openable (no drawer, so
@@ -820,13 +932,13 @@ async function openDrawer(id) {
       : '<span class="rel-empty">no chunks</span>';
     relEl.innerHTML = `<span class="rel-label">chunks</span>${chipsHtml}`;
     relEl.hidden = false;
-  } else if (card.data.parent) {
-    const state = TodomdHierarchy.dependencyState(card.data, boardData.cards);
+  } else if (card.data.parent || asList(card.data.dependencies).length) {
+    const state = TodomdHierarchy.dependencyState({ ...card.data, dependencyIssues: card.dependencyIssues }, boardData.cards);
     const deps = TodomdHierarchy.asList(card.data.dependencies);
     const depsHtml = deps.length
       ? `<span class="rel-label">depends on</span>${deps.map((id) => depChip(id, state)).join('')}`
       : '';
-    relEl.innerHTML = `<span class="rel-label">epic</span>${relChip(card.data.parent, card.data.parent)}${depsHtml}`;
+    relEl.innerHTML = (card.data.parent ? `<span class="rel-label">epic</span>${relChip(card.data.parent, card.data.parent)}` : '') + depsHtml;
     relEl.hidden = false;
   } else {
     relEl.innerHTML = '';
@@ -844,6 +956,9 @@ async function openDrawer(id) {
   }
   $('#drawer-body').innerHTML = mdToHtml(bodyForDisplay);
   const descriptionWords = bodyForDisplay.trim() ? bodyForDisplay.trim().split(/\s+/).length : 0;
+  $('#description-tldr').textContent = tldr || (descriptionWords ? 'Summarizing description…' : 'No description to summarize.');
+  $('#description-tldr').hidden = false;
+  $('#description-tldr').classList.toggle('is-pending', !tldr && !!descriptionWords);
   $('#description-summary').textContent = [
     descriptionWords ? `${descriptionWords} ${descriptionWords === 1 ? 'word' : 'words'}` : 'empty',
     critTotal ? `${critDone}/${critTotal} criteria` : '',
@@ -867,7 +982,8 @@ async function openDrawer(id) {
     .filter((c) => c !== card.data.status)
     .map((c) => {
       const allowed = isHumanMoveAllowed(card.data.status, c, card, boardData);
-      return `<option value="${esc(c)}"${allowed ? '' : ' disabled'}>${esc(c)}${allowed ? '' : ' (orchestrator only)'}</option>`;
+      const recovery = card.data.status === 'Needs Human' && (c === 'Queue' || c === 'Build');
+      return `<option value="${esc(c)}"${allowed ? '' : ' disabled'}>${esc(c)}${recovery ? ' (repair preserved work)' : allowed ? '' : ' (orchestrator only)'}</option>`;
     }).join('');
   $('#move-select').innerHTML = optionsHtml;
   const firstAllowed = cols.find((c) => c !== card.data.status && isHumanMoveAllowed(card.data.status, c, card, boardData));
@@ -879,13 +995,27 @@ async function openDrawer(id) {
   // not just a possibly stale `worktree:` frontmatter value.
   $('#drawer-resume-build').hidden = !card.recovery?.resume_build;
   $('#drawer-restart-build').hidden = !card.recovery?.restart_build;
-  $('#drawer-retry-verify').hidden = !card.recovery?.retry_verification;
+  const retryVerify = $('#drawer-retry-verify');
+  retryVerify.hidden = !card.recovery?.retry_verification;
+  const retryingCi = ['ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid']
+    .includes(card.data.needs_human_reason);
+  retryVerify.textContent = retryingCi ? 'retry CI + verification' : 'retry verification';
+  retryVerify.title = retryingCi
+    ? 'rerun CI on this preserved candidate and continue the same verification attempt if it passes'
+    : 'retry verification on this preserved candidate';
+  $('#drawer-return-build').hidden = !card.recovery?.return_to_build;
+  $('#agent-return-build').hidden = !card.recovery?.return_to_build;
+  $('#drawer-recovery-agent').hidden = card.data.status !== 'Needs Human' || boardData?.access !== 'full';
   resetDeleteBtn();
   // pending agent question
   const q = card.data.question;
   $('#drawer-question').hidden = !q;
   if (q) { $('#question-text').textContent = q; $('#answer-input').value = ''; }
+  $('#agent-prompt').value = '';
+  syncPromptComposer();
   showDrawer();
+  if (!card.parseError) refreshCardSummaries(id, seq);
+  else { $('#description-tldr').textContent = 'Fix the frontmatter error in the card file.'; $('#description-tldr').classList.remove('is-pending'); }
 }
 
 $('#drawer-rel').addEventListener('click', (e) => {
@@ -911,6 +1041,86 @@ $('#answer-submit').addEventListener('click', async () => {
     closeDrawer();
     loadBoard();
   } catch { toast('server unreachable'); }
+});
+
+function syncPromptComposer() {
+  const state = drawerCard ? runStates[drawerCard] : null;
+  const busy = !!state;
+  $('#agent-prompt').disabled = busy;
+  $('#agent-prompt-submit').disabled = busy;
+  $('#agent-instruction-save').disabled = busy;
+  $('#agent-return-build').disabled = busy;
+  $('#drawer-recovery-agent').disabled = busy;
+  $('#agent-prompt-status').textContent = busy
+    ? `${state.state || 'running'} · ${state.stage || 'agent'}`
+    : 'advisor · handoff ready';
+}
+
+async function saveCardInstruction() {
+  if (!drawerCard) return false;
+  const instruction = $('#agent-prompt').value.trim();
+  if (!instruction) { toast('type an instruction first'); return false; }
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/instruction?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ instruction }),
+    });
+    const out = await res.json();
+    toast(res.ok ? 'handoff saved for the next Build agent' : out.error || 'could not save handoff');
+    return res.ok;
+  } catch {
+    toast('server unreachable');
+    return false;
+  }
+}
+
+async function returnCardToBuild() {
+  if (!drawerCard) return;
+  const instruction = $('#agent-prompt').value.trim();
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/return-build?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ instruction }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'could not return card to Build');
+    toast(instruction ? 'sent to Build with your handoff' : 'sent to Build with preserved work');
+    closeDrawer();
+    loadBoard();
+  } catch { toast('server unreachable'); }
+}
+
+$('#agent-instruction-save').addEventListener('click', saveCardInstruction);
+$('#agent-return-build').addEventListener('click', returnCardToBuild);
+
+$('#drawer-prompt').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!drawerCard) return;
+  const prompt = $('#agent-prompt').value.trim();
+  if (!prompt) return toast('type a prompt first');
+  const id = drawerCard;
+  $('#agent-prompt').disabled = true;
+  $('#agent-prompt-submit').disabled = true;
+  $('#agent-prompt-status').textContent = 'queueing…';
+  try {
+    const res = await fetch(`/api/cards/${id}/prompt?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    const out = await res.json();
+    if (!res.ok) {
+      syncPromptComposer();
+      return toast(out.error || 'prompt failed');
+    }
+    $('#agent-prompt').value = '';
+    toast('prompt queued — the answer will appear here');
+  } catch {
+    syncPromptComposer();
+    toast('server unreachable');
+  }
 });
 
 function resetDeleteBtn() {
@@ -964,7 +1174,10 @@ $('#move-apply').addEventListener('click', async () => {
     const res = await fetch(`/api/cards/${drawerCard}/move?project=${encodeURIComponent(currentProject)}`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ status: $('#move-select').value }),
+      body: JSON.stringify({
+        status: $('#move-select').value,
+        instruction: $('#agent-prompt').value.trim(),
+      }),
     });
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'move failed');
@@ -1080,6 +1293,28 @@ $('#drawer-retry-verify').addEventListener('click', async () => {
   } catch { toast('server unreachable'); }
 });
 
+$('#drawer-return-build').addEventListener('click', returnCardToBuild);
+
+$('#drawer-recovery-agent').addEventListener('click', async () => {
+  if (!drawerCard) return;
+  const button = $('#drawer-recovery-agent');
+  button.disabled = true;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/recover?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers,
+    });
+    const out = await res.json();
+    if (!res.ok) {
+      syncPromptComposer();
+      return toast(out.error || 'could not start recovery review');
+    }
+    toast('recovery agent queued — it will execute at most one guarded action');
+  } catch {
+    syncPromptComposer();
+    toast('server unreachable');
+  }
+});
+
 $('#drawer-resume-build').addEventListener('click', async () => {
   if (!drawerCard) return;
   try {
@@ -1109,16 +1344,18 @@ $('#drawer-restart-build').addEventListener('click', async () => {
 async function backfillRunLog(id) {
   const running = runStates[id]?.state === 'running';
   try {
-    const { agent, stage, events } = await api(`cards/${id}/runlog?project=${encodeURIComponent(currentProject)}`);
+    const { agent, stage, events, tldr } = await api(`cards/${id}/runlog?project=${encodeURIComponent(currentProject)}`);
     if (id !== drawerCard) return; // the drawer moved on while we were fetching
     $('#run-log').textContent = '';
     const run = $('#drawer-run');
-    run.open = true;
     run.dataset.agent = agent || '';
     run.dataset.stage = stage || runStates[id]?.stage || '';
     setRunHeader(running);
     for (const ev of events) appendRunEvent({ vendor: agent, ...ev });
     $('#drawer-run').hidden = !(running || events.length);
+    if (running) setRunTldr('Summary available when this run finishes.', { pending: true });
+    else if (events.length) setRunTldr(tldr || 'Summarizing the complete run…', { pending: !tldr });
+    else setRunTldr('');
     setRunHeader(running);
   } catch {
     $('#drawer-run').hidden = !running;
@@ -1148,6 +1385,58 @@ function setRunHeader(running) {
   $('#run-summary').textContent = parts.join(' · ');
 }
 
+function setRunTldr(text, { pending = false } = {}) {
+  const summary = String(text || '').trim();
+  $('#run-tldr').textContent = summary;
+  $('#run-tldr').hidden = !summary;
+  $('#run-tldr').classList.toggle('is-pending', !!summary && pending);
+}
+
+async function refreshCardSummaries(id, seq = drawerOpenSeq) {
+  if (boardData?.access !== 'full') {
+    if (id !== drawerCard || seq !== drawerOpenSeq) return;
+    if ($('#description-tldr').classList.contains('is-pending')) {
+      $('#description-tldr').textContent = 'Summary not generated yet.';
+      $('#description-tldr').classList.remove('is-pending');
+    }
+    if (!$('#drawer-run').hidden && $('#run-tldr').classList.contains('is-pending')) {
+      setRunTldr('Run summary not generated yet.');
+    }
+    return;
+  }
+  try {
+    const res = await fetch(`/api/cards/${id}/summaries?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers,
+    });
+    const out = await res.json();
+    if (id !== drawerCard || seq !== drawerOpenSeq) return;
+    if (!res.ok && /after the active run finishes/i.test(String(out.error || ''))) {
+      if ($('#description-tldr').classList.contains('is-pending')) {
+        $('#description-tldr').textContent = 'Summary available when this run finishes.';
+      }
+      if (!$('#drawer-run').hidden) setRunTldr('Summary available when this run finishes.', { pending: true });
+      return;
+    }
+    if (!res.ok) throw new Error(out.error || 'summary generation failed');
+    const description = String(out.description_tldr || '').trim();
+    $('#description-tldr').textContent = description || 'No description to summarize.';
+    $('#description-tldr').classList.remove('is-pending');
+    if (!$('#drawer-run').hidden) {
+      const run = String(out.last_run_tldr || '').trim();
+      setRunTldr(run || 'No meaningful run result to summarize.');
+    }
+  } catch {
+    if (id !== drawerCard || seq !== drawerOpenSeq) return;
+    if ($('#description-tldr').classList.contains('is-pending')) {
+      $('#description-tldr').textContent = 'Summary unavailable.';
+      $('#description-tldr').classList.remove('is-pending');
+    }
+    if (!$('#drawer-run').hidden && $('#run-tldr').classList.contains('is-pending')) {
+      setRunTldr('Run summary unavailable.');
+    }
+  }
+}
+
 function appendRunSystem(text, cls = 'chat-system') {
   if (!text) return;
   const entry = runEntry('div', cls);
@@ -1168,7 +1457,29 @@ function appendAgentMessage(text, vendor = 'agent') {
   const body = document.createElement('div');
   body.className = 'chat-copy drawer-body';
   body.innerHTML = mdToHtml(String(text));
-  entry.append(head, body);
+  const actions = document.createElement('footer');
+  actions.className = 'chat-message-actions';
+  const handoff = document.createElement('button');
+  handoff.type = 'button';
+  handoff.textContent = 'use as handoff';
+  handoff.addEventListener('click', () => {
+    $('#agent-prompt').value = String(text).trim();
+    $('#agent-prompt').focus();
+    toast('advisor response copied into the next-agent handoff');
+  });
+  actions.appendChild(handoff);
+  entry.append(head, body, actions);
+  appendRunEntry(entry);
+}
+
+function appendHumanMessage(text) {
+  if (!text) return;
+  const entry = runEntry('article', 'chat-user');
+  const label = document.createElement('header');
+  label.textContent = 'you';
+  const body = document.createElement('div');
+  body.textContent = String(text);
+  entry.append(label, body);
   appendRunEntry(entry);
 }
 
@@ -1251,6 +1562,10 @@ function appendCodexItem(event) {
 
 function appendRunEvent(event) {
   if (event.type === 'rate_limit_event' || event.type === 'turn.started') return;
+  if (event.type === 'human_message') {
+    appendHumanMessage(event.text);
+    return;
+  }
   if (event.type === 'system' || event.type === 'thread.started') {
     const session = event.session_id || event.thread_id;
     if (event.type === 'thread.started' || event.subtype === 'init') appendRunSystem(`session ${session || 'started'}`);
@@ -1392,9 +1707,11 @@ function connectWs() {
     if (msg.type === 'board-changed' && msg.project === currentProject) loadBoard();
     else if (msg.type === 'run-state' && msg.project === currentProject) {
       if (msg.state === 'idle') delete runStates[msg.card];
-      else runStates[msg.card] = { state: msg.state, stage: msg.stage, reason: msg.reason };
+      else runStates[msg.card] = { state: msg.state, stage: msg.stage, reason: msg.reason,
+        ...(msg.progress ? { progress: msg.progress } : {}) };
       if (msg.card === drawerCard) {
         $('#drawer-cancel').hidden = msg.state === 'idle' || !runStates[msg.card];
+        syncPromptComposer();
         if (msg.state === 'running') {
           const run = $('#drawer-run');
           $('#run-log').textContent = '';
@@ -1402,15 +1719,31 @@ function connectWs() {
           run.open = true;
           run.dataset.stage = msg.stage || '';
           run.dataset.agent = $('#route-agent').value || '';
+          setRunTldr('Summary available when this run finishes.', { pending: true });
           setRunHeader(true);
         }
-        else backfillRunLog(drawerCard); // run ended — keep its log, now as "last run"
+        else {
+          backfillRunLog(drawerCard); // run ended — keep its log, now as "last run"
+          refreshCardSummaries(drawerCard, drawerOpenSeq);
+        }
+        renderBuildProgress(drawerCard);
       }
       renderBoard();
+    } else if (msg.type === 'run-progress' && msg.project === currentProject) {
+      const state = runStates[msg.card];
+      if (state) state.progress = { ...(state.progress || {}), ...(msg.progress || {}) };
+      if (msg.card === drawerCard) renderBuildProgress(msg.card);
     } else if (msg.type === 'run-event' && msg.project === currentProject && msg.card === drawerCard) {
       const run = $('#drawer-run');
       run.hidden = false;
       if (msg.event?.vendor) run.dataset.agent = msg.event.vendor;
+      const state = runStates[msg.card];
+      if (state) {
+        state.progress ||= {};
+        state.progress.lastActivityAt = new Date().toISOString();
+        state.progress.activity = activityFromRunEvent(msg.event) || state.progress.activity;
+        renderBuildProgress(msg.card);
+      }
       appendRunEvent({ vendor: run.dataset.agent || 'agent', ...msg.event });
     } else if (msg.type === 'banners') {
       renderBanners(msg.banners);
