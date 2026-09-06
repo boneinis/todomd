@@ -654,8 +654,8 @@ for(const orphanStage of ['CI','Verify']) {
 }
 
 test('source changed during Verify cannot merge using earlier remote evidence',async()=>{
-  isolateHome();scheduler.resetState();const argvLog=path.join(tmp('verify-source-change'),'argv.jsonl');
-  useFakeAgent({build:'good',verdict:'pass',exit_delay_ms:750,argv_log:argvLog});pipeline.init({broadcast:noop});
+  isolateHome();scheduler.resetState();const dir=tmp('verify-source-change'),argvLog=path.join(dir,'argv.jsonl'),release=path.join(dir,'release');
+  useFakeAgent({build:'good',verdict:'pass',verify_release:release,argv_log:argvLog});pipeline.init({broadcast:noop});
   const repo=makeRepo();configureCi(repo,{execution:'remote',quick:'node --version'});
   const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});const wt=path.join(repo,'.todomd/worktrees/task-0001');
   try {
@@ -663,9 +663,31 @@ test('source changed during Verify cannot merge using earlier remote evidence',a
     await until(()=>fs.existsSync(argvLog)&&fs.readFileSync(argvLog,'utf8').trim().split('\n').some(line=>JSON.parse(line).some(arg=>arg.includes('todomd-verify'))),{timeout:BUDGET.chain});
     fs.appendFileSync(path.join(wt,'src/calc.js'),'\n// after CI\n');git(wt,['add','src/calc.js']);git(wt,['commit','-qm','source changed after CI']);
     const changed=git(wt,['rev-parse','HEAD']);
+    fs.writeFileSync(release,'complete review');
     await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
     assert.equal(readCard(repo,'task-0001').data.needs_human_reason,'ci_evidence_invalid');
     assert.notEqual(git(repo,['rev-parse','HEAD']),changed);
     assert.deepEqual(readCard(repo,'task-0001').data.ci_evidence,{});
+  } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
+});
+
+test('passing remote CI and Verify preserve the Board Agent publication review hold',async()=>{
+  const home=isolateHome();scheduler.resetState();useFakeAgent({build:'good',verdict:'pass'});pipeline.init({broadcast:noop});
+  const repo=makeRepo();configureCi(repo,{execution:'remote',quick:'node --version'});
+  const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
+  const {savePublicationPolicies}=await import('../src/board-agent-policy.js');
+  savePublicationPolicies(path.join(home,'.todomd/board-agent'),[{
+    path:fs.realpathSync(repo),worktreeRoot:path.join(fs.realpathSync(repo),'.todomd/worktrees'),
+    policy:{publication:'review_required',protectedBranches:['main','master']},
+  }]);
+  const originalSource=git(repo,['show','HEAD:src/calc.js']);
+  try {
+    await pipeline.humanMove(p,'task-0001','Queue');await until(()=>status(repo,'task-0001')==='Needs Human',{timeout:BUDGET.chain});
+    const card=readCard(repo,'task-0001');
+    assert.equal(card.data.needs_human_reason,'publication_review_required');
+    assert.equal(card.data.ci_evidence.execution,'remote');
+    assert.equal(card.data.verification.last_verdict,'pass');
+    assert.equal(git(repo,['show','HEAD:src/calc.js']),originalSource);
+    assert.equal(fs.existsSync(path.join(repo,'.todomd/worktrees/task-0001')),true);
   } finally {pipeline.forgetProject(p.name);await pipeline.killAllChildren({graceMs:1000});clearFakeAgent();scheduler.resetState();}
 });
