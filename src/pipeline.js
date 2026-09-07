@@ -329,7 +329,7 @@ export function normalizeBuildProfile(value) {
   return BUILD_PROFILES.has(profile) ? profile : 'standard';
 }
 
-const COMPLEXITY_LEVELS = new Set(['trivial', 'low', 'medium', 'high', 'very-high']);
+export const COMPLEXITY_LEVELS = ['trivial', 'low', 'medium', 'high', 'very-high'];
 
 // Build-only routing by the Plan stage's difficulty rating. `stages.Build.
 // route_by_complexity` maps a level to `{ agent, model? }` (or a bare agent
@@ -346,7 +346,7 @@ function complexityRoute(config, card, stageName) {
   const map = (config.stages || {})[stageName]?.route_by_complexity;
   if (!map || typeof map !== 'object' || Array.isArray(map)) return null;
   const level = String(card.data.complexity || '').trim().toLowerCase();
-  if (!COMPLEXITY_LEVELS.has(level)) return null;
+  if (!COMPLEXITY_LEVELS.includes(level)) return null;
   if (normalizeBuildProfile(card.data.build_profile) !== 'standard') return null;
   const spec = map[level];
   const entry = typeof spec === 'string' ? { agent: spec } : (spec && typeof spec === 'object' ? spec : null);

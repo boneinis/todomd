@@ -148,6 +148,33 @@ export function loadConfig(repoPath) {
 // `stages.<col>` map: sets the agent/model line, or removes it when the value is
 // empty (so the column falls back to the board default). js-yaml.dump would
 // strip the file's comments, so we patch the lines in place instead.
+const ROUTE_LEVELS = ['trivial', 'low', 'medium', 'high', 'very-high'];
+
+// `stages.<col>.route_by_complexity` as written by the board: a level → provider
+// map, one flow-style entry per level in canonical order. Unknown levels and
+// entries without an agent are dropped; an empty result removes the block.
+function cleanRouteMap(value) {
+  const out = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  for (const level of ROUTE_LEVELS) {
+    const spec = value[level];
+    const entry = typeof spec === 'string' ? { agent: spec } : (spec && typeof spec === 'object' ? spec : null);
+    const agent = String(entry?.agent || '').replace(/[^\w-]/g, '');
+    if (!agent) continue;
+    const model = String(entry?.model || '').replace(/[^\w.-]/g, '');
+    out[level] = model ? { agent, model } : { agent };
+  }
+  return out;
+}
+function routeMapLines(map, indent) {
+  const levels = Object.keys(map);
+  if (!levels.length) return [];
+  return [`${indent}route_by_complexity:`, ...levels.map((level) => {
+    const { agent, model } = map[level];
+    return `${indent}  ${level}: { agent: ${agent}${model ? `, model: ${model}` : ''} }`;
+  })];
+}
+
 export function setStageRouting(repoPath, col, updates) {
   return withRepoLock(repoPath, async () => {
     const file = path.join(repoPath, '.todomd', 'config.yml');
@@ -163,7 +190,9 @@ export function setStageRouting(repoPath, col, updates) {
     if ('model' in updates) clean.model = String(updates.model || '').replace(/[^\w.-]/g, '');
     if ('effort' in updates) clean.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(updates.effort || '')) ? String(updates.effort) : '';
     if ('workflow' in updates) clean.workflow = String(updates.workflow || '') === 'ultra_code' ? 'ultra_code' : '';
-    if (!Object.keys(clean).length) return { ok: true, unchanged: true };
+    // the nested difficulty map is replaced as a whole block, never merged
+    const routeMap = 'route_by_complexity' in updates ? cleanRouteMap(updates.route_by_complexity) : undefined;
+    if (!Object.keys(clean).length && routeMap === undefined) return { ok: true, unchanged: true };
 
     const commit = () => commitPaths(repoPath, [path.join('.todomd', 'config.yml')],
       `chore(todomd): ${col} stage routing`);
@@ -174,6 +203,7 @@ export function setStageRouting(repoPath, col, updates) {
     if (si === -1) {
       const block = [`  ${col}:`];
       for (const [k, v] of Object.entries(clean)) if (v) block.push(`    ${k}: ${v}`);
+      if (routeMap) block.push(...routeMapLines(routeMap, '    '));
       if (block.length === 1) return { ok: true, unchanged: true };
       const body = raw.replace(/\s*$/, '') + eol + eol + 'stages:' + eol + block.join(eol) + eol;
       writeFileAtomic(file, body);
@@ -203,6 +233,7 @@ export function setStageRouting(repoPath, col, updates) {
     if (ci === -1) {
       const block = [`  ${col}:`];
       for (const [k, v] of Object.entries(clean)) if (v) block.push(`    ${k}: ${v}`);
+      if (routeMap) block.push(...routeMapLines(routeMap, '    '));
       if (block.length === 1) return { ok: true, unchanged: true };
       lines.splice(se, 0, ...block);
       writeFileAtomic(file, lines.join(eol));
@@ -234,6 +265,22 @@ export function setStageRouting(repoPath, col, updates) {
         lines.splice(found, 1); ce--;
         if (found < insertAt) insertAt--;
       }
+    }
+    if (routeMap !== undefined) {
+      // the existing block = its key line plus every deeper-indented line after it
+      let ki = -1, ke = -1;
+      for (let i = ci + 1; i < ce; i++) {
+        if (/^\s+route_by_complexity:/.test(lines[i]) && lines[i].search(/\S/) > colIndent) { ki = i; break; }
+      }
+      if (ki >= 0) {
+        const keyIndent = lines[ki].search(/\S/);
+        ke = ki + 1;
+        while (ke < ce && (lines[ke].trim() === '' || lines[ke].search(/\S/) > keyIndent)) ke++;
+        while (ke > ki + 1 && lines[ke - 1].trim() === '') ke--;   // blanks after the block stay
+      }
+      const block = routeMapLines(routeMap, propIndent);
+      if (ki >= 0) lines.splice(ki, ke - ki, ...block);
+      else if (block.length) lines.splice(insertAt, 0, ...block);
     }
     writeFileAtomic(file, lines.join(eol));
     return { ok: true, commit: await commit() };

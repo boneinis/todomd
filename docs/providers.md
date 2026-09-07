@@ -223,5 +223,7 @@ Each map-driven decision is written to the card's run log so it is auditable:
 ```
 
 `stages` is one of the executable config keys resolved from `HEAD:`, so the map
-takes effect once committed. Start narrow (`trivial`/`low`), read a few run logs,
-and widen on evidence.
+takes effect once committed. The board edits it for you: **column settings →
+Build → route by difficulty** writes the block and commits it, the same way the
+column's agent and model are saved. Start narrow (`trivial`/`low`), read a few
+run logs, and widen on evidence.

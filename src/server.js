@@ -389,7 +389,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       // stage columns carry per-column agent/model routing (the "column" tier);
       // triage/dispatch don't, so they're flagged stage:false to hide selectors
       for (const [col, s] of Object.entries(cfg.stages || {})) {
-        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', effort: s.effort || '', workflow: s.workflow || '', agent: s.agent || '', stage: true });
+        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', effort: s.effort || '', workflow: s.workflow || '', route_by_complexity: s.route_by_complexity || {}, agent: s.agent || '', stage: true });
       }
       if (cfg.triage) list.push({ column: 'Triage (auto)', command: cfg.triage.command || 'todomd-triage', model: cfg.triage.model || '', stage: false });
       list.push({ column: 'Dispatch (budget mode)', command: 'todomd-dispatch', model: '', stage: false });
@@ -445,6 +445,26 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if ('workflow' in fields) {
         if (col !== 'Build') return json(res, 400, { error: 'workflow presets are available only for Build' });
         updates.workflow = String(fields.workflow || '');
+      }
+      if ('route_by_complexity' in fields) {
+        if (col !== 'Build') return json(res, 400, { error: 'route_by_complexity is available only for Build' });
+        const map = fields.route_by_complexity;
+        if (map !== null && (typeof map !== 'object' || Array.isArray(map))) {
+          return json(res, 400, { error: 'route_by_complexity must be an object keyed by complexity level' });
+        }
+        const cleanMap = {};
+        for (const [level, spec] of Object.entries(map || {})) {
+          if (!pipeline.COMPLEXITY_LEVELS.includes(level)) return json(res, 400, { error: `unknown complexity level: ${level}` });
+          const entry = typeof spec === 'string' ? { agent: spec } : (spec && typeof spec === 'object' ? spec : {});
+          const agent = entry.agent ? pipeline.normalizeVendor(entry.agent) : '';
+          if (!agent) continue;                               // column default → nothing to store
+          if (!SUPPORTED_VENDORS.includes(agent)) return json(res, 400, { error: `${level}: agent must be ${SUPPORTED_VENDORS.join(', ')}` });
+          const model = String(entry.model || '').replace(/[^\w.-]/g, '');
+          const route = validateModelRoute(agent, model, cfg);
+          if (!route.ok) return json(res, 400, { error: `${level}: ${route.error}` });
+          cleanMap[level] = model ? { agent, model } : { agent };
+        }
+        updates.route_by_complexity = cleanMap;
       }
       const effectiveAgent = updates.agent || (cfg.stages || {})[col]?.agent || cfg.default_agent || 'claude';
       const effectiveModel = 'model' in updates ? updates.model : (cfg.stages || {})[col]?.model || cfg.default_model || '';
