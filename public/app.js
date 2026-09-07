@@ -1782,9 +1782,27 @@ async function updateRoutingRow(item) {
   $('#stage-effort').value = item.effort || '';
   $('#stage-workflow').value = item.workflow || '';
   $('#stage-workflow-row').hidden = item.column !== 'Build';
+  $('#stage-route-map').hidden = item.column !== 'Build';
+  if (item.column === 'Build') fillRouteMap(item.route_by_complexity || {});
   row.hidden = false;
   await setStageModelOptions(item.agent || promptDefaults.agent, item.model || '');
   renderRoutingNote(item);
+}
+function fillRouteMap(map) {
+  for (const sel of document.querySelectorAll('#stage-route-map .route-map-agent')) {
+    const entry = map[sel.dataset.level] || {};
+    sel.value = entry.agent || '';
+    document.querySelector(`#stage-route-map .route-map-model[data-level="${sel.dataset.level}"]`).value = entry.model || '';
+  }
+}
+function readRouteMap() {
+  const map = {};
+  for (const sel of document.querySelectorAll('#stage-route-map .route-map-agent')) {
+    if (!sel.value) continue;
+    const model = document.querySelector(`#stage-route-map .route-map-model[data-level="${sel.dataset.level}"]`).value.trim();
+    map[sel.dataset.level] = model ? { agent: sel.value, model } : { agent: sel.value };
+  }
+  return map;
 }
 async function loadPromptCommand(command) {
   const out = await api(`commands/${encodeURIComponent(command)}?project=${encodeURIComponent(currentProject)}`);
@@ -1855,6 +1873,15 @@ $('#stage-workflow').addEventListener('change', async (e) => {
   if (await saveRouting({ workflow: e.target.value }) && item) {
     item.workflow = e.target.value;
     renderRoutingNote(item); toast(`${col} workflow saved`);
+  }
+});
+$('#route-map-save').addEventListener('click', async () => {
+  const col = routingColumn;
+  const item = promptCommands.find((c) => c.column === col);
+  const map = readRouteMap();
+  if (await saveRouting({ route_by_complexity: map }) && item) {
+    item.route_by_complexity = map;
+    toast(`${col} difficulty routing saved`);
   }
 });
 $('#prompts-close').addEventListener('click', () => { $('#prompts-backdrop').hidden = true; });

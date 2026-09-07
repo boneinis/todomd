@@ -279,6 +279,31 @@
         <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option></select>
       </label>
       <span id="stage-routing-note" class="qr-note"></span>
+      <div id="stage-route-map" class="prompt-routing" hidden>
+        <span class="prompt-routing-title">route by difficulty</span>
+        <label>trivial
+          <select class="route-map-agent" data-level="trivial"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <input class="route-map-model" data-level="trivial" list="model-options" placeholder="provider default" autocomplete="off" />
+        </label>
+        <label>low
+          <select class="route-map-agent" data-level="low"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <input class="route-map-model" data-level="low" list="model-options" placeholder="provider default" autocomplete="off" />
+        </label>
+        <label>medium
+          <select class="route-map-agent" data-level="medium"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <input class="route-map-model" data-level="medium" list="model-options" placeholder="provider default" autocomplete="off" />
+        </label>
+        <label>high
+          <select class="route-map-agent" data-level="high"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <input class="route-map-model" data-level="high" list="model-options" placeholder="provider default" autocomplete="off" />
+        </label>
+        <label>very-high
+          <select class="route-map-agent" data-level="very-high"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <input class="route-map-model" data-level="very-high" list="model-options" placeholder="provider default" autocomplete="off" />
+        </label>
+        <button type="button" id="route-map-save" class="rail-btn">save routing</button>
+        <span class="qr-note">The Plan stage rates each card's difficulty; a level with a provider builds there unless the card pins an agent. Long/split work always uses the column default.</span>
+      </div>
     </div>
     <p class="qr-note">The <b>core protocol</b> is locked (read-only) — changing it could break the pipeline. Add your conventions below; the agent reads both boxes as extra instructions. <b>Shared</b> is committed to the repo and travels with it — treat it as public. <b>Local only</b> is written to <code>.todomd/local/</code>, which is gitignored and never leaves this machine — put client names, internal URLs and other private context there.</p>
     <label class="prompt-lbl">core protocol — read-only</label>

@@ -968,3 +968,31 @@ test('API preserves actionable parse and dependency diagnostics on read, approve
     assert.equal(kick.cards.find((c) => c.id === 'task-0002').code, 'unknown_dependencies');
   } finally { server.close(); }
 });
+
+
+test('API difficulty routing: /api/stages validates and saves the Build map; /api/commands reads it back', async () => {
+  isolateHome();
+  const { base, srv, q } = await boot();
+  const tok = srv.token;
+  const h = { 'x-todomd-token': tok, 'content-type': 'application/json', origin: base };
+  try {
+    let r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h,
+      body: JSON.stringify({ column: 'Build', route_by_complexity: { low: { agent: 'gemini', model: 'gemini-3.7-flash-high' }, medium: { agent: '' } } }) });
+    assert.equal(r.status, 200);
+    r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
+    const build = (await r.json()).commands.find((c) => c.column === 'Build');
+    assert.deepEqual(build.route_by_complexity, { low: { agent: 'gemini', model: 'gemini-3.7-flash-high' } });
+    // only Build routes by difficulty; unknown levels and wrong-family models are refused
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Verify', route_by_complexity: { low: { agent: 'gemini' } } }) });
+    assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', route_by_complexity: { huge: { agent: 'gemini' } } }) });
+    assert.equal(r.status, 400);
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', route_by_complexity: { low: { agent: 'gemini', model: 'opus' } } }) });
+    assert.equal(r.status, 400);
+    // clearing
+    r = await fetch(`${base}/api/stages${q}`, { method: 'POST', headers: h, body: JSON.stringify({ column: 'Build', route_by_complexity: {} }) });
+    assert.equal(r.status, 200);
+    r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
+    assert.deepEqual((await r.json()).commands.find((c) => c.column === 'Build').route_by_complexity, {});
+  } finally { await srv.close(); }
+});

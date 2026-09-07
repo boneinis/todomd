@@ -934,3 +934,30 @@ test('dependency diagnostics distinguish unknown, unfinished, malformed and arch
   });
   assert.equal(board.cards.some((c) => c.id === 'task-0003'), false, 'archived dependency stays hidden');
 });
+
+
+test('setStageRouting writes, replaces and clears the Build difficulty map as one block', async () => {
+  const repo = makeRepo();
+  const file = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8') + '# trailing note\n');
+  let r = await setStageRouting(repo, 'Build', { route_by_complexity: {
+    low: { agent: 'gemini', model: 'gemini-3.7-flash-high' }, trivial: 'gemini', bogus: { agent: 'codex' }, medium: { model: 'x' } } });
+  assert.equal(r.ok, true);
+  let cfg = loadConfig(repo);
+  assert.deepEqual(cfg.stages.Build.route_by_complexity, { trivial: { agent: 'gemini' }, low: { agent: 'gemini', model: 'gemini-3.7-flash-high' } });
+  assert.equal(cfg.stages.Build.model, 'sonnet', 'flat keys untouched');
+  // replaced in place: one key line, no leftovers from the previous block
+  r = await setStageRouting(repo, 'Build', { route_by_complexity: { high: { agent: 'codex' } } });
+  let raw = fs.readFileSync(file, 'utf8');
+  assert.equal((raw.match(/route_by_complexity:/g) || []).length, 1);
+  assert.doesNotMatch(raw, /gemini-3\.7-flash-high/);
+  assert.deepEqual(loadConfig(repo).stages.Build.route_by_complexity, { high: { agent: 'codex' } });
+  // an empty map removes the block; comments and siblings survive
+  r = await setStageRouting(repo, 'Build', { route_by_complexity: {} });
+  raw = fs.readFileSync(file, 'utf8');
+  assert.doesNotMatch(raw, /route_by_complexity/);
+  assert.match(raw, /# trailing note/);
+  cfg = loadConfig(repo);
+  assert.equal(cfg.stages.Build.route_by_complexity, undefined);
+  assert.equal(cfg.stages.Verify.model, 'haiku');
+});
