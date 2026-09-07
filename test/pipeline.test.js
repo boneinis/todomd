@@ -1217,7 +1217,7 @@ test('Triage stays live from its pre-spawn claim through final writes and blocks
     const archive = await voice.prepareVoiceAction(p, { cardId: 'task-0001', action: 'archive' });
     assert.equal(archive.status, 400);
     assert.match(archive.error, /live run/);
-    assert.deepEqual(pipeline.cancel(p, 'task-0001'), { ok: true });
+    assert.deepEqual(await pipeline.cancel(p, 'task-0001'), { ok: true });
 
     await release();
     release = null;
@@ -1938,7 +1938,7 @@ test('cancel during Verify re-enqueues the build — the card resumes to Done on
   await pipeline.humanMove(p, 'task-0001', 'Queue');
   await until(() => status(repo, 'task-0001') === 'Verify' && fs.existsSync(marker), { timeout: BUDGET.chain });
 
-  assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
+  assert.equal((await pipeline.cancel(p, 'task-0001')).ok, true);
   // the cancel reverts to Queue and re-enqueues: build #2 runs (the hang fired
   // once), verify passes, the card lands in Done with no human action
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
@@ -1959,7 +1959,7 @@ test('cancel during Build re-enqueues — the card resumes to Done on its own, n
   await pipeline.humanMove(p, 'task-0001', 'Queue');
   await until(() => status(repo, 'task-0001') === 'Build' && fs.existsSync(marker), { timeout: BUDGET.chain });
 
-  assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
+  assert.equal((await pipeline.cancel(p, 'task-0001')).ok, true);
   // the cancel reverts to Queue and re-enqueues (like the Verify cancel): build
   // #2 runs (the hang fired once), verify passes, Done with no human action
   await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
@@ -1968,7 +1968,7 @@ test('cancel during Build re-enqueues — the card resumes to Done on its own, n
   clearFakeAgent();
 });
 
-test('cancel during a retry Build requeues the card instead of idling in Verify', async () => {
+test('cancel during a retry Build preserves the candidate for explicit recovery', async () => {
   isolateHome();
   const counter = path.join(tmp('retryhang'), 'builds');
   // the RETRY build (2nd build-stage run) hangs until cancelled
@@ -1983,13 +1983,12 @@ test('cancel during a retry Build requeues the card instead of idling in Verify'
   await until(() => fs.existsSync(counter) && fs.readFileSync(counter, 'utf8') === '2' &&
     status(repo, 'task-0001') === 'Build', { timeout: BUDGET.chain });
 
-  assert.equal(pipeline.cancel(p, 'task-0001').ok, true);
-  process.env.FAKE_VERDICT = 'pass'; // the resumed build verifies clean
-  // a retry build's prevStatus is Verify — the cancel must still land it in
-  // Queue and re-enqueue (a Verify revert would strand it with no live run)
-  await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.chain });
-  assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2,
-    'verify-fail attempt + rolled-back cancelled retry + resumed build = attempt 2');
+  assert.equal((await pipeline.cancel(p, 'task-0001')).ok, true);
+  await until(() => status(repo, 'task-0001') === 'Needs Human' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+  assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'build_cancelled');
+  assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2);
+  assert.ok(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')));
+  assert.equal(fs.readFileSync(counter, 'utf8'), '2', 'no automatic replacement Build');
   clearFakeAgent();
 });
 
@@ -2768,18 +2767,18 @@ test('cancelling a CPU-deferred Retry Verification CI refresh unwinds through it
     // pause the queue first, so the cancel's Queue re-drive parks instead of
     // starting a fresh Build we would then have to chase
     pipeline.pauseQueue(p);
-    assert.deepEqual(pipeline.cancel(p, 'task-0001'), { ok: true }, 'a queued retry is cancellable');
+    assert.deepEqual(await pipeline.cancel(p, 'task-0001'), { ok: true }, 'a queued retry is cancellable');
 
     // Cancellation does not wait for resource recovery: the queued admission
     // is removed and its preserved mid-flow state unwinds immediately.
-    await until(() => status(repo, 'task-0001') === 'Queue' && !pipeline.hasLiveRun(p.name, 'task-0001'),
+    await until(() => status(repo, 'task-0001') === 'Needs Human' && !pipeline.hasLiveRun(p.name, 'task-0001'),
       { timeout: BUDGET.stage });
     assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 1,
       'a queued re-verification has not opened an attempt to roll back');
     assert.equal(fs.existsSync(argvLog), false,
       'the cancelled CI refresh never spawned either CI or an agent review');
-    assert.equal(fs.existsSync(worktree), false, 'the cancel released the preserved worktree');
-    assert.ok(!readCard(repo, 'task-0001').data.worktree, 'the stale branch reference is cleared too');
+    assert.equal(fs.existsSync(worktree), true, 'cancel preserves the candidate');
+    assert.ok(readCard(repo, 'task-0001').data.worktree, 'the candidate branch remains recorded');
   } finally {
     // deliberately NOT resumeQueue(): the pause marker lives in this test's own
     // temp repo, and resuming here would start the very Build this test parked

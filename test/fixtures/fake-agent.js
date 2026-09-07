@@ -30,7 +30,7 @@
 //   FAKE_FINDINGS=<text>    — override verifier findings (empty is allowed)
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 const argv = process.argv.slice(2);
 if (process.env.FAKE_ARGV_LOG) {
@@ -184,6 +184,19 @@ if (hangNow && process.env.FAKE_HANG_ON) {
 if (hangNow &&
     !(process.env.FAKE_HANG_MARKER && fs.existsSync(process.env.FAKE_HANG_MARKER))) {
   if (process.env.FAKE_HANG_MARKER) fs.writeFileSync(process.env.FAKE_HANG_MARKER, '1');
+  if (process.env.FAKE_HANG_DESCENDANT) {
+    // The leader exits on TERM; its writer ignores TERM and closes inherited
+    // pipes. A leader-only close/backstop must not count as cancellation.
+    const dir = process.env.FAKE_HANG_DESCENDANT;
+    fs.mkdirSync(path.join(cwd, '.todomd/runs'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'leader'), String(process.pid));
+    spawn(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {});
+      fs.writeFileSync(${JSON.stringify(path.join(dir, 'descendant'))}, String(process.pid));
+      setInterval(() => fs.appendFileSync(${JSON.stringify(path.join(cwd, '.todomd/runs/writes'))}, 'x'), 15);
+    `], { stdio: 'ignore' });
+  }
   if (process.env.FAKE_IGNORE_TERM) process.on('SIGTERM', () => {}); // stubborn child — only SIGKILL stops it
   setInterval(() => {}, 1 << 30); // keep alive; the runner SIGTERMs us on cancel/timeout
 } else if (stage === 'plan') {

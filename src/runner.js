@@ -145,7 +145,7 @@ function runClaude({
     args.push('--settings', settingsFile);
   }
 
-  const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const log = streaming && logFile ? openLog(logFile) : null;
 
@@ -269,7 +269,7 @@ function runCodex({
   // two facts needed to diagnose PATH and worktree problems.
   log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
 
-  const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(executable, args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const done = new Promise((resolve) => {
     let sessionId = null;
@@ -409,7 +409,7 @@ function runGemini({
   const log = logFile ? openLog(logFile) : null;
   log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
 
-  const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(executable, args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const done = new Promise((resolve) => {
     let sessionId = null;
@@ -564,7 +564,7 @@ function runKimi({
   const log = logFile ? openLog(logFile) : null;
   log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
 
-  const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(executable, args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const done = new Promise((resolve) => {
     let sessionId = null;
