@@ -1786,7 +1786,7 @@ export async function resumeBuild(project, id) {
     return { ok: false, error: 'this card must be split into child cards before Build can resume' };
   }
   const eligible = (reason === 'orphaned_run' && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build'].includes(reason) && card.data.recovery_stage === 'Build');
+    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build', 'blocked_build', 'permission_denied'].includes(reason) && card.data.recovery_stage === 'Build');
   if (card.data.status !== 'Needs Human' || !eligible) {
     return { ok: false, error: 'card is not an eligible preserved Build run' };
   }
