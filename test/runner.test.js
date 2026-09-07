@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmp } from './helpers.js';
-import { runStage, stopHookSettings } from '../src/runner.js';
+import { runStage, stopHookSettings, describeDeniedActions, normalizeDeniedActions } from '../src/runner.js';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-agent.js');
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
@@ -334,6 +334,79 @@ test('Gemini real stream result preserves the primary infrastructure error', asy
   assert.equal(result.sessionId, null);
 });
 
+
+test('a headless run denied a permission is a failed run, not an empty success', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  process.env.FAKE_GEMINI_DENIED = 'command';
+  const dir = tmp('gemini-denied');
+  const result = await runStage({
+    vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build',
+    logFile: path.join(dir, 'build.jsonl'),
+  }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_DENIED;
+
+  // exit 0, status SUCCESS and a completed turn — only denied_actions says the
+  // run never did anything, so the envelope must not report success.
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.envelope.is_error, true);
+  assert.equal(result.envelope.subtype, 'error');
+  assert.deepEqual(result.envelope.denied_actions, [{ action: 'command', target: 'RunCommand' }]);
+  assert.match(result.envelope.result, /auto-denied/);
+  assert.match(result.envelope.result, /command \(RunCommand\)/);
+  assert.deepEqual(result.diagnostic.deniedActions, [{ action: 'command', target: 'RunCommand' }]);
+});
+
+test('an ordinary run carries no denied_actions', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  const dir = tmp('gemini-not-denied');
+  const result = await runStage({ vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build' }).done;
+  delete process.env.TODOMD_GEMINI_BIN;
+  assert.equal(result.envelope.is_error, false);
+  assert.equal(result.envelope.denied_actions, undefined);
+  assert.deepEqual(result.diagnostic.deniedActions, []);
+});
+
+test('denial summaries name every refused permission and stay empty otherwise', () => {
+  assert.equal(describeDeniedActions(undefined), '');
+  assert.equal(describeDeniedActions([]), '');
+  assert.deepEqual(normalizeDeniedActions([{ action: 'command' }, 'unsandboxed', { junk: 1 }]),
+    [{ action: 'command', target: '' }, { action: 'unsandboxed', target: '' }]);
+  const text = describeDeniedActions([{ action: 'command', display_name: 'RunCommand' }, { action: 'unsandboxed' }]);
+  assert.match(text, /command \(RunCommand\)/);
+  assert.match(text, /unsandboxed/);
+  assert.match(text, /permission allow-list/);
+});
+
+test('the provider terminal sandbox is on by default and opt-out per stage', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  const dir = tmp('gemini-sandbox-config');
+
+  // Review stages keep the sandbox: they only read, so confinement is free.
+  const reviewLog = path.join(dir, 'review-argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = reviewLog;
+  await runStage({ vendor: 'gemini', stage: 'Verify', cwd: dir, prompt: 'verify', jsonSchema: { type: 'object' } }).done;
+  const review = JSON.parse(fs.readFileSync(reviewLog, 'utf8'));
+  assert.ok(review.includes('--sandbox'));
+  assert.deepEqual(review.slice(review.indexOf('--mode'), review.indexOf('--mode') + 2), ['--mode', 'plan']);
+
+  // An unset stage sandbox is still ON — the opt-out has to be explicit.
+  const defaultLog = path.join(dir, 'default-argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = defaultLog;
+  await runStage({ vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build', terminalSandbox: undefined }).done;
+  assert.ok(JSON.parse(fs.readFileSync(defaultLog, 'utf8')).includes('--sandbox'));
+
+  // A Build that must commit from a worktree checkout can drop the terminal
+  // sandbox — and still never reaches for the global skip-permissions hatch.
+  const buildLog = path.join(dir, 'build-argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = buildLog;
+  const result = await runStage({ vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build', terminalSandbox: false }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_ARGV_LOG;
+  const build = JSON.parse(fs.readFileSync(buildLog, 'utf8'));
+  assert.equal(build.includes('--sandbox'), false);
+  assert.equal(build.includes('--dangerously-skip-permissions'), false);
+  assert.deepEqual(build.slice(build.indexOf('--mode'), build.indexOf('--mode') + 2), ['--mode', 'accept-edits']);
+  assert.equal(result.diagnostic.sandbox, false);
+});
 
 test('Claude main model comes from init, not the first auxiliary modelUsage entry', async () => {
   process.env.TODOMD_CLAUDE_BIN = FAKE;

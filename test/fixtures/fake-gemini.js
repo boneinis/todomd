@@ -27,6 +27,25 @@ const stderr = process.env.FAKE_GEMINI_STDERR || '';
 const exitCode = Number(process.env.FAKE_GEMINI_EXIT || 0);
 const format = args[args.indexOf('--output-format') + 1];
 
+// A headless run whose first tool call needed a permission nobody pre-granted:
+// the gateway still reports SUCCESS, one completed turn and exit 0, and the
+// only evidence is denied_actions beside an empty response. Shape copied from a
+// real gateway result.
+if (process.env.FAKE_GEMINI_DENIED) {
+  const body = {
+    conversation_id: 'fake-gemini-session',
+    status: 'SUCCESS',
+    response: '',
+    num_turns: 1,
+    denied_actions: [{ action: process.env.FAKE_GEMINI_DENIED, display_name: 'RunCommand' }],
+  };
+  process.stdout.write(format === 'stream-json'
+    ? JSON.stringify({ event: 'result', result: body })
+    : JSON.stringify(body));
+  if (stderr) process.stderr.write(stderr);
+  process.exit(0);
+}
+
 if (format === 'stream-json') {
   if (process.env.FAKE_GEMINI_REAL_STREAM) {
     process.stdout.write(JSON.stringify({ event: 'result', result: {

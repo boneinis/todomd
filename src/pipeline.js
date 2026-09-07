@@ -6,7 +6,7 @@ import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, cardParseFailure, dependencyIssues, readRunLog, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt, ensureGitExcluded, cardTldr, explicitCardTldr, descriptionSummarySource, descriptionSummaryHash, readSummaryCache, writeSummaryCache } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
 import { isGitRepo, addWorktree, archiveBranchForRestart, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
-import { runStage } from './runner.js';
+import { runStage, describeDeniedActions } from './runner.js';
 import { SUPPORTED_VENDORS as SUPPORTED_VENDOR_LIST, validateModelRoute } from './models.js';
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost, recordUsage, usageSummary } from './runstore.js';
@@ -415,6 +415,13 @@ function stageConfig(config, stageName, card) {
     // Build continuations below still turn a provider cap into a checkpoint.
     maxTurns: stage.max_turns ?? 30,
     allowedTools: stage.allowed_tools || [],
+    // Provider terminal sandbox. ON unless the column opts out, so a stage that
+    // has to commit its own candidate can be made viable without weakening any
+    // other stage — and without ever reaching for a global skip-permissions
+    // flag. `stages` is an EXEC_KEY, so this is read from the COMMITTED config.
+    // (`terminalSandbox`, not `sandbox`: codex's `sandbox` option is a MODE
+    // string — 'read-only' / 'workspace-write' — and must not be shadowed.)
+    terminalSandbox: stage.sandbox !== false,
   };
 }
 
@@ -680,6 +687,11 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr, diagnostic },
     if (cwd && !fs.existsSync(cwd)) return { kind: 'worktree_failed', detail: `worktree is gone: ${cwd}` };
     return { kind: 'cli_missing', detail: `${providerLabel(vendor, { diagnostic })} CLI not found on PATH` };
   }
+  // A run the provider refused before it could act is neither a code failure
+  // nor a flake: the fix is a permission the operator has to grant, so name it
+  // rather than folding it into the generic agent_error bucket.
+  const denied = describeDeniedActions(envelope?.denied_actions ?? diagnostic?.deniedActions);
+  if (denied) return { kind: 'permission_denied', detail: denied };
   const text = `${envelope?.result || ''} ${envelope?.subtype || ''} ${stderr || ''} ${diagnostic?.finalMessage || ''}`;
   if (/hook.*cancelled|cancelled.*hook/i.test(text)) {
     return { kind: 'hook_cancelled', detail: 'the provider cancelled a lifecycle hook before it returned a verdict' };
@@ -693,6 +705,15 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr, diagnostic },
   if (envelope?.subtype === 'error_max_turns') return { kind: 'agent', detail: 'max turns reached' };
   return { kind: 'agent', detail: diagnosticSnippet(diagnostic?.finalMessage || envelope?.result)
     || envelope?.subtype || `exit ${exitCode}` };
+}
+
+// The run log is the first place an operator looks. A failure whose remedy is
+// an operator action — granting a permission the headless run was refused —
+// has to name that reason there, not only in the card's Needs Human note.
+function failureNote(failure) {
+  return failure.kind === 'permission_denied' && failure.detail
+    ? `failed: ${failure.kind} — ${failure.detail}`
+    : `failed: ${failure.kind}`;
 }
 
 function resumeSessionUnavailable(result) {
@@ -782,7 +803,7 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
   const recoverableStage = reason === 'orphaned_run'
     || (from === 'CI' && ['ci_blocked', 'ci_evidence_invalid'].includes(reason))
     || (reason === 'build_cancelled' && from === 'Verify')
-    || (['build_budget', 'stalled_build', 'uncommitted_build', 'build_cancelled'].includes(reason) && from === 'Build')
+    || (['build_budget', 'stalled_build', 'uncommitted_build', 'build_cancelled', 'blocked_build', 'permission_denied'].includes(reason) && from === 'Build')
     || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
     || (reason === 'agent_error' && from === 'Build');
   await patchFrontmatter(project.path, id, {
@@ -1687,7 +1708,7 @@ export async function recoveryActions(project, id, { ignoreClaim = null } = {}) 
   const reason = card.data.needs_human_reason;
   const resumableBuild = profile.profile !== 'split_required' && ((reason === 'orphaned_run'
       && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build'].includes(reason) && card.data.recovery_stage === 'Build'));
+    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build', 'blocked_build', 'permission_denied'].includes(reason) && card.data.recovery_stage === 'Build'));
   const orphanedBuild = reason === 'orphaned_run'
     && (!card.data.recovery_stage || card.data.recovery_stage === 'Build');
   return {
@@ -2190,6 +2211,7 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
     effort: stage.effort,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
+    terminalSandbox: stage.terminalSandbox,
     jsonSchema: structuredCodexPlan ? PLAN_SCHEMA : undefined,
     logFile: runLogFile(project, id, stageName),
   });
@@ -2296,7 +2318,7 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
 
 async function handleRunFailure(project, id, stageName, result, revertTo, vendor) {
   const failure = classifyFailure(result, project.path, vendor);
-  await recordRun(project, id, stageName, 0, result, `failed: ${failure.kind}`);
+  await recordRun(project, id, stageName, 0, result, failureNote(failure));
   if (failure.kind === 'cli_missing' || failure.kind === 'auth') {
     setBanner(failure.kind, 'error', failure.detail);
     await orchMove(project, id, revertTo, failure.kind);
@@ -3012,6 +3034,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     effort: repair?.effort || stage.effort,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
+    terminalSandbox: stage.terminalSandbox,
     logFile: runLogFile(project, id, 'Build', attempt),
   };
   const route = validateModelRoute(vendor, buildOpts.model, config);
@@ -3172,13 +3195,28 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
   if (!ok) {
     const failure = classifyFailure(result, worktreeAbs, vendor);
-    await recordRun(project, id, 'Build', attempt, result, `failed: ${failure.kind}`);
+    await recordRun(project, id, 'Build', attempt, result, failureNote(failure));
     if (failure.kind === 'quota') {
       // park back in Queue (attempt rolled back); resume re-enqueues it
       return parkForQuota(project, id, attempt, maxAttempts, retry?.findings);
     }
     return toNeedsHuman(project, id, 'Build', failure.kind === 'agent' ? 'agent_error' : failure.kind,
       failure.detail || result.stderr);
+  }
+
+  // Zero-progress guard. A stage can exit 0 with a "success" envelope and
+  // still have done nothing at all — a headless permission refusal is the
+  // known case, but a provider that silently drops a turn looks identical from
+  // out here. An empty final response with no worktree change (no new commit,
+  // no edited or added file) is that run, and it must not be scored as a
+  // completed Build: an empty candidate would otherwise sail through CI and
+  // reach the verifier as if the work had been done.
+  const buildProgress = await progressSnapshot(worktreeAbs);
+  if (!String(result.envelope.result || '').trim() && !hasProgress(before, buildProgress)) {
+    await recordRun(project, id, 'Build', attempt, result, 'blocked: no response and no worktree change');
+    return toNeedsHuman(project, id, 'Build', 'blocked_build',
+      'Build reported success but produced no response and left the worktree unchanged — nothing was built. ' +
+      'Check the stage run log for a refused tool permission, then Resume Build.');
   }
 
   // A successful agent response is not a completed Build unless every
@@ -3372,6 +3410,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     effort: stage.effort,
     maxTurns: stage.maxTurns,
     allowedTools: options.reviewOnly ? [] : stage.allowedTools,
+    terminalSandbox: stage.terminalSandbox,
     reviewOnly: !!options.reviewOnly,
     jsonSchema: VERDICT_SCHEMA,
     logFile: runLogFile(project, id, 'Verify', attempt),
@@ -3437,7 +3476,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     }
     // a genuinely malformed verdict is bad_verdict; a spawn-level failure
     // (e.g. worktree_failed on a deleted cwd) keeps its own kind
-    const nonClaudeUnavailable = vendor !== 'claude' && failure.kind !== 'worktree_failed' && failure.kind !== 'hook_cancelled';
+    const nonClaudeUnavailable = vendor !== 'claude' && failure.kind !== 'worktree_failed'
+      && failure.kind !== 'hook_cancelled' && failure.kind !== 'permission_denied';
     const reason = nonClaudeUnavailable || failure.kind === 'agent' ? 'bad_verdict' : failure.kind;
     await recordRun(project, id, 'Verify', attempt, result,
       infrastructure ? `infrastructure: ${infrastructure}` : `failed: ${reason}`);

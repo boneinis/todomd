@@ -66,6 +66,13 @@ that runs without a human in the loop is confined:
   read-only/scoped `git` rules remain. Treat any broad Bash rule
   (`Bash(node:*)`, `Bash(*)`, `Bash(curl:*)`, …) as weakening the whole
   pipeline's guard set.
+- **A provider's own permission model is not the board's `allowed_tools`.**
+  `allowed_tools` is enforced by the CLI that supports it; a provider with a
+  terminal sandbox and its own command allow/deny lists is configured
+  separately, on the machine that runs the board, and one stage may need that
+  sandbox off in order to commit at all. What each provider enforces, the
+  allow/deny list to give it, and the trade-off of turning a sandbox off are in
+  `docs/providers.md`.
 - **Column prompts are committed — the local layer is not.** The
   `.claude/commands/todomd-*.md` files travel with the repo by design, and the
   **⚙** editor's *shared instructions* box writes into them, so anything typed

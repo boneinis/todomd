@@ -3031,6 +3031,111 @@ test('Gemini Plan preserves agent-written complexity through parseCard/loadBoard
 });
 
 
+test('a Build denied a tool permission is blocked, names the permission, and stays resumable', async () => {
+  isolateHome();
+  process.env.TODOMD_GEMINI_BIN = path.join(path.dirname(FAKE_CODEX), 'fake-gemini.js');
+  process.env.FAKE_GEMINI_DENIED = 'command';
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  await setStageRouting(repo, 'Build', { agent: 'gemini', model: 'gemini-3.7-flash-high' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  await patchFrontmatter(repo, 'task-0001', { agent: 'gemini' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
+    const card = readCard(repo, 'task-0001');
+    // never scored ok, and never handed on to CI or the verifier
+    assert.equal(card.data.needs_human_reason, 'permission_denied');
+    assert.ok(!card.data.verification.last_verdict, 'the empty candidate never reached the verifier');
+    // the operator can read which permission to grant straight off the card
+    assert.match(card.raw, /failed: permission_denied/);
+    assert.match(card.raw, /auto-denied/);
+    assert.match(card.raw, /command \(RunCommand\)/);
+    // the worktree survives, so granting the permission and resuming is enough
+    // (the run's tracking entry is released just after the card moves)
+    await until(async () => (await pipeline.recoveryActions(p, 'task-0001')).resume_build,
+      { label: 'Resume Build offered for the blocked candidate' });
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_DENIED;
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('a Build that answers nothing and changes nothing is blocked, not passed to CI', async () => {
+  isolateHome();
+  // envelope reports success, response is empty, and the worktree is untouched
+  useFakeAgent({ verdict: 'pass', build: 'noop', empty_result: '1' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Needs Human', { timeout: BUDGET.stage });
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'blocked_build');
+    assert.ok(!card.data.verification.last_verdict, 'the empty candidate never reached the verifier');
+    assert.match(card.raw, /blocked: no response and no worktree change/);
+    await until(async () => (await pipeline.recoveryActions(p, 'task-0001')).resume_build,
+      { label: 'Resume Build offered for the blocked candidate' });
+  } finally {
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('a stage sandbox opt-out reaches the provider argv; every other stage keeps it', async () => {
+  // The provider terminal sandbox cannot reach a worktree checkout's git
+  // metadata, so a Build that must commit needs an explicit per-column
+  // opt-out — never the provider's global skip-permissions flag.
+  const runBuild = async (label, sandboxLine) => {
+    isolateHome();
+    useFakeAgent({ verdict: 'pass' });                       // Plan/Verify stay on the default agent
+    const argvLog = path.join(tmp(label), 'argv.json');
+    process.env.TODOMD_GEMINI_BIN = path.join(path.dirname(FAKE_CODEX), 'fake-gemini.js');
+    process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+    pipeline.init({ broadcast: noop });
+    const repo = makeRepo();
+    const p = project(repo);
+    if (sandboxLine) {
+      const cfg = path.join(repo, '.todomd/config.yml');
+      const before = fs.readFileSync(cfg, 'utf8');
+      const after = before.replace('  Build:\n', `  Build:\n${sandboxLine}`);
+      assert.notEqual(after, before, 'the fixture config must carry a Build stage block');
+      fs.writeFileSync(cfg, after);
+    }
+    // setStageRouting commits config.yml, and `stages` is an EXEC_KEY read from
+    // HEAD — so the opt-out has to be committed to take effect.
+    await setStageRouting(repo, 'Build', { agent: 'gemini', model: 'gemini-3.7-flash-high' });
+    writeCard(repo, 'task-0001', { status: 'Planned' });
+    await patchFrontmatter(repo, 'task-0001', { agent: 'gemini' });
+    try {
+      await pipeline.humanMove(p, 'task-0001', 'Queue');
+      // the fixture also records the routing preflight (`agy models`), so wait
+      // for the Build invocation itself — accept-edits is Build's mode alone
+      return await until(() => {
+        let argv;
+        try { argv = JSON.parse(fs.readFileSync(argvLog, 'utf8')); } catch { return null; }
+        return Array.isArray(argv) && argv.includes('accept-edits') ? argv : null;
+      }, { timeout: BUDGET.stage, label: `${label} build argv` });
+    } finally {
+      delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_ARGV_LOG;
+      await pipeline.killAllChildren({ graceMs: 1000 });
+      clearFakeAgent();
+    }
+  };
+
+  const confined = await runBuild('sandbox-default', '');
+  assert.ok(confined.includes('--sandbox'), 'an unset stage sandbox stays ON');
+
+  const opted = await runBuild('sandbox-off', '    sandbox: false\n');
+  assert.equal(opted.includes('--sandbox'), false);
+  assert.equal(opted.includes('--dangerously-skip-permissions'), false, 'never the global hatch');
+  assert.deepEqual(opted.slice(opted.indexOf('--mode'), opted.indexOf('--mode') + 2), ['--mode', 'accept-edits']);
+});
+
 test('malformed approval reports its YAML location before the Planned status gate', async () => {
   isolateHome();
   pipeline.init({ broadcast: noop });
