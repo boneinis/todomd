@@ -168,6 +168,13 @@ stages:
     model: claude-sonnet-5
     effort: high
     # workflow: ultra_code  # Sonnet at xhigh plus required self-review before Verify
+    # sandbox: false  # providers with a terminal sandbox only (gemini/agy).
+    # The sandbox confines shell commands, not the agent's own edits, and it
+    # cannot reach a worktree checkout's git metadata — so a sandboxed Build
+    # can read the repo but never stage or commit its candidate. Turn it off
+    # ONLY for Build, and keep the provider's command allow-list narrow:
+    # exploration + git, never test runners, package managers or containers.
+    # See docs/providers.md. Review stages keep the sandbox.
     max_turns: 40
     allowed_tools:
       - Read

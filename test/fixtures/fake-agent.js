@@ -7,6 +7,7 @@
 //   FAKE_MODE=stream-json (parsing tests echo a fixed sequence)
 //   FAKE_VERDICT=pass|fail   — what the verify stage returns
 //   FAKE_BUILD=good|bad|noop — whether build writes passing/failing/no code
+//   FAKE_EMPTY_RESULT=1      — report success with an empty final response
 //   FAKE_FAIL=1              — exit non-zero (agent error)
 //   FAKE_MAXTURNS=1         — emit an error_max_turns envelope
 //   FAKE_MAXTURNS_ONCE_MARKER=<path> — emit it once, then complete normally
@@ -60,7 +61,10 @@ const emitStream = (events) => {
 };
 const resultEnvelope = (extra = {}) => ({
   type: 'result', subtype: 'success', is_error: false,
-  total_cost_usd: 0.001, num_turns: 1, session_id: session, result: 'ok',
+  total_cost_usd: 0.001, num_turns: 1, session_id: session,
+  // FAKE_EMPTY_RESULT reproduces a provider that reports success with no final
+  // text at all — the shape a run blocked before it acted comes back in.
+  result: process.env.FAKE_EMPTY_RESULT ? '' : 'ok',
   usage: { input_tokens: 20, cache_read_input_tokens: 10, cache_creation_input_tokens: 2, output_tokens: 5 },
   ...(process.env.FAKE_MODEL_USAGE ? { modelUsage: JSON.parse(process.env.FAKE_MODEL_USAGE) } : {}),
   ...extra,

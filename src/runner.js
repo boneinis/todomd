@@ -46,6 +46,39 @@ function addUsage(total, raw) {
   total.available ||= next.available;
 }
 
+// A headless agent CLI cannot open a permission prompt, so a tool call needing
+// a permission the operator has not pre-granted is auto-denied. That is not a
+// crash: the provider still reports a completed turn, an OK status and exit 0,
+// and the only trace is a `denied_actions` list next to an empty response. A
+// run that was blocked before it did anything must never be scored as a
+// success, so normalize the list here and let every stage's error path see it.
+export function normalizeDeniedActions(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => {
+      if (typeof entry === 'string') return { action: entry.trim(), target: '' };
+      if (!entry || typeof entry !== 'object') return null;
+      const action = String(entry.action ?? entry.permission ?? entry.name ?? '').trim();
+      const target = String(entry.target ?? entry.display_name ?? entry.displayName ?? entry.tool ?? '').trim();
+      return { action, target };
+    })
+    .filter((entry) => entry && (entry.action || entry.target));
+}
+
+// One operator-actionable sentence: which permission was refused, and the two
+// levers that fix it. This ends up in the card's run log, so it has to say what
+// to add rather than merely that something was denied.
+export function describeDeniedActions(raw) {
+  const denied = normalizeDeniedActions(raw);
+  if (!denied.length) return '';
+  const named = denied
+    .map(({ action, target }) => (action ? `${action}${target ? ` (${target})` : ''}` : target))
+    .join(', ');
+  return `blocked: headless mode cannot prompt, so the agent auto-denied ${denied.length === 1 ? 'a permission' : 'permissions'} ` +
+    `it needed (${named}). Pre-grant it in the provider's permission allow-list, ` +
+    `or relax the stage's sandbox setting — see docs/providers.md.`;
+}
+
 // All provider adapters resolve through one telemetry boundary. This keeps the
 // pipeline independent from vendor-specific JSON field names and ensures a
 // zero-dollar subscription run is never mistaken for a zero-usage run.
@@ -372,6 +405,7 @@ function runGemini({
   model,
   effort,
   stage,
+  terminalSandbox = true,
   jsonSchema,
   resume,
   logFile,
@@ -382,12 +416,22 @@ function runGemini({
   const executable = process.env.TODOMD_GEMINI_BIN || 'agy';
   const streaming = !jsonSchema;
   // agy print mode is headless, but it still needs an explicit execution mode
-  // to avoid permission dialogs. Sandbox is always on. Build may edit only its
-  // cwd; every read/review stage uses plan mode. Never use agy's global
-  // --dangerously-skip-permissions escape hatch.
+  // to avoid permission dialogs. Build may edit only its cwd; every read/review
+  // stage uses plan mode. Never use agy's global --dangerously-skip-permissions
+  // escape hatch.
+  //
+  // --sandbox is a TERMINAL sandbox: it confines shell commands, not the
+  // agent's own file edits. Inside it the repository's git metadata is
+  // unreachable from a `git worktree` checkout (whose `.git` is a file pointing
+  // outside the tree), so a sandboxed Build cannot stage or commit its own
+  // candidate. It stays ON by default — every review stage wants it — and a
+  // stage that must commit can opt out in the board config. See
+  // docs/providers.md for the trade-off and the allow-list that bounds it.
+  const sandboxed = terminalSandbox !== false;
   const mode = stage === 'Build' ? 'accept-edits' : 'plan';
   const args = ['-p', prompt, '--output-format', streaming ? 'stream-json' : 'json',
-    '--sandbox', '--mode', mode, '--disable-slash-commands'];
+    '--mode', mode, '--disable-slash-commands'];
+  if (sandboxed) args.push('--sandbox');
   if (resume) args.push('--conversation', resume);
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('--model', model);
   // agy 1.1 supports low|medium|high. Preserve the board's stronger intent by
@@ -419,9 +463,12 @@ function runGemini({
     let stderr = '';
     let settled = false;
 
-    const finish = ({ exitCode, signal = null, spawnError = null, lastMessage = '', structuredOutput }) => {
+    const finish = ({ exitCode, signal = null, spawnError = null, lastMessage = '', structuredOutput,
+      deniedActions = [] }) => {
       if (settled) return;
       settled = true;
+      const denied = normalizeDeniedActions(deniedActions);
+      const denialText = describeDeniedActions(denied);
       const diagnostic = {
         executable,
         cwd,
@@ -434,17 +481,22 @@ function runGemini({
         requestedEffort: effort || null,
         effectiveEffort: effectiveEffort || null,
         mode,
-        sandbox: true,
+        sandbox: sandboxed,
+        deniedActions: denied,
       };
-      const ok = exitCode === 0 && !signal && !spawnError && !failed;
+      // A denied run reports success and exit 0, so it has to be failed here or
+      // an empty candidate flows into CI as if the stage had done the work.
+      const ok = exitCode === 0 && !signal && !spawnError && !failed && !denied.length;
       const result = {
         envelope: spawnError ? null : {
           subtype: ok ? 'success' : 'error',
           is_error: !ok,
           total_cost_usd: 0,
           num_turns: turns,
-          result: lastMessage || (failed ? JSON.stringify(failed).slice(0, 500) : ''),
+          result: [denialText, lastMessage || (failed ? JSON.stringify(failed).slice(0, 500) : '')]
+            .filter(Boolean).join(' '),
           structured_output: structuredOutput,
+          ...(denied.length ? { denied_actions: denied } : {}),
         },
         sessionId,
         exitCode,
@@ -509,6 +561,7 @@ function runGemini({
         try { payload = JSON.parse(lineBuf); } catch { /* retained as final message below */ }
       }
       let structured;
+      let deniedActions = [];
       let lastMessage = lineBuf.trim();
       if (payload) {
         const kind = payload.type || payload.event;
@@ -516,6 +569,7 @@ function runGemini({
           ? payload.result : payload;
         sessionId ||= body.thread_id || body.session_id || body.conversation_id || body?.thread?.id || null;
         structured = body.structured_output ?? body.structuredOutput ?? null;
+        deniedActions = body.denied_actions ?? body.deniedActions ?? [];
         const candidate = body.response ?? body.message ?? (typeof body.result === 'string' ? body.result : undefined);
         if (!structured && candidate && typeof candidate === 'object') structured = candidate;
         if (!structured && typeof candidate === 'string') {
@@ -527,7 +581,7 @@ function runGemini({
         else if (candidate !== undefined) lastMessage = JSON.stringify(candidate);
         else lastMessage = JSON.stringify(body);
       }
-      finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
+      finish({ exitCode: code, signal, lastMessage, structuredOutput: structured, deniedActions });
     });
   });
 
