@@ -697,8 +697,11 @@ export function startServer({ port = 7337, lan = false } = {}) {
       const current = readCard(project.path, setMatch[1]);
       const updates = {};
       if ('agent' in fields) {
-        const agent = pipeline.normalizeVendor(fields.agent);
-        if (!SUPPORTED_VENDORS.includes(agent)) return json(res, 400, { error: `agent must be ${SUPPORTED_VENDORS.join(', ')}` });
+        // '' / 'auto' unpins the card: Build then follows the column's routing
+        // (including any complexity map) instead of a per-card choice.
+        const raw = String(fields.agent || '').trim().toLowerCase();
+        const agent = raw && raw !== 'auto' ? pipeline.normalizeVendor(raw) : '';
+        if (agent && !SUPPORTED_VENDORS.includes(agent)) return json(res, 400, { error: `agent must be auto, ${SUPPORTED_VENDORS.join(', ')}` });
         updates.agent = agent;
         if (!('model' in fields)) updates.model = '';
       }

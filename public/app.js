@@ -881,7 +881,7 @@ async function openDrawer(id) {
   drawerRun.hidden = true;
   drawerRun.open = false;
   drawerRun.classList.remove('is-live');
-  drawerRun.dataset.agent = card.data.agent || 'claude';
+  drawerRun.dataset.agent = card.data.agent || 'auto';
   drawerRun.dataset.stage = runStates[id]?.stage || '';
   renderBuildProgress(id);
   $('#run-tldr').textContent = '';
@@ -896,7 +896,7 @@ async function openDrawer(id) {
   const tldr = String(card.tldr || '').trim();
   $('#drawer-meta').innerHTML = [
     ['status', card.data.status], ['type', card.data.type], ['priority', card.data.priority],
-    ['agent', card.data.agent], ['source', card.data.source],
+    ['agent', card.data.agent || 'auto'], ['source', card.data.source],
     ['complexity', card.data.complexity], ['build profile', card.data.build_profile],
     // asList, not `|| []`: a hand-edited/agent-written card can make labels a
     // bare string or a mapping, and .join on that throws — which aborts
@@ -964,7 +964,7 @@ async function openDrawer(id) {
     critTotal ? `${critDone}/${critTotal} criteria` : '',
   ].filter(Boolean).join(' · ');
   $('#drawer-file').textContent = `.todomd/tasks/${card.file}`;
-  $('#route-agent').value = card.data.agent || 'claude';
+  $('#route-agent').value = card.data.agent || '';
   setModelOptions($('#route-agent').value); // suggestions match the card's vendor
   $('#route-model').value = card.data.model || '';
   $('#route-effort').value = card.data.effort || '';

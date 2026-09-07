@@ -203,6 +203,8 @@ stages:
 Precedence for Build is card → **map** → column → board:
 
 - An explicit `agent:` on the card always wins — a human pin is never overridden.
+  A card is *unpinned* when it has no agent: the create form's and the drawer's
+  **auto** choice, or the API without `agent`. Choosing a provider pins it.
 - The map applies only to a card that has a rating, at a listed level, with
   `build_profile: standard`. Long and split work stays on the column default.
 - A map entry's `model` is authoritative for that provider; leave it out and the

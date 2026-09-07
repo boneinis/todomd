@@ -249,6 +249,10 @@ test('createCard sequences ids, slugs the title, and rejects empty titles', asyn
   // `git diff --check` over a range that includes the board's own commits.
   assert.doesNotMatch(fs.readFileSync(path.join(repo, '.todomd', 'tasks', r.file), 'utf8'), /[ \t]+\n/,
     'created card frontmatter carries no trailing whitespace');
+  // no provider chosen → the card is unpinned (column routing decides at Build)
+  assert.match(fs.readFileSync(path.join(repo, '.todomd', 'tasks', r.file), 'utf8'), /^agent:$/m);
+  const pinned = await createCard(repo, { title: 'pinned card', agent: 'gemini' });
+  assert.match(fs.readFileSync(path.join(repo, '.todomd', 'tasks', pinned.file), 'utf8'), /^agent: gemini$/m);
   assert.equal(r.ok, true);
   assert.equal(r.id, 'task-0003');
   assert.match(r.file, /^task-0003-fix-the-thing\.md$/);
