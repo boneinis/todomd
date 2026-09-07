@@ -85,13 +85,13 @@ Risks: `patchFrontmatter` is not involved — `dependencies` is set at `createCa
 ## Run Log
 - 2026-06-11 21:13Z · Triage · 10 turns · $0.386 · ok
 - 2026-06-12 01:42Z · Plan · 0 turns · $0.000 · failed: agent
-  - error: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:102
+  - error: file://~/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:102
   throw new Error(
         ^
 
 Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest
-    at findCodexExecutable (file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:102:9)
-    at file:///Users/irvinbowman/.npm-global/lib/node
+    at findCodexExecutable (file://~/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:102:9)
+    at file://~/.npm-global/lib/node
 - 2026-06-12 01:46Z · Plan · 13 turns · $0.338 · ok
 - 2026-06-12 01:55Z · Build attempt 1 · 1 turns · $0.000 · ok
 - 2026-06-12 01:55Z · Verify attempt 1 · malformed verdict, re-running once

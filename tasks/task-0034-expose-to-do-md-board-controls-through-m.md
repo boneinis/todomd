@@ -76,7 +76,7 @@ Risks:
 - 2026-08-02 14:35Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 1)
   - attempts_exhausted: `npm test` passed with 468 core/API tests and 28 UI tests. `git diff --check main...HEAD` passed and the candidate worktree remained clean.
 
-1. Reachable opaque-error defect: [src/mcp-server.js](</Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0034/src/mcp-server.js:126>) only propagates HTTP errors where `status >= 400`. A connection failure returns `status: 0` and a useful message, but 
+1. Reachable opaque-error defect: [src/mcp-server.js](<~/web dev/TODOMD/.todomd/worktrees/task-0034/src/mcp-server.js:126>) only propagates HTTP errors where `status >= 400`. A connection failure returns `status: 0` and a useful message, but 
 - 2026-08-03 15:26Z · Build attempt 1 · 23 turns · $0.715 · ok
 - 2026-08-03 15:34Z · CI attempt 1 · 124.1s · `npm test` failed
   - ci_failed: `npm test` exited 1
@@ -101,7 +101,7 @@ ok 28 - UI voice: a viewer link never shows the mic control
 - 2026-08-03 18:15Z · Build attempt 1 · 1 turns · $0.000 · failed: agent
 - 2026-08-04 22:32Z · Build attempt 1 · 0 turns · $0.000 · ok
 - 2026-08-04 22:32Z · CI attempt 1 · 0.0s · `npm test` failed
-  - worktree_failed: worktree is gone: /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0034
+  - worktree_failed: worktree is gone: ~/web dev/TODOMD/.todomd/worktrees/task-0034
 - 2026-08-05 00:52Z · Build attempt 1 · 0 turns · $0.000 · ok
 - 2026-08-05 00:53Z · CI attempt 1 · 54.4s · `npm test` failed
   - ci_failed: `npm test` exited 1

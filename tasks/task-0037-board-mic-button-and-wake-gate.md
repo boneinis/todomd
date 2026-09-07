@@ -62,10 +62,10 @@ local speech or provider configuration is unavailable.
   - orphaned_run: server restarted during a run — unmerged work is PRESERVED in the worktree/branch
 - 2026-08-01 23:10Z · Resume Build · continuing attempt 2 in preserved worktree todomd/task-0037
 - 2026-08-01 23:18Z · Build attempt 2 · 5 turns · $4.109 · ok
-- 2026-08-01 23:18Z · Verify attempt 2 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
+- 2026-08-01 23:18Z · Verify attempt 2 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: ~/.npm-global/bin/codex in ~/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file://~/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
 - 2026-08-01 23:18Z · Verify attempt 2 · malformed verdict, re-running once
-- 2026-08-01 23:18Z · Verify attempt 2 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
-  - bad_verdict: Codex verification infrastructure: /Users/irvinbowman/.npm-global/bin/codex in /Users/irvinbowman/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file:///Users/irvinbowman/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or
+- 2026-08-01 23:18Z · Verify attempt 2 · 0 turns · $0.000 · infrastructure: Codex verification infrastructure: ~/.npm-global/bin/codex in ~/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file://~/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or structured output; no valid verdict
+  - bad_verdict: Codex verification infrastructure: ~/.npm-global/bin/codex in ~/web dev/TODOMD/.todomd/worktrees/task-0037 exited 1; stderr: file://~/.npm-global/lib/node_modules/@openai/codex/bin/codex.js:105 throw new Error( ^ Error: Missing optional dependency @openai/codex-darwin-x64. Reinstall Codex: npm install -g @openai/codex@latest a; no final message or
 - 2026-08-01 23:28Z · Verify attempt 2 · 1 turns · $0.000 · verdict: fail (unmet: 3)
   - escalating after 2 failed reviews: Fable diagnosis → Opus repair → final Codex gate
 - 2026-08-01 23:32Z · Escalate attempt 2 · 24 turns · $2.887 · diagnosis complete
@@ -73,7 +73,7 @@ local speech or provider configuration is unavailable.
 - 2026-08-01 23:48Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail
   - attempts_exhausted: `npm test` passed: 413 unit/API tests and 12 browser tests. However, adversarial review found three reachable bugs:
 
-1. Fresh supported Chrome profiles cannot install a downloadable language pack. The `install:false` probe reports `supported:false` for `downloadable`, and [main.js](/Users/irvinbowman/web%20dev/TODOMD/.todomd/worktrees/task-0037/public/voice/main.js:110) hides the Arm button. That 
+1. Fresh supported Chrome profiles cannot install a downloadable language pack. The `install:false` probe reports `supported:false` for `downloadable`, and [main.js](~/web%20dev/TODOMD/.todomd/worktrees/task-0037/public/voice/main.js:110) hides the Arm button. That 
 - 2026-08-01 23:58Z · Verify attempt 3 · 1 turns · $0.000 · verdict: fail (unmet: 2)
   - attempts_exhausted: The configured `npm test` passed with normal listener/process permissions: 414 core/API tests and 14 browser tests. `git diff --check main...HEAD` also passed. Adversarial review found three reachable defects:
 
