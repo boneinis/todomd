@@ -70,9 +70,13 @@ worktrees for reads *and* writes, or the file tools are refused there.
 
 Expect a short tail of one-off refusals the first few runs (`test`, `echo`, a
 `stat`): each parks the card as `permission_denied` naming the command, at zero
-cost, and the fix is one more `allow` line. Shell **redirect and heredoc writes
-are refused regardless** — the agent must write files with its file tool, which
-is why the workspace registration in § 2 matters.
+cost, and the fix is one more `allow` line. Two shapes are refused **regardless**
+of the list and cannot be granted: shell redirect/heredoc writes (the agent must
+write files with its file tool, which is why the workspace registration in § 2
+matters) and command substitution (`$(…)`, backticks). The board's provider note
+tells the agent both; a repo command file that suggests
+`git diff --check $(git merge-base …)` will still trip it, so write such steps as
+two plain commands.
 
 Notes on that shape:
 

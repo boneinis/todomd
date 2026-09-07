@@ -438,7 +438,9 @@ function runGemini({
   const notes = [
     `\n\n## Provider notes\n`,
     `- Your workspace is the task worktree at ${cwd}; it is also your shell working directory. `
-      + `Every path, shell command and git command resolves there. Do not search, list or read outside it.`,
+      + `Every path, shell command and git command resolves there. Do not search, list or read outside it. `
+      + `Run one plain command per call: no command substitution ($(...) or backticks), no shell redirects — `
+      + `run the inner command first and use its output in the next call.`,
     stage === 'Build'
       ? `- Create or overwrite files with the write_file tool and edit files with replace_file_content, `
         + `using absolute paths under the worktree. Do not use write_to_file (the artifact tool; it cannot `
