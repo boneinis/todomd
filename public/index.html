@@ -152,7 +152,7 @@
       <button id="move-apply" class="rail-btn rail-primary">move</button>
       <span class="rail-label">routing</span>
       <label class="rail-field">agent
-        <select id="route-agent" class="rail-input"><option>claude</option><option>codex</option><option>gemini</option></select>
+        <select id="route-agent" class="rail-input"><option value="">auto</option><option>claude</option><option>codex</option><option>gemini</option></select>
       </label>
       <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
       <label class="rail-field">effort <select id="route-effort" class="rail-input"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
@@ -231,7 +231,7 @@
         <div class="modal-row">
           <label>agent
             <select name="agent">
-              <option selected>claude</option><option>codex</option><option>gemini</option>
+              <option value="" selected>auto (column routing)</option><option>claude</option><option>codex</option><option>gemini</option>
             </select>
           </label>
           <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
