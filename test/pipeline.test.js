@@ -3056,6 +3056,11 @@ test('a Build denied a tool permission is blocked, names the permission, and sta
     // (the run's tracking entry is released just after the card moves)
     await until(async () => (await pipeline.recoveryActions(p, 'task-0001')).resume_build,
       { label: 'Resume Build offered for the blocked candidate' });
+    // and the offer is honoured: resuming runs Build again in the preserved
+    // worktree (still denied here, so it parks a second time with the same reason)
+    assert.equal((await pipeline.resumeBuild(p, 'task-0001')).ok, true, 'resume_build accepts a permission_denied card');
+    await until(() => (readCard(repo, 'task-0001').raw.match(/failed: permission_denied/g) || []).length >= 2,
+      { timeout: BUDGET.stage, label: 'resumed Build ran and parked again' });
   } finally {
     delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_DENIED;
     await pipeline.killAllChildren({ graceMs: 1000 });
@@ -3080,6 +3085,9 @@ test('a Build that answers nothing and changes nothing is blocked, not passed to
     assert.match(card.raw, /blocked: no response and no worktree change/);
     await until(async () => (await pipeline.recoveryActions(p, 'task-0001')).resume_build,
       { label: 'Resume Build offered for the blocked candidate' });
+    assert.equal((await pipeline.resumeBuild(p, 'task-0001')).ok, true, 'resume_build accepts a blocked_build card');
+    await until(() => (readCard(repo, 'task-0001').raw.match(/blocked: no response and no worktree change/g) || []).length >= 2,
+      { timeout: BUDGET.stage, label: 'resumed Build ran and parked again' });
   } finally {
     await pipeline.killAllChildren({ graceMs: 1000 });
     clearFakeAgent();
