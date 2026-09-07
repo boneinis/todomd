@@ -179,3 +179,47 @@ successes:
 
 Both preserve the worktree and branch, so the recovery is: fix the permission,
 then **Resume Build** on the same card.
+
+
+## Routing Build by the planner's difficulty rating
+
+The Plan stage rates every card's implementation **difficulty** (`complexity:`
+one of `trivial | low | medium | high | very-high`, judged independently of size,
+which `build_profile` covers). `stages.Build.route_by_complexity` turns that
+rating into a provider choice, so routine work can go to a cheaper or faster
+provider without anyone touching the card:
+
+```yaml
+stages:
+  Build:
+    agent: claude
+    model: opus
+    route_by_complexity:
+      trivial: { agent: gemini, model: gemini-3.8-flash-high }
+      low:     { agent: gemini, model: gemini-3.8-flash-high }
+      # levels not listed use the column default above
+```
+
+Precedence for Build is card → **map** → column → board:
+
+- An explicit `agent:` on the card always wins — a human pin is never overridden.
+- The map applies only to a card that has a rating, at a listed level, with
+  `build_profile: standard`. Long and split work stays on the column default.
+- A map entry's `model` is authoritative for that provider; leave it out and the
+  provider's own default is used. The column's `model` is never inherited across
+  providers (it would fail route validation as belonging to the other family).
+- Unknown levels and malformed entries are ignored, so a typo degrades to the
+  routing you had before rather than parking cards. An unsupported agent or a
+  model from the wrong family still parks as `routing_error`, as it does today.
+- Plan, Verify and Recovery are unaffected: they remain pinned to their columns.
+- A repair Build keeps the provider that built the candidate.
+
+Each map-driven decision is written to the card's run log so it is auditable:
+
+```
+- 2026-09-07T15:40 · Build attempt 1 · routed to gemini/gemini-3.8-flash-high by complexity: low
+```
+
+`stages` is one of the executable config keys resolved from `HEAD:`, so the map
+takes effect once committed. Start narrow (`trivial`/`low`), read a few run logs,
+and widen on evidence.

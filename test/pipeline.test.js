@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import yaml from 'js-yaml';
 import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
 import { readCard, loadBoard, setStageRouting, patchFrontmatter, withRepoLock, readRunLog } from '../src/board.js';
 import { addProject } from '../src/registry.js';
@@ -3267,4 +3268,110 @@ test('repairing malformed YAML clears its parse-error banner on the next sweep',
   writeCard(repo, 'task-9917', { title: 'Fixed title', status: 'Planned' });
   pipeline.triageSweep(p);
   assert.equal(pipeline.getBanners().some((b) => b.text.includes('task-9917') && b.text.includes('parse error')), false);
+});
+
+
+// ── Build routing by the Plan stage's difficulty rating ──
+
+// `stages` is an EXEC_KEY (read from HEAD), so the map has to be committed.
+function commitRouteMap(repo, map) {
+  const file = path.join(repo, '.todomd', 'config.yml');
+  const cfg = yaml.load(fs.readFileSync(file, 'utf8'));
+  cfg.stages.Build.route_by_complexity = map;
+  fs.writeFileSync(file, yaml.dump(cfg));
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-qm', 'route map']);
+}
+
+const FAKE_GEMINI_BIN = path.join(path.dirname(FAKE_CODEX), 'fake-gemini.js');
+const LOW_TO_GEMINI = { low: { agent: 'gemini', model: 'gemini-3.7-flash-high' } };
+
+async function buildOnce(repo, p) {
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => /Build attempt 1 · \d+ turns · /.test(readCard(repo, 'task-0001').raw), { timeout: BUDGET.stage });
+  return readCard(repo, 'task-0001');
+}
+
+test('a low-complexity card with no pinned agent builds on the mapped provider and logs why', async () => {
+  isolateHome();
+  useFakeAgent();
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI_BIN;
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  commitRouteMap(repo, LOW_TO_GEMINI);
+  writeCard(repo, 'task-0001', { status: 'Planned', extra: 'complexity: low\nbuild_profile: standard\n' });
+  await patchFrontmatter(repo, 'task-0001', { agent: '' });
+  try {
+    const card = await buildOnce(repo, p);
+    assert.match(card.raw, /routed to gemini\/gemini-3\.7-flash-high by complexity: low/);
+    assert.match(card.raw, /Build attempt 1 · \d+ turns · gemini\/gemini-3\.7-flash-high/);
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('an unmapped rating falls through to the column default', async () => {
+  isolateHome();
+  useFakeAgent();
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI_BIN;
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  commitRouteMap(repo, LOW_TO_GEMINI);
+  writeCard(repo, 'task-0001', { status: 'Planned', extra: 'complexity: medium\n' });
+  await patchFrontmatter(repo, 'task-0001', { agent: '' });
+  try {
+    const card = await buildOnce(repo, p);
+    assert.match(card.raw, /Build attempt 1 · \d+ turns · claude\//);
+    assert.doesNotMatch(card.raw, /routed to/);
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('a pinned card agent beats the complexity map', async () => {
+  isolateHome();
+  useFakeAgent();
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI_BIN;
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  commitRouteMap(repo, LOW_TO_GEMINI);
+  // writeCard pins `agent: claude`; the map must not override a human pin
+  writeCard(repo, 'task-0001', { status: 'Planned', extra: 'complexity: low\n' });
+  try {
+    const card = await buildOnce(repo, p);
+    assert.match(card.raw, /Build attempt 1 · \d+ turns · claude\//);
+    assert.doesNotMatch(card.raw, /routed to/);
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('long and split work is never routed by complexity', async () => {
+  isolateHome();
+  useFakeAgent();
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI_BIN;
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  commitRouteMap(repo, LOW_TO_GEMINI);
+  writeCard(repo, 'task-0001', { status: 'Planned', extra: 'complexity: low\nbuild_profile: long\n' });
+  await patchFrontmatter(repo, 'task-0001', { agent: '' });
+  try {
+    const card = await buildOnce(repo, p);
+    assert.match(card.raw, /Build attempt 1 · \d+ turns · claude\//);
+    assert.doesNotMatch(card.raw, /routed to/);
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
 });

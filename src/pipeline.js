@@ -329,13 +329,42 @@ export function normalizeBuildProfile(value) {
   return BUILD_PROFILES.has(profile) ? profile : 'standard';
 }
 
+const COMPLEXITY_LEVELS = new Set(['trivial', 'low', 'medium', 'high', 'very-high']);
+
+// Build-only routing by the Plan stage's difficulty rating. `stages.Build.
+// route_by_complexity` maps a level to `{ agent, model? }` (or a bare agent
+// name). It is consulted only when the card carries no explicit `agent:` (a
+// human pin always wins), has a rating, and is a standard-profile build —
+// long and split work stays on the column default. A map entry's model is
+// authoritative for that provider; absent, the provider's own default applies
+// rather than the column's model, which belongs to the column's provider.
+// Unknown levels and malformed entries are ignored, so a typo degrades to
+// today's routing instead of parking cards. `stages` is an EXEC_KEY, so the
+// map is read from the committed config.
+function complexityRoute(config, card, stageName) {
+  if (stageName !== 'Build' || !card?.data || card.data.agent) return null;
+  const map = (config.stages || {})[stageName]?.route_by_complexity;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return null;
+  const level = String(card.data.complexity || '').trim().toLowerCase();
+  if (!COMPLEXITY_LEVELS.has(level)) return null;
+  if (normalizeBuildProfile(card.data.build_profile) !== 'standard') return null;
+  const spec = map[level];
+  const entry = typeof spec === 'string' ? { agent: spec } : (spec && typeof spec === 'object' ? spec : null);
+  const agent = String(entry?.agent || '').trim().toLowerCase();
+  if (!agent) return null;
+  const model = String(entry?.model || '').trim();
+  return { level, agent, model: model || undefined };
+}
+
 // Override precedence is normally card → column → board. Plan and Verify are
 // independent, explicitly-routed stages: a Build provider selected on a card
-// must not replace either planning or independent quality control.
+// must not replace either planning or independent quality control. Build
+// alone has one more tier between card and column: the complexity map.
 function cardVendor(config, card, stageName) {
   const stageAgent = stageName && (config.stages || {})[stageName]?.agent;
   if (['Plan', 'Verify', 'Recovery'].includes(stageName) && stageAgent) return normalizeVendor(stageAgent);
-  return normalizeVendor(card?.data?.agent || stageAgent || config.default_agent || 'claude');
+  const routed = complexityRoute(config, card, stageName);
+  return normalizeVendor(card?.data?.agent || routed?.agent || stageAgent || config.default_agent || 'claude');
 }
 
 // The complete state-independent approval gate shared by the board UI and
@@ -404,11 +433,16 @@ function stageConfig(config, stageName, card) {
   const effortRank = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 };
   if (stageName === 'Build' && workflow === 'ultra_code' &&
       (effortRank[effort] ?? -1) < effortRank.xhigh) effort = 'xhigh';
+  // A complexity-routed Build takes the map entry's model (or that provider's
+  // default) — never the column's model, which may belong to another provider.
+  const routed = complexityRoute(config, card, stageName);
   return {
     command: stage.command || `todomd-${stageName.toLowerCase()}`,
     // A model selected for the card's Build provider may be invalid for the
     // independent verifier. Prefer Verify's own routing (or provider default).
-    model: independentStage ? (stage.model || undefined) : (card?.data?.model || stage.model || config.default_model),
+    model: independentStage ? (stage.model || undefined)
+      : routed ? (card?.data?.model || routed.model)
+        : (card?.data?.model || stage.model || config.default_model),
     effort,
     workflow,
     // Zero deliberately means "let the provider choose its per-session cap".
@@ -3039,6 +3073,12 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   };
   const route = validateModelRoute(vendor, buildOpts.model, config);
   if (!route.ok) return toNeedsHuman(project, id, 'Build', 'routing_error', route.error);
+  // Make every map-driven routing decision auditable on the card.
+  const routedBy = repair ? null : complexityRoute(config, card, 'Build');
+  if (routedBy) {
+    await appendRunLog(project.path, id,
+      `- ${now()} · Build attempt ${attempt} · routed to ${vendor}/${buildOpts.model || 'provider default'} by complexity: ${routedBy.level}`);
+  }
   if (recovery && !repair) {
     buildOpts.resume = recovery.sessionId || undefined;
     buildOpts.prompt = recovery.sessionId
