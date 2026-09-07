@@ -997,7 +997,7 @@ async function openDrawer(id) {
   $('#drawer-restart-build').hidden = !card.recovery?.restart_build;
   const retryVerify = $('#drawer-retry-verify');
   retryVerify.hidden = !card.recovery?.retry_verification;
-  const retryingCi = ['ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid']
+  const retryingCi = ['ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid', 'ci_blocked', 'build_cancelled', 'agent_error']
     .includes(card.data.needs_human_reason);
   retryVerify.textContent = retryingCi ? 'retry CI + verification' : 'retry verification';
   retryVerify.title = retryingCi

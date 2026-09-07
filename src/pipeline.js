@@ -11,6 +11,7 @@ import { SUPPORTED_VENDORS as SUPPORTED_VENDOR_LIST, validateModelRoute } from '
 import { claim as coordClaim, release as coordRelease, readAllClaims as coordClaims, planFiles as coordPlanFiles, workerName as coordWorker } from './coordination.js';
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost, recordUsage, usageSummary } from './runstore.js';
 import * as scheduler from './scheduler.js';
+import { stopChild, signalChild, awaitChildStop } from './process-lifecycle.js';
 
 const VERDICT_SCHEMA = {
   // todomd.verdict/1
@@ -1388,7 +1389,8 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     }, timeoutMin * 60_000);
     stageTimer.unref?.();
   }
-  return done.then((result) => {
+  return done.then(async (result) => {
+    await awaitChildStop(child);
     clearTimeout(stageTimer);
     const run = runs.get(key);
     children.delete(key);
@@ -1635,8 +1637,9 @@ function canRetryVerification(card) {
     // If it still fails, ciStage records another failure and parks it again;
     // if it passes, the existing attempt continues into Verify without
     // silently extending max_attempts or manufacturing another Build.
-    'ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid', 'ci_blocked',
+    'ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid', 'ci_blocked', 'build_cancelled',
   ].includes(reason)
+    || (reason === 'agent_error' && card?.data?.recovery_stage === 'Build')
     || (reason === 'orphaned_run' && ['CI', 'Verify'].includes(card?.data?.recovery_stage))
     || (reason === 'run_timeout' && card?.data?.recovery_stage === 'Verify')
     // A real fail followed by an infrastructure error in the repair Build can
@@ -1675,7 +1678,7 @@ export async function recoveryActions(project, id, { ignoreClaim = null } = {}) 
   const reason = card.data.needs_human_reason;
   const resumableBuild = profile.profile !== 'split_required' && ((reason === 'orphaned_run'
       && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_budget', 'stalled_build', 'uncommitted_build'].includes(reason) && card.data.recovery_stage === 'Build'));
+    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build'].includes(reason) && card.data.recovery_stage === 'Build'));
   const orphanedBuild = reason === 'orphaned_run'
     && (!card.data.recovery_stage || card.data.recovery_stage === 'Build');
   return {
@@ -1753,7 +1756,7 @@ export async function resumeBuild(project, id) {
     return { ok: false, error: 'this card must be split into child cards before Build can resume' };
   }
   const eligible = (reason === 'orphaned_run' && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_budget', 'stalled_build', 'uncommitted_build'].includes(reason) && card.data.recovery_stage === 'Build');
+    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build'].includes(reason) && card.data.recovery_stage === 'Build');
   if (card.data.status !== 'Needs Human' || !eligible) {
     return { ok: false, error: 'card is not an eligible preserved Build run' };
   }
@@ -1851,10 +1854,11 @@ export async function retryVerification(project, id) {
     worktreeAbs, branch: card.data.worktree, attempt, maxAttempts,
     lastVerdict: verification.last_verdict || '',
     attemptOpened: false,
+    verificationRetry: true,
   };
-  // Unlike a one-shot custom trigger, Retry Verification can continue into a
-  // repair Build. Use the same object as the persistent build-flow owner so
-  // the card remains live across Verify -> queued Build.
+  // Keep an owner across CI and Verify admissions. A CI failure on this
+  // explicit retry parks the same attempt; only a real Verify verdict may
+  // request a subsequent repair Build.
   pending.set(key, claim);
   bumpRunGeneration(project.name, id);
   await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
@@ -1867,7 +1871,7 @@ export async function retryVerification(project, id) {
   // admit a tool-less review, while memory/disk pressure still defers it. Any
   // checks requested by that review are queued behind normal heavy admission.
   // The persistent claim above is set BEFORE scheduling and covers both this
-  // queued window and any repair Build that follows. A cancel() landing in
+  // queued window and any verdict-directed repair that follows. A cancel() landing in
   // that window flips claim.cancelled, which verify() unwinds at admission.
   // No explicit withoutRepoLockContext here: scheduler.admitEntry() already
   // wraps run().
@@ -1905,40 +1909,28 @@ export async function retryVerification(project, id) {
   return { ok: true };
 }
 
-// A CI command is spawned with `shell: true`, so `child` is the SHELL, not the
-// program it runs — for a compound command (`tsc && npm test && npm run e2e`)
-// signalling only that shell PID leaves whichever step is currently running as
-// an orphaned, still-consuming-CPU child once its parent shell exits or is
-// reaped. runVerifyCommand spawns CI children with `detached: true`, making
-// `child.pid` the leader of its own process group; signal the NEGATIVE pid to
-// reach the whole group (the shell plus every descendant it forked), same as
-// the `tree-kill` pattern. Falls back to signalling just the child if the
-// group send fails (already gone, or a platform where negative-pid kill isn't
-// meaningful) — erring toward "still try to stop the one process we know
-// about" rather than doing nothing.
-function sendSignal(child, signal, { processGroup = false } = {}) {
-  if (processGroup && child.pid) {
-    try { process.kill(-child.pid, signal); return; } catch { /* fall through */ }
+// All runner agents and CI shells own a process group. A close event for the
+// leader alone is not proof its descendants stopped; the shared stop barrier
+// also covers descendants that ignore TERM or close inherited output pipes.
+const sendSignal = signalChild;
+const killWithEscalation = stopChild;
+
+function preserveCancelledCandidate(project, id, state) {
+  if (!state) return;
+  const card = readCard(project.path, id);
+  if (card?.data?.ci_execution === 'remote' || loadConfig(project.path).ci?.execution === 'remote' ||
+      state.verificationRetry || (state.stage === 'Build' && (state.attempt > 1 || state.repairBuild))) {
+    state.preserveWorktree = true;
+    state.humanCancelled = true;
+    state.noRequeue = true;
   }
-  try { child.kill(signal); } catch { /* already gone */ }
 }
 
-// SIGTERM a child with a SIGKILL backstop: a child that ignores TERM would
-// otherwise hold its concurrency slot (and keep billing) forever. The kill
-// timer is cleared when the child's close fires. (TODOMD_KILL_GRACE_MS is a
-// test steering knob, like TODOMD_CLAUDE_BIN.) `processGroup: true` (CI
-// children only — see sendSignal) signals the whole process group instead of
-// just this one PID.
-function killWithEscalation(child, { graceMs = Number(process.env.TODOMD_KILL_GRACE_MS) || 10000, processGroup = false } = {}) {
-  sendSignal(child, 'SIGTERM', { processGroup });
-  const killTimer = setTimeout(() => sendSignal(child, 'SIGKILL', { processGroup }), graceMs);
-  killTimer.unref?.();
-  child.once('close', () => clearTimeout(killTimer));
-}
-
-export function cancel(project, id) {
+export async function cancel(project, id) {
   const key = runKey(project.name, id);
   const live = children.get(key);
+  preserveCancelledCandidate(project, id, runs.get(key));
+  preserveCancelledCandidate(project, id, pending.get(key));
   if (!live) {
     // The agent child has exited but a Plan/custom-stage finalizer can still be
     // committing its result. Keep cancellation meaningful in that window; the
@@ -1954,8 +1946,7 @@ export function cancel(project, id) {
           // Mark the owner so ciStage performs candidate recovery on exit.
           const owner = pending.get(key);
           if (owner) { owner.cancelled = true; owner.revertTo = 'Queue'; }
-          killWithEscalation(ci.child, { processGroup: true });
-          return { ok: true };
+          return await killWithEscalation(ci.child, { processGroup: true });
         }
       }
       run.cancelled = true;
@@ -1997,7 +1988,7 @@ export function cancel(project, id) {
       // cancelled card wait out a full test suite; its stage then unwinds
       // through the same pendingCancelled() checkpoint as everything else.
       const ci = ciRuns.get(key);
-      if (ci) { ci.cancelled = true; killWithEscalation(ci.child, { processGroup: true }); }
+      if (ci) { ci.cancelled = true; return await killWithEscalation(ci.child, { processGroup: true }); }
       // A queued mid-flow stage may never be admitted (permanent pressure or
       // a hung capacity holder). Remove it and run the same worktree/attempt
       // unwind immediately instead of making cancellation depend on capacity.
@@ -2026,8 +2017,7 @@ export function cancel(project, id) {
   // revert to a column humanMove refuses to leave, with no run to re-drive it;
   // send it back to Queue so the cancel handler re-enqueues it
   run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
-  killWithEscalation(live);
-  return { ok: true };
+  return await killWithEscalation(live);
 }
 
 // Archive/unarchive with the same guards the HTTP route (and voice actions)
@@ -2072,7 +2062,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
       // into a dying process
       run.noRequeue = true;
     }
-    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    killWithEscalation(child, { graceMs });
   }
   // A trigger-stage child may already be gone while its final card/Git writes
   // remain tracked. Cancel that finalizer too, and wait for it below, so a board
@@ -2115,7 +2105,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
     }
   };
   await waitForExit(graceMs);
-  for (const child of children.values()) { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  for (const child of children.values()) sendSignal(child, 'SIGKILL');
   for (const ci of ciRuns.values()) { sendSignal(ci.child, 'SIGKILL', { processGroup: true }); }
   for (const summary of summaryRuns.values()) if (summary.child) sendSignal(summary.child, 'SIGKILL');
   await waitForExit(1000); // let the close handlers reap and drop tracking entries
@@ -2397,6 +2387,10 @@ function scheduleBuild(project, id, retry) {
   const owner = pending.get(runKey(project.name, id)) || null;
   if (owner) {
     owner.stage = 'Build';
+    owner.repairBuild = true;
+    // A real verdict authorized this new repair; the explicit CI-only retry
+    // policy belongs to its previous candidate/attempt, not the new Build.
+    owner.verificationRetry = false;
     // The preceding Verify attempt is complete; this queued repair has not
     // opened its next attempt until buildChain records it below.
     owner.attemptOpened = false;
@@ -2669,9 +2663,11 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   const detail = `\`${command}\` ${why}\n${outcome.output.slice(-CI_DETAIL_MAX)}`;
 
   // Legacy path (no CI column): unchanged — a failing CI gate always escalates
-  // directly to Needs Human, with no retry.
-  if (!ciBoardColumn(config)) {
-    return toNeedsHuman(project, id, 'CI', 'ci_failed', detail);
+  // directly to Needs Human, with no retry. Explicit Retry Verification also
+  // parks on failure at the SAME attempt. Exit 1 does not distinguish infra
+  // from test failures; do not guess from timing/output or manufacture a Build.
+  if (!ciBoardColumn(config) || pendingOwner?.verificationRetry) {
+    return toNeedsHuman(project, id, 'CI', 'ci_failed', detail, pendingOwner);
   }
   // CI board-column path: bounded retry through a repair Build, exactly like a
   // failed independent Verify — attempts_exhausted at the cap, else re-drive
@@ -2760,8 +2756,12 @@ function runVerifyCommand(project, id, command, cwd, config, attempt) {
     stageTimer = setTimeout(() => { entry.timedOut = true; killWithEscalation(child, { processGroup: true }); }, timeoutMin * 60_000);
     stageTimer.unref?.();
   }
-  return new Promise((resolve) => {
-    const settle = (result) => {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = async (result) => {
+      if (settled) return;
+      settled = true;
+      try { await awaitChildStop(child); } catch (err) { reject(err); return; }
       clearTimeout(stageTimer);
       if (ciRuns.get(key) === entry) ciRuns.delete(key);
       if (runs.get(key) === runRecord) runs.delete(key);
@@ -2817,8 +2817,9 @@ async function revertPendingCancel(project, id, pc,
   if (pc.preserveWorktree) {
     const status = readCard(project.path, id)?.data?.status;
     const stage = ['CI', 'Verify'].includes(status) ? status : 'Build';
-    return toNeedsHuman(project, id, stage, 'orphaned_run',
-      'server stopped during a run — unmerged work is preserved in the worktree/branch', pc);
+    return toNeedsHuman(project, id, stage, pc.humanCancelled && stage === 'Build' ? 'build_cancelled' : 'orphaned_run',
+      pc.humanCancelled ? 'Run cancelled; candidate and adapter journals are preserved. Retry CI explicitly to reconcile existing jobs.' :
+        'server stopped during a run — unmerged work is preserved in the worktree/branch', pc);
   }
   await releaseCoordination(project, id);
   await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
@@ -2896,11 +2897,11 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
 
   // worktree exists across retries; create on first attempt. A leftover dir is
   // only reusable if it's a real git worktree checked out on THIS task's branch
-  // — a user-switched or half-removed one must be recreated, not built upon.
+  // — a recorded candidate must never be silently replaced from local HEAD.
   let forkedFrom = null;
-  if (recovery && (!fs.existsSync(worktreeAbs) || !(await worktreeValid(worktreeAbs, branch)))) {
+  if ((recovery || pendingOwner?.repairBuild || card.data.worktree) && (!fs.existsSync(worktreeAbs) || !(await worktreeValid(worktreeAbs, branch)))) {
     return toNeedsHuman(project, id, fromStatus, 'worktree_failed',
-      'the preserved orphaned-Build worktree is no longer available or is checked out on a different branch; nothing was recreated');
+      'the preserved candidate worktree is no longer available or is checked out on a different branch; nothing was recreated');
   }
   if (!recovery && fs.existsSync(worktreeAbs) && !(await worktreeValid(worktreeAbs, branch))) {
     await withRepoLock(project.path, () => removeWorktree(project.path, worktreeAbs, branch));
@@ -3094,8 +3095,9 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
   if (run?.cancelled) {
     await recordRun(project, id, 'Build', attempt, result, 'cancelled');
     if (run.preserveWorktree) {
-      return toNeedsHuman(project, id, 'Build', 'orphaned_run',
-        'server stopped during Build — unmerged work is preserved in the worktree/branch');
+      return toNeedsHuman(project, id, 'Build', run.humanCancelled ? 'build_cancelled' : 'orphaned_run',
+        run.humanCancelled ? 'Build cancelled; candidate and adapter journals are preserved. Retry CI explicitly after reviewing the worktree.' :
+          'server stopped during Build — unmerged work is preserved in the worktree/branch');
     }
     await releaseCoordination(project, id);
     // abandon the worktree so the cancelled attempt's commits don't linger (and
@@ -3117,7 +3119,7 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     }
     await orchMove(project, id, run.revertTo, 'cancelled');
     sendState(project, id, 'idle');
-    // same re-drive as the Verify cancel below: a cancel that reverts to Queue
+    // Legacy first local Build only: a cancel that reverts to Queue
     // (a plain Build cancel, or a retry-Build cancel) re-enqueues through the
     // normal queue so the card resumes on its own; killAllChildren opts out
     if (run.revertTo === 'Queue' && !run.noRequeue && (config.mode || 'launcher') !== 'budget') {

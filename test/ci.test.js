@@ -602,7 +602,7 @@ for (const committedConfig of ['absent', 'malformed']) {
 
 test('an actual remote check failure retains the bounded repair policy', async () => {
   isolateHome();scheduler.resetState();useFakeAgent({build:'good',verdict:'pass'});pipeline.init({broadcast:noop});
-  const repo=makeRepo();writeScript(repo,'remote.mjs','process.exit(1);\n');
+  const repo=makeRepo();writeScript(repo,'remote.mjs',"console.error('FAIL calc.test.js: expected 4, got 3'); process.exit(1);\n");
   configureCi(repo,{execution:'remote',quick:'node remote.mjs',maxAttempts:2});
   const p=project(repo);writeCard(repo,'task-0001',{status:'Planned'});
   await patchFrontmatter(repo,'task-0001',{verification:{attempts:0,max_attempts:2,last_verdict:''}});

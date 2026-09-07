@@ -1,0 +1,172 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
+import { readCard, patchFrontmatter } from '../src/board.js';
+import * as pipeline from '../src/pipeline.js';
+import * as scheduler from '../src/scheduler.js';
+
+function fixture(script) {
+  isolateHome(); scheduler.resetState(); pipeline.init({ broadcast: () => {} });
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('Build, Verify', 'Build, CI, Verify') +
+    'ci:\n  enabled: true\n  execution: remote\n  quick: node remote.mjs\n');
+  fs.writeFileSync(path.join(repo, 'remote.mjs'), script);
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'remote fixture policy']);
+  const project = { name: path.basename(repo), path: repo };
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  return { repo, project, wt: path.join(repo, '.todomd/worktrees/task-0001') };
+}
+async function cleanup(project) {
+  pipeline.forgetProject(project.name);
+  await pipeline.killAllChildren({ graceMs: 100 });
+  clearFakeAgent(); scheduler.resetState();
+  delete process.env.TODOMD_KILL_GRACE_MS;
+}
+const parked = (repo, p) => readCard(repo, 'task-0001').data.status === 'Needs Human' && !pipeline.hasLiveRun(p.name, 'task-0001');
+
+async function seedCandidate(repo, wt, reason = 'ci_failed') {
+  git(repo, ['add', '.todomd/tasks']); git(repo, ['commit', '-qm', 'record task']);
+  git(repo, ['worktree', 'add', '-b', 'todomd/task-0001', wt]);
+  fs.writeFileSync(path.join(wt, 'implementation.txt'), 'reviewed implementation\n');
+  git(wt, ['add', 'implementation.txt']); git(wt, ['commit', '-qm', 'reviewed candidate']);
+  const head = git(wt, ['rev-parse', 'HEAD']);
+  await patchFrontmatter(repo, 'task-0001', { status: 'Needs Human', worktree: 'todomd/task-0001',
+    needs_human_reason: reason, recovery_stage: reason === 'agent_error' ? 'Build' : 'CI',
+    verification: { attempts: 2, max_attempts: 3, last_verdict: 'fail' } });
+  git(repo, ['add', '.todomd/tasks']); git(repo, ['commit', '-qm', 'unpushed bookkeeping on main']);
+  return head;
+}
+
+for (const reason of ['ci_failed', 'agent_error']) {
+  test(`retry verification after ${reason}: one-second silent adapter exit 1 parks the same candidate and attempt`, async () => {
+    const calls = path.join(tmp('retry-ci'), 'agent-calls');
+    useFakeAgent({ argv_log: calls });
+    const { repo, project: p, wt } = fixture('setTimeout(() => process.exit(1), 1000);\n');
+    const head = await seedCandidate(repo, wt, reason);
+    try {
+      assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true);
+      assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, true);
+      await until(() => parked(repo, p), { timeout: BUDGET.stage });
+      const card = readCard(repo, 'task-0001');
+      assert.equal(card.data.needs_human_reason, 'ci_failed');
+      assert.equal(card.data.verification.attempts, 2);
+      assert.equal(card.data.verification.max_attempts, 3);
+      assert.deepEqual(card.data.ci_evidence, {});
+      assert.equal(fs.existsSync(calls), false, 'no Build or Verify agent spawned');
+      assert.doesNotMatch(card.raw, /retrying after a failed CI gate/);
+      assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
+      assert.equal(fs.readFileSync(path.join(wt, 'implementation.txt'), 'utf8'), 'reviewed implementation\n');
+    } finally { await cleanup(p); }
+  });
+}
+
+test('repair admission and cancel preserve candidate ancestry and running fleet journal; retry polls without resubmitting', { skip: process.platform === 'win32' }, async () => {
+  const dir = tmp('repair-journal');
+  const calls = path.join(dir, 'agents');
+  useFakeAgent({ build: 'good', verdict: 'pass', hang: 'build', hang_on: '2',
+    hang_counter: path.join(dir, 'builds'), hang_descendant: dir, argv_log: calls });
+  process.env.TODOMD_KILL_GRACE_MS = '400';
+  // Emulate the adapter-owned durable journal in the actual per-worktree Git
+  // metadata directory. Runtime must leave it opaque and let the adapter poll.
+  const { repo, project: p, wt } = fixture(`
+    import fs from 'node:fs'; import path from 'node:path'; import { execFileSync } from 'node:child_process';
+    const dir = ${JSON.stringify(dir)};
+    const gitdir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim();
+    const journals = path.join(gitdir, 'fleet-runs'); fs.mkdirSync(journals, { recursive: true });
+    const journal = path.join(journals, 'candidate.digest.unit.json');
+    if (!fs.existsSync(journal)) {
+      fs.writeFileSync(journal, JSON.stringify({ submission_id: '0123456789abcdef0123456789abcdef', run_id: '0123456789abcdef0123456789abcdef', phase: 'running' }));
+      fs.appendFileSync(dir + '/submissions', 'submit\\n');
+    } else {
+      const receipt = JSON.parse(fs.readFileSync(journal));
+      fs.appendFileSync(dir + '/polls', 'status ' + receipt.run_id + '\\n');
+    }
+    fs.writeFileSync(dir + '/ci-started', '1');
+    const timer = setInterval(() => {
+      if (fs.existsSync(dir + '/fail')) { clearInterval(timer); console.error('FAIL calc.test.js: expected 4, got 3'); process.exit(1); }
+      if (fs.existsSync(dir + '/recover')) { clearInterval(timer); process.exit(2); }
+    }, 20);
+  `);
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(path.join(dir, 'ci-started')), { timeout: BUDGET.chain });
+    const head = git(wt, ['rev-parse', 'HEAD']);
+    const source = fs.readFileSync(path.join(wt, 'src/calc.js'), 'utf8');
+    const gitdir = git(wt, ['rev-parse', '--absolute-git-dir']);
+    const journal = path.join(gitdir, 'fleet-runs/candidate.digest.unit.json');
+    const journalBytes = fs.readFileSync(journal, 'utf8');
+    // Local main diverges with unpushed bookkeeping while approved CI runs.
+    fs.writeFileSync(path.join(repo, 'local-bookkeeping.txt'), 'main-only\n');
+    git(repo, ['add', 'local-bookkeeping.txt']); git(repo, ['commit', '-qm', 'unpushed local bookkeeping']);
+    fs.writeFileSync(path.join(dir, 'fail'), '1');
+    await until(() => fs.existsSync(path.join(dir, 'descendant')), { timeout: BUDGET.chain });
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2, 'real failure admitted bounded repair');
+    assert.equal(git(wt, ['merge-base', '--is-ancestor', head, 'HEAD']), '');
+    assert.equal(git(wt, ['rev-parse', 'HEAD']), head, 'admission performed no base sync');
+    assert.equal(fs.readFileSync(journal, 'utf8'), journalBytes);
+    const leader = Number(fs.readFileSync(path.join(dir, 'leader')));
+    const descendant = Number(fs.readFileSync(path.join(dir, 'descendant')));
+    const writes = path.join(wt, '.todomd/runs/writes');
+    await until(() => fs.existsSync(writes));
+    const cancelling = pipeline.cancel(p, 'task-0001');
+    await sleep(100);
+    assert.doesNotMatch(readCard(repo, 'task-0001').raw, /Build attempt 2.*cancelled/,
+      'leader close must not record cancellation while its TERM-resistant writer survives');
+    assert.equal((await cancelling).ok, true);
+    assert.throws(() => process.kill(leader, 0), { code: 'ESRCH' });
+    // Linux init may retain a killed orphan as Z. It cannot mutate files.
+    try { process.kill(descendant, 0); assert.match(gitProcessState(descendant), /^Z/); } catch (err) { assert.equal(err.code, 'ESRCH'); }
+    await until(() => parked(repo, p), { timeout: BUDGET.stage });
+    const count = fs.readFileSync(writes, 'utf8');
+    await sleep(200);
+    assert.equal(fs.readFileSync(writes, 'utf8'), count, 'no mutations after cancellation');
+    assert.match(readCard(repo, 'task-0001').raw, /Build attempt 2.*cancelled/);
+    assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'build_cancelled');
+    assert.equal(git(wt, ['merge-base', '--is-ancestor', head, 'HEAD']), '');
+    assert.equal(fs.readFileSync(path.join(wt, 'src/calc.js'), 'utf8'), source);
+    assert.equal(fs.readFileSync(journal, 'utf8'), journalBytes);
+    assert.equal(git(wt, ['rev-parse', '--absolute-git-dir']), gitdir);
+    assert.equal(git(wt, ['status', '--porcelain']), '');
+    fs.unlinkSync(path.join(dir, 'fail')); fs.writeFileSync(path.join(dir, 'recover'), '1');
+    assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true);
+    assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, true);
+    await until(() => parked(repo, p), { timeout: BUDGET.stage });
+    assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'ci_blocked');
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2);
+    assert.equal(fs.readFileSync(path.join(dir, 'submissions'), 'utf8'), 'submit\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'polls'), 'utf8'), 'status 0123456789abcdef0123456789abcdef\n');
+    assert.equal(fs.readFileSync(path.join(dir, 'builds'), 'utf8'), '2');
+  } finally { await cleanup(p); }
+});
+
+import { execFileSync } from 'node:child_process';
+function gitProcessState(pid) { return execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim(); }
+
+for (const damaged of ['missing', 'wrong-branch']) {
+  test(`recorded candidate ${damaged} at Build admission fails closed without recreating from main`, async () => {
+    const calls = path.join(tmp('damaged-candidate'), 'agents');
+    useFakeAgent({ argv_log: calls });
+    const { repo, project: p, wt } = fixture('process.exit(2);\n');
+    const head = await seedCandidate(repo, wt);
+    if (damaged === 'missing') git(repo, ['worktree', 'remove', wt]);
+    else git(wt, ['checkout', '-b', 'operator-inspection']);
+    // Model a persisted Queue recovery at boot, not a user-requested Restart.
+    await patchFrontmatter(repo, 'task-0001', { status: 'Queue' });
+    try {
+      pipeline.kickQueue(p);
+      await until(() => parked(repo, p), { timeout: BUDGET.stage });
+      assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'worktree_failed');
+      assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2);
+      assert.equal(git(repo, ['rev-parse', 'todomd/task-0001']), head);
+      assert.equal(fs.existsSync(calls), false);
+      if (damaged === 'missing') assert.equal(fs.existsSync(wt), false);
+      else {
+        assert.equal(git(wt, ['branch', '--show-current']), 'operator-inspection');
+        assert.equal(fs.readFileSync(path.join(wt, 'implementation.txt'), 'utf8'), 'reviewed implementation\n');
+      }
+    } finally { await cleanup(p); }
+  });
+}
