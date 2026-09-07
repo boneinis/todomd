@@ -429,7 +429,23 @@ function runGemini({
   // docs/providers.md for the trade-off and the allow-list that bounds it.
   const sandboxed = terminalSandbox !== false;
   const mode = stage === 'Build' ? 'accept-edits' : 'plan';
-  const args = ['-p', prompt, '--output-format', streaming ? 'stream-json' : 'json',
+  // Provider notes the prompt cannot know: the workspace is the cwd (without
+  // this the agent searches the filesystem for "the repo" and trips path
+  // denials), and which of the CLI's two similarly named write tools reaches
+  // the checkout. `write_to_file` is its artifact tool, confined to a private
+  // directory — a Build that picks it fails with "not a valid artifact path"
+  // and falls back to shell redirects, which the permission checker refuses.
+  const notes = [
+    `\n\n## Provider notes\n`,
+    `- Your workspace is the task worktree at ${cwd}; it is also your shell working directory. `
+      + `Every path, shell command and git command resolves there. Do not search, list or read outside it.`,
+    stage === 'Build'
+      ? `- Create or overwrite files with the write_file tool and edit files with replace_file_content, `
+        + `using absolute paths under the worktree. Do not use write_to_file (the artifact tool; it cannot `
+        + `write into the checkout), and do not write files through shell redirects or heredocs — those are refused.`
+      : '',
+  ].filter(Boolean).join('\n');
+  const args = ['-p', prompt + notes, '--output-format', streaming ? 'stream-json' : 'json',
     '--mode', mode, '--disable-slash-commands'];
   // The task worktree IS the agent's workspace. Headless, the CLI opens no
   // workspace on its own: its file-writing tool then only accepts paths under

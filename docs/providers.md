@@ -124,6 +124,17 @@ block is the repository's git metadata:
   for one stage while keeping a narrow command allow-list, so the board does not
   use it.
 
+### 3. Two write tools, one of which cannot reach the checkout
+
+The CLI exposes `write_file` / `replace_file_content` (workspace files) next to
+`write_to_file` (its artifact tool, confined to a private directory). A model
+asked to "create a file" reaches for the artifact tool often enough that a Build
+would fail with `… is not a valid artifact path` and then try a shell heredoc,
+which the checker refuses. The board appends a short provider note to every
+prompt — the workspace path, and for Build which tool writes the checkout — so
+this is handled; it is described here so the failure is recognisable if a
+future CLI renames the tools.
+
 **So: keep the sandbox on for review stages, and let Build opt out.**
 
 ```yaml
