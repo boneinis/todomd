@@ -245,6 +245,8 @@ test('Gemini Build is sandboxed, headless, routed, and never skips permissions g
 
   const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
   assert.ok(argv.includes('--sandbox'));
+  assert.deepEqual(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2), ['--add-dir', dir],
+    'the task worktree is registered as the agent workspace');
   assert.deepEqual(argv.slice(argv.indexOf('--mode'), argv.indexOf('--mode') + 2), ['--mode', 'accept-edits']);
   assert.deepEqual(argv.slice(argv.indexOf('--output-format'), argv.indexOf('--output-format') + 2), ['--output-format', 'stream-json']);
   assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'gemini-3.1-pro-high']);
@@ -273,6 +275,7 @@ test('Gemini Verify passes a private schema and retains a structured diagnostic'
 
   const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
   assert.deepEqual(argv.slice(argv.indexOf('--mode'), argv.indexOf('--mode') + 2), ['--mode', 'plan']);
+  assert.deepEqual(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2), ['--add-dir', dir]);
   assert.deepEqual(argv.slice(argv.indexOf('--output-format'), argv.indexOf('--output-format') + 2), ['--output-format', 'json']);
   assert.ok(argv.includes('--json-schema'));
   assert.equal(result.envelope.structured_output.verdict, 'pass');

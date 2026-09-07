@@ -431,6 +431,14 @@ function runGemini({
   const mode = stage === 'Build' ? 'accept-edits' : 'plan';
   const args = ['-p', prompt, '--output-format', streaming ? 'stream-json' : 'json',
     '--mode', mode, '--disable-slash-commands'];
+  // The task worktree IS the agent's workspace. Headless, the CLI opens no
+  // workspace on its own: its file-writing tool then only accepts paths under
+  // its private artifact directory ("not a valid artifact path" for anything
+  // in the checkout), so a Build cannot write its candidate with the file tool
+  // and falls back to shell redirects, which the permission checker refuses.
+  // Registering the cwd fixes both — and it is the worktree, never the main
+  // checkout (see docs/providers.md § 2 for why adding the main repo is wrong).
+  args.push('--add-dir', cwd);
   if (sandboxed) args.push('--sandbox');
   if (resume) args.push('--conversation', resume);
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('--model', model);
