@@ -2,7 +2,7 @@
 
 ## Observed mechanism
 
-This review used 4Upfit only as read-only incident evidence. The runtime fix is
+This review used a downstream project's board only as read-only incident evidence. The runtime fix is
 based on `f0c0ff6`, on the board-agent-fleet-integration line.
 
 The evidence supports **cancel → delete → automatic fresh Build**, not an
@@ -102,5 +102,5 @@ normal assertion failures. These are runtime fixtures, not fleet qualification.
    still held. A config-only change needs no restart: configuration loads per
    operation, with execution policy taken from committed config.
 
-Fleet-owned follow-up: diagnose and health-check desktop1-ci unit recipe startup.
+Remote-CI follow-up: diagnose and health-check the worker's unit recipe startup.
 No fleet recipe, database, source approval or live runtime was changed here.

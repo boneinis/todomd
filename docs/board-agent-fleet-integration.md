@@ -33,16 +33,16 @@ final browser routing synchronization fix passed all ten integration smoke tests
 No shared-service restart, global CLI relink, project configuration change,
 source approval, or queue resume was performed during this integration.
 
-The read-only preflight observed service PID 28865 on port 7337 and nine
-registered boards. It found no active Plan/Build/CI/Verify card. 4Upfit remained
-paused, with task-0013 held as `held_for_fleet_ci` and task-0027 queued for Build.
-ShopTach remained paused. This snapshot is not restart clearance and must be
-repeated immediately before an operator-coordinated restart.
+The read-only preflight observed the running service and its registered
+boards. It found no active Plan/Build/CI/Verify card; the downstream boards
+remained paused with their held cards unchanged. This snapshot is not restart
+clearance and must be repeated immediately before an operator-coordinated
+restart.
 
 Before live use, complete the required CI gates, review/land the desired
 runtime branch, record the previous CLI target and commit, and have the operator
 restart within an agreed idle window. Check every board's queue, holds and
-active state afterward. Leave P1-05 held until the fleet and 4Upfit adapter
+active state afterward. Leave held cards held until the remote-CI and adapter
 owners qualify every applicable check and exact-source approval.
 
 For Board Agent activation, follow [the setup guide](board-agent.md): explicitly
