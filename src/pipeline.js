@@ -781,7 +781,7 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
   await releaseCoordination(project, id);
   const recoverableStage = reason === 'orphaned_run'
     || (from === 'CI' && ['ci_blocked', 'ci_evidence_invalid'].includes(reason))
-    || (['build_budget', 'stalled_build', 'uncommitted_build'].includes(reason) && from === 'Build')
+    || (['build_budget', 'stalled_build', 'uncommitted_build', 'build_cancelled'].includes(reason) && from === 'Build')
     || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
     || (reason === 'agent_error' && from === 'Build');
   await patchFrontmatter(project.path, id, {
@@ -2040,8 +2040,11 @@ export async function archiveCard(project, id, on) {
 // the kill as an agent failure). Resolves once all children are dead or
 // force-killed.
 export async function killAllChildren({ graceMs = 5000, preserveWorktrees = false } = {}) {
+  // Retain barriers independently of maps: a leader may close and its
+  // finalizer may remove tracking while descendants are still stopping.
+  const stops = [];
   for (const summary of summaryRuns.values()) {
-    if (summary.child) sendSignal(summary.child, 'SIGTERM');
+    if (summary.child) stops.push(killWithEscalation(summary.child, { graceMs }));
   }
   for (const [key, claim] of promptClaims) {
     claim.cancelled = true;
@@ -2062,7 +2065,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
       // into a dying process
       run.noRequeue = true;
     }
-    killWithEscalation(child, { graceMs });
+    stops.push(killWithEscalation(child, { graceMs }));
   }
   // A trigger-stage child may already be gone while its final card/Git writes
   // remain tracked. Cancel that finalizer too, and wait for it below, so a board
@@ -2096,7 +2099,7 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
   // Its pending claim was just flagged above, so its stage unwinds normally.
   for (const ci of ciRuns.values()) {
     ci.cancelled = true;
-    sendSignal(ci.child, 'SIGTERM', { processGroup: true });
+    stops.push(killWithEscalation(ci.child, { graceMs, processGroup: true }));
   }
   const waitForExit = async (ms) => {
     const deadline = Date.now() + ms;
@@ -2108,6 +2111,9 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
   for (const child of children.values()) sendSignal(child, 'SIGKILL');
   for (const ci of ciRuns.values()) { sendSignal(ci.child, 'SIGKILL', { processGroup: true }); }
   for (const summary of summaryRuns.values()) if (summary.child) sendSignal(summary.child, 'SIGKILL');
+  const stopped = await Promise.all(stops);
+  const failedStop = stopped.find((result) => !result.ok);
+  if (failedStop) throw new Error(failedStop.error);
   await waitForExit(1000); // let the close handlers reap and drop tracking entries
 }
 

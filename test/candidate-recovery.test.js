@@ -170,3 +170,71 @@ for (const damaged of ['missing', 'wrong-branch']) {
     } finally { await cleanup(p); }
   });
 }
+
+test('shutdown retains the CI process-group barrier after the shell exits', { skip: process.platform === 'win32' }, async () => {
+  const dir = tmp('shutdown-ci-writer');
+  useFakeAgent({ build: 'good' });
+  const { repo, project: p, wt } = fixture(`
+    import fs from 'node:fs'; import { spawn } from 'node:child_process';
+    const dir = ${JSON.stringify(dir)};
+    fs.mkdirSync('.todomd/runs', { recursive: true });
+    spawn(process.execPath, ['-e', \`
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {});
+      fs.writeFileSync(\${JSON.stringify(dir + '/pid')}, String(process.pid));
+      setInterval(() => fs.appendFileSync('.todomd/runs/writes', 'x'), 15);
+    \`], { stdio: 'ignore' });
+    setInterval(() => {}, 1000);
+  `);
+  let pid;
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => fs.existsSync(path.join(dir, 'pid')), { timeout: BUDGET.stage });
+    pid = Number(fs.readFileSync(path.join(dir, 'pid')));
+    const writes = path.join(wt, '.todomd/runs/writes');
+    await until(() => fs.existsSync(writes));
+    const stopping = pipeline.killAllChildren({ graceMs: 400, preserveWorktrees: true });
+    await sleep(100);
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true, 'CI stays tracked until the writer stops');
+    assert.doesNotMatch(readCard(repo, 'task-0001').raw, /CI attempt 1.*cancelled/);
+    await stopping;
+    await until(() => parked(repo, p));
+    assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'ci_blocked');
+    const count = fs.readFileSync(writes, 'utf8');
+    await sleep(250);
+    assert.equal(fs.readFileSync(writes, 'utf8'), count, 'shutdown returned only after descendant stopped');
+  } finally {
+    if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* fixture already reaped */ } }
+    await cleanup(p);
+  }
+});
+
+test('dirty cancelled repair offers Resume Build and preserves its candidate and attempt', async () => {
+  const dir = tmp('dirty-repair');
+  const marker = path.join(dir, 'hanging');
+  useFakeAgent({ build: 'noop', hang: 'build', hang_marker: marker, require_file: 'unfinished.txt' });
+  const { repo, project: p, wt } = fixture('process.exit(2);\n');
+  const head = await seedCandidate(repo, wt, 'ci_evidence_invalid');
+  try {
+    assert.equal((await pipeline.returnToBuild(p, 'task-0001', 'Continue the preserved implementation')).ok, true);
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.stage });
+    fs.writeFileSync(path.join(wt, 'unfinished.txt'), 'unfinished repair\n');
+    assert.equal((await pipeline.cancel(p, 'task-0001')).ok, true);
+    await until(() => parked(repo, p));
+    let card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'build_cancelled');
+    assert.equal(card.data.recovery_stage, 'Build');
+    assert.equal(card.data.verification.attempts, 3);
+    const actions = await pipeline.recoveryActions(p, 'task-0001');
+    assert.equal(actions.resume_build, true);
+    assert.equal(actions.retry_verification, true);
+    assert.equal((await pipeline.resumeBuild(p, 'task-0001')).ok, true);
+    await until(() => parked(repo, p));
+    card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'uncommitted_build', 'resumed no-op Build leaves dirty work for the operator');
+    assert.equal(card.data.verification.attempts, 3, 'resume did not spend another attempt');
+    assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
+    assert.equal(fs.readFileSync(path.join(wt, 'unfinished.txt'), 'utf8'), 'unfinished repair\n');
+    assert.match(card.raw, /Resume Build · continuing attempt 3 after build_cancelled/);
+  } finally { await cleanup(p); }
+});
