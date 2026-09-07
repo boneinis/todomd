@@ -245,6 +245,10 @@ test('createCard sequences ids, slugs the title, and rejects empty titles', asyn
   writeCard(repo, 'task-0001');
   writeCard(repo, 'task-0002');
   const r = await createCard(repo, { title: 'Fix: the Thing!', priority: 'high' });
+  // An empty scalar must not leave a trailing space: downstream CI gates run
+  // `git diff --check` over a range that includes the board's own commits.
+  assert.doesNotMatch(fs.readFileSync(path.join(repo, '.todomd', 'tasks', r.file), 'utf8'), /[ \t]+\n/,
+    'created card frontmatter carries no trailing whitespace');
   assert.equal(r.ok, true);
   assert.equal(r.id, 'task-0003');
   assert.match(r.file, /^task-0003-fix-the-thing\.md$/);
