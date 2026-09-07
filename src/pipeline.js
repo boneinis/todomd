@@ -781,6 +781,7 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
   await releaseCoordination(project, id);
   const recoverableStage = reason === 'orphaned_run'
     || (from === 'CI' && ['ci_blocked', 'ci_evidence_invalid'].includes(reason))
+    || (reason === 'build_cancelled' && from === 'Verify')
     || (['build_budget', 'stalled_build', 'uncommitted_build', 'build_cancelled'].includes(reason) && from === 'Build')
     || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
     || (reason === 'agent_error' && from === 'Build');
@@ -818,7 +819,10 @@ export async function releaseCardResources(project, id) {
   const card = readCard(project.path, id);
   if (card?.data?.worktree) {
     const wtDir = loadConfig(project.path).worktree_dir || '.todomd/worktrees';
-    await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
+    await withRepoLock(project.path, async () => {
+      await removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree);
+      await patchFrontmatter(project.path, id, { worktree: '', base_branch: '', recovery_stage: '' });
+    });
   }
 }
 
@@ -1389,22 +1393,27 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
     }, timeoutMin * 60_000);
     stageTimer.unref?.();
   }
-  return done.then(async (result) => {
-    await awaitChildStop(child);
-    clearTimeout(stageTimer);
-    const run = runs.get(key);
-    children.delete(key);
-    const finishTracking = () => {
-      // Do not delete a newer run if a late finalizer somehow overlaps it.
-      if (runs.get(key) === run) runs.delete(key);
-      finalizationWaiters.get(run)?.resolve();
-      finalizationWaiters.delete(run);
-      persistRuns();
-    };
-    if (!retainUntilFinalized) finishTracking();
-    else persistRuns();
-    return { result, run, finishTracking };
-  });
+  const finishTracking = () => {
+    // Do not delete a newer run if a late finalizer somehow overlaps it.
+    if (runs.get(key) === run) runs.delete(key);
+    finalizationWaiters.get(run)?.resolve();
+    finalizationWaiters.delete(run);
+    persistRuns();
+  };
+  return (async () => {
+    let completed = false;
+    try {
+      const result = await done;
+      await confirmChildStop(child, stage);
+      completed = true;
+      return { result, run, finishTracking };
+    } finally {
+      clearTimeout(stageTimer);
+      if (children.get(key) === child) children.delete(key);
+      if (!retainUntilFinalized || !completed) finishTracking();
+      else persistRuns();
+    }
+  })();
 }
 
 /* ── human transitions (the §3.1 table) ── */
@@ -1905,7 +1914,9 @@ export async function retryVerification(project, id) {
       onDefer: onDeferState(project, id, 'Verify'),
       resourceClass: 'light',
     })
-    .catch((err) => toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err), claim));
+    .catch((err) => err.stopConfirmationStage
+      ? pipelineError(project, id, err, claim)
+      : toNeedsHuman(project, id, 'Verify', 'retry_failed', String(err?.message || err), claim));
   return { ok: true };
 }
 
@@ -1915,10 +1926,10 @@ export async function retryVerification(project, id) {
 const sendSignal = signalChild;
 const killWithEscalation = stopChild;
 
-function preserveCancelledCandidate(project, id, state) {
+function preserveCancelledCandidate(project, id, state, config) {
   if (!state) return;
   const card = readCard(project.path, id);
-  if (card?.data?.ci_execution === 'remote' || loadConfig(project.path).ci?.execution === 'remote' ||
+  if (card?.data?.ci_execution === 'remote' || config.ci?.execution === 'remote' ||
       state.verificationRetry || (state.stage === 'Build' && (state.attempt > 1 || state.repairBuild))) {
     state.preserveWorktree = true;
     state.humanCancelled = true;
@@ -1927,10 +1938,11 @@ function preserveCancelledCandidate(project, id, state) {
 }
 
 export async function cancel(project, id) {
+  const config = await execConfig(project.path);
   const key = runKey(project.name, id);
   const live = children.get(key);
-  preserveCancelledCandidate(project, id, runs.get(key));
-  preserveCancelledCandidate(project, id, pending.get(key));
+  preserveCancelledCandidate(project, id, runs.get(key), config);
+  preserveCancelledCandidate(project, id, pending.get(key), config);
   if (!live) {
     // The agent child has exited but a Plan/custom-stage finalizer can still be
     // committing its result. Keep cancellation meaningful in that window; the
@@ -2767,12 +2779,18 @@ function runVerifyCommand(project, id, command, cwd, config, attempt) {
     const settle = async (result) => {
       if (settled) return;
       settled = true;
-      try { await awaitChildStop(child); } catch (err) { reject(err); return; }
-      clearTimeout(stageTimer);
-      if (ciRuns.get(key) === entry) ciRuns.delete(key);
-      if (runs.get(key) === runRecord) runs.delete(key);
-      persistRuns();
-      maybeStopCriticalWatch();
+      try {
+        await confirmChildStop(child, 'CI');
+      } catch (err) {
+        reject(err);
+        return;
+      } finally {
+        clearTimeout(stageTimer);
+        if (ciRuns.get(key) === entry) ciRuns.delete(key);
+        if (runs.get(key) === runRecord) runs.delete(key);
+        persistRuns();
+        maybeStopCriticalWatch();
+      }
       resolve({ ...result, ok: result.ok && !entry.timedOut && !entry.cancelled && !entry.loadCancelled, cancelled: entry.cancelled, loadCancelled: entry.loadCancelled, timedOut: entry.timedOut, timeoutMin, output });
     };
     child.on('error', (err) => settle({ ok: false, code: -1, signal: null, spawnError: String(err?.message || err) }));
@@ -2823,7 +2841,7 @@ async function revertPendingCancel(project, id, pc,
   if (pc.preserveWorktree) {
     const status = readCard(project.path, id)?.data?.status;
     const stage = ['CI', 'Verify'].includes(status) ? status : 'Build';
-    return toNeedsHuman(project, id, stage, pc.humanCancelled && stage === 'Build' ? 'build_cancelled' : 'orphaned_run',
+    return toNeedsHuman(project, id, stage, pc.humanCancelled ? 'build_cancelled' : 'orphaned_run',
       pc.humanCancelled ? 'Run cancelled; candidate and adapter journals are preserved. Retry CI explicitly to reconcile existing jobs.' :
         'server stopped during a run — unmerged work is preserved in the worktree/branch', pc);
   }
@@ -2848,13 +2866,26 @@ async function revertPendingCancel(project, id, pc,
   }
 }
 
+// Keep stop-confirmation failures distinct from unexpected pipeline errors.
+// Callers must preserve the candidate even when cancellation cannot be confirmed.
+async function confirmChildStop(child, stage) {
+  try { await awaitChildStop(child); }
+  catch (err) {
+    throw Object.assign(new Error(`cancellation incomplete: could not confirm process group ${child.pid} stopped`, { cause: err }),
+      { stopConfirmationStage: stage });
+  }
+}
+
 // An unexpected throw anywhere in the build→verify chain would otherwise
 // strand the card in Build/Verify with no live run, no banner, and no log.
 async function pipelineError(project, id, err, pendingOwner) {
-  const detail = String(err?.stack || err || 'unknown error');
-  setBanner(`pipeline:${project.name}:${id}`, 'error', `${id}: unexpected pipeline error — routed to Needs Human`);
+  const stopStage = err?.stopConfirmationStage;
+  const detail = stopStage ? err.message : String(err?.stack || err || 'unknown error');
+  if (!stopStage) setBanner(`pipeline:${project.name}:${id}`, 'error', `${id}: unexpected pipeline error — routed to Needs Human`);
   try {
-    await toNeedsHuman(project, id, 'Build', 'pipeline_error', detail, pendingOwner);
+    if (stopStage) await patchFrontmatter(project.path, id, { ci_evidence: {} });
+    await toNeedsHuman(project, id, stopStage || 'Build',
+      stopStage ? (stopStage === 'CI' ? 'ci_blocked' : 'build_cancelled') : 'pipeline_error', detail, pendingOwner);
   } catch { /* a failed recovery must not rethrow into the same catch chain */ }
   finally {
     // toNeedsHuman normally settles the claim itself. If its Git/card recovery
@@ -3303,7 +3334,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 
   if (triggerClaim?.cancelled) {
     if (triggerClaim.preserveWorktree) {
-      return toNeedsHuman(project, id, 'Verify', 'orphaned_run',
+      return toNeedsHuman(project, id, 'Verify', triggerClaim.humanCancelled ? 'build_cancelled' : 'orphaned_run',
+        triggerClaim.humanCancelled ? 'Verify cancelled; completed Build work is preserved in the worktree/branch' :
         'server stopped before Verify — completed Build work is preserved in the worktree/branch');
     }
     await releaseCoordination(project, id);
@@ -3348,7 +3380,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (run?.cancelled) {
     await recordRun(project, id, 'Verify', attempt, result, 'cancelled');
     if (run.preserveWorktree) {
-      return toNeedsHuman(project, id, 'Verify', 'orphaned_run',
+      return toNeedsHuman(project, id, 'Verify', run.humanCancelled ? 'build_cancelled' : 'orphaned_run',
+        run.humanCancelled ? 'Verify cancelled; completed Build work is preserved in the worktree/branch' :
         'server stopped during Verify — completed Build work is preserved in the worktree/branch');
     }
     await releaseCoordination(project, id);
