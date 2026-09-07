@@ -16,7 +16,7 @@ This change follows `fcb861c` on `codex/card-tldr-agent-prompt`. It does not res
 - After the final CSS-only correction, `npm run test:ui`: all 35 browser tests passed again, including the computed-color regression.
 - Isolated `agent-browser` visual check: both chips and drawer values render, the card without metadata has neither chip, very-high difficulty is red, and no browser errors were reported. Preview servers used disposable boards and were stopped after verification.
 - `git diff --check` passed. No TypeScript files or configuration changed; no typecheck was needed.
-- The live production process and the 4Upfit repository were not changed. Runtime validation against real providers remains an operator check after the idle-window restart below.
+- The live production process and the downstream repository were not changed. Runtime validation against real providers remains an operator check after the idle-window restart below.
 
 ## Operator verification after an idle-window restart
 
