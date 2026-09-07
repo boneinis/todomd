@@ -6,6 +6,9 @@ import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, 
 import { readCard, patchFrontmatter } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 import * as scheduler from '../src/scheduler.js';
+import { ChildProcess } from 'node:child_process';
+import { runs, runKey } from '../src/runstore.js';
+import { signalChild } from '../src/process-lifecycle.js';
 
 function fixture(script) {
   isolateHome(); scheduler.resetState(); pipeline.init({ broadcast: () => {} });
@@ -236,5 +239,110 @@ test('dirty cancelled repair offers Resume Build and preserves its candidate and
     assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
     assert.equal(fs.readFileSync(path.join(wt, 'unfinished.txt'), 'utf8'), 'unfinished repair\n');
     assert.match(card.raw, /Resume Build · continuing attempt 3 after build_cancelled/);
+  } finally { await cleanup(p); }
+});
+
+for (const stage of ['Build', 'CI', 'Verify']) {
+  test(`failed ${stage} stop confirmation releases tracking and parks the preserved candidate`, async (t) => {
+    const dir = tmp('failed-stop');
+    const marker = path.join(dir, 'hanging');
+    const spawned = [];
+    const emit = ChildProcess.prototype.emit;
+    t.mock.method(ChildProcess.prototype, 'emit', function (event, ...args) {
+      if (event === 'spawn') spawned.push(this);
+      return emit.call(this, event, ...args);
+    });
+    useFakeAgent({ build: 'good', hang: stage.toLowerCase(), hang_marker: marker });
+    const { repo, project: p, wt } = fixture(stage === 'CI'
+      ? `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, '1'); setInterval(() => {}, 1000);`
+      : 'process.exit(0);');
+    let child;
+    try {
+      await pipeline.humanMove(p, 'task-0001', 'Queue');
+      await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
+      const run = runs.get(runKey(p.name, 'task-0001'));
+      assert.equal(run.stage, stage);
+      child = spawned.find((entry) => entry.pid === run.pid);
+      assert.ok(child);
+      const head = git(wt, ['rev-parse', 'HEAD']);
+      fs.writeFileSync(path.join(wt, 'unfinished.txt'), 'preserved work');
+      // Inject the same barrier stopChild returns on failed confirmation. The
+      // fixture process really exits; only confirmation is simulated to fail.
+      let finishStop;
+      child.todomdStop = new Promise((resolve) => { finishStop = resolve; });
+      const cancelling = pipeline.cancel(p, 'task-0001');
+      await until(() => run.cancelled);
+      signalChild(child, 'SIGTERM');
+      const error = `could not confirm process group ${child.pid} stopped; cancellation is incomplete`;
+      finishStop({ ok: false, error });
+      assert.deepEqual(await cancelling, { ok: false, error });
+      await until(() => parked(repo, p), { timeout: BUDGET.stage });
+      const card = readCard(repo, 'task-0001');
+      assert.equal(card.data.needs_human_reason, stage === 'CI' ? 'ci_blocked' : 'build_cancelled');
+      assert.equal(card.data.recovery_stage, stage);
+      assert.match(card.raw, new RegExp(`cancellation incomplete: could not confirm process group ${child.pid} stopped`));
+      assert.doesNotMatch(card.raw, /pipeline_error|attempt 1.*cancelled/);
+      assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), false);
+      const actions = await pipeline.recoveryActions(p, 'task-0001');
+      assert.equal(actions.retry_verification, true);
+      assert.equal(actions.resume_build, stage === 'Build');
+      assert.equal(card.data.verification.attempts, 1);
+      assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
+      assert.equal(fs.readFileSync(path.join(wt, 'unfinished.txt'), 'utf8'), 'preserved work');
+      assert.equal((await pipeline.humanMove(p, 'task-0001', 'Planned')).ok, true,
+        'the runtime remains responsive and no tracking entry wedges human moves');
+    } finally {
+      if (child) signalChild(child, 'SIGKILL');
+      await cleanup(p);
+    }
+  });
+}
+
+for (const stage of ['Build', 'Verify']) {
+  test(`first-attempt ${stage} cancel honors committed remote policy and reports deliberate cancellation`, async () => {
+    const marker = path.join(tmp('remote-cancel'), 'hanging');
+    useFakeAgent({ build: 'good', hang: stage.toLowerCase(), hang_marker: marker });
+    const { repo, project: p, wt } = fixture('process.exit(0);');
+    // An uncommitted policy edit must not disable candidate preservation.
+    const cfg = path.join(repo, '.todomd/config.yml');
+    fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('execution: remote', 'execution: local'));
+    try {
+      await pipeline.humanMove(p, 'task-0001', 'Queue');
+      await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
+      const head = git(wt, ['rev-parse', 'HEAD']);
+      assert.equal((await pipeline.cancel(p, 'task-0001')).ok, true);
+      await until(() => parked(repo, p), { timeout: BUDGET.stage });
+      const card = readCard(repo, 'task-0001');
+      assert.equal(card.data.needs_human_reason, 'build_cancelled');
+      assert.equal(card.data.recovery_stage, stage);
+      assert.equal(card.data.verification.attempts, 1);
+      assert.doesNotMatch(card.raw, /server stopped|orphaned_run/);
+      assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
+      assert.equal((await pipeline.recoveryActions(p, 'task-0001')).retry_verification, true);
+    } finally { await cleanup(p); }
+  });
+}
+
+test('archive and unarchive clear the candidate record and admit a fresh Queue Build', async () => {
+  const calls = path.join(tmp('archive-candidate'), 'agents');
+  useFakeAgent({ build: 'good', argv_log: calls });
+  const { repo, project: p, wt } = fixture('process.exit(2);');
+  await seedCandidate(repo, wt);
+  await patchFrontmatter(repo, 'task-0001', { status: 'Queue', base_branch: 'main' });
+  try {
+    assert.equal((await pipeline.archiveCard(p, 'task-0001', true)).ok, true);
+    const archived = readCard(repo, 'task-0001');
+    for (const field of ['worktree', 'base_branch', 'recovery_stage']) assert.ok(!archived.data[field], `${field} is cleared`);
+    assert.equal(fs.existsSync(wt), false);
+    assert.equal((await pipeline.archiveCard(p, 'task-0001', false)).ok, true);
+    pipeline.kickQueue(p);
+    await until(() => parked(repo, p), { timeout: BUDGET.chain });
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.needs_human_reason, 'ci_blocked', 'fresh Build reached CI');
+    assert.equal(card.data.verification.attempts, 3);
+    assert.equal(fs.existsSync(calls), true, 'a fresh Build agent ran');
+    assert.equal(fs.existsSync(wt), true);
+    assert.equal(fs.existsSync(path.join(wt, 'implementation.txt')), false, 'archived candidate was released');
+    assert.doesNotMatch(card.raw, /worktree_failed/);
   } finally { await cleanup(p); }
 });

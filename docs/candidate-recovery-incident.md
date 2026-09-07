@@ -46,7 +46,9 @@ Normal automatic CI failure retains bounded repair, and an actual independent
 Verify failure can still request repair. That new repair starts a new attempt
 and clears the earlier explicit-retry policy.
 
-Remote cancellation and repair-Build cancellation preserve the worktree,
+On a board with committed remote-CI policy, every cancel preserves and parks,
+including first-attempt Build and Verify. Repair-Build cancellation also preserves
+the worktree,
 branch, candidate bytes and opaque adapter journals; no automatic replacement
 Build starts. Cancelled Build parks as `build_cancelled`. Both that reason and
 Build `agent_error` offer Retry CI + Verification when the preserved worktree
@@ -62,7 +64,9 @@ All agent runners use owned local process groups. Cancellation sends TERM,
 escalates to KILL, verifies that no live group member remains, and reaps the
 leader before acknowledging success or recording cancellation. A zombie cannot
 write; failed process inspection stays conservative. A failed stop confirmation
-returns an error and cannot produce a successful cancellation log. The POSIX
+returns an error and cannot produce a successful cancellation log. It releases
+runtime tracking and parks the preserved candidate with a recoverable reason and
+a "cancellation incomplete" diagnostic, so explicit recovery remains available. The POSIX
 process-group regression runs on macOS/Linux; Windows retains leader termination
 and does not claim POSIX descendant verification.
 
