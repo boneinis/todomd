@@ -96,13 +96,15 @@ export function withAdmissionSync(directory, kind, taskId, fn, options) {
   try { return { ok: true, value: enter(claim.token, fn) }; }
   finally { if (claim.token) release(claim.token); }
 }
-export async function withExistingProjectAdmission(repoPath, fn) {
-  const root = projectAdmissionDirectory(repoPath);
+export const admissionHeld = directory => context.getStore()?.get(path.resolve(directory))?.active === true;
+export async function withAdmission(directory, kind, taskId, fn, { existingOnly = false } = {}) {
+  if (!['repository', 'launch'].includes(kind)) throw new Error('Asynchronous metadata admission is not supported.');
+  const root = path.resolve(directory);
   // A synchronous launch token must not be borrowed across an await. Nested
   // repository work is already handled by board.js's revocable repo context.
   const deadline = Date.now() + 10000;
   while (true) {
-    const claim = acquire(root, 'repository', null, { existingOnly: true, borrow: false });
+    const claim = acquire(root, kind, taskId, { existingOnly, borrow: false });
     if (claim.ok) {
       try { return await enter(claim.token, fn); }
       finally { if (claim.token) release(claim.token); }
@@ -111,6 +113,8 @@ export async function withExistingProjectAdmission(repoPath, fn) {
     await pause(50);
   }
 }
+export const withExistingProjectAdmission = (repoPath, fn) =>
+  withAdmission(projectAdmissionDirectory(repoPath), 'repository', null, fn, { existingOnly: true });
 export const withoutAdmissionContext = fn => context.run(new Map(), fn);
 
 export function recoverAdmission(directory, { epoch, nonce } = {}) {

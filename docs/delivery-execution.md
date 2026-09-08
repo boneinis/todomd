@@ -29,9 +29,10 @@ context. The latter must name the same backend/source and set `fenced: true`.
 
 The adapter must derive that context under an actual admission fence shared by
 legacy/remote writers and source changes. The boolean is an attestation from the
-trusted adapter, not a lock implemented by this module. The current legacy
-preflight guard alone cannot provide it. Until the shared protocol exists,
-initialization and execution remain unavailable on live boards.
+trusted adapter, not a lock implemented by this module. The trusted authority
+adapter now holds the shared local admission gate through launch. Production
+credential and policy bindings, including proof that remote writers participate
+in the fence, remain required before initialization or execution on live boards.
 
 Every dispatch/recovery command includes `expected_revision`,
 `idempotency_key`, and the execution reference: `task_id`, `lease_id`, `run_id`,
@@ -99,8 +100,10 @@ release because the task is still delivery-managed.
 
 The local backend, its guardian for orphaned local writers, and the
 [shared admission gate](delivery-admission.md) are implemented, including exact
-dead-metadata-transaction recovery. Remote backends, server-owned
-role grants, source fencing shared with every writer, recovery after loss of all
-local controllers, remote orphan reconciliation, and revision-checked task projection/migration remain required. Repository and
+dead-metadata-transaction recovery. The [trusted role/job adapter](delivery-authority.md)
+now implements project-scoped role grants and registered local-job selection.
+Remote backends, production credential/policy bindings, source fencing shared
+with every writer, recovery after loss of all local controllers, remote orphan
+reconciliation, and revision-checked task projection/migration remain required. Repository and
 launch ownership still require external reconciliation. No active card, candidate,
 or attempt history is migrated, reset, or rewritten by the coordinator.
