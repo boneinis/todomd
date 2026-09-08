@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { progressSnapshot, retryStagedCommit, isIndexLockFailure } from './build-progress.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, cardParseFailure, dependencyIssues, readRunLog, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt, ensureGitExcluded, cardTldr, explicitCardTldr, descriptionSummarySource, descriptionSummaryHash, readSummaryCache, writeSummaryCache } from './board.js';
@@ -504,36 +504,6 @@ function buildContinuationConfig(config, card = null) {
   };
 }
 
-async function progressSnapshot(worktreeAbs) {
-  const head = await git(worktreeAbs, ['rev-parse', 'HEAD']);
-  const changed = await git(worktreeAbs, ['status', '--porcelain=v1']);
-  const tracked = await git(worktreeAbs, ['diff', '--name-only', '-z', 'HEAD', '--']);
-  const untracked = await git(worktreeAbs, ['ls-files', '--others', '--exclude-standard', '-z']);
-  const digest = createHash('sha256');
-  const paths = new Set();
-  for (const output of [tracked, untracked]) {
-    if (!output.ok) continue;
-    for (const file of output.stdout.split('\0').filter(Boolean)) paths.add(file);
-  }
-  for (const file of [...paths].sort()) {
-    digest.update(`\0${file}\0`);
-    try {
-      const absolute = path.join(worktreeAbs, file);
-      const stat = fs.statSync(absolute);
-      digest.update(`${stat.size}:${stat.mtimeMs}:`);
-      // Source files are normally small. Hash their contents exactly; for a
-      // large generated artifact, size+mtime still detects continued writes
-      // without reading an unbounded file into the board process.
-      if (stat.isFile() && stat.size <= 1024 * 1024) digest.update(fs.readFileSync(absolute));
-    }
-    catch { digest.update('unreadable'); }
-  }
-  return {
-    head: head.ok ? head.stdout : '',
-    fingerprint: digest.digest('hex'),
-    changed: changed.ok ? changed.stdout.split('\n').filter(Boolean).length : 0,
-  };
-}
 
 function hasProgress(before, after) {
   return before.head !== after.head || before.fingerprint !== after.fingerprint;
@@ -730,6 +700,7 @@ function classifyFailure({ envelope, exitCode, spawnError, stderr, diagnostic },
   if (/hook.*cancelled|cancelled.*hook/i.test(text)) {
     return { kind: 'hook_cancelled', detail: 'the provider cancelled a lifecycle hook before it returned a verdict' };
   }
+  if (envelope?.subtype === 'empty_run') return { kind: 'empty_run', detail: envelope.result };
   if (/rate.?limit|quota|credit|usage limit|exhausted|exceeded/i.test(text)) {
     return { kind: 'quota', detail: 'usage limit reached' };
   }
@@ -835,9 +806,9 @@ async function toNeedsHuman(project, id, from, reason, detail = '', pendingOwner
   retryFindings.delete(runKey(project.name, id)); // a card leaving the flow keeps no stale findings
   await releaseCoordination(project, id);
   const recoverableStage = reason === 'orphaned_run'
-    || (from === 'CI' && ['ci_blocked', 'ci_evidence_invalid'].includes(reason))
+    || (from === 'CI' && ['ci_blocked', 'ci_evidence_invalid', 'nothing_to_test'].includes(reason))
     || (reason === 'build_cancelled' && from === 'Verify')
-    || (['build_budget', 'stalled_build', 'uncommitted_build', 'build_cancelled', 'blocked_build', 'permission_denied'].includes(reason) && from === 'Build')
+    || (['build_budget', 'stalled_build', 'uncommitted_build', 'build_cancelled', 'blocked_build', 'permission_denied', 'empty_run'].includes(reason) && from === 'Build')
     || (reason === 'run_timeout' && ['Build', 'Verify'].includes(from))
     || (reason === 'agent_error' && from === 'Build');
   await patchFrontmatter(project.path, id, {
@@ -1542,11 +1513,13 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
     }
     if (triageClaim) {
       triageClaim.cancelled = true;
+      scheduler.dequeue(project.name, id);
       return { ok: true, cancelled: true };
     }
     if (triggerClaim) {
       triggerClaim.cancelled = true;
       triggerClaim.revertTo = 'Review';
+      scheduler.dequeue(project.name, id);
       return { ok: true, cancelled: true };
     }
     // A first Build has no worktree/pending owner until admission. If it is
@@ -1640,14 +1613,14 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
     if (IN_FLIGHT.has(from)) return { ok: false, error: `cannot leave ${from} while a stage may be active` };
     await patchFrontmatter(project.path, id, { needs_human_reason: '' });
     const moved = await moveCard(project.path, id, to, { reason: 'queued by human' });
-    if (moved.ok && (config.mode || 'launcher') !== 'budget') {
+    if (moved.ok && !moved.unchanged && (config.mode || 'launcher') !== 'budget') {
       const claim = {
         project: project.name, card: id, stage: to,
         cancelled: false, revertTo: 'Review', noRequeue: false,
       };
       triggerClaims.set(key, claim);
       bumpRunGeneration(project.name, id);
-      withoutRepoLockContext(() => runTriggerStage(project, id, to, claim).catch(() => {}));
+      withoutRepoLockContext(() => scheduleTriggerStage(project, id, to, claim));
     }
     return moved;
   }
@@ -1701,7 +1674,7 @@ function canRetryVerification(card) {
     // If it still fails, ciStage records another failure and parks it again;
     // if it passes, the existing attempt continues into Verify without
     // silently extending max_attempts or manufacturing another Build.
-    'ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid', 'ci_blocked', 'build_cancelled',
+    'ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid', 'ci_blocked', 'nothing_to_test', 'build_cancelled',
   ].includes(reason)
     || (reason === 'agent_error' && card?.data?.recovery_stage === 'Build')
     || (reason === 'orphaned_run' && ['CI', 'Verify'].includes(card?.data?.recovery_stage))
@@ -1715,6 +1688,7 @@ function canReturnToBuild(card) {
   const reason = card?.data?.needs_human_reason;
   const lastVerdict = card?.data?.verification?.last_verdict;
   return reason === 'attempts_exhausted'
+    || reason === 'nothing_to_test'
     || reason === 'ci_attempts_exhausted'
     || reason === 'verification_incomplete'
     || reason === 'ci_evidence_invalid'
@@ -1742,7 +1716,7 @@ export async function recoveryActions(project, id, { ignoreClaim = null } = {}) 
   const reason = card.data.needs_human_reason;
   const resumableBuild = profile.profile !== 'split_required' && ((reason === 'orphaned_run'
       && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build', 'blocked_build', 'permission_denied'].includes(reason) && card.data.recovery_stage === 'Build'));
+    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build', 'blocked_build', 'permission_denied', 'empty_run'].includes(reason) && card.data.recovery_stage === 'Build'));
   const orphanedBuild = reason === 'orphaned_run'
     && (!card.data.recovery_stage || card.data.recovery_stage === 'Build');
   return {
@@ -1820,7 +1794,7 @@ export async function resumeBuild(project, id) {
     return { ok: false, error: 'this card must be split into child cards before Build can resume' };
   }
   const eligible = (reason === 'orphaned_run' && (!card.data.recovery_stage || card.data.recovery_stage === 'Build'))
-    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build', 'blocked_build', 'permission_denied'].includes(reason) && card.data.recovery_stage === 'Build');
+    || (['run_timeout', 'agent_error', 'build_cancelled', 'build_budget', 'stalled_build', 'uncommitted_build', 'blocked_build', 'permission_denied', 'empty_run'].includes(reason) && card.data.recovery_stage === 'Build');
   if (card.data.status !== 'Needs Human' || !eligible) {
     return { ok: false, error: 'card is not an eligible preserved Build run' };
   }
@@ -1985,7 +1959,7 @@ function preserveCancelledCandidate(project, id, state, config) {
   if (!state) return;
   const card = readCard(project.path, id);
   if (card?.data?.ci_execution === 'remote' || config.ci?.execution === 'remote' ||
-      state.verificationRetry || (state.stage === 'Build' && (state.attempt > 1 || state.repairBuild))) {
+      state.verificationRetry || (state.stage === 'Build' && (state.attempt > 1 || state.repairBuild || state.recoveryBuild))) {
     state.preserveWorktree = true;
     state.humanCancelled = true;
     state.noRequeue = true;
@@ -2023,12 +1997,14 @@ export async function cancel(project, id) {
     const triageClaim = triaging.get(key);
     if (triageClaim) {
       triageClaim.cancelled = true;
+      scheduler.dequeue(project.name, id);
       return { ok: true };
     }
     const triggerClaim = triggerClaims.get(key);
     if (triggerClaim) {
       triggerClaim.cancelled = true;
       triggerClaim.revertTo = triggerClaim.stage === 'Verify' ? 'Queue' : 'Review';
+      scheduler.dequeue(project.name, id);
       return { ok: true };
     }
     const promptClaim = promptClaims.get(key);
@@ -2145,12 +2121,16 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
     run.revertTo = run.stage === 'Verify' || run.prevStatus === 'Verify' ? 'Queue' : run.prevStatus;
     run.noRequeue = true;
   }
-  for (const claim of triaging.values()) claim.cancelled = true;
+  for (const claim of triaging.values()) {
+    claim.cancelled = true;
+    scheduler.dequeue(claim.project, claim.card);
+  }
   for (const claim of triggerClaims.values()) {
     claim.cancelled = true;
     claim.preserveWorktree = preserveWorktrees && claim.stage === 'Verify';
     claim.revertTo = claim.stage === 'Verify' ? 'Queue' : 'Review';
     claim.noRequeue = true;
+    scheduler.dequeue(claim.project, claim.card);
   }
   // chains claimed but between spawns have no child to kill — flag them so they
   // park in Queue at their next checkpoint instead of spawning into a dying
@@ -2186,6 +2166,25 @@ export async function killAllChildren({ graceMs = 5000, preserveWorktrees = fals
 
 /* ── plan & custom trigger stages ── */
 
+function scheduleTriggerStage(project, id, stage, claim) {
+  const key = runKey(project.name, id);
+  sendState(project, id, 'queued', stage);
+  return scheduler.schedule(project, id, stage,
+    () => runTriggerStage(project, id, stage, claim),
+    { onDefer: onDeferState(project, id, stage) })
+    .then(async () => {
+      // Dequeue settles without running the callback. Finish cancellation
+      // immediately, even when resource pressure never clears.
+      if (claim.cancelled && triggerClaims.get(key) === claim) {
+        await runTriggerStage(project, id, stage, claim);
+      }
+    })
+    .catch((err) => pipelineError(project, id, err))
+    .finally(() => {
+      if (triggerClaims.get(key) === claim) triggerClaims.delete(key);
+    });
+}
+
 async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   const key = runKey(project.name, id);
   const finishPreSpawnCancellation = async () => {
@@ -2199,6 +2198,10 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   const config = await execConfig(project.path);
   if (await finishPreSpawnCancellation()) return;
   const card = readCard(project.path, id);
+  if (!card || card.data.status !== stageName || card.data.archived) {
+    sendState(project, id, 'idle');
+    return;
+  }
   const stage = stageConfig(config, stageName, card);
   const vendor = cardVendor(config, card, stageName);
   const skill = card.data.skill;
@@ -2436,6 +2439,7 @@ function enqueueBuild(project, id) {
     owner = {
       project: project.name, card: id, stage: 'Build',
       cancelled: false, revertTo: null, cascadeArchive: false, noRequeue: false,
+      recoveryBuild: Boolean(recovery),
       attemptOpened: false,
     };
     pending.set(key, owner);
@@ -2655,6 +2659,29 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   if ((currentConfig.ci?.execution || 'local') !== (config.ci?.execution || 'local') || currentCommand !== command) {
     await patchFrontmatter(project.path, id, { ci_evidence: {} });
     return toNeedsHuman(project, id, 'CI', 'ci_blocked', 'CI execution policy changed while admission was queued; review and retry the preserved candidate.', pendingOwner);
+  }
+  // An adapter's docs-only shortcut must never turn an empty candidate green.
+  // Enforce the invariant before any adapter (local or remote) is invoked.
+  const candidate = readCard(project.path, id);
+  const base = candidate?.data.base_branch || await baseBranch(project.path);
+  const baseCancel = pendingCancelled(project, id);
+  if (baseCancel) return revertPendingCancel(project, id, baseCancel, revertArgs);
+  if (base === 'unknown') {
+    return toNeedsHuman(project, id, 'CI', 'base_branch_unknown',
+      'This run forked from a detached HEAD. The merge target and candidate diff must be established before CI can run.', pendingOwner);
+  }
+  const baseCommit = base && await git(worktreeAbs, ['rev-parse', '--verify', '--end-of-options', `${base}^{commit}`]);
+  const diff = baseCommit?.ok && /^[a-f0-9]{40,64}$/.test(baseCommit.stdout) && await git(worktreeAbs,
+    ['diff', '--name-only', '-z', `${baseCommit.stdout}...HEAD`, '--', '.', ':(exclude).todomd']);
+  const diffCancel = pendingCancelled(project, id);
+  if (diffCancel) return revertPendingCancel(project, id, diffCancel, revertArgs);
+  if (!diff || !diff.ok || !diff.stdout) {
+    await patchFrontmatter(project.path, id, { ci_evidence: {} });
+    const empty = diff?.ok;
+    await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${empty ? 'nothing to test (empty candidate)' : 'candidate diff unavailable'}`);
+    return toNeedsHuman(project, id, 'CI', empty ? 'nothing_to_test' : 'ci_evidence_invalid',
+      empty ? 'No candidate file changes relative to the base branch. CI did not pass or run; candidate preserved for inspection.'
+        : `Cannot establish the candidate diff: ${diff?.stderr || 'base branch unavailable'}`, pendingOwner);
   }
   const remote = config.ci?.execution === 'remote';
   const startingHead = remote ? await git(worktreeAbs, ['rev-parse', 'HEAD']) : null;
@@ -3099,6 +3126,9 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
       `acceptance criteria or repository safety rules):\n${humanInstruction}`
     : '';
   buildOpts.prompt += humanInstructionBlock;
+  if (card.data.build_commit_pending) {
+    buildOpts.prompt += '\n\nThe previous build completed but its commit hit index.lock. Inspect the existing staged work and commit it first. Do not recreate files or restart implementation. Never delete an index lock.';
+  }
 
   // a cancel that landed while the chain was claimed-but-between-spawns (no
   // live child to SIGTERM) is honored right before any work starts
@@ -3124,7 +3154,24 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     worktreeAbs,
   };
   buildOpts.trackingProgress = trackingProgress;
-  let { result, run } = await spawnTracked(project, id, 'Build', fromStatus, attempt, buildOpts);
+  let result, run;
+  if (recovery && card.data.build_commit_pending) {
+    const committed = await retryStagedCommit(worktreeAbs, `${id}: preserve completed build`, {
+      cancelled: () => Boolean(pendingCancelled(project, id)),
+    });
+    const commitCancel = pendingCancelled(project, id);
+    if (commitCancel) return revertPendingCancel(project, id, commitCancel,
+      { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: ver.last_verdict });
+    if (!committed.ok) {
+      return toNeedsHuman(project, id, 'Build', 'uncommitted_build',
+        `Staged work remains preserved. Commit retry failed: ${committed.error}`);
+    }
+    await patchFrontmatter(project.path, id, { build_commit_pending: false, build_staged_paths: [] });
+    result = { envelope: { subtype: 'success', is_error: false, result: 'Committed the existing preserved candidate.', num_turns: null }, exitCode: 0 };
+    await appendRunLog(project.path, id, `- ${now()} · Resume Build · committed preserved staged work without restarting the agent`);
+  } else {
+    ({ result, run } = await spawnTracked(project, id, 'Build', fromStatus, attempt, buildOpts));
+  }
 
   // A preserved worktree is the durable recovery asset; a provider session is
   // only an optimization. If the provider has expired or lost that session,
@@ -3232,8 +3279,28 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     return toNeedsHuman(project, id, 'Build', 'run_timeout',
       `Build exceeded the ${run.timeoutMin}m stage timeout`);
   }
+  const lockFailure = isIndexLockFailure(
+    `${result.envelope?.result || ''}\n${result.stderr || ''}`);
+  let commitRecovered = false;
+  if (lockFailure && result.envelope && !result.envelope.denied_actions?.length && result.envelope.subtype !== 'empty_run') {
+    const committed = await retryStagedCommit(worktreeAbs, `${id}: preserve completed build`, {
+      cancelled: () => Boolean(pendingCancelled(project, id)),
+    });
+    const commitCancel = pendingCancelled(project, id);
+    if (commitCancel) return revertPendingCancel(project, id, commitCancel,
+      { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: ver.last_verdict });
+    if (!committed.ok) {
+      await patchFrontmatter(project.path, id, { build_commit_pending: true, build_staged_paths: committed.paths });
+      await recordRun(project, id, 'Build', attempt, result, 'commit blocked; staged work preserved');
+      return toNeedsHuman(project, id, 'Build', 'uncommitted_build',
+        `Commit could not complete. Existing work is preserved; Resume Build commits it first.\nStaged paths:\n${committed.paths.join('\n') || '(none)'}\n${committed.error}`);
+    }
+    await patchFrontmatter(project.path, id, { build_commit_pending: false, build_staged_paths: [] });
+    await appendRunLog(project.path, id, `- ${now()} · Build · recovered index-lock collision; committed existing staged work`);
+    commitRecovered = true;
+  }
   const ok = result.envelope && !result.envelope.is_error && result.envelope.subtype === 'success';
-  if (!ok) {
+  if (!ok && !commitRecovered) {
     const failure = classifyFailure(result, worktreeAbs, vendor);
     await recordRun(project, id, 'Build', attempt, result, failureNote(failure));
     if (failure.kind === 'quota') {
@@ -3368,8 +3435,12 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
       `\`${ciEvidence.command}\` at ${ciEvidence.passed_at}. Do not rerun that full command. `;
   }
   verifyPrompt += `\n\nThis review stage is intentionally read-only. Do not run tests, typecheck, builds, ` +
-    `database resets, Docker, Git mutations, or other local processes. Executable checks belong to the trusted CI ` +
-    `stage above. Independently inspect the candidate diff and acceptance criteria. Always return checks_requested ` +
+    `database resets, Docker, or Git mutations. Read-only inspection through your available tools, including ` +
+    `shell commands such as pwd, ls, cat, rg, git diff, git show, and git status, is permitted within the candidate ` +
+    `worktree. Do not execute project code or scripts. Executable checks belong to the trusted CI ` +
+    `stage above. Independently inspect the candidate diff and acceptance criteria. A fail verdict must name ` +
+    `a concrete defect or unmet criterion; if inspection is unavailable, set setup_error to the limitation ` +
+    `and leave findings empty rather than inventing a code defect. Always return checks_requested ` +
     `as an array; normally it is empty. Request a focused deferred check only when a concrete review finding needs ` +
     `new executable evidence that the configured CI profile did not provide.`;
   let reviewBundle = null;
@@ -3584,6 +3655,11 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
       'Add worktree_link only when the error identifies a genuinely missing gitignored file.');
   }
 
+  if (verdict.verdict === 'fail' && !substantiveFindings && !verdict.question) {
+    return toNeedsHuman(project, id, 'Verify', 'bad_verdict',
+      'Verify returned fail without identifying a defect or unmet criterion. Candidate preserved; retry verification after correcting the reviewer setup.');
+  }
+
   if (verdict.verdict === 'pass') {
     // last between-spawns window: a cancel flagged post-verify/pre-merge aborts
     // the merge too — the card reverts instead of landing Done under a cancel
@@ -3722,10 +3798,17 @@ export async function maybeTriage(project, id) {
       await commitCardChanges(project.path, id, `chore(todomd): ${id} triage routing failed`);
       return;
     }
-    await runTriage(project, id, config, t, vendor, claim);
+    sendState(project, id, 'queued', 'Triage');
+    await scheduler.schedule(project, id, 'Triage', async () => {
+      const current = readCard(project.path, id);
+      if (claim.cancelled || !current || current.data.status !== 'Review' ||
+          current.data.triaged || current.data.archived || current.data.skill) return;
+      await runTriage(project, id, config, t, vendor, claim);
+    }, { onDefer: onDeferState(project, id, 'Triage') });
   } finally {
-    triaging.delete(key);
+    if (triaging.get(key) === claim) triaging.delete(key);
     claim.resolve();
+    sendState(project, id, 'idle');
   }
 }
 

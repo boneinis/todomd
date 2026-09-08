@@ -39,6 +39,8 @@ let runStates = {};
 let drawerCard = null;
 let myName = localStorage.getItem('todomd-me') || '';
 let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'mine' : 'all';
+let layout = localStorage.getItem('todomd-layout') === 'list' ? 'list' : 'board';
+const expandedListEpics = new Set();
 let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
 let deleteArmed = false;    // two-click confirm for delete
@@ -395,6 +397,10 @@ function renderBoard() {
         && boardColumns.has(parent.status) && !nested.has(parent.id);
     })
   );
+  document.body.classList.toggle('list-layout', layout === 'list');
+  $('#layout-toggle').textContent = layout === 'list' ? 'board view' : 'list view';
+  $('#layout-toggle').setAttribute('aria-pressed', String(layout === 'list'));
+  if (layout === 'list') return renderList(boardData.cards.filter(passesView));
   boardEl.innerHTML = '';
   for (const col of boardData.config.columns) {
     const color = COL_COLORS[col] || 'var(--dim)';
@@ -430,6 +436,80 @@ function renderBoard() {
     wireDrop(colEl, list);
     boardEl.appendChild(colEl);
   }
+}
+
+$('#layout-toggle').addEventListener('click', () => {
+  layout = layout === 'list' ? 'board' : 'list';
+  localStorage.setItem('todomd-layout', layout);
+  renderBoard();
+});
+
+function renderList(visibleCards) {
+  boardEl.replaceChildren();
+  const rows = TodomdListView.rows(boardData.cards, visibleCards);
+  for (const group of TodomdListView.GROUPS) {
+    const members = rows.filter((row) => row.group === group.key);
+    if (!members.length) continue;
+    const section = document.createElement('section');
+    section.className = 'list-group';
+    const heading = document.createElement('h2');
+    heading.textContent = `${group.label} · ${members.length}`;
+    section.appendChild(heading);
+    for (const row of members) {
+      section.appendChild(renderListRow(row.card, row));
+      const key = `${currentProject}:${row.card.id}`;
+      if (expandedListEpics.has(key)) {
+        for (const child of row.children) section.appendChild(renderListRow(child, null));
+      }
+    }
+    boardEl.appendChild(section);
+  }
+  if (!rows.length) {
+    const empty = document.createElement('p');
+    empty.className = 'col-empty'; empty.textContent = 'No matching cards';
+    boardEl.appendChild(empty);
+  }
+}
+
+function renderListRow(card, row) {
+  const el = document.createElement('div');
+  el.className = `list-row${row ? '' : ' list-child'}`;
+  el.dataset.id = card.id || card.file;
+  if (row?.children.length) {
+    const toggle = document.createElement('button');
+    const key = `${currentProject}:${card.id}`;
+    const expanded = expandedListEpics.has(key);
+    toggle.className = 'list-expand';
+    toggle.textContent = expanded ? '▾' : '▸';
+    toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${card.title}`);
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.addEventListener('click', () => {
+      if (expandedListEpics.has(key)) expandedListEpics.delete(key); else expandedListEpics.add(key);
+      renderBoard();
+      [...boardEl.querySelectorAll('.list-row')].find((r) => r.dataset.id === String(card.id))?.querySelector('.list-expand')?.focus();
+    });
+    el.appendChild(toggle);
+  }
+  const open = document.createElement('button');
+  open.className = 'list-card';
+  const title = document.createElement('span');
+  title.className = 'list-title'; title.textContent = card.title || card.file;
+  const meta = document.createElement('span');
+  meta.className = 'list-meta';
+  meta.textContent = [card.id, card.priority, card.status,
+    row && card.epic ? `${row.progress.done}/${row.progress.total} children done` : '',
+  ].filter(Boolean).join(' · ');
+  open.append(title, meta);
+  const state = TodomdHierarchy.dependencyState(card, boardData.cards);
+  if (state.blocked && card.status !== 'Done') {
+    const wait = document.createElement('span');
+    wait.className = 'list-wait';
+    wait.textContent = 'Waiting for: ' + state.waitingOn.map((d) => `${d.id} (${d.status || 'missing'})`).join(', ');
+    open.appendChild(wait);
+  }
+  open.addEventListener('click', () => openDrawer(card.id || card.file));
+  el.appendChild(open);
+  return el;
 }
 
 // hand-edited cards can make labels a YAML mapping or a bare string — coerce

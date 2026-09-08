@@ -106,6 +106,16 @@ export function runStage(opts) {
   return {
     child: run.child,
     done: run.done.then((result) => {
+      // A provider's success flag alone cannot establish that a run happened.
+      // Keep missing metrics distinct from a measured zero, and preserve the
+      // more specific denial/error diagnostic when the adapter supplied one.
+      const envelope = result?.envelope;
+      if (envelope && !envelope.is_error && envelope.num_turns === 0 &&
+          !String(envelope.result || result.diagnostic?.finalMessage || '').trim() && !envelope.structured_output) {
+        envelope.is_error = true;
+        envelope.subtype = 'empty_run';
+        envelope.result = 'Provider reported zero turns and no response; the run did not complete.';
+      }
       const envelopeUsage = normalizeUsage(result?.envelope?.usage);
       const usage = envelopeUsage.available ? envelopeUsage : streamed;
       // modelUsage may include auxiliary/subagent calls in arbitrary order.
@@ -484,7 +494,7 @@ function runGemini({
   const done = new Promise((resolve) => {
     let sessionId = null;
     let failed = null;
-    let turns = 0;
+    let turns = null; // missing provider metrics are not a measured zero
     let lineBuf = '';
     let stderr = '';
     let settled = false;
@@ -552,7 +562,7 @@ function runGemini({
         const body = kind === 'result' && event.result && typeof event.result === 'object'
           ? event.result : event;
         sessionId ||= body.thread_id || body.session_id || body.conversation_id || body?.thread?.id || null;
-        if (kind === 'turn.completed') turns++;
+        if (kind === 'turn.completed') turns = (turns ?? 0) + 1;
         if (kind === 'turn.failed' || kind === 'error' || body.status === 'ERROR') failed = body;
         if (kind === 'result') finalEvent = event;
         onEvent({ vendor: 'gemini', ...event });
@@ -594,6 +604,7 @@ function runGemini({
         const body = kind === 'result' && payload.result && typeof payload.result === 'object'
           ? payload.result : payload;
         sessionId ||= body.thread_id || body.session_id || body.conversation_id || body?.thread?.id || null;
+        if (Number.isInteger(body.num_turns) && body.num_turns >= 0) turns = body.num_turns;
         structured = body.structured_output ?? body.structuredOutput ?? null;
         deniedActions = body.denied_actions ?? body.deniedActions ?? [];
         const candidate = body.response ?? body.message ?? (typeof body.result === 'string' ? body.result : undefined);

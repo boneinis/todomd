@@ -529,6 +529,9 @@ for (const interruption of ['cancel', 'shutdown', 'timeout']) {
       }
       fs.writeFileSync(path.join(dir,'release'),'complete remotely');
       await until(()=>fs.existsSync(path.join(dir,'result')));
+      // The parked card is visible before its cancellation finalizer drops
+      // the run claim. Recovery is available only after that owner settles.
+      await until(()=>!pipeline.hasLiveRun(p.name,'task-0001'),{timeout:BUDGET.stage});
       const retries=await Promise.all([pipeline.retryVerification(p,'task-0001'),pipeline.retryVerification(p,'task-0001')]);
       assert.equal(retries.filter((r)=>r.ok).length,1, 'simultaneous recovery cannot start two CI waiters');
       await sleep(150);
@@ -556,7 +559,7 @@ test('local evidence cannot bypass a newly committed remote gate on verification
     await pipeline.humanMove(p,'task-0001','Queue');
     await until(()=>pipeline.getRunStates(p.name)['task-0001']?.stage==='Verify' && readCard(repo,'task-0001').data.ci_evidence?.clean,{timeout:BUDGET.chain});
     await pipeline.killAllChildren({preserveWorktrees:true,graceMs:1000});
-    await until(()=>status(repo,'task-0001')==='Needs Human');
+    await until(()=>status(repo,'task-0001')==='Needs Human' && !pipeline.hasLiveRun(p.name,'task-0001'));
     const cfg=path.join(repo,'.todomd/config.yml');
     fs.writeFileSync(cfg,fs.readFileSync(cfg,'utf8').replace('quick: node --version','quick: node remote.mjs')+'  execution: remote\n');
     git(repo,['add','.todomd/config.yml']);git(repo,['commit','-qm','explicit remote cutover']);
