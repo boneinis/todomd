@@ -15,6 +15,12 @@ uses an exclusive hard link, file sync, and directory sync. Epoch numbers increa
 records are never replaced, removed, or reused. Corrupt or incomplete history holds
 admission. Elapsed time never authorizes takeover.
 
+New launches through the trusted local authority also record
+`launch_authority: registered-local-job-v1` and the exact task, lease, run, fence,
+backend, and source reference. This server-owned binding means the entire launch
+scope belongs to that one registered local job. It is not accepted from a recovery
+request. Legacy scheduler launches and repository work have no such binding.
+
 Metadata transactions synchronously resolve trusted authority and commit the
 snapshot, event, and retry receipt while holding admission. Their context resolver
 must be read-only and synchronous: no child process, remote submission, or deferred
@@ -44,24 +50,45 @@ After inspecting its exact epoch and nonce, request recovery:
 todomd delivery-admission /absolute/project/path --recover --epoch 7 --nonce EXACT_NONCE --json
 ```
 
-Recovery succeeds only for a `metadata` owner on the same host and boot when the
-OS confirms that its PID no longer exists. A live or reused PID, permission error,
-foreign host/boot, corrupted record, or mismatched nonce retains ownership. The
+Recovery requires the same host and boot and OS confirmation that the owner PID
+no longer exists. A live or reused PID, permission error, foreign host/boot,
+corrupted record, or mismatched nonce retains ownership. The
 command requires local OS access to the private store; it is not a public HTTP
 write endpoint. Board viewers continue to receive sanitized hold information.
+
+- For a `metadata` owner, confirmed process absence permits completion of the
+  synchronous transaction gate.
+- For a bound local `launch` owner, the recovery adapter additionally verifies
+  the original registered backend namespace and the matching dispatching journal.
+  It closes that execution through the authenticated backend protocol, requires
+  an exact stopped-and-permanently-closed observation, then rechecks the owner,
+  process absence, registration, and task identity before publishing completion.
+  Missing or corrupt authority, a different journal, or uncertain closure holds
+  admission. No persisted PID is used to signal a job.
+
+Local launch recovery may stop an orphaned job. Before-start crashes close the
+dispatch identity against a late start even if no supervisor registered. Removing
+a job profile or job-policy approval does not remove its registered recovery
+authority. If the recovery process crashes before or after completion publication,
+retry the same epoch/nonce; backend closure and gate completion are idempotent.
 
 Successful recovery appends only the matching completion record. It preserves
 task snapshots, leases (including expired leases), candidates, attempts, events,
 and receipts. Inspect the committed task or retry the exact original command/key
-to resolve an uncertain acknowledgement. Recovery never resubmits a job. Replaying
+to resolve an uncertain acknowledgement. Local launch recovery returns
+`launch_gate_only`: the task lease and dispatch journal are still held. Use the
+normal scoped [execution recovery](delivery-access.md) to stop/reconcile and
+release that lease with its preserved-work handoff. Recovery never resubmits a job. Replaying
 an old recovery cannot close a newer epoch, even with concurrent recovery callers.
 
 ## Remaining activation requirements
 
-`repository` and `launch` owners can leave child processes or accepted remote work
+`repository` and unbound `launch` owners can leave child processes or accepted remote work
 behind. PID absence is insufficient for them; the CLI returns
 `external_reconciliation_required`. Their supported external reconciliation
-adapter remains future work. Old per-card `.lock` remnants also remain held for
+adapter remains future work. The new binding does not retroactively make old
+launch records recoverable. Loss of all local controllers with surviving writers
+also remains held. Old per-card `.lock` remnants remain held for
 quiesced operator reconciliation because they lack this ownership protocol.
 
 The legacy shell/budget lock protocol does not yet participate in this gate.
@@ -74,4 +101,7 @@ remain required. Gate history retention is currently unbounded.
 Tests cover independent recovery callers, stale recovery against a newer owner,
 live ownership, shared scheduler/repository/metadata exclusion, revoked asynchronous
 contexts, corruption, old lock remnants, and a real process crash immediately after
-a lease snapshot was renamed. All write and recovery fixtures use isolated state.
+a lease snapshot was renamed. Local launch tests also cover a real authority
+crash before backend start, a surviving supervised job after launcher death,
+concurrent CLI recovery, unknown authority/observations, and recovery-process
+crashes around completion publication. All write and recovery fixtures use isolated state.

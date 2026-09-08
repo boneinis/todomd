@@ -93,8 +93,10 @@ admission callback must establish any further candidate and policy requirements.
 The launch gate remains held across asynchronous local authorization, job
 resolution, and supervisor acknowledgement. Waiting writers cannot race that
 start. Once acknowledged, the durable lease and backend closure protocol retain
-ownership of the running execution. A dead launch-gate owner still requires
-external reconciliation; metadata-only recovery cannot retire it.
+ownership of the running execution. New local launch owners carry an exact
+execution binding. The [local admission recovery adapter](delivery-admission.md)
+can retire a dead owner's gate only after closing that registered execution;
+metadata-only recovery cannot retire it. The task lease remains held afterward.
 
 `reserve(taskId, command)` accepts `profile`, `run_id`, `ttl_ms`, optional `reason`,
 `expected_revision`, and `idempotency_key`. The adapter derives backend and source
@@ -112,7 +114,7 @@ and supply approved job definitions.
 The admission callback must integrate every legacy, shell/budget, and remote
 writer with authoritative source/stop checks; booleans copied from a request or
 stale heartbeat do not meet this contract. Keep activation off until those
-adapters, revision-checked projection/migration, recovery of abandoned launch
+adapters, revision-checked projection/migration, recovery of unbound launch
 owners, and the pilot gates pass. Remote execution still needs its own backend.
 
 Tests cover role/project isolation, command/permission injection rejection,

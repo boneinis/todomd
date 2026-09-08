@@ -106,6 +106,8 @@ dead-metadata-transaction recovery. The [trusted role/job adapter](delivery-auth
 now implements project-scoped role grants and registered local-job selection.
 Remote backends, provider credential/configuration distribution, source fencing shared
 with every writer, recovery after loss of all local controllers, remote orphan
-reconciliation, and revision-checked task projection/migration remain required. Repository and
-launch ownership still require external reconciliation. No active card, candidate,
+reconciliation, and revision-checked task projection/migration remain required.
+Bound local launch owners now support [gate recovery](delivery-admission.md)
+after verified backend closure; the task lease remains held. Repository and
+unbound launch ownership still require external reconciliation. No active card, candidate,
 or attempt history is migrated, reset, or rewritten by the coordinator.

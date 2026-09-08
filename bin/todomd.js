@@ -68,10 +68,11 @@ if (cmd === 'delivery-admission') {
   }
   try {
     const { projectAdmissionDirectory } = await import('../src/delivery-paths.js');
-    const { admissionStatus, recoverAdmission } = await import('../src/delivery-admission.js');
+    const { admissionStatus } = await import('../src/delivery-admission.js');
+    const { recoverProjectAdmission } = await import('../src/delivery-launch-recovery.js');
     const directory = projectAdmissionDirectory(path.resolve(positional[1] || process.cwd()));
     const report = args.includes('--recover')
-      ? recoverAdmission(directory, { epoch: Number(flag('--epoch')), nonce: flag('--nonce') })
+      ? await recoverProjectAdmission(path.resolve(positional[1] || process.cwd()), { epoch: Number(flag('--epoch')), nonce: flag('--nonce') })
       : { read_only: true, ...admissionStatus(directory) };
     console.log(JSON.stringify(report, null, args.includes('--json') ? undefined : 2));
     process.exit(report.ok === false ? 1 : 0);
