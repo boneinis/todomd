@@ -58,7 +58,10 @@ function hostileBoard() {
     // column, and this hostile-shapes suite still wants task-0004 as a full
     // card (see test/ui/hierarchy.test.js for the nesting behavior itself).
     '---\nid: task-0004\ntitle: chunk with scalar dependencies\nstatus: Build\ntype: module\n' +
-    'parent: task-0003\ndependencies: task-0002\n---\n\n## Description\n\nhand-edited\n');
+    // Opening the child in the list test must not launch a summary agent or
+    // change the seeded usage totals used by the following smoke test.
+    'parent: task-0003\ndependencies: task-0002\n' +
+    'tldr: The child verifies dependency ordering and drawer access in the list view.\n---\n\n## Description\n\nhand-edited\n');
   // not valid frontmatter at all — must be surfaced, not fatal
   card('task-0005-broken.md', '---\ntitle: "unterminated\nstatus: Review\n---\nbroken\n');
   card('task-0006-resumable.md',
