@@ -6,9 +6,12 @@ Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)
 Pilot project: To-do MD itself
 
 The first increment implements the [delivery schema, assessment rules, and
-read-only migration preview](delivery-foundation.md). Existing boards still use
-the legacy runtime. Durable mutation handling, ownership leases, cycles, the new
-board view, evidence adapters, and pilot activation remain future work.
+read-only migration preview](delivery-foundation.md). The next implements an
+internal [durable ownership, lease, and transition store](delivery-ownership.md).
+Existing boards still use the legacy runtime. Coordinated runtime admission and
+recovery adapters, cycles, the new board view, evidence adapters, migration, and
+pilot activation remain future work. Phase 3 is not complete until its runtime
+integration and recovery acceptance gates pass.
 
 ## 1. Objective
 

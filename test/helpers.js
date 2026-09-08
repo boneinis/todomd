@@ -31,11 +31,17 @@ export function git(repo, args) {
 }
 
 // A temp git repo with a minimal Node test project + a todomd board.
-export function makeRepo({ triage = false } = {}) {
+export function makeRepo({ triage = false, automaticMaintenance = true } = {}) {
   const repo = tmp('repo');
   git(repo, ['init', '-q']);
   git(repo, ['config', 'user.email', 'test@todomd.local']);
   git(repo, ['config', 'user.name', 'todomd-test']);
+  if (!automaticMaintenance) {
+    // Read-only snapshot tests include all of .git. Stop unrelated background
+    // maintenance before the first commit can launch it in this fixture.
+    git(repo, ['config', 'maintenance.auto', 'false']);
+    git(repo, ['config', 'gc.auto', '0']);
+  }
   fs.writeFileSync(path.join(repo, 'package.json'),
     JSON.stringify({ name: 'fixture', type: 'module', scripts: { test: 'node --test' } }, null, 2));
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });

@@ -5,9 +5,11 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { makeRepo, writeCard, isolateHome, tmp } from './helpers.js';
+import { makeRepo as makeBaseRepo, writeCard, isolateHome, tmp } from './helpers.js';
 import { previewDeliveryMigration, formatDeliveryPreview } from '../src/delivery-preview.js';
 import { readCard } from '../src/board.js';
+
+const makeRepo = () => makeBaseRepo({ automaticMaintenance: false });
 
 function snapshot(dir) {
   const files = {};
