@@ -58,7 +58,10 @@ function hostileBoard() {
     // column, and this hostile-shapes suite still wants task-0004 as a full
     // card (see test/ui/hierarchy.test.js for the nesting behavior itself).
     '---\nid: task-0004\ntitle: chunk with scalar dependencies\nstatus: Build\ntype: module\n' +
-    'parent: task-0003\ndependencies: task-0002\n---\n\n## Description\n\nhand-edited\n');
+    // Opening the child in the list test must not launch a summary agent or
+    // change the seeded usage totals used by the following smoke test.
+    'parent: task-0003\ndependencies: task-0002\n' +
+    'tldr: The child verifies dependency ordering and drawer access in the list view.\n---\n\n## Description\n\nhand-edited\n');
   // not valid frontmatter at all — must be surfaced, not fatal
   card('task-0005-broken.md', '---\ntitle: "unterminated\nstatus: Review\n---\nbroken\n');
   card('task-0006-resumable.md',
@@ -119,6 +122,30 @@ before(async () => {
 after(async () => {
   try { await page?.close(); } catch { /* browser already gone */ }
   try { srv?.close(); } catch { /* already closed */ }
+});
+
+test('list view keeps hostile cards accessible, expands epics, filters children and persists layout', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => await page.eval(`!!boardData?.cards?.length`));
+  await page.eval(`document.getElementById('layout-toggle').click()`);
+  assert.equal(await page.eval(`document.body.classList.contains('list-layout')`), true);
+  assert.equal(await page.eval(`document.querySelectorAll('.list-row').length`), 7);
+  assert.equal(await page.eval(`!!document.querySelector('.list-row[data-id="task-0004"]')`), false);
+  await page.eval(`document.querySelector('.list-row[data-id="task-0003"] .list-expand').click()`);
+  assert.equal(await page.eval(`document.querySelectorAll('.list-row').length`), 8);
+  assert.match(await page.eval(`document.querySelector('.list-row[data-id="task-0004"]').textContent`), /Waiting for: task-0002/);
+  await page.eval(`document.querySelector('.list-row[data-id="task-0004"] .list-card').click()`);
+  await until(async () => /chunk with scalar dependencies/.test(await page.eval(`document.getElementById('drawer-title').textContent`)));
+  await page.eval(`closeDrawer(); document.getElementById('filter').value = 'task-0004'; document.getElementById('filter').dispatchEvent(new Event('input'));`);
+  assert.equal(await page.eval(`document.querySelectorAll('.list-row').length`), 1);
+  assert.equal(await page.eval(`document.querySelector('.list-row').dataset.id`), 'task-0004');
+  await page.goto(`http://127.0.0.1:${srv.port}/?project=${encodeURIComponent(name)}`);
+  await until(async () => await page.eval(`document.body.classList.contains('list-layout')`));
+  assert.equal(await page.eval(`document.querySelectorAll('.list-row').length`), 7);
+  await page.eval(`document.getElementById('layout-toggle').click()`);
+  assert.equal(await page.eval(`document.querySelectorAll('.card').length`), 8);
+  assert.deepEqual(page.errors, []);
 });
 
 test('UI smoke: hostile card shapes render, drawer opens, console stays clean', async (t) => {

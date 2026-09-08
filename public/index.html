@@ -24,6 +24,7 @@
     <button id="new-card" class="new-card">+ card</button>
     <button id="queue-pause" class="view-toggle" type="button" aria-pressed="false" title="let active work finish, then hold new starts">pause queue</button>
     <button id="queue-run" class="view-toggle" type="button" title="wake this project's already-approved Queue cards">▶ run queue</button>
+    <button id="layout-toggle" class="view-toggle" type="button" title="switch between board and list" aria-pressed="false">list view</button>
     <button id="view-toggle" class="view-toggle" title="click: team / my work · ⌥-click: change your name">team</button>
     <button id="archived-toggle" class="view-toggle" title="show / hide archived cards">archived</button>
     <input id="filter" type="search" placeholder="filter…" spellcheck="false" autocomplete="off" />
@@ -466,6 +467,7 @@ todomd init             # scaffolds the board + registers it</code></pre>
 <datalist id="skill-options"></datalist>
 
 <script src="/hierarchy.js"></script>
+<script src="/listview.js"></script>
 <script src="/card-prompt.js"></script>
 <script src="/app.js"></script>
 <script src="/board-agent.js"></script>

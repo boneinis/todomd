@@ -111,6 +111,8 @@ function schedulerConfig(cfg) {
   return {
     global: unlimited(Number(s.global)),
     columns: {
+      Plan: Number(cols.Plan) > 0 && Number.isFinite(Number(cols.Plan)) ? Math.max(1, Math.floor(Number(cols.Plan))) : 1,
+      Triage: Number(cols.Triage) > 0 && Number.isFinite(Number(cols.Triage)) ? Math.max(1, Math.floor(Number(cols.Triage))) : 1,
       Build: unlimited(Number(cols.Build)),
       CI: unlimited(Number(cols.CI)),
       Verify: unlimited(Number(cols.Verify)),

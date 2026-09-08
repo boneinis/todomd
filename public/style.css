@@ -1035,3 +1035,18 @@ body.viewer .drawer-question { display: none; }
 #ba-message { border-top: 1px solid var(--line); }
 body.viewer #board-agent-open { display: none; }
 @media (max-width: 720px) { .ba-layout { grid-template-columns: 1fr; } #ba-settings { max-height: 35vh; } .ba-conversation { max-height: none; } #ba-history { max-height: 40vh; } #board-agent-dialog { padding: 16px; } }
+
+/* A compact alternative to the board. Rows are buttons, so keyboard users
+   can expand an epic or open a card without relying on drag-and-drop. */
+body.list-layout #board { display: flex; flex-direction: column; gap: 20px; max-width: 1100px; margin-inline: auto; width: 100%; box-sizing: border-box; }
+.list-group { width: 100%; min-width: 0; }
+.list-group h2 { margin: 0 0 8px; padding: 6px 10px; font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+.list-row { display: flex; align-items: stretch; min-width: 0; border-bottom: 1px solid var(--line); }
+.list-card { display: flex; flex: 1; flex-direction: column; align-items: flex-start; min-width: 0; gap: 5px; padding: 12px; border: 0; border-radius: 0; background: transparent; text-align: left; text-transform: none; letter-spacing: normal; }
+.list-card:hover { background: var(--panel-2); }
+.list-title { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+.list-meta { color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
+.list-wait { color: var(--amber); font-size: 11px; overflow-wrap: anywhere; }
+.list-expand { flex: 0 0 32px; padding: 0; border: 0; background: transparent; font-size: 18px; }
+.list-child { margin-left: 32px; border-left: 2px solid var(--line); }
+.list-row button:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }

@@ -2538,6 +2538,11 @@ function seedPreservedVerification(repo, id) {
   git(repo, ['commit', '-qm', `seed preserved verification ${id}`]);
   fs.mkdirSync(path.dirname(worktree), { recursive: true });
   git(repo, ['worktree', 'add', '-q', worktree, '-b', branch]);
+  // Recovery fixtures represent an actual candidate, not an empty branch.
+  // Empty candidates are covered by recommended-fixes.test.js and stop at CI.
+  fs.writeFileSync(path.join(worktree, 'src/preserved-candidate.js'), 'export const candidate = true;\n');
+  git(worktree, ['add', 'src/preserved-candidate.js']);
+  git(worktree, ['commit', '-qm', 'seed preserved candidate']);
   return { branch, worktree };
 }
 const spawnedAnything = (repo, id) => fs.existsSync(path.join(repo, '.todomd/runs', id));
@@ -2731,11 +2736,15 @@ test('Retry Verification waits its turn when the Verify column is full — plain
       && pipeline.getRunStates(p.name)['task-0001']?.state === 'running', { timeout: BUDGET.chain });
 
     assert.deepEqual(await pipeline.retryVerification(p, 'task-0002'), { ok: true });
-    await sleep(200);
+    await until(() => pipeline.getRunStates(p.name)['task-0002']?.stage === 'Verify'
+      && pipeline.getRunStates(p.name)['task-0002']?.state === 'queued', { timeout: BUDGET.stage });
     // An ordinary capacity wait is 'queued' — 'deferred' stays reserved for
     // resource pressure, so a board never shows a normal turn-wait as load.
     assert.deepEqual(pipeline.getRunStates(p.name)['task-0002'], { state: 'queued', stage: 'Verify' });
-    assert.equal(spawnedAnything(repo, 'task-0002'), false, 'the retry spawned nothing while the column was full');
+    const runDir = path.join(repo, '.todomd/runs/task-0002');
+    const files = fs.existsSync(runDir) ? fs.readdirSync(runDir) : [];
+    assert.equal(files.some((file) => /^Verify/i.test(file)), false,
+      'the retry refreshed CI evidence but never spawned Verify while its column was full');
   } finally {
     pipeline.forgetProject(p.name);
     await pipeline.killAllChildren({ graceMs: 1000 });

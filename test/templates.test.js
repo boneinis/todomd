@@ -115,15 +115,17 @@ test('shipped config.yml documents the scheduler block; its 0-defaults are unlim
   // guarantee is carried entirely by the separate, per-project concurrency
   // cap (never combined across projects) — see scheduler.js.
   assert.equal(normalized.scheduler.global, Infinity);
+  assert.equal(normalized.scheduler.columns.Plan, 1);
+  assert.equal(normalized.scheduler.columns.Triage, 1);
   assert.equal(normalized.scheduler.columns.Build, Infinity);
   assert.equal(normalized.scheduler.columns.CI, Infinity);
   assert.equal(normalized.scheduler.columns.Verify, Infinity);
 });
 
 test('normalizeConfig scheduler: an explicit global/column override is honored verbatim', () => {
-  const normalized = normalizeConfig({ concurrency: 4, scheduler: { global: 2, columns: { Build: 3, CI: 1, Verify: 1 } } });
+  const normalized = normalizeConfig({ concurrency: 4, scheduler: { global: 2, columns: { Plan: 2, Triage: 3, Build: 3, CI: 1, Verify: 1 } } });
   assert.equal(normalized.scheduler.global, 2);
-  assert.deepEqual(normalized.scheduler.columns, { Build: 3, CI: 1, Verify: 1 });
+  assert.deepEqual(normalized.scheduler.columns, { Plan: 2, Triage: 3, Build: 3, CI: 1, Verify: 1 });
 });
 
 test('dispatch LOCK loop steals an ownerless lock by the lock dir mtime', () => {

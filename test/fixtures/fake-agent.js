@@ -61,7 +61,7 @@ const emitStream = (events) => {
 };
 const resultEnvelope = (extra = {}) => ({
   type: 'result', subtype: 'success', is_error: false,
-  total_cost_usd: 0.001, num_turns: 1, session_id: session,
+  total_cost_usd: 0.001, num_turns: Number(process.env.FAKE_TURNS ?? 1), session_id: session,
   // FAKE_EMPTY_RESULT reproduces a provider that reports success with no final
   // text at all — the shape a run blocked before it acted comes back in.
   result: process.env.FAKE_EMPTY_RESULT ? '' : 'ok',
@@ -236,7 +236,11 @@ if (hangNow &&
     process.exit(1);
   }
   const mode = process.env.FAKE_BUILD || 'good';
-  if (mode !== 'noop') {
+  if (mode === 'docs') {
+    fs.writeFileSync(path.join(cwd, 'CHANGE.md'), 'Documentation update.\n');
+    execFileSync('git', ['add', 'CHANGE.md'], { cwd });
+    execFileSync('git', ['commit', '-qm', 'docs update'], { cwd });
+  } else if (mode !== 'noop') {
     const fn = mode === 'bad' ? 'export function prod(a, b) { return a + b; }\n'  // wrong: returns sum
                               : 'export function prod(a, b) { return a * b; }\n';
     fs.appendFileSync(path.join(cwd, 'src/calc.js'), fn);
@@ -244,6 +248,13 @@ if (hangNow &&
       `import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { prod } from './calc.js';\n` +
       `test('prod', () => { assert.equal(prod(3, 4), 12); });\n`);
     execFileSync('git', ['add', '-A'], { cwd });
+    if (process.env.FAKE_BUILD_INDEX_LOCK) {
+      const lock = execFileSync('git', ['rev-parse', '--git-path', 'index.lock'], { cwd, encoding: 'utf8' }).trim();
+      fs.writeFileSync(lock, 'fixture-owned lock');
+      fs.writeFileSync(process.env.FAKE_BUILD_INDEX_LOCK, lock);
+      emitStream([resultEnvelope({ is_error: true, subtype: 'error', result: `fatal: Unable to create '${lock}': File exists.` })]);
+      process.exit(0);
+    }
     execFileSync('git', ['commit', '-qm', `${taskId}: add prod`], { cwd });
   }
   if (process.env.FAKE_LEAVE_DIRTY) {
@@ -268,7 +279,7 @@ if (hangNow &&
   const verdict = process.env.FAKE_VERDICT || 'pass';
   const structured = {
     verdict,
-    criteria: [{ criterion: 'works', met: verdict === 'pass' }],
+    criteria: [{ criterion: 'works', met: process.env.FAKE_CRITERIA_MET === '1' || verdict === 'pass' }],
     findings: Object.hasOwn(process.env, 'FAKE_FINDINGS')
       ? process.env.FAKE_FINDINGS
       : verdict === 'pass' ? 'all good' : 'prod returns the wrong value',
