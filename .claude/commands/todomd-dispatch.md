@@ -8,15 +8,20 @@ Skip any card whose frontmatter `agent:` is not claude — the launcher handles 
 
 ## Concurrency — one writer at a time
 
-Another dispatcher (or the server's launcher) may run on this repo at the same time. An on-disk lock at `.todomd/.lock` serializes every `.todomd` write so they never corrupt the board, `ACTIVE.md`, or the git index. Use it like this:
+Another dispatcher or the server may be working in this repository. Every shared board edit and repository merge must use the supervised transaction helper:
 
-- **LOCK** — run this and wait for it to return before any git commit that writes under `.todomd/` (and before *selecting* the build card in step 2):
-  ```
-  until mkdir .todomd/.lock 2>/dev/null; do o=$(cut -d' ' -f1 .todomd/.lock/owner 2>/dev/null); if [ -n "$o" ] && [ $(( $(date +%s) - o )) -gt 300 ]; then d=.todomd/.lock.dead.$$.$(date +%s); mv .todomd/.lock "$d" 2>/dev/null && rm -rf "$d"; else sleep 1; fi; done; printf '%s %s %s\n' "$(date +%s)" "$(whoami)@$(hostname -s)" "$$-$(date +%s)" > .todomd/.lock/owner
-  ```
-- **UNLOCK** — run immediately after that commit: `rm -rf .todomd/.lock`
+```
+"/usr/local/bin/node" "/Users/irvinbowman/web dev/TODOMD-worktrees/main/bin/todomd.js" budget-write . -- /bin/sh /absolute/path/to/transaction.sh
+```
 
-Rules: hold the lock ONLY around quick commits — **never across an agent run** (plan/build/verify); UNLOCK before you start one and LOCK again for the next commit. Whenever you LOCK to act on a card, **re-read its status first and skip if another dispatcher already advanced it** (discard your work for that card). The lock is a plain directory on disk, so it persists across your tool calls until you UNLOCK. A crashed dispatcher's lock auto-expires after 5 minutes (LOCK steals it). `.todomd/.lock/` is gitignored — never commit it.
+Write a short transaction script outside the repository and begin it with `set -eu`. The helper runs it in the canonical repository, acquires the legacy file lock and shared admission, and keeps both until the entire local process group is confirmed closed. The default deadline is 30 seconds; `--timeout-ms N` before `--` accepts 50–60000 milliseconds. Read its JSON result and private output file. A nonzero or uncertain result means inspect the existing changes before retrying; do not blindly repeat a commit or merge.
+
+In the steps below, **LOCK … UNLOCK means one transaction script submitted to this helper**, not separate shell/tool calls. Re-read eligibility and status inside that script before making any change. Select candidates read-only outside the transaction, then revalidate your choice inside it. Never use raw mkdir/rm locking, steal a lock by age, or edit a card before entering the helper. No nested helper or other todomd mutation CLI may run inside the transaction; invoke fanout/advance outside it, since they acquire their own repository lock.
+
+Use the helper only for bounded local writes and quick Git operations. Do not start agents, remote jobs, daemons, detached children, or processes that escape its process group from a transaction. Long plan/build/verify work remains outside the transaction. If a referenced command asks to edit the shared card, collect the proposed content and apply it through a transaction instead. A managed or mixed delivery project is refused; stop the budget dispatcher and use its delivery owners. Do not remove delivery records to bypass that refusal.
+
+If the helper or its controllers crash, retain the candidate and inspect `"/usr/local/bin/node" "/Users/irvinbowman/web dev/TODOMD-worktrees/main/bin/todomd.js" delivery-admission . --json`. A matching supervised repository command can be recovered using its exact epoch/nonce only after backend closure is verified. Never delete the admission history or reset attempts to clear a hold. Starting a new delivery workflow still requires stopping and reconciling every long interactive budget run; the transaction helper does not supervise those sessions.
+
 
 ### Leases — don't redo a long run another dispatcher is doing
 
@@ -35,7 +40,7 @@ Unless config `triage.enabled` is false: for each card with `status: Review` who
 
 For each card in `.todomd/tasks/*.md` with `status: Plan` and no fresh lease: first **LOCK**, re-check it's still `Plan` and unleased, set `lease: "<epoch> <worker>"`, commit, **UNLOCK** (claim it so no other dispatcher plans it). Then run the plan/skill UNLOCKED and record the result under **LOCK**, clearing the lease:
 - If it has `skill: <name>`: invoke /<name> with the card id, save output worth keeping under `## Findings` in the card; then **LOCK**, if status is still `Plan` set `status: Review`, clear `lease`, append a Run Log line, commit, **UNLOCK** (else discard).
-- Otherwise follow `.claude/commands/todomd-plan.md` for it; then **LOCK**, if status is still `Plan` set `status: Planned`, clear `lease`, Run Log line, commit, **UNLOCK** (else discard). After the commit, if the card's `## Chunks` section is non-empty, shell out `"/usr/local/bin/node" "~/web dev/TODOMD/bin/todomd.js" fanout <id>` — this materializes the chunk cards in Planned state and moves the epic to Planned; it then awaits your human approval (drag Planned → Queue) before its chunk children begin building.
+- Otherwise follow `.claude/commands/todomd-plan.md` for it; then **LOCK**, if status is still `Plan` set `status: Planned`, clear `lease`, Run Log line, commit, **UNLOCK** (else discard). After the commit, if the card's `## Chunks` section is non-empty, shell out `"/usr/local/bin/node" "/Users/irvinbowman/web dev/TODOMD-worktrees/main/bin/todomd.js" fanout <id>` — this materializes the chunk cards in Planned state and moves the epic to Planned; it then awaits your human approval (drag Planned → Queue) before its chunk children begin building.
 
 ## 2. Build work (ONE card per tick)
 
@@ -46,7 +51,7 @@ For each card in `.todomd/tasks/*.md` with `status: Plan` and no fresh lease: fi
 4. Inside the worktree follow `.claude/commands/todomd-build.md` for the card (UNLOCKED — this is the long part). Never touch `.todomd/` inside the worktree.
 5. **LOCK**, set `status: Verify`, commit, **UNLOCK**. Spawn a SUBAGENT (Agent/Task tool) — never verify your own work in-context — giving it the text of `.claude/commands/todomd-verify.md`, the card id, and the worktree path; require back: verdict pass|fail, per-criterion results, findings, and a `setup_error` if the verify command couldn't run at all (missing dep/file/env/service, not a test assertion).
 6. **setup_error** (the verify command couldn't even run) → **LOCK**, set `status: Needs Human`, `needs_human_reason: worktree_env`, quote the cause in the Run Log with the hint "add the missing gitignored file/dep to `worktree_link` in .todomd/config.yml, then move the card back to Queue", commit, **release your coordination claim (step C)**, **UNLOCK**. (Don't retry — another build won't fix a missing env file.)
-   **pass** → **LOCK**, then: confirm `git diff --name-only HEAD...<branch> -- .todomd` is empty (not empty → Needs Human, reason board_tampering, commit, release claim step C, **UNLOCK**); `git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"`; remove worktree, delete branch; set `status: Done` + verification.last_verdict, commit; **release your coordination claim (step C)**; **UNLOCK**. Then, if the card's frontmatter has a `parent:` field, shell out `"/usr/local/bin/node" "~/web dev/TODOMD/bin/todomd.js" advance <parent-id>` (outside the lock) to cascade the next chunk to Queue and allow the epic to auto-complete when all chunks are Done.
+   **pass** → **LOCK**, then: confirm `git diff --name-only HEAD...<branch> -- .todomd` is empty (not empty → Needs Human, reason board_tampering, commit, release claim step C, **UNLOCK**); `git merge --no-ff <branch> -m "chore(todomd): merge <id> (verified)"`; remove worktree, delete branch; set `status: Done` + verification.last_verdict, commit; **release your coordination claim (step C)**; **UNLOCK**. Then, if the card's frontmatter has a `parent:` field, shell out `"/usr/local/bin/node" "/Users/irvinbowman/web dev/TODOMD-worktrees/main/bin/todomd.js" advance <parent-id>` (outside the lock) to cascade the next chunk to Queue and allow the epic to auto-complete when all chunks are Done.
    **fail** (on the merits) → if attempts < max_attempts: fix the findings in the worktree (UNLOCKED), re-run step 5. Else **LOCK**, Needs Human as in step 1 with the findings quoted in the Run Log, **release your coordination claim (step C)**, **UNLOCK**.
 
 ### Coordination manifest — `.todomd/ACTIVE.md` (only if `coordination.enabled`)
@@ -62,7 +67,7 @@ So multiple developers don't build the same files at once. A claim is exactly tw
 
 ## 3. Self-heal
 
-Cards left in `Build`/`Verify` by an interrupted earlier tick: treat as Queue and re-enter step 2 (which LOCKs). Also: if `coordination.enabled`, under **LOCK** remove from `.todomd/ACTIVE.md` any claim whose card is no longer `Queue`/`Build`/`Verify` (a stale claim), commit, **UNLOCK**. (A crashed dispatcher's `.todomd/.lock` itself auto-expires after 5 minutes.)
+Cards left in `Build`/`Verify` by an interrupted earlier tick: treat as Queue and re-enter step 2 (which LOCKs). Also: if `coordination.enabled`, under **LOCK** remove from `.todomd/ACTIVE.md` any claim whose card is no longer `Queue`/`Build`/`Verify` (a stale claim), commit, **UNLOCK**.
 
 ## Rules
 

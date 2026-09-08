@@ -25,6 +25,10 @@ provisioning and an HTTP recovery transport. Existing boards still use the legac
 New local launches bind their admission owner to the exact execution; the local
 recovery adapter closes that backend before releasing an abandoned launch gate,
 while preserving the task lease, journal, and candidate.
+The [budget transaction helper](budget-write.md) now holds shared admission
+through supervised shell writes and supports exact repository-command recovery.
+Long interactive budget sessions and old dispatcher scripts still require a
+quiescent migration boundary.
 Remote authority and remaining external-writer admission, recovery after loss of
 all local controllers, provider credential/configuration distribution, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime
