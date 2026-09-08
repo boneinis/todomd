@@ -136,7 +136,9 @@ record events before these assessments can authorize live changes.
 ## Remaining rollout work
 
 The [update plan](delivery-workflow-update-plan.md) remains the rollout authority.
-Durable mutations and ownership leases, role/cycle management, UI integration,
-external evidence reconciliation, apply/rollback migration, and the two-cycle
-pilot are not implemented in this increment. There is no activation flag yet;
-`execution_enabled: false` describes the preview's fixed capability.
+The next increment supplies an internal [durable ownership and transition
+store](delivery-ownership.md). Its production adapters are not connected.
+Role/cycle management, UI integration, external evidence reconciliation,
+apply/rollback migration, and the two-cycle pilot remain future work. There is
+no board activation flag yet; `execution_enabled: false` describes the preview's
+fixed capability.
