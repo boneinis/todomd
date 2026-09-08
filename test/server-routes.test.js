@@ -87,6 +87,40 @@ test('API auth gauntlet: token tiers, origin check, viewer is read-only', async 
   } finally { srv.close(); }
 });
 
+test('delivery preview uses existing read permissions and cannot mutate or dispatch', async () => {
+  isolateHome();
+  const { repo, name, base, srv, q } = await boot();
+  try {
+    writeCard(repo, 'task-0001', { status: 'Done' });
+    const file = path.join(repo, '.todomd/tasks/task-0001-card.md');
+    const before = fs.readFileSync(file, 'utf8');
+    const head = () => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' });
+    const beforeHead = head(), beforeLog = readRunLog(repo, 'task-0001');
+    const viewer = deviceToken('token-viewer');
+    const endpoint = `${base}/api/delivery/preview${q}`;
+    assert.equal((await fetch(endpoint)).status, 401);
+    for (const token of [viewer, srv.token]) {
+      const response = await fetch(endpoint, { headers: { 'x-todomd-token': token } });
+      assert.equal(response.status, 200);
+      const report = await response.json();
+      assert.equal(report.read_only, true);
+      assert.equal(report.execution_enabled, false);
+      assert.equal(report.cards[0].deployment, 'unknown');
+      assert.equal(report.cards[0].proposed_state, null);
+    }
+    assert.equal((await fetch(endpoint, { headers: { 'x-todomd-token': deviceToken('token-board-agent') } })).status, 403);
+    assert.equal((await fetch(`${base}/api/delivery/preview?project=absent`, { headers: { 'x-todomd-token': viewer } })).status, 404);
+    for (const [token, status] of [[viewer, 403], [srv.token, 405]]) {
+      assert.equal((await fetch(endpoint, { method: 'POST', headers: { 'x-todomd-token': token, origin: base } })).status, status);
+    }
+    assert.equal(fs.readFileSync(file, 'utf8'), before);
+    assert.equal(head(), beforeHead);
+    assert.deepEqual(readRunLog(repo, 'task-0001'), beforeLog);
+    assert.equal(pipeline.hasLiveRun(name, 'task-0001'), false);
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Done');
+  } finally { srv.close(); }
+});
+
 test('API usage separates subscription tokens, unavailable gateway runs, and legacy estimated cost', async () => {
   isolateHome();
   const { base, srv, q } = await boot();

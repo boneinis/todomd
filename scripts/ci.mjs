@@ -125,6 +125,9 @@ async function packSmoke() {
     if (!fs.readFileSync(path.join(repo, '.gitignore'), 'utf8').split('\n').some((l) => l.trim() === '.todomd/local/'))
       throw new Error('init did not gitignore .todomd/local/ (local prompts would be committable)');
 
+    const preview = JSON.parse(await run(bin, ['delivery-preview', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
+    if (preview.read_only !== true || preview.execution_enabled !== false) throw new Error('installed CLI lost the read-only delivery preview');
+
     // 4. boot the installed server and exercise the API
     const port = await freePort();
     server = spawn(bin, ['serve', '--no-open', '--port', String(port)],
@@ -148,6 +151,10 @@ async function packSmoke() {
     expect(await code('/api/board?project=repo', { 'x-todomd-token': tok }), 200, 'board with a full token');
     expect(await code('/api/board?project=repo'), 401, 'board with no token');
     expect(await code('/api/board?project=repo', { 'x-todomd-token': viewer }), 200, 'viewer can read the board');
+    const previewResponse = await fetch(`${base}/api/delivery/preview?project=repo`, { headers: { 'x-todomd-token': viewer } });
+    expect(previewResponse.status, 200, 'viewer can read the delivery preview');
+    const installedPreview = await previewResponse.json();
+    if (installedPreview.read_only !== true || installedPreview.execution_enabled !== false) throw new Error('installed API lost the read-only delivery preview');
     // today's fix: an authenticated-but-limited viewer is 403, never 401
     expect(await code('/api/cards/task-0001/runlog?project=repo', { 'x-todomd-token': viewer }), 403, 'viewer runlog');
     expect(await code('/api/models?project=repo&agent=claude', { 'x-todomd-token': viewer }), 403, 'viewer models');
