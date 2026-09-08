@@ -28,7 +28,7 @@ alone does not establish private ownership.
 
 The read-only status contains a reason, a next action for the project owner,
 delivery state/revision, stable owners, blocker category, and whether an existing
-lease has expired. It omits private paths, PIDs, run IDs, receipts, commands,
+lease has expired, plus the execution journal phase when present. It omits private paths, PIDs, run IDs, receipts, commands,
 source revisions, and evidence references.
 
 ## Runtime and UI integration
@@ -72,6 +72,10 @@ do not make concurrent live migration safe and do not fence arbitrary shell
 writes, external budget dispatchers, or work already running before a private
 record appears. Keep activation off until those adapters and the pilot acceptance
 gates in the [update plan](delivery-workflow-update-plan.md) pass.
+
+The internal [execution coordinator](delivery-execution.md) now implements the
+durable dispatch/closure journal. Production backends and a shared admission
+fence still need to implement its contract before enabling execution.
 
 On an existing hold, keep candidate and history intact. The project owner must
 reconcile the recorded execution and pending operation under the quiesced
