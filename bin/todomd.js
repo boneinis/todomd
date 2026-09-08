@@ -12,10 +12,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(['--port']);
+const VALUE_FLAGS = new Set(['--port', '--epoch', '--nonce']);
 const positional = [];
 for (let i = 0; i < args.length; i++) {
   if (VALUE_FLAGS.has(args[i])) { i++; continue; }
@@ -52,6 +52,28 @@ const flag = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback;
 };
+
+if (cmd === 'delivery-admission') {
+  const allowed = new Set(['--json', '--recover', '--epoch', '--nonce']);
+  if (positional.length > 2 || args.some(a => a.startsWith('-') && !allowed.has(a)) ||
+    (!args.includes('--recover') && (args.includes('--epoch') || args.includes('--nonce')))) {
+    console.error('usage: todomd delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]');
+    process.exit(1);
+  }
+  try {
+    const { projectAdmissionDirectory } = await import('../src/delivery-paths.js');
+    const { admissionStatus, recoverAdmission } = await import('../src/delivery-admission.js');
+    const directory = projectAdmissionDirectory(path.resolve(positional[1] || process.cwd()));
+    const report = args.includes('--recover')
+      ? recoverAdmission(directory, { epoch: Number(flag('--epoch')), nonce: flag('--nonce') })
+      : { read_only: true, ...admissionStatus(directory) };
+    console.log(JSON.stringify(report, null, args.includes('--json') ? undefined : 2));
+    process.exit(report.ok === false ? 1 : 0);
+  } catch {
+    console.error('Delivery admission could not be verified; private state was preserved.');
+    process.exit(1);
+  }
+}
 
 const isGitRepo = (dir) => {
   try { execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: dir, stdio: 'ignore' }); return true; }
