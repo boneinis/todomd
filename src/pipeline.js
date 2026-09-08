@@ -1689,6 +1689,9 @@ function canReturnToBuild(card) {
   const lastVerdict = card?.data?.verification?.last_verdict;
   return reason === 'attempts_exhausted'
     || reason === 'nothing_to_test'
+    // A CI failure can precede any verifier verdict. A human may choose a
+    // repair Build as well as retrying CI on the existing candidate.
+    || reason === 'ci_failed'
     || reason === 'ci_attempts_exhausted'
     || reason === 'verification_incomplete'
     || reason === 'ci_evidence_invalid'
@@ -1728,7 +1731,7 @@ export async function recoveryActions(project, id, { ignoreClaim = null } = {}) 
   };
 }
 
-// Human-directed repair after a real verifier failure. Unlike Retry
+// Human-directed repair after a CI or verifier failure. Unlike Retry
 // Verification, this runs Build again in the preserved worktree. It extends
 // the cap by exactly one attempt so an explicit human decision can recover an
 // attempts_exhausted card without resetting or hiding its prior history.

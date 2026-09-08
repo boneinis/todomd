@@ -71,8 +71,8 @@ function hostileBoard() {
     '---\nid: task-0007\ntitle: restartable orphaned build\nstatus: Needs Human\ntype: bug\n' +
     'labels: []\nneeds_human_reason: orphaned_run\nworktree: todomd/task-0007\n---\n\n## Description\n\nmissing worktree\n');
   card('task-0008-exhausted.md',
-    '---\nid: task-0008\ntitle: exhausted repair with preserved work\nstatus: Needs Human\ntype: bug\n' +
-    'labels: []\nneeds_human_reason: attempts_exhausted\nworktree: todomd/task-0008\n' +
+    '---\nid: task-0008\ntitle: CI-failed repair with preserved work\nstatus: Needs Human\ntype: bug\n' +
+    'labels: []\nneeds_human_reason: ci_failed\nworktree: todomd/task-0008\n' +
     'verification: { attempts: 3, max_attempts: 3, last_verdict: fail }\n---\n\n## Description\n\nrepair the verifier findings\n');
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', 'hostile UI fixtures']);
@@ -307,10 +307,10 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
       'an orphan whose preserved assets are gone shows Restart Build');
 
     await page.eval(`document.querySelector('[data-id="task-0008"]').click()`);
-    await until(async () => /exhausted repair with preserved work/.test(
+    await until(async () => /CI-failed repair with preserved work/.test(
       await page.eval(`document.getElementById('drawer-title').textContent`)) || null, { timeout: BUDGET.quick });
     assert.equal(await page.eval(`document.getElementById('drawer-return-build').hidden`), false,
-      'a verifier-exhausted card with preserved work shows Return to Build');
+      'a CI-failed card with preserved work shows Return to Build');
     assert.equal(await page.eval(`document.getElementById('agent-return-build').hidden`), false,
       'the card-agent composer can carry its handoff into the guarded repair Build');
     assert.equal(await page.eval(`document.getElementById('drawer-recovery-agent').hidden`), false,
