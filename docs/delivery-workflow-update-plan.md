@@ -1,6 +1,7 @@
 # To-do MD delivery workflow update plan
 
-Status: approved for incremental implementation; read-only foundation implemented  
+Status: approved; foundation, ownership, compatibility guard, and execution coordinator implemented; activation off
+
 Date: September 8, 2026  
 Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)  
 Pilot project: To-do MD itself
@@ -10,7 +11,9 @@ read-only migration preview](delivery-foundation.md). The next implements an
 internal [durable ownership, lease, and transition store](delivery-ownership.md).
 The [runtime compatibility guard](delivery-runtime.md) now makes the legacy
 scheduler, recovery controls, and card writes respect that private ownership.
-Existing boards still use the legacy runtime. Coordinated runtime admission and
+The internal [execution coordinator](delivery-execution.md) now persists dispatch
+claims and reconciles backend closure before releasing a lease. Existing boards
+still use the legacy runtime. Production backend/admission and transaction
 recovery adapters, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime
 integration and recovery acceptance gates pass.

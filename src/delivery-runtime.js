@@ -43,7 +43,8 @@ export function deliveryRuntimeStatus(repoPath, id) {
       record.lease ? 'Durable delivery ownership prevents legacy execution or recovery.' : 'This task is managed by the delivery workflow; legacy actions are held.',
       reconcile, { revision: record.revision, state: record.task.delivery.state,
         ownership: record.task.ownership, blocker_category: record.task.blocker?.category || null,
-        lease: record.lease ? { owner: record.lease.owner, expired: record.lease.expires_at <= Date.now() } : null });
+        lease: record.lease ? { owner: record.lease.owner, expired: record.lease.expires_at <= Date.now() } : null,
+        execution: record.execution ? { phase: record.execution.phase } : null });
   } catch {
     return hold('delivery_state_unavailable', 'Delivery ownership cannot be verified.', reconcile);
   }

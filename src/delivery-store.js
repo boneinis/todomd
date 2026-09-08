@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateDeliveryTask, evaluateDeliveryTransition, OWNER_ROLES, isOwnerId } from './delivery.js';
+import { EXECUTION_ACTIONS, validExecution, admissionMatches, applyExecution } from './delivery-execution-state.js';
 
-// Internal, opt-in persistence primitive. No production adapter imports this
-// module yet. Its private directory must never be the tracked task directory.
+// Internal, opt-in persistence primitive. No production write entry point is
+// enabled. Its private directory must never be the tracked task directory.
 // It does not dispatch work, edit Markdown, or make external evidence trusted.
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const text = v => typeof v === 'string' && v.trim().length > 0;
@@ -18,7 +19,7 @@ const canonical = value => JSON.stringify(value, function (key, v) {
 const fingerprint = value => createHash('sha256').update(canonical(value)).digest('hex');
 const handoff = v => object(v) && text(v.evidence) && text(v.next_action);
 const ttl = v => Number.isSafeInteger(v) && v >= 1 && v <= 3_600_000;
-const ACTIONS = new Set(['initialize', 'assign', 'acquire', 'renew', 'release', 'block', 'resolve', 'transition']);
+const ACTIONS = new Set(['initialize', 'assign', 'acquire', 'renew', 'release', 'block', 'resolve', 'transition', ...EXECUTION_ACTIONS]);
 const matchesLease = (lease, value) => object(lease) && object(value) &&
   lease.id === value.lease_id && lease.fence === value.fence && lease.run_id === value.run_id;
 
@@ -37,7 +38,7 @@ function readRecord(file, id) {
     !sha(checksum) || checksum !== fingerprint(contents) ||
     r.task?.id !== id || !validateDeliveryTask(r.task).ok || r.task.schema_version !== 2 ||
     !sha(r.source_revision) || !Array.isArray(r.events) || r.events.length !== r.revision ||
-    !object(r.receipts) || !Number.isSafeInteger(r.next_fence) || r.next_fence < 1 ||
+    !object(r.receipts) || !Number.isSafeInteger(r.next_fence) || r.next_fence < 1 || !validExecution(r.execution, r) ||
     !(r.lease === null || object(r.lease) && identity(r.lease.id) && identity(r.lease.run_id) &&
       isOwnerId(r.lease.owner) && Number.isSafeInteger(r.lease.fence) && r.lease.fence > 0 &&
       r.lease.fence < r.next_fence && Number.isSafeInteger(r.lease.expires_at))) {
@@ -125,7 +126,11 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
             next_fence: 1, last_handoff: null, events: [], receipts: {} };
         } else {
           if (!record) return fail('not_initialized', 'Initialize an explicitly mapped task first.');
-          if (c.action === 'renew' || c.action === 'release') {
+          if (EXECUTION_ACTIONS.includes(c.action)) {
+            if (!matchesLease(record.lease, c)) return fail('stale_lease', 'Use the current lease identity, run and fence.');
+            const result = applyExecution(record, c, context, time);
+            if (!result.ok) return result;
+          } else if (c.action === 'renew' || c.action === 'release') {
             if (!matchesLease(record.lease, c)) return fail('stale_lease', 'The lease identity, run and fence must match the current owner.');
             if (c.action === 'renew') {
               if (context.actor_id !== record.lease.owner) return fail('not_owner', 'Only the lease owner can renew it.');
@@ -133,12 +138,15 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
               if (!ttl(c.ttl_ms)) return fail('invalid_ttl', 'Lease duration must be between 1 ms and one hour.');
               record.lease.expires_at = Math.max(record.lease.expires_at, time + c.ttl_ms);
             } else {
-              if (!matchesLease(record.lease, context.stopped) || context.stopped.confirmed !== true || !text(context.stopped.reference)) {
+              const stopped = record.execution
+                ? record.execution.phase === 'stopped' && { ...record.execution.observation, confirmed: true }
+                : context.stopped;
+              if (!matchesLease(record.lease, stopped) || stopped.confirmed !== true || !text(stopped.reference)) {
                 return fail('stop_unconfirmed', 'Confirm this exact execution stopped, including any accepted remote job.');
               }
               if (!handoff(c.handoff)) return fail('handoff_required', 'Preserve evidence and the next action when releasing execution.');
               record.last_handoff = { ...clone(c.handoff), from: record.lease.owner, run_id: record.lease.run_id,
-                fence: record.lease.fence, stopped_reference: context.stopped.reference, at: time };
+                fence: record.lease.fence, stopped_reference: stopped.reference, at: time };
               record.lease = null;
             }
           } else {
@@ -172,11 +180,16 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
                 if (!result.ok) return result;
               }
               if (c.action === 'acquire') {
+                if (c.execution !== undefined && !admissionMatches(context, c.execution, record.source_revision, record.task.ownership.implementation)) {
+                  return fail('admission_required', 'Execution requires a matching source revision and fenced backend admission.');
+                }
                 if (!identity(c.run_id) || !ttl(c.ttl_ms)) return fail('invalid_lease', 'Supply a run identity and a lease duration between 1 ms and one hour.');
                 // Run IDs are never recycled, even after a confirmed release.
                 if (record.events.some(e => e.action === 'acquire' && e.command.run_id === c.run_id)) return fail('run_reused', 'Use a new run identity.');
                 record.lease = { id: randomUUID(), fence: record.next_fence++, run_id: c.run_id,
                   owner: record.task.ownership.implementation, acquired_at: time, expires_at: time + c.ttl_ms };
+                record.execution = c.execution === undefined ? null : { backend: c.execution.backend,
+                  source_revision: c.execution.source_revision, phase: 'reserved' };
               }
               record.task.delivery.state = to;
               if (['backlog', 'cancelled'].includes(to)) delete record.task.blocker;
@@ -185,10 +198,17 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
         }
         const validation = validateDeliveryTask(record.task);
         if (!validation.ok) return { ...fail('invalid_schema', 'The operation would violate the delivery contract.'), issues: validation.issues };
+        if (!validExecution(record.execution, record)) return fail('invalid_execution', 'The operation would violate the execution journal contract.');
         record.revision++;
         const result = { ok: true, revision: record.revision, action: c.action, lease: clone(record.lease), effect: 'private_state_only' };
-        const evidence = c.action === 'release' ? { stopped: clone(context.stopped) }
+        const evidence = c.action === 'release' ? { stopped: clone(record.execution?.observation || context.stopped) }
+          : c.action === 'observe_execution' ? { observation: clone(record.execution.observation) }
           : ['transition', 'acquire'].includes(c.action) ? { facts: clone(context.facts || {}) } : {};
+        if (record.execution && ['acquire', 'dispatch'].includes(c.action)) {
+          evidence.execution_admission = { backend: record.execution.backend,
+            source_revision: record.execution.source_revision, fenced: true,
+            owner: record.lease.owner, authorized: true, dependencies_satisfied: true };
+        }
         record.events.push({ revision: record.revision, at: time, actor: context.actor_id, grant, action: c.action,
           command: clone(c), evidence });
         Object.defineProperty(record.receipts, key, { value: { fingerprint: hash, result }, enumerable: true, writable: true, configurable: true });
