@@ -4,13 +4,14 @@ The internal coordinator in `src/delivery-execution.js` connects durable leases
 to trusted execution backends. It records dispatch before calling a backend,
 reconciles uncertain acknowledgements without resubmitting, and releases only
 after a committed observation confirms the exact execution is permanently
-closed. It is disabled by default. No server, CLI, migration command, or shipped
-production backend enables this path yet. Existing boards retain their runtime.
+closed. It is disabled by default. A concrete [local process backend](delivery-local-backend.md)
+now implements this contract on macOS/Linux. No server, CLI, or migration command
+enables this path yet. Existing boards retain their runtime.
 
 This completes the journal/coordinator portion of phase 3, not its production
-integration or pilot acceptance gates. The tests exercise the backend contract,
-including an actual local process-group stop. They do not establish that the
-existing legacy or fleet runners already implement that contract.
+integration or pilot acceptance gates. Tests now exercise the coordinator with
+the real local backend, including an actual process-group stop. The existing
+legacy and fleet runners do not yet participate in this protocol.
 
 ## Admission and authority
 
@@ -96,7 +97,7 @@ release because the task is still delivery-managed.
 
 ## Remaining integration
 
-Production local/remote backends, server-owned role grants, source fencing shared
+The local backend is implemented; remote backends, server-owned role grants, source fencing shared
 with all writers, supported abandoned-transaction recovery, and revision-checked
 task projection/migration remain required. Transaction locks retain the offline
 quiesced recovery procedure in [delivery ownership](delivery-ownership.md); this
