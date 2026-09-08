@@ -59,6 +59,12 @@ On first open the board shows a **Getting Started** guide (the flow, the two hum
 - **Recovery agent:** open a Needs Human card and click **review & process**. A tool-less reviewer reads the card and latest run, then either resumes preserved Build work, retries infrastructure-only CI/Verify, returns substantive findings to a fresh repair Build with a durable handoff, or holds for a real human decision. One click permits one high-confidence, server-revalidated action—there is no recursive retry loop or silent attempt-cap growth.
 - Email → board: built-in **IMAP polling** (`~/.todomd/intake.json` + `todomd intake-test`) turns inbox mail into Review cards with attachments; or a zero-infra cloud-routine recipe. Inbound mail is **screened** first — marketing/automated mail never makes a card, ambiguous mail (bounces, out-of-office, a body too thin to act on) is held in **Needs Human** rather than dropped, and every decision is logged to `.todomd/intake-audit.jsonl`. See `docs/email-intake.md`.
 
+**Delivery workflow preview:** `todomd delivery-preview /path/to/repo` shows proposed
+delivery states and migration issues without modifying cards or starting agents.
+Add `--json` for structured output. Legacy Done cards keep deployment **unknown**.
+See the [foundation contract](docs/delivery-foundation.md) and
+[implementation plan](docs/delivery-workflow-update-plan.md).
+
 ## Task file
 
 ```markdown
