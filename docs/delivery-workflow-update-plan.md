@@ -1,6 +1,6 @@
 # To-do MD delivery workflow update plan
 
-Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, shared admission core, trusted role/job adapter, scoped credentials/job policy, and HTTP recovery implemented; launch activation off
+Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, shared admission core, trusted role/job adapter, scoped credentials/job policy, HTTP recovery, and bound local launch recovery implemented; launch activation off
 
 Date: September 8, 2026  
 Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)  
@@ -22,6 +22,9 @@ now derives grants from authenticated project identities and binds approved job
 profiles to persistent recovery authority. [Scoped credentials and private job
 policy](delivery-access.md) now bind request sessions, with local administrative
 provisioning and an HTTP recovery transport. Existing boards still use the legacy runtime.
+New local launches bind their admission owner to the exact execution; the local
+recovery adapter closes that backend before releasing an abandoned launch gate,
+while preserving the task lease, journal, and candidate.
 Remote authority and remaining external-writer admission, recovery after loss of
 all local controllers, provider credential/configuration distribution, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime

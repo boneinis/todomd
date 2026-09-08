@@ -84,7 +84,9 @@ sessions; neither capability establishes writer quiescence on its own.
 On an existing hold, keep candidate and history intact. The project owner must
 inspect the recorded execution and pending operation using the
 [admission recovery procedure](delivery-admission.md). Only exact, dead metadata
-transactions qualify for online recovery; external work requires quiesced
+transactions and bound local launches qualify for their respective recovery
+adapters. A `delivery_launch_pending` hold directs the operator to recover the
+launch gate before reconciling the lease. Other external work requires quiesced
 reconciliation. Do not delete a record or reset attempts to make the legacy
 controls available again.
 

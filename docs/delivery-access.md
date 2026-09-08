@@ -100,6 +100,6 @@ board-wide token.
 
 Provider session setup still needs to distribute these scoped credentials and
 select approved job configurations. Shared admission for every shell/budget and
-remote writer, recovery of abandoned launch owners and lost controllers,
+remote writer, recovery of unbound launch owners and lost controllers,
 revision-checked projection/migration, and pilot acceptance remain required.
 No credential or policy is provisioned automatically during deployment.

@@ -112,7 +112,7 @@ export function createDeliveryAuthority(repoPath, { enabled = false, authenticat
     return { inspect: verified(local.inspect), close: verified(local.close),
       // Retain project admission through asynchronous authorization, job
       // resolution, and supervisor acknowledgement. Revalidate after acquiring.
-      start: verified(ref => withAdmission(gate, 'launch', ref.task_id, () => local.start(ref))) };
+      start: verified(ref => withAdmission(gate, 'launch', ref.task_id, () => local.start(ref), { localExecution: ref })) };
   }
   function coordinator(record) {
     const names = new Set(byBackend.keys());
