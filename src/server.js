@@ -1,6 +1,7 @@
 import { createBoardAgent } from './board-agent.js';
 import http from 'node:http';
 import fs from 'node:fs';
+import { previewDeliveryMigration } from './delivery-preview.js';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -380,6 +381,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     const project = findProject(url.searchParams.get('project') || '');
     if (!project) return json(res, 404, { error: 'unknown project' });
+
+    if (url.pathname === '/api/delivery/preview') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'delivery preview is read-only; activation is not available' });
+      try { return json(res, 200, previewDeliveryMigration(project.path)); }
+      catch (error) { return json(res, error.code === 'board_not_found' ? 404 : 500, { error: 'delivery preview unavailable', code: error.code || 'read_failed' }); }
+    }
 
     // column prompts = the .claude/commands/*.md files. Full token only (editing repo files).
     if (url.pathname === '/api/commands' && req.method === 'GET') {

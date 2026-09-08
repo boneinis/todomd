@@ -12,7 +12,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
 const VALUE_FLAGS = new Set(['--port']);
@@ -33,6 +33,21 @@ if (args.includes('--help') || args.includes('-h')) {
 }
 
 const cmd = positional[0] || 'serve';
+if (cmd === 'delivery-preview') {
+  if (positional.length > 2 || args.some(arg => arg.startsWith('-') && arg !== '--json')) {
+    console.error('usage: todomd delivery-preview [repo] [--json] (read only; no apply option)');
+    process.exit(1);
+  }
+  try {
+    const { previewDeliveryMigration, formatDeliveryPreview } = await import('../src/delivery-preview.js');
+    const report = previewDeliveryMigration(path.resolve(positional[1] || process.cwd()));
+    console.log(args.includes('--json') ? JSON.stringify(report, null, 2) : formatDeliveryPreview(report));
+  } catch (error) {
+    console.error(`delivery preview failed: ${error.code || error.message}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
 const flag = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback;
