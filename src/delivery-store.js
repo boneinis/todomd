@@ -180,7 +180,7 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
                 if (!result.ok) return result;
               }
               if (c.action === 'acquire') {
-                if (c.execution !== undefined && !admissionMatches(context, c.execution, record.source_revision)) {
+                if (c.execution !== undefined && !admissionMatches(context, c.execution, record.source_revision, record.task.ownership.implementation)) {
                   return fail('admission_required', 'Execution requires a matching source revision and fenced backend admission.');
                 }
                 if (!identity(c.run_id) || !ttl(c.ttl_ms)) return fail('invalid_lease', 'Supply a run identity and a lease duration between 1 ms and one hour.');
@@ -206,7 +206,8 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
           : ['transition', 'acquire'].includes(c.action) ? { facts: clone(context.facts || {}) } : {};
         if (record.execution && ['acquire', 'dispatch'].includes(c.action)) {
           evidence.execution_admission = { backend: record.execution.backend,
-            source_revision: record.execution.source_revision, fenced: true };
+            source_revision: record.execution.source_revision, fenced: true,
+            owner: record.lease.owner, authorized: true, dependencies_satisfied: true };
         }
         record.events.push({ revision: record.revision, at: time, actor: context.actor_id, grant, action: c.action,
           command: clone(c), evidence });

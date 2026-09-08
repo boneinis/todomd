@@ -68,6 +68,15 @@ test('admission and dispatch recheck fenced source authority before any external
   f.context.execution_admission.source_revision = 'b'.repeat(64);
   assert.equal((await f.coordinator().dispatch(id, f.command())).code, 'admission_required');
   f.context.execution_admission.source_revision = source;
+  f.context.facts.admission.dependencies_satisfied = false;
+  assert.equal((await f.coordinator().dispatch(id, f.command())).code, 'admission_required');
+  f.context.facts.admission.dependencies_satisfied = true;
+  f.context.facts.admission.authorized = false;
+  assert.equal((await f.coordinator().dispatch(id, f.command())).code, 'admission_required');
+  f.context.facts.admission.authorized = true;
+  f.context.facts.admission.owner = 'agent-role:other';
+  assert.equal((await f.coordinator().dispatch(id, f.command())).code, 'admission_required');
+  f.context.facts.admission.owner = 'agent-role:builder';
   f.context.busy = true;
   assert.equal((await f.coordinator().dispatch(id, f.command())).code, 'admission_required');
   assert.equal(f.starts, 0);

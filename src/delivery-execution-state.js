@@ -22,11 +22,12 @@ export function validExecution(e, r) {
       text(e.observation.reference) && (r.lease === null || sameExecution(e.observation, executionRef(r))));
 }
 
-export function admissionMatches(context, execution, sourceRevision) {
-  const a = context.execution_admission;
+export function admissionMatches(context, execution, sourceRevision, owner) {
+  const a = context.execution_admission, eligibility = context.facts?.admission;
   return identity(execution?.backend) && sha(execution?.source_revision) &&
     execution.source_revision === sourceRevision && a?.fenced === true &&
-    a.backend === execution.backend && a.source_revision === sourceRevision;
+    a.backend === execution.backend && a.source_revision === sourceRevision &&
+    eligibility?.authorized === true && eligibility.dependencies_satisfied === true && eligibility.owner === owner;
 }
 
 export function applyExecution(r, c, context, time) {
@@ -35,7 +36,7 @@ export function applyExecution(r, c, context, time) {
   if (c.action === 'dispatch') {
     if (e.phase !== 'reserved') return fail('dispatch_claimed', 'Dispatch was already claimed; reconcile without submitting again.');
     if (r.lease.expires_at <= time) return fail('lease_expired', 'Reconcile the expired reservation before execution.');
-    if (!admissionMatches(context, e, r.source_revision) || context.busy !== false) {
+    if (!admissionMatches(context, e, r.source_revision, r.lease.owner) || context.busy !== false) {
       return fail('admission_required', 'Revalidate source and fenced legacy/remote admission before dispatch.');
     }
     e.phase = 'dispatching'; // publish before calling any external backend

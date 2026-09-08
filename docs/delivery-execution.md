@@ -46,7 +46,7 @@ return after an asynchronous lookup.
 | Operation | Durable behavior |
 | --- | --- |
 | `reserve` | Lease and `reserved` execution intent publish atomically; no backend call. |
-| `dispatch` | Rechecks source/admission and unexpired lease, commits `dispatching`, then calls `start` once. Replayed receipts, stale revisions, and uncertain commits never start another job. |
+| `dispatch` | Rechecks source, assigned owner, authorization, dependencies, and unexpired lease, commits `dispatching`, then calls `start` once. Replayed receipts, stale revisions, and uncertain commits never start another job. |
 | `stop` | Commits `stop_requested` before calling idempotent backend `close`. A lost close acknowledgement can retry the same request. This alone does not release the lease. |
 | `reconcile` | Queries backend `inspect`, then commits a matching observation under the current revision and lease. Running, unknown, or unavailable results retain ownership. |
 | `release` | Uses the committed closed observation and required candidate handoff. It ignores caller-provided stop claims for journaled executions. |
