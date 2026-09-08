@@ -68,7 +68,7 @@ The legacy shell/budget lock protocol does not yet participate in this gate.
 Enabling a gate does not fence work that started beforehand, a direct shell writer,
 or an accepted remote job. Initial activation/migration must establish quiescence
 and integrate every writer and authoritative stop/source check. Production
-credential and job-policy bindings, remote closure, projection/migration, and the pilot acceptance gates
+provider credential/configuration integration, remote closure, projection/migration, and the pilot acceptance gates
 remain required. Gate history retention is currently unbounded.
 
 Tests cover independent recovery callers, stale recovery against a newer owner,
