@@ -23,9 +23,14 @@ const matchesLease = (lease, value) => object(lease) && object(value) &&
   lease.id === value.lease_id && lease.fence === value.fence && lease.run_id === value.run_id;
 
 function readRecord(file, id) {
-  let raw;
-  try { raw = fs.readFileSync(file, 'utf8'); }
+  let raw, descriptor;
+  try {
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    if (!fs.fstatSync(descriptor).isFile()) throw new Error('Delivery record is not a regular file.');
+    raw = fs.readFileSync(descriptor, 'utf8');
+  }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
   const r = JSON.parse(raw);
   const { checksum, ...contents } = r || {};
   if (!object(r) || r.format !== 1 || !Number.isSafeInteger(r.revision) || r.revision < 1 ||

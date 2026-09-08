@@ -4,6 +4,9 @@
    neutrals, teal accent, Fraunces wordmark, mono for IDs & meta.
    Light + dark via body.light. */
 
+#drawer-delivery-hold { white-space: pre-line; }
+.drawer-rail button:disabled, .drawer-rail select:disabled { opacity: .45; cursor: not-allowed; }
+
 :root {
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, monospace;

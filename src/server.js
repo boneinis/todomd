@@ -2,6 +2,7 @@ import { createBoardAgent } from './board-agent.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import { previewDeliveryMigration } from './delivery-preview.js';
+import { deliveryRuntimeStatus, legacyMutationGuard } from './delivery-runtime.js';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -382,6 +383,18 @@ export function startServer({ port = 7337, lan = false } = {}) {
     const project = findProject(url.searchParams.get('project') || '');
     if (!project) return json(res, 404, { error: 'unknown project' });
 
+    const deliveryCardWrite = url.pathname.match(/^\/api\/cards\/([\w.-]+)(?:\/|$)/);
+    if (deliveryCardWrite && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      const held = legacyMutationGuard(project.path, deliveryCardWrite[1]);
+      if (held) return json(res, 409, held);
+    }
+    if (url.pathname === '/api/delivery/runtime') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'delivery runtime status is read-only' });
+      const cards = loadBoard(project.path, { includeArchived: true }).cards;
+      return json(res, 200, { read_only: true, execution_enabled: false,
+        cards: Object.fromEntries(cards.map(card => [card.id, deliveryRuntimeStatus(project.path, card.id)])) });
+    }
+
     if (url.pathname === '/api/delivery/preview') {
       if (req.method !== 'GET') return json(res, 405, { error: 'delivery preview is read-only; activation is not available' });
       try { return json(res, 200, previewDeliveryMigration(project.path)); }
@@ -493,6 +506,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     if (url.pathname === '/api/board') {
       const board = loadBoard(project.path, { includeArchived: url.searchParams.get('archived') === '1' });
+      board.cards = board.cards.map(card => ({ ...card, delivery_runtime: deliveryRuntimeStatus(project.path, card.id) }));
       return json(res, 200, {
         ...board,
         mode: board.config.mode || 'launcher',
@@ -633,6 +647,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       if (!card) return json(res, 404, { error: 'card not found' });
       const summary = loadBoard(project.path, { includeArchived: true }).cards.find((c) => c.file === card.file);
       return json(res, 200, { ...card, dependencyIssues: summary?.dependencyIssues,
+        delivery_runtime: deliveryRuntimeStatus(project.path, cardMatch[1]),
         recovery: card.parseError ? {} : await pipeline.recoveryActions(project, cardMatch[1]) });
     }
     // the streamed events of the card's most recent run, to back-fill the drawer

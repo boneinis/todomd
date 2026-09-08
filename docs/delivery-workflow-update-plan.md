@@ -8,6 +8,8 @@ Pilot project: To-do MD itself
 The first increment implements the [delivery schema, assessment rules, and
 read-only migration preview](delivery-foundation.md). The next implements an
 internal [durable ownership, lease, and transition store](delivery-ownership.md).
+The [runtime compatibility guard](delivery-runtime.md) now makes the legacy
+scheduler, recovery controls, and card writes respect that private ownership.
 Existing boards still use the legacy runtime. Coordinated runtime admission and
 recovery adapters, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime

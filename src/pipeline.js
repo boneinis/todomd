@@ -12,6 +12,7 @@ import { claim as coordClaim, release as coordRelease, readAllClaims as coordCla
 import { runs, runKey, persistRuns, readPriorRuns, addCost, monthCost, recordUsage, usageSummary } from './runstore.js';
 import * as scheduler from './scheduler.js';
 import { stopChild, signalChild, awaitChildStop } from './process-lifecycle.js';
+import { legacyMutationGuard, deliveryRuntimeStatus } from './delivery-runtime.js';
 
 const VERDICT_SCHEMA = {
   // todomd.verdict/1
@@ -197,6 +198,7 @@ function clearCardInstruction(project, id) {
 }
 
 export function setCardInstruction(project, id, value) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   if (!readCard(project.path, id)) return { ok: false, error: `card not found: ${id}` };
   const text = String(value || '').trim();
   if (text.length > CARD_INSTRUCTION_MAX) {
@@ -377,6 +379,7 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
   if (!card) return { ok: false, error: 'card not found' };
   if (card.parseError) return cardParseFailure(card);
   const id = card.data.id;
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   if (card.data.status !== 'Planned') {
     return { ok: false, error: 'cards are assigned from Planned (approve a plan first)' };
   }
@@ -837,6 +840,7 @@ async function releaseCoordination(project, id) {
 // worktree) so it can be archived or deleted without leaking anything. The
 // caller must ensure there's no LIVE run first (cancel it).
 export async function releaseCardResources(project, id) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   scheduler.dequeue(project.name, id);
   const key = runKey(project.name, id);
   retryFindings.delete(key);
@@ -857,6 +861,7 @@ export async function cascadeEpicCleanup(project, epicId) {
   const board = loadBoard(project.path); // active (non-archived) children only
   const remaining = board.cards.filter((c) => c.parent === epicId && c.status !== 'Done' && !c.epic);
   for (const child of remaining) {
+    if (legacyMutationGuard(project.path, child.id)) continue;
     const childKey = runKey(project.name, child.id);
     const childLive = children.get(childKey);
     const childPend = pending.get(childKey);
@@ -895,6 +900,7 @@ export async function cascadeEpicCleanup(project, epicId) {
 // into the next build (via the retry-findings channel the build prompt already
 // injects) and re-drive the card back into the build queue. No live run expected.
 export async function answerCard(project, id, answer) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: `card not found: ${id}` };
   const text = String(answer || '').trim();
@@ -988,6 +994,7 @@ async function runCardPrompt(project, id, text, claim) {
 // entering the Build/Verify workflow. The HTTP request returns immediately;
 // progress and the answer stream through the existing run-state/run-event bus.
 export async function promptCard(project, id, value) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: `card not found: ${id}` };
   const text = String(value || '').trim();
@@ -1163,6 +1170,7 @@ async function runRecoveryReview(project, id, claim) {
 // server-revalidated recovery action. There is deliberately no automatic
 // sweep or recursive retry: every additional attempt requires another click.
 export async function reviewAndProcessRecovery(project, id) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: `card not found: ${id}` };
   if (card.data.status !== 'Needs Human') return { ok: false, error: 'recovery review is available only for Needs Human cards' };
@@ -1285,6 +1293,7 @@ async function generateCardSummaries(project, id, holder) {
 }
 
 export function summarizeCard(project, id) {
+  const held = legacyMutationGuard(project.path, id); if (held) return Promise.resolve(held);
   const key = runKey(project.name, id);
   const active = summaryRuns.get(key);
   if (active) return active.promise;
@@ -1446,6 +1455,7 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
 /* ── human transitions (the §3.1 table) ── */
 
 export async function humanMove(project, id, to, { instruction = '' } = {}) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: `card not found: ${id}` };
   if (card.parseError) return cardParseFailure(card);
@@ -1715,6 +1725,8 @@ function canReturnToBuild(card) {
 export async function recoveryActions(project, id, { ignoreClaim = null } = {}) {
   const card = readCard(project.path, id);
   const empty = { resume_build: false, restart_build: false, retry_verification: false, return_to_build: false, reset_attempts: false };
+  const delivery = deliveryRuntimeStatus(project.path, id);
+  if (!delivery.legacy_execution_allowed) return { ...empty, delivery_runtime: delivery };
   if (!card) return { ...empty, build_profile: 'standard', build_limits: { max_slices: 3, budget_minutes: 60 } };
   const profile = buildContinuationConfig(await execConfig(project.path), card);
   const summary = {
@@ -2020,6 +2032,7 @@ function preserveCancelledCandidate(project, id, state, config) {
 }
 
 export async function cancel(project, id) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   if (recoveryAdmissions.has(runKey(project.name, id))) {
     return { ok: false, error: 'recovery transition in progress — retry cancellation after it settles' };
   }
@@ -3841,6 +3854,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
 const triaging = new Map(); // runKey → exact claim spanning pre-spawn through final writes
 
 export async function maybeTriage(project, id) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   const key = runKey(project.name, id);
   if (triaging.has(key)) return;                         // already claimed this tick
   const card = readCard(project.path, id);
@@ -4069,8 +4083,11 @@ export async function reconcileOnBoot() {
   // editing worktrees behind our back. Kill any still-alive PIDs, but only if
   // the PID is still one of OUR agent CLIs (guard against PID reuse).
   const priorRuns = readPriorRuns();
+  const projects = (await import('./registry.js')).listProjects();
   const priorByKey = new Map(priorRuns.map((run) => [runKey(run.project, run.card), run]));
   for (const prev of priorRuns) {
+    const project = projects.find(p => p.name === prev.project);
+    if (project && legacyMutationGuard(project.path, prev.card)) continue;
     if (prev.stage === 'CI' && prev.pid && isOurCiProcess(prev)) {
       try { process.kill(-prev.pid, 'SIGKILL'); } catch {
         try { process.kill(prev.pid, 'SIGKILL'); } catch { /* gone already */ }
@@ -4079,7 +4096,7 @@ export async function reconcileOnBoot() {
       try { process.kill(prev.pid, 'SIGKILL'); } catch { /* gone already */ }
     }
   }
-  for (const project of (await import('./registry.js')).listProjects()) {
+  for (const project of projects) {
     try {
       // budget-mode boards belong to the dispatcher session, which self-heals
       // its own interrupted cards — the server must not orphan-sweep them. But
@@ -4105,6 +4122,7 @@ export async function reconcileOnBoot() {
       const branchPrefix = config.branch_prefix || 'todomd/';
       const board = loadBoard(project.path);
       for (const card of board.cards) {
+        if (legacyMutationGuard(project.path, card.id)) continue;
         const key = runKey(project.name, card.id);
         if (IN_FLIGHT.has(card.status) && !children.has(key)) {
           // an orphaned Build|Verify card may hold real work on its branch —
@@ -4165,7 +4183,9 @@ export async function reconcileOnBoot() {
           await patchFrontmatter(project.path, card.id, { triaged: '' });
         }
       }
-      await withRepoLock(project.path, () => git(project.path, ['worktree', 'prune']));
+      if (!board.cards.some(card => legacyMutationGuard(project.path, card.id))) {
+        await withRepoLock(project.path, () => git(project.path, ['worktree', 'prune']));
+      }
       // Queue cards (quota-parked, or approved just before a restart) have
       // no live run and no in-memory queue entry — re-drive them.
       enqueueQueue(project);
@@ -4181,6 +4201,7 @@ export async function reconcileOnBoot() {
       if ((config.coordination || {}).enabled) {
         const building = new Set(board.cards.filter((c) => BUILD_FLOW.has(c.status)).map((c) => c.id));
         for (const claimed of await coordClaims(project.path, { sync: false })) {
+          if (legacyMutationGuard(project.path, claimed.card)) continue;
           if (!building.has(claimed.card)) await coordRelease(project.path, claimed.card, { sync: (config.coordination || {}).sync });
         }
       }
@@ -4322,6 +4343,7 @@ function cardCycleBusy(projectName, id, { ignoreClaim = null, ignoreAdmission = 
 }
 
 async function admitRecovery(project, id, execute) {
+  const held = legacyMutationGuard(project.path, id); if (held) return held;
   if (cardCycleBusy(project.name, id)) return { ok: false, error: 'run already in progress' };
   const key = runKey(project.name, id);
   const admission = { project: project.name };
@@ -4334,7 +4356,7 @@ export function hasLiveBuildingChild(project, epicId) {
   const board = loadBoard(project.path, { includeArchived: false });
   return board.cards
     .filter((c) => c.parent === epicId && !c.epic)
-    .some((c) => hasLiveRun(project.name, c.id));
+    .some((c) => legacyMutationGuard(project.path, c.id) || hasLiveRun(project.name, c.id));
 }
 
 // Any live agent run for this project (used to refuse removing a busy project).
@@ -4428,7 +4450,7 @@ export async function kickQueue(project) {
     const active = children.has(key) || pending.has(key) || runs.has(key);
     if (card.archived || !(card.status === 'Queue' || card.unparseable ||
         (active && ['Build', 'CI', 'Verify'].includes(card.status)))) continue;
-    const blocker = queueCardBlocker(card, board.cards);
+    const blocker = legacyMutationGuard(project.path, card.id) || queueCardBlocker(card, board.cards);
     let code, reason, added = false;
     if (blocker) { code = blocker.code; reason = blocker.error; }
     else if (active) { code = 'running'; reason = 'already active in the pipeline'; }

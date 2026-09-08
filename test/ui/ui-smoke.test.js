@@ -26,6 +26,7 @@ import { appendIntakeAudit } from '../../src/screen.js';
 import { recordUsage } from '../../src/runstore.js';
 import { loadConfig, readCard, runSummaryHash, writeSummaryCache } from '../../src/board.js';
 import { openPage } from '../browser.js';
+import { seedDelivery } from '../delivery-fixture.js';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -102,7 +103,7 @@ function hostileBoard() {
 // One Chrome launch and one server for the whole file: `npm test` is also
 // todomd's own verify gate, so every build pays this — a second browser boot
 // would be ~8s of pure overhead per run.
-let page, srv, name, viewerToken;
+let page, srv, name, viewerToken, boardRepo;
 const SKIP = 'no Chrome/Chromium found (set TODOMD_CHROME_BIN to run this)';
 
 before(async () => {
@@ -111,6 +112,7 @@ before(async () => {
     usage: { available: true, input_tokens: 1200, cached_input_tokens: 900, output_tokens: 50 } });
   recordUsage({ run_id: 'ui-gateway', provider: 'gemini', execution_type: 'gateway', usage: { available: false } });
   const repo = hostileBoard();
+  boardRepo = repo;
   addProject(repo);
   name = path.basename(repo);
   page = await openPage();
@@ -776,4 +778,33 @@ test('UI smoke: card width is unaffected by column overflow or running/queued st
 
     assert.deepEqual(page.errors, [], 'no console error building the synthetic card-width layout');
   }
+});
+
+test('UI smoke: delivery ownership hold is visible to full and viewer readers and disables legacy actions', async (t) => {
+  if (!page) return t.skip(SKIP);
+  seedDelivery(boardRepo, 'task-0008', { leased: true });
+  const before = readCard(boardRepo, 'task-0008').raw;
+  for (const token of [srv.token, viewerToken]) {
+    page.errors.length = 0;
+    await page.goto(`http://127.0.0.1:${srv.port}/?token=${token}&project=${encodeURIComponent(name)}#task-0008`);
+    await until(async () => await page.eval(`!document.getElementById('drawer').hidden && !document.getElementById('drawer-delivery-hold').hidden`));
+    const view = await page.eval(`({
+      message: document.getElementById('drawer-delivery-hold').textContent,
+      visible: document.getElementById('drawer-delivery-hold').getClientRects().length > 0,
+      disabled: ['drawer-archive','drawer-delete','move-apply','move-select','route-save','agent-prompt-submit','agent-instruction-save','drawer-recovery-agent'].every(id => document.getElementById(id).disabled),
+      recoveryHidden: ['drawer-resume-build','drawer-restart-build','drawer-retry-verify','drawer-return-build'].every(id => document.getElementById(id).hidden)
+    })`);
+    assert.equal(view.visible, true);
+    assert.match(view.message, /project owner must confirm/i);
+    assert.match(view.message, /agent-role:builder/);
+    assert.equal(view.disabled, true);
+    assert.equal(view.recoveryHidden, true);
+    assert.doesNotMatch(view.message, /private-run|private-evidence/);
+    assert.deepEqual(page.errors, []);
+  }
+  assert.equal(readCard(boardRepo, 'task-0008').raw, before);
+  // Opening a normal card must restore controls instead of inheriting the hold.
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}#task-0001`);
+  await until(async () => await page.eval(`drawerCard === 'task-0001' && !document.getElementById('drawer').hidden`));
+  assert.equal(await page.eval(`document.getElementById('drawer-delivery-hold').hidden && !document.getElementById('drawer-archive').disabled`), true);
 });

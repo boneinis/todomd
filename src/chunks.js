@@ -1,4 +1,5 @@
 import { readCard, loadBoard, createCard, patchFrontmatter, appendRunLog, moveCard, deleteCard } from './board.js';
+import { legacyMutationGuard } from './delivery-runtime.js';
 
 const now = () => new Date().toISOString().slice(0, 16).replace('T', ' ') + 'Z';
 
@@ -6,6 +7,7 @@ const now = () => new Date().toISOString().slice(0, 16).replace('T', ' ') + 'Z';
 // Sets epic:true and children:[ids] on the epic, moves it to Planned.
 // Returns the array of created child card IDs.
 export async function materializeChunks(repoPath, epicId, chunks) {
+  if (legacyMutationGuard(repoPath, epicId)) return [];
   const epic = readCard(repoPath, epicId);
   const epicType = epic?.data?.type;
   const epicAgent = epic?.data?.agent;
@@ -67,6 +69,7 @@ export async function materializeChunks(repoPath, epicId, chunks) {
 // Move every Planned child of epicId whose dependencies are all Done to Queue.
 // Returns the array of moved card IDs. Does NOT call enqueueBuild.
 export async function advanceEpicChildren(repoPath, epicId) {
+  if (legacyMutationGuard(repoPath, epicId)) return [];
   const board = loadBoard(repoPath, { includeArchived: false });
   const moved = [];
   for (const child of board.cards.filter((c) => c.parent === epicId && c.status === 'Planned' && !c.epic)) {
