@@ -21,6 +21,11 @@ backend, and source reference. This server-owned binding means the entire launch
 scope belongs to that one registered local job. It is not accepted from a recovery
 request. Legacy scheduler launches and repository work have no such binding.
 
+The [budget transaction helper](budget-write.md) binds supervised repository
+commands separately as `local-repository-command-v1`, including the exact local
+execution and legacy-lock nonce. Admission spans the command's whole process
+group; uncertain closure retains the gate even when the helper returns an error.
+
 Metadata transactions synchronously resolve trusted authority and commit the
 snapshot, event, and retry receipt while holding admission. Their context resolver
 must be read-only and synchronous: no child process, remote submission, or deferred
@@ -65,6 +70,10 @@ write endpoint. Board viewers continue to receive sanitized hold information.
   process absence, registration, and task identity before publishing completion.
   Missing or corrupt authority, a different journal, or uncertain closure holds
   admission. No persisted PID is used to signal a job.
+- For a supervised repository command, recovery verifies its private command
+  receipt and backend closure, releases only its original legacy-lock nonce,
+  and completes that exact repository gate. Commands and partial edits are never
+  replayed or rolled back. Unknown repository scopes remain held.
 
 Local launch recovery may stop an orphaned job. Before-start crashes close the
 dispatch identity against a late start even if no supervisor registered. Removing
@@ -83,7 +92,7 @@ an old recovery cannot close a newer epoch, even with concurrent recovery caller
 
 ## Remaining activation requirements
 
-`repository` and unbound `launch` owners can leave child processes or accepted remote work
+Unbound `repository` and `launch` owners can leave child processes or accepted remote work
 behind. PID absence is insufficient for them; the CLI returns
 `external_reconciliation_required`. Their supported external reconciliation
 adapter remains future work. The new binding does not retroactively make old
@@ -91,7 +100,8 @@ launch records recoverable. Loss of all local controllers with surviving writers
 also remains held. Old per-card `.lock` remnants remain held for
 quiesced operator reconciliation because they lack this ownership protocol.
 
-The legacy shell/budget lock protocol does not yet participate in this gate.
+Updated budget shell transactions participate through the supervised helper.
+Old raw-lock scripts and long interactive budget sessions still do not participate.
 Enabling a gate does not fence work that started beforehand, a direct shell writer,
 or an accepted remote job. Initial activation/migration must establish quiescence
 and integrate every writer and authoritative stop/source check. Production

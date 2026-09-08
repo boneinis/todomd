@@ -12,9 +12,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]|delivery-access <repo> <status|issue|revoke|jobs>] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]|delivery-access <repo> <status|issue|revoke|jobs>|budget-write <repo> -- /absolute/executable [args...]] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
+if (args[0] === 'budget-write') {
+  const usage = 'usage: todomd budget-write <repo> [--timeout-ms N] -- /absolute/executable [args...]';
+  const separator = args.indexOf('--'), before = args.slice(1, separator);
+  if (separator < 2 || ![1, 3].includes(before.length) || before.length === 3 && (before[1] !== '--timeout-ms' || !/^\d+$/.test(before[2])) || !args[separator + 1]) {
+    console.error(usage); process.exit(1);
+  }
+  try {
+    const { budgetWrite } = await import('../src/budget-write.js');
+    const result = await budgetWrite(before[0], { command: args[separator + 1], args: args.slice(separator + 2), timeoutMs: before.length === 3 ? Number(before[2]) : 30000 });
+    console.log(JSON.stringify(result)); process.exit(result.ok ? 0 : 1);
+  } catch { console.error('Repository command failed; inspect admission before retrying.'); process.exit(1); }
+}
 if (args[0] === 'delivery-access') {
   const { deliveryAccessCommand } = await import('../src/delivery-access-cli.js');
   const result = deliveryAccessCommand(args.slice(1));

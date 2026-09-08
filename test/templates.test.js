@@ -128,11 +128,9 @@ test('normalizeConfig scheduler: an explicit global/column override is honored v
   assert.deepEqual(normalized.scheduler.columns, { Plan: 2, Triage: 3, Build: 3, CI: 1, Verify: 1 });
 });
 
-test('dispatch LOCK loop steals an ownerless lock by the lock dir mtime', () => {
+test('dispatch uses supervised transactions and refuses raw lock stealing', () => {
   const dispatch = cmdDispatch('npx', 'todomd');
-  // mirrors the JS lockfile fallback: owner missing/empty → lock dir mtime,
-  // steal when older than 300s (GNU and BSD stat spellings)
-  assert.match(dispatch, /stat -c %Y \.todomd\/\.lock/);
-  assert.match(dispatch, /stat -f %m \.todomd\/\.lock/);
-  assert.match(dispatch, /-gt 300/);
+  assert.match(dispatch, /budget-write \. -- \/bin\/sh/);
+  assert.match(dispatch, /Never use raw mkdir\/rm locking, steal a lock by age/);
+  assert.doesNotMatch(dispatch, /until mkdir|stat -[cf] %|rm -rf \.todomd\/\.lock/);
 });

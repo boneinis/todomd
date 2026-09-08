@@ -14,3 +14,11 @@ test('cmdDispatch: preserves fanout and advance instructions (structural integri
   assert.match(result, /fanout/, 'fanout instruction must be present');
   assert.match(result, /advance/, 'advance instruction must be present');
 });
+
+test('budget transactions use supervised admission and do not prescribe raw stale-lock theft', () => {
+  const result = cmdDispatch('/abs/node', '/abs/todomd.js');
+  assert.match(result, /budget-write/);
+  assert.match(result, /LOCK … UNLOCK means one transaction script/);
+  assert.match(result, /Long plan\/build\/verify work remains outside/);
+  assert.doesNotMatch(result, /until mkdir|rm -rf \.todomd\/\.lock|auto-expires after 5 minutes/);
+});
