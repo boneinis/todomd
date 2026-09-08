@@ -6,6 +6,8 @@ import { registeredAuthority } from './delivery-authority-state.js';
 import { createDeliveryStore } from './delivery-store.js';
 import { createLocalDeliveryBackend } from './delivery-local-backend.js';
 import { executionRef, sameExecution } from './delivery-execution-state.js';
+import { verifyRepositoryCommand } from './budget-write.js';
+import { releaseFileLock } from './lockfile.js';
 
 // Local OS administrative capability, used by delivery-admission --recover.
 // No request-supplied observation, backend path, PID or command is accepted.
@@ -25,6 +27,14 @@ export function recoverProjectAdmission(repoPath, command) {
     await backend.close(ref);
     const observation = await backend.inspect(ref);
     verify();
+    return observation;
+  }, reconcileRepository: async owner => {
+    const ref = verifyRepositoryCommand(directory, owner);
+    const backend = createLocalDeliveryBackend(path.join(directory, 'repository-writes'), { enabled: true, name: ref.backend });
+    await backend.close(ref);
+    const observation = await backend.inspect(ref);
+    verifyRepositoryCommand(directory, owner);
+    if (observation.state === 'stopped' && observation.closed === true) releaseFileLock(path.join(repo, '.todomd/.lock'), owner.repository_command.lock_nonce);
     return observation;
   } });
 }

@@ -7,7 +7,8 @@ import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, sleep, 
 import { readCard } from '../src/board.js';
 import { addProject } from '../src/registry.js';
 import { parseActive } from '../src/coordination.js';
-import { initProject } from '../src/templates.js';
+import { initProject, cmdDispatch } from '../src/templates.js';
+import { fileURLToPath } from 'node:url';
 import * as pipeline from '../src/pipeline.js';
 
 const noop = () => {};
@@ -103,22 +104,23 @@ test('budget reconcileOnBoot does NOT nudge a freshly-active card', async () => 
 /* ── B. cross-implementation consistency: the prose prompt vs the code it must
       stay compatible with (the lock owner format and the ACTIVE.md parser) ── */
 
-test('budget: the dispatch prompt\'s LOCK snippet runs and writes an owner lockfile.js can read', () => {
-  const prompt = dispatchPrompt();
-  const lockLine = prompt.match(/^\s*until mkdir \.todomd\/\.lock.*owner$/m);
-  assert.ok(lockLine, 'the LOCK one-liner is present in the prompt');
-
-  const dir = tmp('lockrun');
-  fs.mkdirSync(path.join(dir, '.todomd'), { recursive: true });
-  execFileSync('bash', ['-c', lockLine[0].trim()], { cwd: dir }); // also validates the bash syntax
-
-  const owner = fs.readFileSync(path.join(dir, '.todomd/.lock/owner'), 'utf8').trim();
-  const fields = owner.split(' ');
-  // lockfile.js reads field 0 as epoch-seconds and field 2 as the nonce
-  assert.equal(fields.length, 3, 'owner is "<epoch> <who> <nonce>" — matches lockfile.js');
-  const ts = parseInt(fields[0], 10);
-  assert.ok(Number.isFinite(ts) && ts > 1_000_000_000 && ts < 10_000_000_000, 'field 0 is epoch seconds');
-  assert.ok(fields[1].includes('@'), 'field 1 is <user>@<host>');
+test('budget: the generated transaction command runs with a compatible lock owner', { skip: !['darwin', 'linux'].includes(process.platform) }, () => {
+  isolateHome();
+  const bin = fileURLToPath(new URL('../bin/todomd.js', import.meta.url));
+  const prompt = cmdDispatch(process.execPath, bin);
+  const command = prompt.match(/^.* budget-write \. -- \/bin\/sh \/absolute\/path\/to\/transaction\.sh$/m);
+  assert.ok(command, 'the supervised transaction command is present');
+  const repo = budgetRepo(), script = path.join(tmp('transaction'), 'write.sh');
+  fs.writeFileSync(script, 'set -eu\ncat .todomd/.lock/owner\n');
+  const quotedScript = "'" + script.replaceAll("'", "'\\''") + "'";
+  const result = JSON.parse(execFileSync('/bin/sh', ['-c', command[0].replace('/absolute/path/to/transaction.sh', quotedScript)], { cwd: repo, encoding: 'utf8' }));
+  assert.equal(result.ok, true);
+  const fields = fs.readFileSync(result.output_file, 'utf8').trim().split(' ');
+  assert.equal(fields.length, 3, 'owner format matches lockfile.js');
+  const ts = Number(fields[0]);
+  assert.ok(Number.isFinite(ts) && ts > 1_000_000_000 && ts < 10_000_000_000);
+  assert.ok(fields[1].includes('@'));
+  assert.equal(fs.existsSync(path.join(repo, '.todomd/.lock')), false);
 });
 
 test('budget: the prompt\'s ACTIVE.md manifest format parses with coordination.parseActive', () => {
