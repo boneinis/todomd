@@ -25,6 +25,10 @@ export function deliveryRuntimeStatus(repoPath, id) {
     if (admission.owner?.kind === 'metadata' && admission.owner.task_id === id) {
       return hold('delivery_transaction_pending', 'A delivery metadata transaction owns admission or requires recovery.', reconcile);
     }
+    if (admission.owner?.launch_authority === 'registered-local-job-v1' && admission.owner.task_id === id) {
+      return hold('delivery_launch_pending', 'A local delivery launch owns admission or requires recovery.',
+        'The project owner must inspect and recover the recorded local launch, then reconcile its task lease. Keep the candidate and attempt history.');
+    }
     // lstat distinguishes absence from unreadability and dangling symlinks.
     for (const file of [`${id}.lock`, `${id}.json`]) {
       let stat;
