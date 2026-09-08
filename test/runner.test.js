@@ -434,3 +434,34 @@ test('Claude main model comes from init, not the first auxiliary modelUsage entr
     for (const key of ['TODOMD_CLAUDE_BIN', 'FAKE_MODE', 'FAKE_INIT_MODEL', 'FAKE_MODEL_USAGE']) delete process.env[key];
   }
 });
+
+test('a provider reporting zero turns and an empty response is never successful', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  process.env.FAKE_EMPTY_RESULT = '1';
+  process.env.FAKE_TURNS = '0';
+  try {
+    const result = await runStage({ cwd: process.cwd(), prompt: 'anything' }).done;
+    assert.equal(result.envelope.is_error, true);
+    assert.equal(result.envelope.subtype, 'empty_run');
+  } finally {
+    delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_MODE;
+    delete process.env.FAKE_EMPTY_RESULT; delete process.env.FAKE_TURNS;
+  }
+});
+
+test('Gemini reported turns are preserved and absent metrics stay unknown', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  try {
+    process.env.FAKE_GEMINI_DENIED = 'command';
+    const denied = await runStage({ vendor: 'gemini', cwd: tmp('gemini-reported-turns'), prompt: 'build' }).done;
+    assert.equal(denied.envelope.num_turns, 1);
+    delete process.env.FAKE_GEMINI_DENIED;
+    process.env.FAKE_GEMINI_REAL_STREAM = '1';
+    const unknown = await runStage({ vendor: 'gemini', cwd: tmp('gemini-unknown-turns'), prompt: 'build' }).done;
+    assert.equal(unknown.envelope.num_turns, null);
+    assert.equal(unknown.envelope.is_error, false);
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_REAL_STREAM; delete process.env.FAKE_GEMINI_DENIED;
+  }
+});
