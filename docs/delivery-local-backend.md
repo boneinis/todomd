@@ -98,8 +98,9 @@ closure, background descendants, forced supervisor death, wrong control
 credentials, corrupt/foreign registration, abandoned claims, and preserved
 candidate files. All commands and private state are isolated test fixtures.
 
-Live activation still requires server-owned job/role resolution, admission and
-source fencing shared with legacy/remote writers, supported transaction and
-orphan recovery, revision-checked projection/migration, and the pilot gates in
+The [shared admission gate](delivery-admission.md) now coordinates board writers,
+scheduler starts, and metadata transactions, with supported recovery of exact dead
+metadata owners. Live activation still requires server-owned job/role resolution,
+source fencing shared with all legacy/remote writers, external orphan recovery, revision-checked projection/migration, and the pilot gates in
 the [update plan](delivery-workflow-update-plan.md). Remote fleet execution needs
 its own authoritative closure adapter. Existing cards remain on the legacy path.

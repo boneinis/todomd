@@ -24,9 +24,11 @@ writes unless `enabled` is exactly true. No shipped entry point enables it.
 
 Each command has `action`, a unique `idempotency_key`, and an integer
 `expected_revision`. An absent record has revision zero. The store resolves the
-trusted context synchronously while holding the task transaction lock. Context
+trusted context synchronously while holding project admission. Context
 provides the authenticated `actor_id`, grants, current legacy/remote busy state,
-and reconciled evidence. An asynchronous context resolver is not supported.
+and reconciled evidence. An asynchronous context resolver is not supported. This
+callback must be read-only and must not launch child processes, remote work, or
+deferred mutations.
 
 Grants are `delivery:<action>`, except transition commands use
 `delivery:<destination>`. Acquire additionally needs `delivery:in_progress`
@@ -93,8 +95,9 @@ committed backend observation in stopped phase with `closed: true`; the legacy
 `context.stopped` shortcut cannot release that execution. See the coordinator
 contract for dispatch closure and delayed-start fencing.
 
-The store currently serializes its own writers only. The compatibility guard
-holds legacy admission for managed cards, but the store does not itself fence
+The store shares a [project admission gate](delivery-admission.md) with board
+repository writes and scheduler starts. The compatibility guard also holds legacy
+admission for managed cards, but the store does not itself fence
 operating-system processes or a remote execution service.
 Those adapters must participate in the same admission protocol and check the
 current run/fence before candidate writes and completion. A precomputed
@@ -113,15 +116,14 @@ On `commit_uncertain`, read the record or retry the identical key. Never submit 
 new external job based on an uncertain acknowledgement. Rejected commands do not
 advance revision or create accepted events.
 
-A per-task atomic directory lock serializes separate processes. Competing callers
-receive `write_busy` and can retry after reading current state. Lock age never
-permits theft. If the process dies mid-transaction, the last complete snapshot is
-readable and the abandoned lock remains. Before removing that lock operationally,
-an operator must stop all processes using that store and reconcile pending local
-and remote execution. Inspect the lock's owner nonce/PID and committed record;
-an empty/partial owner file is uncertain, not proof of a dead process. This
-increment deliberately has no online lock-recovery endpoint. A safe supported
-recovery adapter is required before pilot activation.
+A project-wide, numbered admission record serializes participating processes.
+Competing callers receive `write_busy` and can retry after reading current state.
+Ownership is never stolen by age. The supported local CLI can retire an exact,
+dead metadata transaction on the same host and boot, retaining the committed
+snapshot and all execution leases. See [admission and recovery](delivery-admission.md)
+for the protocol and command. It cannot recover repository/launch owners, foreign
+hosts/boots, or old per-task `.lock` remnants. Those cases still require quiesced
+operator reconciliation; never delete ownership to make a card runnable.
 
 ## Verified boundary and next work
 
@@ -130,8 +132,8 @@ atomic rename, write failures before/after publication, restart and expiry with
 an existing lease, stale release/renewal, idempotency under revoked grants,
 corrupt snapshots, blockers, preserved handoff history, and unchanged task files.
 
-Remaining integration work: server-owned role/grant resolution; coordinated
-legacy/remote admission and stop confirmation; supported transaction-lock
-recovery; revision-checked task projection/migration; bounded event retention;
+Remaining integration work: server-owned role/grant resolution; complete
+legacy/remote admission and stop confirmation; external orphan reconciliation;
+revision-checked task projection/migration; bounded event retention;
 and UI/API adapters. No active boards have been migrated or new agents admitted
 through this store.

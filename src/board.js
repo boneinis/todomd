@@ -9,6 +9,7 @@ import { commitCard, commitPaths } from './git.js';
 import { withFileLock } from './lockfile.js';
 import { resourcesConfig } from './resources.js';
 import { legacyMutationGuard } from './delivery-runtime.js';
+import { withExistingProjectAdmission, withoutAdmissionContext } from './delivery-admission.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'];
 
@@ -595,7 +596,7 @@ export function withRepoLock(repoPath, fn) {
   const inherited = held?.get(key);
   if (inherited?.active) return Promise.resolve().then(fn);
 
-  const guarded = () => withFileLock(key, () => {
+  const guarded = () => withFileLock(key, () => withExistingProjectAdmission(key, () => {
     const nextHeld = new Map(held || []);
     const token = { active: true };
     nextHeld.set(key, token);
@@ -606,7 +607,7 @@ export function withRepoLock(repoPath, fn) {
       // its stale context for lock ownership and bypass a future holder.
       finally { token.active = false; }
     });
-  });
+  }));
   const prev = repoLocks.get(key) || Promise.resolve();
   const next = prev.then(guarded, guarded);
   repoLocks.set(key, next.then(() => {}, () => {}));
@@ -617,7 +618,7 @@ export function withRepoLock(repoPath, fn) {
 // Start that detached chain with no inherited ownership: every later board/git
 // write must acquire the real repository lock in its own right.
 export function withoutRepoLockContext(fn) {
-  return heldRepoLocks.run(new Map(), fn);
+  return withoutAdmissionContext(() => heldRepoLocks.run(new Map(), fn));
 }
 
 export function moveCard(repoPath, id, newStatus, { reason } = {}) {

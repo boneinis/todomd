@@ -1,6 +1,6 @@
 # To-do MD delivery workflow update plan
 
-Status: approved; foundation, ownership, compatibility guard, coordinator, and local backend implemented; activation off
+Status: approved; foundation, ownership, compatibility guard, coordinator, local backend, and shared admission core implemented; activation off
 
 Date: September 8, 2026  
 Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)  
@@ -14,9 +14,11 @@ scheduler, recovery controls, and card writes respect that private ownership.
 The internal [execution coordinator](delivery-execution.md) now persists dispatch
 claims and reconciles backend closure before releasing a lease. The concrete
 [local backend](delivery-local-backend.md) now supervises actual process groups
-and retains control after the launcher exits. Existing boards still use the
-legacy runtime. Remote backend/shared admission and transaction
-recovery adapters, cycles, the new board view, evidence adapters, migration, and
+and retains control after the launcher exits. The [shared admission gate](delivery-admission.md)
+now coordinates board writes, scheduler starts, and metadata transactions, including
+recovery of exact dead metadata owners. Existing boards still use the legacy runtime.
+Remote authority and remaining external-writer admission, orphan recovery, trusted
+role/job adapters, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime
 integration and recovery acceptance gates pass.
 

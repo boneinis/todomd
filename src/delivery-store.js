@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateDeliveryTask, evaluateDeliveryTransition, OWNER_ROLES, isOwnerId } from './delivery.js';
 import { EXECUTION_ACTIONS, validExecution, admissionMatches, applyExecution } from './delivery-execution-state.js';
+import { withAdmissionSync } from './delivery-admission.js';
 
 // Internal, opt-in persistence primitive. No production write entry point is
 // enabled. Its private directory must never be the tracked task directory.
@@ -83,18 +84,17 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
       }
       const time = now();
       if (!Number.isSafeInteger(time) || time < 0 || time > Number.MAX_SAFE_INTEGER - 3_600_000) return fail('invalid_clock', 'A valid clock is required.');
-      // No time-based lock stealing. An abandoned transaction lock requires
-      // explicit operator reconciliation of its process before removal.
-      fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-      const lock = path.join(root, `${id}.lock`), nonce = randomUUID();
-      try { fs.mkdirSync(lock, { mode: 0o700 }); }
-      catch (error) { if (error.code === 'EEXIST') return fail('write_busy', 'A transaction owns this task; retry or reconcile its process.'); throw error; }
+      // Preserve pre-gate lock remnants. They lack the generation/host proof
+      // needed for online recovery and must never be removed by age.
+      try { fs.lstatSync(path.join(root, `${id}.lock`)); return fail('write_busy', 'A legacy delivery transaction requires quiesced reconciliation.'); }
+      catch (error) { if (error.code !== 'ENOENT') return fail('write_busy', 'Legacy transaction ownership cannot be verified.'); }
       try {
-        fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ nonce, pid: process.pid }), { mode: 0o600 });
+        const gated = withAdmissionSync(path.join(root, 'admission'), 'metadata', id, () => {
         let record;
         try { record = readRecord(fileFor(id), id); }
         catch { return fail('corrupt_store', 'Private delivery state could not be validated; no state was replaced.'); }
-        // Trusted synchronous adapter only, resolved under the transaction lock.
+        // Trusted synchronous, read-only adapter under project admission. No
+        // child/remote work or deferred mutations may escape this transaction.
         // It must derive identity/grants/facts from server authority, not a card
         // or HTTP body, and fence legacy/remote admission before enabling writes.
         const context = typeof resolveContext === 'function' ? resolveContext(record && clone(record), clone(command)) : null;
@@ -217,11 +217,10 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
         try { saveRecord(fileFor(id), record); }
         catch { return fail('commit_uncertain', 'Read state or retry this exact key before taking any external action.'); }
         return result;
-      } finally {
-        // Cleanup only our own lock; never remove a replacement owner's lock.
-        let owner;
-        try { owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8')); } catch { /* preserve uncertain ownership */ }
-        if (owner?.nonce === nonce) fs.rmSync(lock, { recursive: true });
+        });
+        return gated.ok ? gated.value : gated;
+      } catch {
+        return fail('commit_uncertain', 'Admission or commit acknowledgement is uncertain; inspect state before retrying this exact key.');
       }
     },
   };

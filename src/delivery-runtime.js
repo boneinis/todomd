@@ -1,18 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { createHash } from 'node:crypto';
 import { createDeliveryStore } from './delivery-store.js';
+import { deliveryStoreDirectory } from './delivery-paths.js';
+import { admissionStatus } from './delivery-admission.js';
+export { deliveryStoreDirectory } from './delivery-paths.js';
 
 // Read-only compatibility boundary. Presence of private delivery state claims
 // the task even when its lease is expired, absent, corrupt, or mid-transaction.
 // No production entry point initializes this store or activates migration yet.
-export function deliveryStoreDirectory(repoPath) {
-  const canonical = fs.realpathSync(repoPath);
-  const key = createHash('sha256').update(canonical).digest('hex');
-  return path.join(process.env.TODOMD_HOME || os.homedir(), '.todomd', 'delivery', key);
-}
-
 const legacy = () => ({ managed: false, legacy_execution_allowed: true });
 const hold = (code, message, nextAction, extra = {}) => ({ managed: true, legacy_execution_allowed: false,
   code, message, next_action: nextAction, ...extra });
@@ -25,6 +20,10 @@ export function deliveryRuntimeStatus(repoPath, id) {
     catch (error) { if (error.code === 'ENOENT') return legacy(); throw error; }
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)) {
       return hold('delivery_identity_invalid', 'Delivery task identity requires reconciliation.', reconcile);
+    }
+    const admission = admissionStatus(path.join(directory, 'admission'));
+    if (admission.owner?.kind === 'metadata' && admission.owner.task_id === id) {
+      return hold('delivery_transaction_pending', 'A delivery metadata transaction owns admission or requires recovery.', reconcile);
     }
     // lstat distinguishes absence from unreadability and dangling symlinks.
     for (const file of [`${id}.lock`, `${id}.json`]) {
