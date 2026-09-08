@@ -65,6 +65,12 @@ for (const owner of ['queued', 'prompt-claim']) {
       assert.equal((await pipeline.humanMove(p, 'task-0001', 'Planned')).ok, false);
       assert.equal((await pipeline.returnToBuild(p, 'task-0001')).ok, false);
       assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, false);
+      if (owner === 'prompt-claim') {
+        const cancelled = await pipeline.humanMove(p, 'task-0001', 'Review');
+        assert.equal(cancelled.ok, true);
+        assert.equal(cancelled.cancelled, true);
+        assert.match(cancelled.warning, /candidate is preserved.*Retry the move/);
+      }
       assert.equal(readCard(repo, 'task-0001').raw, before);
       assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
       assert.equal(fs.readFileSync(path.join(wt, 'implementation.txt'), 'utf8'), 'reviewed implementation\n');

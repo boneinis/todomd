@@ -1479,7 +1479,11 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
     if (recoveryAdmissions.has(key)) return { ok: false, error: 'recovery transition in progress — try again after it settles' };
     // Advisory/recovery turns also own the candidate. Cancel that turn first;
     // its completion must not race a destructive retriage/reset transition.
-    if (promptClaims.has(key)) return cancel(project, id);
+    if (promptClaims.has(key)) {
+      const stopped = await cancel(project, id);
+      return stopped.ok ? { ...stopped, cancelled: true,
+        warning: 'Card turn cancelled; the candidate is preserved. Retry the move after the turn finishes.' } : stopped;
+    }
     if (tracked) {
       if (tracked.stage === 'CI') {
         if (pend) {
