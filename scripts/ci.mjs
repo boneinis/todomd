@@ -146,6 +146,9 @@ async function packSmoke() {
     const preview = JSON.parse(await run(bin, ['delivery-preview', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
     if (preview.read_only !== true || preview.execution_enabled !== false) throw new Error('installed CLI lost the read-only delivery preview');
 
+    const admission = JSON.parse(await run(bin, ['delivery-admission', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
+    if (admission.read_only !== true || admission.enabled !== false || admission.owner !== null) throw new Error('installed CLI activated an ordinary project admission gate');
+
     // 4. boot the installed server and exercise the API
     const port = await freePort();
     server = spawn(bin, ['serve', '--no-open', '--port', String(port)],

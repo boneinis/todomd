@@ -23,7 +23,7 @@ alone does not establish private ownership.
 | No record or transaction | Existing admission and recovery rules apply. |
 | Valid record, no lease | Held for the delivery workflow; never silently returned to legacy control. |
 | Current or expired lease | Held; elapsed time does not prove that execution stopped. |
-| Transaction lock, including an unfinished initialization | Held pending transaction reconciliation. |
+| Metadata admission owner or legacy transaction lock, including unfinished initialization | Held pending transaction reconciliation. |
 | Corrupt, unreadable, symlinked, or nonregular record | Held because ownership cannot be verified. |
 
 The read-only status contains a reason, a next action for the project owner,
@@ -39,8 +39,8 @@ source revisions, and evidence references.
   handoffs, prompts, summaries, triage, and resource cleanup reject conflicting
   legacy actions. Recovery eligibility uses the same status.
 - Low-level card move/patch/archive/delete/attachment/log/commit operations
-  check ownership under the existing repository lock. Reordering checks every
-  affected peer before writing. New cards cannot reuse an owned identity or
+  check ownership under the repository lock and, when present, the shared
+  project admission gate. Reordering checks every affected peer before writing. New cards cannot reuse an owned identity or
   create children beneath a delivery-owned parent.
 - Boot reconciliation leaves managed cards, prior processes, coordination
   claims, candidates, and remote journals for the delivery reconciliation path.
@@ -67,20 +67,23 @@ or ownership-write endpoint is provided.
 
 The next adapter must coordinate source revision checks and durable admission
 with legacy and remote writers, resolve trusted roles/grants, verify exact stop
-evidence, and offer supported transaction recovery. The present preflight checks
+evidence, and support external orphan reconciliation. The present preflight checks
 do not make concurrent live migration safe and do not fence arbitrary shell
 writes, external budget dispatchers, or work already running before a private
 record appears. Keep activation off until those adapters and the pilot acceptance
 gates in the [update plan](delivery-workflow-update-plan.md) pass.
 
 The internal [execution coordinator](delivery-execution.md) now implements the
-durable dispatch/closure journal. Production backends and a shared admission
-fence still need to implement its contract before enabling execution.
+durable dispatch/closure journal. The [local backend](delivery-local-backend.md) and
+[shared admission gate](delivery-admission.md) are implemented. External writers
+and production authority adapters still need to participate before enabling execution.
 
 On an existing hold, keep candidate and history intact. The project owner must
-reconcile the recorded execution and pending operation under the quiesced
-procedure in the [ownership contract](delivery-ownership.md). Do not delete a
-record or reset attempts to make the legacy controls available again.
+inspect the recorded execution and pending operation using the
+[admission recovery procedure](delivery-admission.md). Only exact, dead metadata
+transactions qualify for online recovery; external work requires quiesced
+reconciliation. Do not delete a record or reset attempts to make the legacy
+controls available again.
 
 Tests cover expired ownership, absent/corrupt/nonregular records, path aliases,
 scheduler capacity, direct recovery and low-level writes, reader permissions,

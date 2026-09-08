@@ -27,6 +27,9 @@ import { loadConfig, withoutRepoLockContext } from './board.js';
 import { createGovernor, sampleProjectResources, resourcesConfig } from './resources.js';
 import { listProjects } from './registry.js';
 import { legacyMutationGuard } from './delivery-runtime.js';
+import { withAdmissionSync, onAdmissionRelease } from './delivery-admission.js';
+import { projectAdmissionDirectory } from './delivery-paths.js';
+onAdmissionRelease(() => scan());
 
 const queue = [];                    // [{project, card, column, resourceClass, run, resolveFn, rejectFn, deferredReason, onDefer}]
 const runningByColumn = new Map();   // column -> count
@@ -297,6 +300,21 @@ function bump(map, key, delta) {
 }
 
 function admitEntry(entry, resourceState = { deferring: false, critical: false, reasons: [] }) {
+  let admitted;
+  try {
+    admitted = withAdmissionSync(projectAdmissionDirectory(entry.project.path), 'launch', entry.card, () => {
+      const held = legacyMutationGuard(entry.project.path, entry.card);
+      if (held) { setDeferred(entry, held.error, false); return; }
+      startEntry(entry, resourceState);
+    }, { existingOnly: true, borrow: false });
+  } catch {
+    setDeferred(entry, 'Project admission cannot be verified; reconcile its current owner.', false);
+    return;
+  }
+  if (!admitted.ok) setDeferred(entry, admitted.message, false);
+}
+
+function startEntry(entry, resourceState) {
   const idx = queue.indexOf(entry);
   if (idx === -1) return;
   queue.splice(idx, 1);
