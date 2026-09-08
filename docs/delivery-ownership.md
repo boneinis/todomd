@@ -2,7 +2,9 @@
 
 This increment implements an internal private-state store for delivery
 transitions, assignments, handoffs, blockers, and execution leases. It is disabled
-by default and has no production mutation or dispatch adapter. A subsequent
+by default and has no production mutation or dispatch adapter. The internal
+[execution coordinator](delivery-execution.md) adds durable dispatch and backend
+closure observations for explicitly reserved executions. A subsequent
 [runtime compatibility guard](delivery-runtime.md) reads ownership to prevent
 conflicting legacy actions. Existing boards continue to use their current
 runtime. This is part of phase 3 of the
@@ -59,8 +61,10 @@ candidates, run agents, or call external services.
 | block | A validated `blocker` with category, responsible owner, timestamp, evidence, and next action. Existing blockers must be resolved before replacement. |
 | resolve | A `handoff` explaining evidence and next action for the existing blocker. |
 
-Every handoff requires nonempty `evidence` and `next_action`. All actions except
-renew/release require no persisted lease and explicit `context.busy: false`.
+Every handoff requires nonempty `evidence` and `next_action`. Metadata actions
+require no persisted lease and explicit `context.busy: false`. Renew/release and
+the coordinator's dispatch/stop/observation actions instead require the exact
+current lease. Dispatch also revalidates source and admission authority.
 Initialization and all destinations still pass the version 2 schema. Unresolved
 blockers prevent forward progress; withdrawal retains their history in events.
 
@@ -83,6 +87,11 @@ match the current lease. This must cover accepted remote jobs and surviving loca
 processes, not just elapsed time or an unavailable heartbeat. Releasing an old
 fence after replacement is rejected. Admission preserves a durable reservation
 before any future adapter could dispatch work.
+
+For an acquisition with an execution journal, release instead requires its
+committed backend observation in stopped phase with `closed: true`; the legacy
+`context.stopped` shortcut cannot release that execution. See the coordinator
+contract for dispatch closure and delayed-start fencing.
 
 The store currently serializes its own writers only. The compatibility guard
 holds legacy admission for managed cards, but the store does not itself fence
