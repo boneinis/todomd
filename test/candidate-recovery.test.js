@@ -43,6 +43,40 @@ async function seedCandidate(repo, wt, reason = 'ci_failed') {
   return head;
 }
 
+for (const lastVerdict of ['', 'fail']) {
+  test(`CI-failed candidate offers a preserved repair Build with ${lastVerdict || 'no'} verifier verdict`, async () => {
+    useFakeAgent({ build: 'good', verdict: 'pass' });
+    const { repo, project: p, wt } = fixture('process.exit(0);\n');
+    await seedCandidate(repo, wt, 'ci_failed');
+    await patchFrontmatter(repo, 'task-0001', {
+      recovery_stage: '', verification: { attempts: 3, max_attempts: 3, last_verdict: lastVerdict },
+    });
+    try {
+      const actions = await pipeline.recoveryActions(p, 'task-0001');
+      assert.equal(actions.return_to_build, true);
+      assert.equal(actions.retry_verification, true, 'CI-only retry remains an alternative');
+      const returned = await pipeline.humanMove(p, 'task-0001', 'Build', { instruction: 'Repair the failing CI check without discarding implementation.txt.' });
+      assert.equal(returned.ok, true, returned.error);
+      assert.equal(returned.attempt, 4);
+      assert.equal(returned.max_attempts, 4);
+      await until(() => readCard(repo, 'task-0001').data.status === 'Done' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+      assert.equal(fs.readFileSync(path.join(repo, 'implementation.txt'), 'utf8'), 'reviewed implementation\n');
+      assert.match(readCard(repo, 'task-0001').raw, /Return to Build.*human approved repair attempt 4\/4/);
+    } finally { await cleanup(p); }
+  });
+}
+
+test('CI-failed repair still requires the preserved task branch', async () => {
+  const { repo, project: p, wt } = fixture('process.exit(0);\n');
+  await seedCandidate(repo, wt, 'ci_failed');
+  try {
+    git(wt, ['checkout', '-b', 'unrelated-fixture-branch']);
+    assert.equal((await pipeline.recoveryActions(p, 'task-0001')).return_to_build, false);
+    assert.equal((await pipeline.returnToBuild(p, 'task-0001')).ok, false);
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Needs Human');
+  } finally { await cleanup(p); }
+});
+
 for (const reason of ['ci_failed', 'agent_error']) {
   test(`retry verification after ${reason}: one-second silent adapter exit 1 parks the same candidate and attempt`, async () => {
     const calls = path.join(tmp('retry-ci'), 'agent-calls');
