@@ -12,6 +12,7 @@ import { readCard, readRunLog } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 import * as scheduler from '../src/scheduler.js';
 import { recordUsage } from '../src/runstore.js';
+import { seedDelivery } from './delivery-fixture.js';
 
 // The epic-delete test drives a build that hangs until it's signalled. A live
 // agent child is a ref'd handle — one left behind (cancel path missed, an early
@@ -118,6 +119,41 @@ test('delivery preview uses existing read permissions and cannot mutate or dispa
     assert.deepEqual(readRunLog(repo, 'task-0001'), beforeLog);
     assert.equal(pipeline.hasLiveRun(name, 'task-0001'), false);
     assert.equal(readCard(repo, 'task-0001').data.status, 'Done');
+  } finally { srv.close(); }
+});
+
+test('delivery ownership is visible to readers and blocks every legacy card write route', async () => {
+  isolateHome(); const { repo, name, base, srv, q } = await boot();
+  try {
+    writeCard(repo, 'task-0001', { status: 'Needs Human', extra: 'needs_human_reason: ci_failed\n' });
+    seedDelivery(repo, 'task-0001', { leased: true });
+    const file = path.join(repo, '.todomd/tasks/task-0001-card.md'), before = fs.readFileSync(file);
+    const viewer = deviceToken('token-viewer');
+    for (const token of [viewer, srv.token]) {
+      const headers = { 'x-todomd-token': token };
+      const board = await (await fetch(`${base}/api/board${q}`, { headers })).json();
+      const card = await (await fetch(`${base}/api/cards/task-0001${q}`, { headers })).json();
+      const runtime = await (await fetch(`${base}/api/delivery/runtime${q}`, { headers })).json();
+      assert.equal(runtime.read_only, true);
+      assert.deepEqual(card.delivery_runtime, board.cards[0].delivery_runtime);
+      assert.deepEqual(runtime.cards['task-0001'], card.delivery_runtime);
+      assert.equal(card.delivery_runtime.lease.expired, true);
+      assert.equal(card.recovery.reset_attempts, false);
+      assert.doesNotMatch(JSON.stringify(runtime), /private-evidence|private-run|receipts|source_revision/);
+    }
+    assert.equal((await fetch(`${base}/api/delivery/runtime${q}`)).status, 401);
+    assert.equal((await fetch(`${base}/api/delivery/runtime${q}`, { headers: { 'x-todomd-token': deviceToken('token-board-agent') } })).status, 403);
+    assert.equal((await fetch(`${base}/api/delivery/runtime${q}`, { method: 'POST', headers: { 'x-todomd-token': srv.token, origin: base } })).status, 405);
+    for (const action of ['move', 'set', 'archive', 'cancel', 'return-build', 'resume-build', 'restart-build', 'retry-verify', 'recover', 'prompt', 'instruction', 'answer', 'summaries', 'attach', 'reorder']) {
+      const response = await fetch(`${base}/api/cards/task-0001/${action}${q}`, { method: 'POST',
+        headers: { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base }, body: '{}' });
+      assert.equal(response.status, 409, action);
+      assert.equal((await response.json()).code, 'delivery_execution_owned');
+    }
+    assert.equal((await fetch(`${base}/api/cards/task-0001${q}`, { method: 'DELETE', headers: { 'x-todomd-token': srv.token, origin: base } })).status, 409);
+    assert.equal((await fetch(`${base}/api/cards/task-0001/move${q}`, { method: 'POST', headers: { 'x-todomd-token': viewer, origin: base } })).status, 403);
+    assert.deepEqual(fs.readFileSync(file), before);
+    assert.equal(pipeline.hasLiveRun(name, 'task-0001'), false);
   } finally { srv.close(); }
 });
 

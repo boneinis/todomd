@@ -26,6 +26,7 @@
 import { loadConfig, withoutRepoLockContext } from './board.js';
 import { createGovernor, sampleProjectResources, resourcesConfig } from './resources.js';
 import { listProjects } from './registry.js';
+import { legacyMutationGuard } from './delivery-runtime.js';
 
 const queue = [];                    // [{project, card, column, resourceClass, run, resolveFn, rejectFn, deferredReason, onDefer}]
 const runningByColumn = new Map();   // column -> count
@@ -267,6 +268,8 @@ function scan() {
   const columnLimitCache = new Map();
   for (const entry of [...queue]) {
     if (!queue.includes(entry)) continue; // admitted/dequeued earlier in this same pass
+    const deliveryHold = legacyMutationGuard(entry.project.path, entry.card);
+    if (deliveryHold) { setDeferred(entry, deliveryHold.error, false); continue; }
     // A caller-side gate (manual/quota pause) is orthogonal to capacity: it
     // stays plainly 'queued' rather than 'deferred', and — unlike governor
     // pressure — never applies to an in-flight chain's own later stages (only

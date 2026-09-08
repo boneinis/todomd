@@ -37,6 +37,7 @@ let boardData = null;
 let boardLoadGeneration = 0;
 let runStates = {};
 let drawerCard = null;
+let drawerDelivery = null;
 let myName = localStorage.getItem('todomd-me') || '';
 let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'mine' : 'all';
 let layout = localStorage.getItem('todomd-layout') === 'list' ? 'list' : 'board';
@@ -584,7 +585,7 @@ function renderCardDiagnostic(element, card) {
 
 function renderCard(card, color, i, nestedIds) {
   const el = $('#card-tpl').content.firstElementChild.cloneNode(true);
-  if (boardData.access === 'viewer') el.draggable = false;
+  if (boardData.access === 'viewer' || card.delivery_runtime?.managed) el.draggable = false;
   el.style.setProperty('--col', color);
   el.style.setProperty('--i', i);
   el.dataset.id = card.id;
@@ -699,6 +700,7 @@ function renderCard(card, color, i, nestedIds) {
 const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human']);
 
 function isHumanMoveAllowed(from, to, card, boardData) {
+  if (card?.delivery_runtime?.managed) return false;
   if (!from || !to || from === to) return false;
   if (to === 'Review') return true;
   if (to === 'Planned' && from === 'Needs Human') return card?.recovery ? !!card.recovery.reset_attempts : true;
@@ -953,6 +955,12 @@ async function openDrawer(id) {
   // to replace the currently rendered card. During a slow child fetch the old
   // card remains visible, so its controls must continue to target that old ID.
   drawerCard = id;
+  drawerDelivery = card.delivery_runtime || null;
+  const deliveryHold = $('#drawer-delivery-hold');
+  deliveryHold.hidden = !drawerDelivery?.managed;
+  const deliveryOwners = Object.entries(drawerDelivery?.ownership || {}).map(([role, owner]) => `${role.replaceAll('_', ' ')}: ${owner}`).join(' · ');
+  deliveryHold.textContent = drawerDelivery?.managed
+    ? [drawerDelivery.message, deliveryOwners, drawerDelivery.next_action].filter(Boolean).join('\n\n') : '';
   if (location.hash !== '#' + id) {
     history.replaceState(null, '', '#' + id);
   }
@@ -1097,12 +1105,15 @@ async function openDrawer(id) {
     publication_review_required: `Review and merge ${card.data.worktree || 'the preserved candidate'} into ${target && target !== 'unknown' ? target : 'the intended target branch'} using your repository’s review workflow. Then retry verification to confirm it landed. The board will not bypass publication review.`,
   };
   const hint = $('#drawer-recovery-hint');
-  hint.textContent = card.data.status === 'Needs Human' ? hints[hold] || '' : '';
+  hint.textContent = !drawerDelivery?.managed && card.data.status === 'Needs Human' ? hints[hold] || '' : '';
   hint.hidden = !hint.textContent;
   $('#drawer-return-build').hidden = !card.recovery?.return_to_build;
   $('#agent-return-build').hidden = !card.recovery?.return_to_build;
   $('#drawer-recovery-agent').hidden = card.data.status !== 'Needs Human' || boardData?.access !== 'full';
   resetDeleteBtn();
+  for (const selector of ['#drawer-attach', '#drawer-archive', '#drawer-delete', '#drawer-cancel', '#move-apply', '#move-select', '#route-save', '#answer-submit']) {
+    const control = $(selector); if (control) control.disabled = !!drawerDelivery?.managed;
+  }
   // pending agent question
   const q = card.data.question;
   $('#drawer-question').hidden = !q;
@@ -1141,13 +1152,13 @@ $('#answer-submit').addEventListener('click', async () => {
 
 function syncPromptComposer() {
   const state = drawerCard ? runStates[drawerCard] : null;
-  const busy = !!state;
+  const busy = !!state || !!drawerDelivery?.managed;
   $('#agent-prompt').disabled = busy;
   $('#agent-prompt-submit').disabled = busy;
   $('#agent-instruction-save').disabled = busy;
   $('#agent-return-build').disabled = busy;
   $('#drawer-recovery-agent').disabled = busy;
-  $('#agent-prompt-status').textContent = busy
+  $('#agent-prompt-status').textContent = drawerDelivery?.managed ? 'delivery ownership hold' : busy
     ? `${state.state || 'running'} · ${state.stage || 'agent'}`
     : 'advisor · handoff ready';
 }
@@ -1494,7 +1505,7 @@ function setRunTldr(text, { pending = false } = {}) {
 }
 
 async function refreshCardSummaries(id, seq = drawerOpenSeq) {
-  if (boardData?.access !== 'full') {
+  if (boardData?.access !== 'full' || (id === drawerCard && drawerDelivery?.managed)) {
     if (id !== drawerCard || seq !== drawerOpenSeq) return;
     if ($('#description-tldr').classList.contains('is-pending')) {
       $('#description-tldr').textContent = 'Summary not generated yet.';
