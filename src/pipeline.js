@@ -131,6 +131,7 @@ const pending = new Map();
 const triggerClaims = new Map();      // runKey → exact pre-spawn stage claim
 // Read-only card conversations are independent of the build workflow but still
 // need an exact claim so delete/move/cancel cannot race a queued or live turn.
+const recoveryAdmissions = new Map(); // synchronous ownership during human recovery/reset admission
 const promptClaims = new Map();       // runKey → { project, card, cancelled }
 // On-demand semantic summaries use a tool-less agent turn and an ignored cache
 // under .todomd/runs. They do not enter card history or replace Build sessions,
@@ -1206,7 +1207,7 @@ function recordSummaryUsage(project, id, result) {
 async function generateCardSummaries(project, id, holder) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: `card not found: ${id}` };
-  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
+  if (cardCycleBusy(project.name, id)) {
     return { ok: false, error: 'summaries are available after the active run finishes' };
   }
 
@@ -1469,12 +1470,20 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
       return humanMove(project, id, to, { instruction });
     }
   }
-  if ((tracked || pend || triageClaim || triggerClaim || queued) && to !== 'Review') {
+  if (cardCycleBusy(project.name, id) && to !== 'Review') {
     return { ok: false, error: 'run in progress — drag to Review to cancel it first' };
   }
 
   // always allowed: retriage to Review (cancels a live run)
   if (to === 'Review') {
+    if (recoveryAdmissions.has(key)) return { ok: false, error: 'recovery transition in progress — try again after it settles' };
+    // Advisory/recovery turns also own the candidate. Cancel that turn first;
+    // its completion must not race a destructive retriage/reset transition.
+    if (promptClaims.has(key)) {
+      const stopped = await cancel(project, id);
+      return stopped.ok ? { ...stopped, cancelled: true,
+        warning: 'Card turn cancelled; the candidate is preserved. Retry the move after the turn finishes.' } : stopped;
+    }
     if (tracked) {
       if (tracked.stage === 'CI') {
         if (pend) {
@@ -1584,24 +1593,26 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
   // retry path: Needs Human → Planned (resets the attempt counter)
   if (to === 'Planned') {
     if (from !== 'Needs Human') return { ok: false, error: 'Planned is set by the orchestrator' };
-    retryFindings.delete(key);
-    recoveryBuilds.delete(key);
-    const ver = card.data.verification || {};
-    // discard the rejected worktree so the fresh attempt doesn't build on top of it
-    if (card.data.worktree) {
-      const wtDir = config.worktree_dir || '.todomd/worktrees';
-      // serialize shared-index git ops (worktree add/remove/merge/prune) so two
-      // cards finishing at concurrency>1 can't race the .git index
-      await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
-    }
-    await patchFrontmatter(project.path, id, {
-      needs_human_reason: '',
-      recovery_stage: '',
-      worktree: '',
-      base_branch: '',
-      verification: { attempts: 0, max_attempts: ver.max_attempts || config.max_attempts || 3, last_verdict: '' },
+    return admitRecovery(project, id, async () => {
+      retryFindings.delete(key);
+      recoveryBuilds.delete(key);
+      const ver = card.data.verification || {};
+      // discard the rejected worktree so the fresh attempt doesn't build on top of it
+      if (card.data.worktree) {
+        const wtDir = config.worktree_dir || '.todomd/worktrees';
+        // serialize shared-index git ops (worktree add/remove/merge/prune) so two
+        // cards finishing at concurrency>1 can't race the .git index
+        await withRepoLock(project.path, () => removeWorktree(project.path, path.join(project.path, wtDir, id), card.data.worktree));
+      }
+      await patchFrontmatter(project.path, id, {
+        needs_human_reason: '',
+        recovery_stage: '',
+        worktree: '',
+        base_branch: '',
+        verification: { attempts: 0, max_attempts: ver.max_attempts || config.max_attempts || 3, last_verdict: '' },
+      });
+      return moveCard(project.path, id, 'Planned', { reason: 'human retry' });
     });
-    return moveCard(project.path, id, 'Planned', { reason: 'human retry' });
   }
 
   // stage-trigger columns: Plan, plus any custom column with a stages entry
@@ -1675,6 +1686,7 @@ function canRetryVerification(card) {
     // if it passes, the existing attempt continues into Verify without
     // silently extending max_attempts or manufacturing another Build.
     'ci_failed', 'ci_attempts_exhausted', 'ci_evidence_invalid', 'ci_blocked', 'nothing_to_test', 'build_cancelled',
+    'merge_conflict', 'merge_noop', 'base_branch_moved', 'base_branch_unknown', 'publication_review_required',
   ].includes(reason)
     || (reason === 'agent_error' && card?.data?.recovery_stage === 'Build')
     || (reason === 'orphaned_run' && ['CI', 'Verify'].includes(card?.data?.recovery_stage))
@@ -1695,25 +1707,25 @@ function canReturnToBuild(card) {
     || reason === 'ci_attempts_exhausted'
     || reason === 'verification_incomplete'
     || reason === 'ci_evidence_invalid'
+    || reason === 'merge_conflict'
+    || reason === 'merge_noop'
     || (['error', 'retry_failed'].includes(reason) && lastVerdict === 'fail');
 }
 
 export async function recoveryActions(project, id, { ignoreClaim = null } = {}) {
   const card = readCard(project.path, id);
-  const empty = { resume_build: false, restart_build: false, retry_verification: false, return_to_build: false };
+  const empty = { resume_build: false, restart_build: false, retry_verification: false, return_to_build: false, reset_attempts: false };
   if (!card) return { ...empty, build_profile: 'standard', build_limits: { max_slices: 3, budget_minutes: 60 } };
   const profile = buildContinuationConfig(await execConfig(project.path), card);
   const summary = {
     build_profile: profile.profile,
     build_limits: { max_slices: profile.maxSlices, budget_minutes: profile.budgetMinutes },
   };
-  const key = runKey(project.name, id);
-  const onlyIgnoredReviewClaim = !!ignoreClaim && promptClaims.get(key) === ignoreClaim
-    && !runs.has(key) && !pending.has(key) && !ciRuns.has(key) && !triaging.has(key) && !triggerClaims.has(key);
-  if (card.data.status !== 'Needs Human' || (hasLiveRun(project.name, id) && !onlyIgnoredReviewClaim)) {
+  if (card.data.status !== 'Needs Human' || cardCycleBusy(project.name, id, { ignoreClaim })) {
     return { ...empty, ...summary };
   }
   const kept = await preservedWorktree(project, card);
+  if (cardCycleBusy(project.name, id, { ignoreClaim })) return { ...empty, ...summary };
   // Older orphan records predate recovery_stage. orphaned_run was only emitted
   // for Build at that point, so keep those cards recoverable too.
   const reason = card.data.needs_human_reason;
@@ -1727,6 +1739,7 @@ export async function recoveryActions(project, id, { ignoreClaim = null } = {}) 
     restart_build: !kept && orphanedBuild,
     retry_verification: !!kept && canRetryVerification(card),
     return_to_build: !!kept && canReturnToBuild(card),
+    reset_attempts: true,
     ...summary,
   };
 }
@@ -1735,19 +1748,24 @@ export async function recoveryActions(project, id, { ignoreClaim = null } = {}) 
 // Verification, this runs Build again in the preserved worktree. It extends
 // the cap by exactly one attempt so an explicit human decision can recover an
 // attempts_exhausted card without resetting or hiding its prior history.
-export async function returnToBuild(project, id, value = '') {
+export function returnToBuild(project, id, value = '') {
+  return admitRecovery(project, id, (admission) => returnToBuildClaimed(project, id, value, admission));
+}
+
+async function returnToBuildClaimed(project, id, value = '', admission) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
   if (card.data.status !== 'Needs Human' || !canReturnToBuild(card)) {
     return { ok: false, error: 'card is not eligible for a preserved repair Build' };
   }
   const key = runKey(project.name, id);
-  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
+  if (cardCycleBusy(project.name, id, { ignoreAdmission: admission })) {
     return { ok: false, error: 'run already in progress' };
   }
   const kept = await preservedWorktree(project, card);
   if (!kept) return { ok: false, error: 'the preserved worktree is unavailable or no longer valid' };
-  const instruction = String(value || '').trim();
+  const instruction = String(value || '').trim() || (['merge_conflict', 'merge_noop'].includes(card.data.needs_human_reason)
+    ? `Repair the preserved candidate after ${card.data.needs_human_reason}. Inspect the latest merge failure and resolve it against the recorded target ${card.data.base_branch || '(see run log)'}. Preserve existing implementation; do not publish or change publication policy.` : '');
   if (instruction) {
     const saved = setCardInstruction(project, id, instruction);
     if (!saved.ok) return saved;
@@ -1789,7 +1807,11 @@ export async function returnToBuild(project, id, value = '') {
 // Resume only a Build that reconcileOnBoot positively identified as orphaned.
 // The preserved git worktree and its checked-out branch are validated twice
 // (here and when the queued continuation starts); neither path can recreate it.
-export async function resumeBuild(project, id) {
+export function resumeBuild(project, id) {
+  return admitRecovery(project, id, (admission) => resumeBuildClaimed(project, id, admission));
+}
+
+async function resumeBuildClaimed(project, id, admission) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
   const reason = card.data.needs_human_reason;
@@ -1802,7 +1824,7 @@ export async function resumeBuild(project, id) {
     return { ok: false, error: 'card is not an eligible preserved Build run' };
   }
   const key = runKey(project.name, id);
-  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
+  if (cardCycleBusy(project.name, id, { ignoreAdmission: admission })) {
     return { ok: false, error: 'run already in progress' };
   }
   const kept = await preservedWorktree(project, card);
@@ -1832,7 +1854,11 @@ export async function resumeBuild(project, id) {
 // left to resume, but the prior human approval still stands: clear only the
 // stale recovery metadata and enqueue a fresh Build. If preservation is still
 // available, refuse this path so the Resume Build action cannot be bypassed.
-export async function restartBuild(project, id) {
+export function restartBuild(project, id) {
+  return admitRecovery(project, id, (admission) => restartBuildClaimed(project, id, admission));
+}
+
+async function restartBuildClaimed(project, id, admission) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
   if (card.data.status !== 'Needs Human' || card.data.needs_human_reason !== 'orphaned_run'
@@ -1840,7 +1866,7 @@ export async function restartBuild(project, id) {
     return { ok: false, error: 'card is not an eligible orphaned Build run' };
   }
   const key = runKey(project.name, id);
-  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
+  if (cardCycleBusy(project.name, id, { ignoreAdmission: admission })) {
     return { ok: false, error: 'run already in progress' };
   }
   if (await preservedWorktree(project, card)) {
@@ -1872,7 +1898,11 @@ export async function restartBuild(project, id) {
   return { ok: true };
 }
 
-export async function retryVerification(project, id) {
+export function retryVerification(project, id, options = {}) {
+  return admitRecovery(project, id, (admission) => retryVerificationClaimed(project, id, options, admission));
+}
+
+async function retryVerificationClaimed(project, id, { baseBranch: requestedBase = '' } = {}, admission) {
   const card = readCard(project.path, id);
   if (!card) return { ok: false, error: 'card not found' };
   if (card.data.status !== 'Needs Human') return { ok: false, error: 'card is not waiting for verification retry' };
@@ -1882,7 +1912,22 @@ export async function retryVerification(project, id) {
   const kept = await preservedWorktree(project, card);
   if (!kept) return { ok: false, error: 'the preserved worktree is unavailable or no longer valid' };
   const { config, worktreeAbs } = kept;
-  if (hasLiveRun(project.name, id) || scheduler.isQueued(project.name, id)) {
+  // A detached-head run has no trustworthy destination. Only an explicit
+  // human choice of the currently checked-out local branch establishes it.
+  const target = String(requestedBase || '').trim();
+  if (target && card.data.base_branch !== 'unknown') {
+    return { ok: false, error: 'the recorded merge target cannot be changed by a verification retry' };
+  }
+  if (card.data.base_branch === 'unknown') {
+    if (!target || target === card.data.worktree
+        || !(await git(project.path, ['check-ref-format', '--branch', target])).ok
+        || await currentBranch(project.path) !== target) {
+      return { ok: false, error: 'check out the intended local target branch and enter its name before retrying verification' };
+    }
+  } else if (card.data.base_branch && await currentBranch(project.path) !== card.data.base_branch) {
+    return { ok: false, error: `check out ${card.data.base_branch} before retrying; the preserved candidate is unchanged` };
+  }
+  if (cardCycleBusy(project.name, id, { ignoreAdmission: admission })) {
     return { ok: false, error: 'run already in progress' };
   }
   const verification = card.data.verification || {};
@@ -1896,13 +1941,18 @@ export async function retryVerification(project, id) {
     lastVerdict: verification.last_verdict || '',
     attemptOpened: false,
     verificationRetry: true,
+    // Keep reconciliation available after a subsequent CI interruption too.
+    // Ancestry is checked again before any empty-diff exception can apply.
+    publishedRecovery: verification.last_verdict === 'pass',
   };
   // Keep an owner across CI and Verify admissions. A CI failure on this
   // explicit retry parks the same attempt; only a real Verify verdict may
   // request a subsequent repair Build.
   pending.set(key, claim);
   bumpRunGeneration(project.name, id);
-  await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '' });
+  await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '',
+    ...(target ? { base_branch: target } : {}) });
+  if (target) await appendRunLog(project.path, id, `- ${now()} · Human selected merge target: ${target}`);
   const moved = await orchMove(project, id, 'Verify', 'retrying unavailable verifier');
   if (!moved.ok) { sendState(project, id, 'idle', undefined, undefined, claim); return moved; }
 
@@ -1970,6 +2020,9 @@ function preserveCancelledCandidate(project, id, state, config) {
 }
 
 export async function cancel(project, id) {
+  if (recoveryAdmissions.has(runKey(project.name, id))) {
+    return { ok: false, error: 'recovery transition in progress — retry cancellation after it settles' };
+  }
   const config = await execConfig(project.path);
   const key = runKey(project.name, id);
   const live = children.get(key);
@@ -2678,7 +2731,13 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
     ['diff', '--name-only', '-z', `${baseCommit.stdout}...HEAD`, '--', '.', ':(exclude).todomd']);
   const diffCancel = pendingCancelled(project, id);
   if (diffCancel) return revertPendingCancel(project, id, diffCancel, revertArgs);
-  if (!diff || !diff.ok || !diff.stdout) {
+  // An explicitly retried, previously verified candidate may already have
+  // landed through external review. Its empty diff is expected; CI still runs
+  // against the exact candidate. Ordinary empty Builds never take this path.
+  const alreadyPublished = pendingOwner?.publishedRecovery && diff?.ok && !diff.stdout
+    && base === await currentBranch(project.path)
+    && (await git(project.path, ['merge-base', '--is-ancestor', branch, 'HEAD'])).ok;
+  if (!diff || !diff.ok || (!diff.stdout && !alreadyPublished)) {
     await patchFrontmatter(project.path, id, { ci_evidence: {} });
     const empty = diff?.ok;
     await appendRunLog(project.path, id, `- ${now()} · CI attempt ${attempt} · ${empty ? 'nothing to test (empty candidate)' : 'candidate diff unavailable'}`);
@@ -3690,32 +3749,41 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     if (forkedFrom === 'unknown') {
       return toNeedsHuman(project, id, 'Verify', 'base_branch_unknown',
         'this run forked from a detached HEAD, so the merge target is unknown. ' +
-        'Check out the intended branch, then drag the card back to Planned to retry.');
+        'Check out the intended branch, enter its name in the recovery controls, then retry verification on the preserved candidate.');
     }
     const head = await currentBranch(project.path);
     if (forkedFrom && head !== forkedFrom) {
       return toNeedsHuman(project, id, 'Verify', 'base_branch_moved',
         `repo is on "${head || 'detached HEAD'}" but this run forked from "${forkedFrom}" — ` +
-        `merge refused. Check out ${forkedFrom}, then drag the card back to Planned to retry.`);
+        `merge refused. Check out ${forkedFrom}, then retry verification on the preserved candidate.`);
     }
     const merged = await withRepoLock(project.path, async () => {
       const latest = await execConfig(project.path);
+      if (forkedFrom && await currentBranch(project.path) !== forkedFrom) {
+        return { ok: false, targetMoved: true, reason: `Check out ${forkedFrom}, then retry verification on the preserved candidate.` };
+      }
       let mergeTarget = branch;
-      if (config.ci?.execution === 'remote' || latest.ci?.execution === 'remote') {
-        const command = ciBoardColumn(latest) ? ciCommandForProfile(latest) : String(latest.verify_command || '').trim();
+      const command = ciBoardColumn(latest) ? ciCommandForProfile(latest) : String(latest.verify_command || '').trim();
+      if (ciCommand || command || config.ci?.execution === 'remote' || latest.ci?.execution === 'remote') {
         const evidence = command && await trustedCiEvidence(readCard(project.path, id), worktreeAbs, command, latest.ci?.execution || 'local');
         if (!evidence) {
-          return { ok: false, ciInvalid: true, reason: 'Candidate or CI policy changed after the gate passed; remote evidence no longer authorizes this merge.' };
+          return { ok: false, ciInvalid: true, reason: 'Candidate or CI policy changed after the gate passed; CI evidence no longer authorizes this merge.' };
         }
         // Merge the checked commit, never a branch ref that can move after validation.
         mergeTarget = evidence.head;
       }
+      // A human may already have published this exact candidate through the
+      // repository's required review workflow. Recognize it without attempting
+      // another merge or relaxing publication policy. CI and Verify above still
+      // validate the candidate, and the ancestry check below still gates Done.
+      if ((await git(project.path, ['merge-base', '--is-ancestor', mergeTarget, 'HEAD'])).ok) return { ok: true };
       return mergeBranch(project.path, mergeTarget, `chore(todomd): merge ${id} (verified, attempt ${attempt})`);
     });
     if (merged.ciInvalid) {
       await patchFrontmatter(project.path, id, { ci_evidence: {} });
       return toNeedsHuman(project, id, 'CI', 'ci_evidence_invalid', merged.reason);
     }
+    if (merged.targetMoved) return toNeedsHuman(project, id, 'Verify', 'base_branch_moved', merged.reason);
     if (!merged.ok) return toNeedsHuman(project, id, 'Verify', merged.reviewRequired ? 'publication_review_required' : 'merge_conflict', merged.reason);
     // A merge that "succeeds" without the branch landing (git reports "Already
     // up to date" while the branch is NOT an ancestor — e.g. a messed-up
@@ -4237,7 +4305,29 @@ export function hasLiveRun(projectName, id) {
   // so a live CI command is self-evidently a live run rather than one that
   // depends on another map's bookkeeping.
   return runs.has(key) || pending.has(key) || ciRuns.has(key) || triaging.has(key) ||
-    triggerClaims.has(key) || promptClaims.has(key);
+    triggerClaims.has(key) || promptClaims.has(key) || recoveryAdmissions.has(key);
+}
+
+// One admission rule for reset, recovery eligibility, and recovery execution.
+// A review may inspect eligibility while holding only its own prompt claim;
+// queued work and every other owner still block it.
+function cardCycleBusy(projectName, id, { ignoreClaim = null, ignoreAdmission = null } = {}) {
+  const key = runKey(projectName, id);
+  const onlyIgnoredClaims = (!promptClaims.has(key) || promptClaims.get(key) === ignoreClaim)
+    && (!recoveryAdmissions.has(key) || recoveryAdmissions.get(key) === ignoreAdmission)
+    && !runs.has(key) && !pending.has(key) && !ciRuns.has(key)
+    && !triaging.has(key) && !triggerClaims.has(key) && !children.has(key);
+  return scheduler.isQueued(projectName, id) || children.has(key)
+    || (hasLiveRun(projectName, id) && !onlyIgnoredClaims);
+}
+
+async function admitRecovery(project, id, execute) {
+  if (cardCycleBusy(project.name, id)) return { ok: false, error: 'run already in progress' };
+  const key = runKey(project.name, id);
+  const admission = { project: project.name };
+  recoveryAdmissions.set(key, admission);
+  try { return await execute(admission); }
+  finally { if (recoveryAdmissions.get(key) === admission) recoveryAdmissions.delete(key); }
 }
 
 export function hasLiveBuildingChild(project, epicId) {
@@ -4258,6 +4348,7 @@ export function projectHasLiveRun(projectName) {
   for (const claim of triaging.values()) if (claim.project === projectName) return true;
   for (const claim of triggerClaims.values()) if (claim.project === projectName) return true;
   for (const claim of promptClaims.values()) if (claim.project === projectName) return true;
+  for (const claim of recoveryAdmissions.values()) if (claim.project === projectName) return true;
   for (const summary of summaryRuns.values()) if (summary.project === projectName) return true;
   return false;
 }

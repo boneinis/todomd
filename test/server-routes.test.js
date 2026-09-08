@@ -189,6 +189,7 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
       restart_build: false,
       retry_verification: false,
       return_to_build: false,
+      reset_attempts: false,
       build_profile: 'long',
       build_limits: { max_slices: 6, budget_minutes: 120 },
     });

@@ -701,8 +701,8 @@ const ORCH_ONLY = new Set(['Planned', 'Build', 'Verify', 'Done', 'Needs Human'])
 function isHumanMoveAllowed(from, to, card, boardData) {
   if (!from || !to || from === to) return false;
   if (to === 'Review') return true;
-  if (to === 'Planned' && from === 'Needs Human') return true;
-  if (from === 'Needs Human' && (to === 'Queue' || to === 'Build')) return true;
+  if (to === 'Planned' && from === 'Needs Human') return card?.recovery ? !!card.recovery.reset_attempts : true;
+  if (from === 'Needs Human' && (to === 'Queue' || to === 'Build')) return card?.recovery ? !!card.recovery.return_to_build : true;
   if (to === 'Queue' && from === 'Planned') return true;
 
   const stages = boardData?.config?.stages || {};
@@ -1063,7 +1063,8 @@ async function openDrawer(id) {
     .map((c) => {
       const allowed = isHumanMoveAllowed(card.data.status, c, card, boardData);
       const recovery = card.data.status === 'Needs Human' && (c === 'Queue' || c === 'Build');
-      return `<option value="${esc(c)}"${allowed ? '' : ' disabled'}>${esc(c)}${recovery ? ' (repair preserved work)' : allowed ? '' : ' (orchestrator only)'}</option>`;
+      const reset = card.data.status === 'Needs Human' && c === 'Planned';
+      return `<option value="${esc(c)}"${allowed ? '' : ' disabled'}>${esc(c)}${reset ? ' (discard candidate; reset attempts)' : recovery ? ' (repair preserved work)' : allowed ? '' : ' (orchestrator only)'}</option>`;
     }).join('');
   $('#move-select').innerHTML = optionsHtml;
   const firstAllowed = cols.find((c) => c !== card.data.status && isHumanMoveAllowed(card.data.status, c, card, boardData));
@@ -1083,6 +1084,21 @@ async function openDrawer(id) {
   retryVerify.title = retryingCi
     ? 'rerun CI on this preserved candidate and continue the same verification attempt if it passes'
     : 'retry verification on this preserved candidate';
+  const hold = card.data.needs_human_reason;
+  const target = card.data.base_branch;
+  const unknownTarget = card.data.status === 'Needs Human' && target === 'unknown' && !!card.recovery?.retry_verification;
+  $('#drawer-merge-target-field').hidden = !unknownTarget;
+  $('#drawer-merge-target').value = '';
+  const hints = {
+    merge_conflict: 'Repair the merge conflict in the preserved candidate, then retry verification. Return to Build can request agent help.',
+    merge_noop: 'The candidate did not land. Inspect the merge failure, then retry verification or return the preserved work to Build.',
+    base_branch_moved: `Check out the recorded target branch ${target || ''}, then retry verification. Your candidate is preserved.`,
+    base_branch_unknown: 'Check out the intended target branch and enter its name below, then retry verification. Your candidate is preserved.',
+    publication_review_required: `Review and merge ${card.data.worktree || 'the preserved candidate'} into ${target && target !== 'unknown' ? target : 'the intended target branch'} using your repository’s review workflow. Then retry verification to confirm it landed. The board will not bypass publication review.`,
+  };
+  const hint = $('#drawer-recovery-hint');
+  hint.textContent = card.data.status === 'Needs Human' ? hints[hold] || '' : '';
+  hint.hidden = !hint.textContent;
   $('#drawer-return-build').hidden = !card.recovery?.return_to_build;
   $('#agent-return-build').hidden = !card.recovery?.return_to_build;
   $('#drawer-recovery-agent').hidden = card.data.status !== 'Needs Human' || boardData?.access !== 'full';
@@ -1364,7 +1380,12 @@ $('#drawer-cancel').addEventListener('click', async () => {
 $('#drawer-retry-verify').addEventListener('click', async () => {
   if (!drawerCard) return;
   try {
-    const res = await fetch(`/api/cards/${drawerCard}/retry-verify?project=${encodeURIComponent(currentProject)}`, { method: 'POST', headers });
+    const baseBranch = $('#drawer-merge-target-field').hidden ? '' : $('#drawer-merge-target').value.trim();
+    if (!$('#drawer-merge-target-field').hidden && !baseBranch) return toast('enter the checked-out target branch name');
+    const res = await fetch(`/api/cards/${drawerCard}/retry-verify?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ base_branch: baseBranch }),
+    });
     const out = await res.json();
     if (!res.ok) return toast(out.error || 'could not retry verification');
     toast('verification retry started');
