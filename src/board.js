@@ -8,6 +8,7 @@ import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
 import { withFileLock } from './lockfile.js';
 import { resourcesConfig } from './resources.js';
+import { legacyMutationGuard } from './delivery-runtime.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'];
 
@@ -621,6 +622,7 @@ export function withoutRepoLockContext(fn) {
 
 export function moveCard(repoPath, id, newStatus, { reason } = {}) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const config = loadConfig(repoPath);
     if (!config.columns.includes(newStatus)) {
       return { ok: false, error: `unknown status: ${newStatus}` };
@@ -653,6 +655,7 @@ export function moveCard(repoPath, id, newStatus, { reason } = {}) {
 // ordering deterministic. Archived and active-board views remain separate.
 export function reorderCards(repoPath, id, beforeId = null) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const board = loadBoard(repoPath, { includeArchived: true });
     const movingMatches = board.cards.filter((c) => !c.unparseable && c.id === id);
     if (movingMatches.length !== 1) {
@@ -662,6 +665,9 @@ export function reorderCards(repoPath, id, beforeId = null) {
     const archived = !!moving.archived;
     const peers = sortCardsByBoardOrder(board.cards.filter((c) =>
       !c.unparseable && c.status === moving.status && !!c.archived === archived));
+    for (const peer of peers) {
+      const held = legacyMutationGuard(repoPath, peer.id); if (held) return held;
+    }
 
     if (beforeId === id) return { ok: true, unchanged: true, status: moving.status, order: peers.map((c) => c.id) };
     let before = null;
@@ -703,6 +709,7 @@ export function reorderCards(repoPath, id, beforeId = null) {
 // by the whole pipeline) unless explicitly included.
 export function setArchived(repoPath, id, on) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
     if (card.parseError) return cardParseFailure(card);
@@ -728,6 +735,7 @@ export function setArchived(repoPath, id, on) {
 // path-scoped commit. git history still has it, so it's recoverable.
 export function deleteCard(repoPath, id) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const dir = tasksDir(repoPath);
     const file = findCardFile(dir, id);
     if (!file) return { ok: false, error: `card not found: ${id}` };
@@ -764,6 +772,7 @@ function flowYaml(value) {
 // key lines inside the frontmatter block only. Orchestrator-owned fields.
 export function patchFrontmatter(repoPath, id, updates) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
     if (card.parseError) return cardParseFailure(card);
@@ -807,6 +816,7 @@ const fmScalar = (value, fallback) =>
 
 export function createCard(repoPath, fields) {
   return withRepoLock(repoPath, async () => {
+    if (fields.parent) { const held = legacyMutationGuard(repoPath, String(fields.parent)); if (held) return held; }
     const dir = tasksDir(repoPath);
     fs.mkdirSync(dir, { recursive: true });
     const title = String(fields.title || '').trim();
@@ -817,6 +827,7 @@ export function createCard(repoPath, fields) {
       .filter(Boolean)
       .reduce((m, n) => Math.max(m, Number(n)), 0);
     const id = `task-${String(max + 1).padStart(4, '0')}`;
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const file = `${id}-${slugify(title)}.md`;
 
     // asArray: chunk cards are created from the Plan agent's yaml, where any of
@@ -873,6 +884,7 @@ ${plan ? `${plan}\n\n` : ''}## Run Log
 // don't change status, so no moveCard commit folds the changes in).
 export function commitCardChanges(repoPath, id, message) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const file = findCardFile(tasksDir(repoPath), id);
     if (!file) return { committed: false, reason: 'card not found' };
     return commitCard(repoPath, path.join('.todomd', 'tasks', file), message);
@@ -1010,6 +1022,7 @@ const MAX_ATTACHMENT = 25 * 1024 * 1024; // 25 MB
 // basename so they can never escape the attachments dir.
 export function attachCard(repoPath, id, filename, buffer) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     if (!buffer || !buffer.length) return { ok: false, error: 'empty file' };
     if (buffer.length > MAX_ATTACHMENT) return { ok: false, error: 'file too large (25 MB max)' };
     const card = readCard(repoPath, id);
@@ -1053,6 +1066,7 @@ export function attachCard(repoPath, id, filename, buffer) {
 // (inserted at the end of that section, before any following heading).
 export function appendRunLog(repoPath, id, line) {
   return withRepoLock(repoPath, async () => {
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
     if (card.parseError) return cardParseFailure(card);

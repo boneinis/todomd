@@ -137,7 +137,9 @@ record events before these assessments can authorize live changes.
 
 The [update plan](delivery-workflow-update-plan.md) remains the rollout authority.
 The next increment supplies an internal [durable ownership and transition
-store](delivery-ownership.md). Its production adapters are not connected.
+store](delivery-ownership.md). The [runtime compatibility guard](delivery-runtime.md)
+connects read-only ownership checks to legacy admission and recovery; production
+delivery mutation and dispatch adapters remain unconnected.
 Role/cycle management, UI integration, external evidence reconciliation,
 apply/rollback migration, and the two-cycle pilot remain future work. There is
 no board activation flag yet; `execution_enabled: false` describes the preview's

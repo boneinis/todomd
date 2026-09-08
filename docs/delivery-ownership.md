@@ -2,8 +2,10 @@
 
 This increment implements an internal private-state store for delivery
 transitions, assignments, handoffs, blockers, and execution leases. It is disabled
-by default and has no production HTTP, CLI, scheduler, or board adapter. Existing
-boards continue to use their current runtime. This is part of phase 3 of the
+by default and has no production mutation or dispatch adapter. A subsequent
+[runtime compatibility guard](delivery-runtime.md) reads ownership to prevent
+conflicting legacy actions. Existing boards continue to use their current
+runtime. This is part of phase 3 of the
 [update plan](delivery-workflow-update-plan.md), not pilot activation.
 
 ## Authority and storage
@@ -82,8 +84,9 @@ processes, not just elapsed time or an unavailable heartbeat. Releasing an old
 fence after replacement is rejected. Admission preserves a durable reservation
 before any future adapter could dispatch work.
 
-The store currently serializes its own writers only. It does not fence the
-legacy scheduler, operating-system processes, or a remote execution service.
+The store currently serializes its own writers only. The compatibility guard
+holds legacy admission for managed cards, but the store does not itself fence
+operating-system processes or a remote execution service.
 Those adapters must participate in the same admission protocol and check the
 current run/fence before candidate writes and completion. A precomputed
 `busy: false` by itself does not provide that cross-system guarantee.
