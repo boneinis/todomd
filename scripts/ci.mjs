@@ -107,6 +107,24 @@ async function packSmoke() {
     const bin = path.join(proj, 'node_modules', '.bin', 'todomd');
     if (!fs.existsSync(bin)) throw new Error('the installed package has no todomd bin');
 
+    // Exercise the packaged backend AND its detached supervisor entry point.
+    // Source imports alone cannot catch a missing worker in an installed tarball.
+    if (['darwin', 'linux'].includes(process.platform)) {
+      await run(process.execPath, ['--input-type=module', '-e', `
+        import { pathToFileURL } from 'node:url';
+        import path from 'node:path';
+        const { createLocalDeliveryBackend } = await import(pathToFileURL(path.join(process.argv[1], 'src/delivery-local-backend.js')));
+        const backend = createLocalDeliveryBackend(process.argv[2], { enabled: true, graceMs: 50,
+          authorizeStart: () => true, resolveJob: () => ({ command: process.execPath,
+            args: ['-e', 'setInterval(() => {}, 1000)'], cwd: process.argv[3], containment: 'local_process_group' }) });
+        const ref = { task_id: 'pack-task', lease_id: 'pack-lease', run_id: 'pack-run', fence: 1,
+          backend: 'local', source_revision: 'a'.repeat(64) };
+        try { await backend.start(ref); } finally { await backend.close(ref); }
+        const result = await backend.inspect(ref);
+        if (result.state !== 'stopped' || result.closed !== true) throw new Error('Packaged local execution did not close');
+      `, path.join(proj, 'node_modules/todomd'), path.join(work, 'execution'), repo]);
+    }
+
     // 3. scaffold a board in a fresh git repo
     execFileSync('git', ['init', '-q', '.'], { cwd: repo });
     execFileSync('git', ['config', 'user.email', 'ci@todomd.local'], { cwd: repo });

@@ -1,6 +1,6 @@
 # To-do MD delivery workflow update plan
 
-Status: approved; foundation, ownership, compatibility guard, and execution coordinator implemented; activation off
+Status: approved; foundation, ownership, compatibility guard, coordinator, and local backend implemented; activation off
 
 Date: September 8, 2026  
 Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)  
@@ -12,8 +12,10 @@ internal [durable ownership, lease, and transition store](delivery-ownership.md)
 The [runtime compatibility guard](delivery-runtime.md) now makes the legacy
 scheduler, recovery controls, and card writes respect that private ownership.
 The internal [execution coordinator](delivery-execution.md) now persists dispatch
-claims and reconciles backend closure before releasing a lease. Existing boards
-still use the legacy runtime. Production backend/admission and transaction
+claims and reconciles backend closure before releasing a lease. The concrete
+[local backend](delivery-local-backend.md) now supervises actual process groups
+and retains control after the launcher exits. Existing boards still use the
+legacy runtime. Remote backend/shared admission and transaction
 recovery adapters, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime
 integration and recovery acceptance gates pass.
