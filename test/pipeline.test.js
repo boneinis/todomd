@@ -1616,24 +1616,27 @@ test('cascadeEpicCleanup: live building child is archived (not Review) after cle
   writeCard(repo, 'epic-001', { status: 'Queue', extra: 'epic: true\nchildren: [chunk-001]\n' });
   writeCard(repo, 'chunk-001', { status: 'Planned', extra: 'parent: epic-001\n' });
 
-  // start the child build — it hangs until SIGTERM
-  await pipeline.humanMove(p, 'chunk-001', 'Queue');
-  await until(() => status(repo, 'chunk-001') === 'Build' && fs.existsSync(marker), { timeout: BUDGET.chain });
-
-  // trigger cascade while the child run is live
-  await pipeline.cascadeEpicCleanup(p, 'epic-001');
-
-  // cancel handler archives asynchronously after cleanup
-  await until(() => readCard(repo, 'chunk-001').data.archived, { timeout: BUDGET.stage });
-  const child = readCard(repo, 'chunk-001');
-  assert.ok(child.data.archived, 'child is archived');
-  assert.notEqual(child.data.status, 'Review', 'child never entered Review');
-  clearFakeAgent();
+  try {
+    // start the child build — it hangs until SIGTERM
+    await pipeline.humanMove(p, 'chunk-001', 'Queue');
+    await until(() => status(repo, 'chunk-001') === 'Build' && fs.existsSync(marker), { timeout: BUDGET.chain });
+    await pipeline.cascadeEpicCleanup(p, 'epic-001');
+    await until(() => readCard(repo, 'chunk-001').data.archived, { timeout: BUDGET.stage });
+    const child = readCard(repo, 'chunk-001');
+    assert.ok(child.data.archived, 'child is archived');
+    assert.notEqual(child.data.status, 'Review', 'child never entered Review');
+    // Archival precedes final scheduler settlement. Do not let this fixture's
+    // late release race the next test's reset or fake-agent configuration.
+    await until(() => !pipeline.hasLiveRun(p.name, 'chunk-001'), { timeout: BUDGET.stage });
+  } finally {
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    pipeline.forgetProject(p.name);
+    clearFakeAgent();
+  }
 });
 
 test('cascadeEpicCleanup immediately archives a repair child waiting for Build admission', async () => {
   isolateHome();
-  await sleep(300);
   scheduler.resetState();
   useFakeAgent({ verdict: 'fail', build: 'good' });
   pipeline.init({ broadcast: noop });
@@ -1653,6 +1656,7 @@ test('cascadeEpicCleanup immediately archives a repair child waiting for Build a
   }));
 
   try {
+    await until(() => typeof releaseBlocker === 'function', { timeout: BUDGET.stage });
     assert.deepEqual(await pipeline.retryVerification(p, 'chunk-001'), { ok: true });
     await until(() => scheduler.queuedEntries(p.name)
       .some((entry) => entry.card === 'chunk-001' && entry.column === 'Build'),
@@ -1667,6 +1671,7 @@ test('cascadeEpicCleanup immediately archives a repair child waiting for Build a
     assert.equal(scheduler.isQueued(p.name, 'chunk-001'), false);
     assert.equal(fs.existsSync(worktree), false, 'the archived child releases its worktree');
   } finally {
+    scheduler.dequeue(p.name, 'blocker');
     releaseBlocker?.();
     await blocker;
     pipeline.forgetProject(p.name);

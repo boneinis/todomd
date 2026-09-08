@@ -2,7 +2,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { localRef, refKey, machineIdentity, privateDirectory, regularFile, writeOnce, readRegistration, groupAlive, pause, cleanupSocket } from './delivery-local-state.js';
+import { localRef, refKey, machineIdentity, privateDirectory, regularFile, writeOnce, readRegistration, readGuardian, groupAlive, pause, cleanupSocket } from './delivery-local-state.js';
 
 const worker = fileURLToPath(new URL('./delivery-local-supervisor.js', import.meta.url));
 function control(registration, action) {
@@ -50,6 +50,7 @@ export function createLocalDeliveryBackend(directory, { enabled = false, name = 
     const closed = regularFile(path.join(dir, 'closed.json'));
     const registration = readRegistration(dir, ref);
     const sameMachine = registration && registration.host === machine.host && registration.boot === machine.boot;
+    const guardian = sameMachine || !registration ? readGuardian(dir, ref, registration) : null;
     const absent = sameMachine && !await groupAlive(registration.pid);
     let state = 'unknown';
     // Persisted no-job closure remains terminal even if a delayed, harmless
@@ -58,9 +59,12 @@ export function createLocalDeliveryBackend(directory, { enabled = false, name = 
     else if (!registration) state = 'unknown';
     else if (sameMachine) {
       if (absent) state = closed ? 'stopped' : 'unknown';
-      else if (await control(registration, 'status')) state = 'running';
+      else if (await control(registration, 'status') || guardian && await control(guardian, 'status')) state = 'running';
     }
-    if (state === 'stopped' && absent) cleanupSocket(registration);
+    if (state === 'stopped' && absent) {
+      cleanupSocket(registration);
+      if (guardian) cleanupSocket(guardian);
+    }
     return { ...ref, state, closed: closed && state === 'stopped', reference: `local-execution:${refKey(ref)}` };
   }
   return {
@@ -99,13 +103,19 @@ export function createLocalDeliveryBackend(directory, { enabled = false, name = 
       // must observe it after registering and may never start its job.
       writeOnce(path.join(dir, 'closed.json'));
       const registration = readRegistration(dir, ref);
+      const sameMachine = registration && registration.host === location.machine.host && registration.boot === location.machine.boot;
+      const guardian = sameMachine || !registration ? readGuardian(dir, ref, registration) : null;
       if (!registration) writeOnce(path.join(dir, 'no-job.json'));
-      if (registration && registration.host === location.machine.host && registration.boot === location.machine.boot) {
+      if (sameMachine) {
         await control(registration, 'stop');
+        if (guardian) await control(guardian, 'stop');
       }
       const deadline = Date.now() + closeTimeoutMs;
       do {
-        if ((await inspectAt(location)).state === 'stopped') return { closed: true };
+        // A transient process-table failure is not stop evidence. Keep trying
+        // within the existing bound; only a verified observation can close.
+        try { if ((await inspectAt(location)).state === 'stopped') return { closed: true }; }
+        catch { /* retain uncertainty and retry inspection */ }
         await pause(50);
       } while (Date.now() < deadline);
       throw new Error('Local execution stop is unconfirmed; ownership must remain held.');

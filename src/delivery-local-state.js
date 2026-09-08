@@ -51,8 +51,8 @@ export function writeOnce(file, value = {}) {
     syncDirectory(path.dirname(file)); return true;
   } finally { fs.unlinkSync(temp); }
 }
-export function readRegistration(directory, ref) {
-  const file = path.join(directory, 'supervisor.json');
+function readController(directory, ref, filename) {
+  const file = path.join(directory, filename);
   let fd, record;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
@@ -69,13 +69,26 @@ export function readRegistration(directory, ref) {
     record.socket !== `/tmp/todomd-delivery-${record.nonce}.sock`) throw new Error('Invalid supervisor registration.');
   return record;
 }
+export function readRegistration(directory, ref) {
+  const record = readController(directory, ref, 'supervisor.json');
+  // Legacy supervisor records have no role; a guardian is never a group leader.
+  if (record && record.role !== undefined && record.role !== 'supervisor') throw new Error('Invalid supervisor registration.');
+  return record;
+}
+export function readGuardian(directory, ref, supervisor) {
+  const record = readController(directory, ref, 'guardian.json');
+  if (record && (!supervisor || record.role !== 'guardian' || record.pid === supervisor.pid ||
+    record.group_pid !== supervisor.pid || record.supervisor_checksum !== supervisor.checksum ||
+    record.host !== supervisor.host || record.boot !== supervisor.boot)) throw new Error('Invalid guardian registration.');
+  return record;
+}
 export function cleanupSocket(record) {
   try {
     const stat = fs.lstatSync(record.socket, { bigint: true });
     if (stat.isSocket() && stat.ino.toString() === record.socket_ino && stat.dev.toString() === record.socket_dev) fs.unlinkSync(record.socket);
   } catch { /* already removed or replaced; never remove an unknown socket */ }
 }
-export async function groupAlive(pid, excludeLeader = false) {
+export async function groupAlive(pid, excludeLeader = false, excludedMembers = []) {
   try { process.kill(-pid, 0); }
   catch (error) {
     if (error.code === 'ESRCH') return false;
@@ -92,6 +105,7 @@ export async function groupAlive(pid, excludeLeader = false) {
   return rows.some(line => {
     const [member, group, state] = line.trim().split(/\s+/);
     return Number(group) === pid && Number(member) !== inspectionPid &&
+      !excludedMembers.includes(Number(member)) &&
       (!excludeLeader || Number(member) !== pid) && !state?.startsWith('Z');
   });
 }

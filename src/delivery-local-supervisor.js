@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, fork } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { localRef, machineIdentity, privateDirectory, regularFile, writeOnce, groupAlive, pause, sealRegistration, cleanupSocket } from './delivery-local-state.js';
 
@@ -13,7 +13,7 @@ process.on('disconnect', () => { if (!received) process.exit(0); });
 const send = type => { if (process.connected) process.send({ type }, () => {}); };
 process.once('message', async input => {
   received = true;
-  let server, socketPath, directory, stopping = false, killTimer, finished = false;
+  let server, socketPath, directory, guardian, stopping = false, killTimer, finished = false;
   function stop() {
     if (stopping || finished) return;
     stopping = true;
@@ -47,7 +47,7 @@ process.once('message', async input => {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
     fs.chmodSync(socketPath, 0o600);
     const socketStat = fs.lstatSync(socketPath, { bigint: true });
-    const registration = sealRegistration({ format: 1, ref, ...machine, pid: process.pid, nonce, socket: socketPath,
+    const registration = sealRegistration({ format: 1, role: 'supervisor', ref, ...machine, pid: process.pid, nonce, socket: socketPath,
       socket_ino: socketStat.ino.toString(), socket_dev: socketStat.dev.toString() });
     process.on('exit', () => cleanupSocket(registration));
     // This publication MUST precede the closed-barrier check and every spawn.
@@ -56,6 +56,23 @@ process.once('message', async input => {
     if (stopping || regularFile(path.join(directory, 'closed.json'))) {
       send('closed');
     } else {
+      guardian = fork(new URL('./delivery-local-guardian.js', import.meta.url), [],
+        { detached: false, execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      guardian.on('exit', () => { if (!finished) stop(); });
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Guardian did not register.')), 5000);
+        const fail = () => { clearTimeout(timer); reject(new Error('Guardian is unavailable.')); };
+        guardian.once('error', fail); guardian.once('exit', fail);
+        guardian.once('message', message => {
+          clearTimeout(timer);
+          if (message?.type === 'ready' && message.pid === guardian.pid) resolve(); else fail();
+        });
+        guardian.send({ ref, directory, group: process.pid, graceMs: input.graceMs }, error => { if (error) fail(); });
+      });
+      // Closure may have arrived while the second controller registered.
+      if (stopping || regularFile(path.join(directory, 'closed.json'))) {
+        send('closed'); stop(); return;
+      }
       const log = fs.openSync(path.join(directory, 'output.log'), fs.constants.O_WRONLY | fs.constants.O_CREAT |
         fs.constants.O_APPEND | fs.constants.O_NOFOLLOW, 0o600);
       let child;
@@ -72,13 +89,14 @@ process.once('message', async input => {
       // Leader exit alone is insufficient: background descendants retain this
       // supervisor and ownership until they leave the process group or stop.
       while (true) {
-        try { if (!await groupAlive(process.pid, true)) break; } catch { /* uncertain, retain ownership */ }
+        try { if (!await groupAlive(process.pid, true, [guardian.pid])) break; } catch { /* uncertain, retain ownership */ }
         await pause(50);
       }
       writeOnce(path.join(directory, 'result.json'), outcome);
     }
     writeOnce(path.join(directory, 'closed.json'));
     finished = true; clearTimeout(killTimer);
+    if (guardian?.connected) guardian.send({ type: 'finish' }, () => {});
     server.close();
     // Exit, rather than waiting for stale control sockets to drain indefinitely.
     process.exit(0);

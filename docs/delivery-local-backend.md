@@ -3,8 +3,9 @@
 `createLocalDeliveryBackend` in `src/delivery-local-backend.js` implements the
 coordinator's `start`, `close`, and `inspect` contract for contained local process
 groups on macOS and Linux. It can run real commands through a detached supervisor
-and recover control after the board/launcher process exits. It is disabled by
-default and is not yet wired into live board admission or migration.
+and recover control after the board/launcher process exits. A second controller
+inside each new process group closes orphaned work if the supervisor dies. It
+is disabled by default and is not yet wired into live board admission or migration.
 
 ## Trusted configuration
 
@@ -49,6 +50,9 @@ used by this backend.
   private control socket, and random control nonce. It has a corruption checksum
   and is never overwritten. Commands and environment variables are not stored in
   the registration; they travel over parent/child IPC.
+- `guardian.json` binds a second private control socket and live group member to
+  the exact supervisor checksum, group, host/boot, and execution reference. It
+  must publish and acknowledge readiness before a new command can start.
 - `output.log` retains command output privately. `result.json`, when available,
   records the direct command's exit outcome. Neither is delivery acceptance,
   review, or release evidence by itself.
@@ -60,19 +64,33 @@ start. A start claim with no registration can safely close; elapsed time is not
 used to reach that conclusion.
 
 The supervisor remains group leader after the direct command exits, until all
-contained descendants stop. It excludes its own process and the inspection
-process when checking remaining group members. Zombies cannot write and do not
+contained job descendants stop. It excludes the guardian from this drain check
+and tells it to finish only after the remaining writers are gone. It also excludes
+its own process and the inspection process when checking remaining group members. Zombies cannot write and do not
 keep execution active. Natural completion closes the identity before supervisor
 exit. Closure requests can still stop a descendant whose command leader has
 already exited.
 
 ## Recovery and evidence
 
-Recovery sends only status/stop requests over the supervisor's private Unix
-socket. Requests require the recorded random nonce. The supervisor signals its
-own current group; the backend **never signals a persisted PID or group ID**.
-This avoids killing an unrelated process after PID reuse. A live group without a
-reachable authenticated supervisor remains unknown and held.
+Recovery sends only status/stop requests over private Unix sockets. Both
+controllers require their own recorded random nonce. The supervisor signals its
+own current group. The guardian verifies its current process-group membership
+before becoming ready and never leaves that group, so its continued presence
+prevents that group ID from being reused while it sends TERM and then KILL.
+The backend itself **never signals a persisted PID or group ID**.
+
+If the supervisor dies, its IPC channel disconnects and the guardian closes the
+dispatch identity and stops the group. If the guardian dies, the supervisor does
+the same. A frozen/unreachable supervisor can also be stopped through the
+guardian's authenticated socket. Losing either controller interrupts the job;
+it never restarts it or releases its lease automatically. The coordinator must
+still commit exact stopped/closed evidence before releasing durable ownership.
+
+A guardian with a corrupt registration or a different supervisor, execution,
+host, or boot cannot authorize control or closure. Old executions without a
+guardian retain the original supervisor-only recovery behavior; the upgrade
+does not inject a new process into work already running.
 
 `inspect` returns the execution reference, a safe local receipt reference,
 `state`, and `closed`. Only a published closure barrier plus a no-job receipt
@@ -80,12 +98,13 @@ reachable authenticated supervisor remains unknown and held.
 `state: 'stopped', closed: true`. A closed marker while writers remain is
 insufficient. Corrupt registration, unsupported host/boot, failed process
 inspection, and surviving descendants keep ownership held. A process group that
-outlives a killed supervisor requires operator reconciliation; this adapter does
-not guess which saved PID is safe to kill. Reboot/host changes also require
-reconciliation before reusing the private store.
+outlives both controllers (or an older execution without a guardian) remains
+held until its writers actually stop. This adapter does not guess which saved
+PID is safe to kill. Reboot/host changes also require reconciliation before
+reusing the private store.
 
 Socket cleanup occurs only after confirmed group absence and only for the socket
-inode recorded by that supervisor. The read-only board projection continues to
+inode recorded by that controller. The read-only board projection continues to
 expose execution phase only; it does not publish nonces, sockets, PIDs, commands,
 environment, or output logs.
 
@@ -94,13 +113,15 @@ environment, or output logs.
 Tests run the complete store/coordinator/backend sequence through reservation,
 dispatch, observation, stop and release. They also cover concurrent independent
 launchers, launcher exit, natural completion, delayed supervisor arrival after
-closure, background descendants, forced supervisor death, wrong control
+closure, background descendants, loss of either or both controllers, a frozen
+supervisor, failed guardian registration before job start, wrong control
 credentials, corrupt/foreign registration, abandoned claims, and preserved
 candidate files. All commands and private state are isolated test fixtures.
 
 The [shared admission gate](delivery-admission.md) now coordinates board writers,
 scheduler starts, and metadata transactions, with supported recovery of exact dead
 metadata owners. Live activation still requires server-owned job/role resolution,
-source fencing shared with all legacy/remote writers, external orphan recovery, revision-checked projection/migration, and the pilot gates in
-the [update plan](delivery-workflow-update-plan.md). Remote fleet execution needs
+source fencing shared with all legacy/remote writers, recovery when every local
+controller is lost, remote orphan reconciliation, revision-checked
+projection/migration, and the pilot gates in the [update plan](delivery-workflow-update-plan.md). Remote fleet execution needs
 its own authoritative closure adapter. Existing cards remain on the legacy path.

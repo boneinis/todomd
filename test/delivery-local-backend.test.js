@@ -6,7 +6,7 @@ import net from 'node:net';
 import { spawn, fork } from 'node:child_process';
 import { tmp } from './helpers.js';
 import { createLocalDeliveryBackend } from '../src/delivery-local-backend.js';
-import { localRef, refKey, writeOnce, readRegistration, pause, sealRegistration, groupAlive } from '../src/delivery-local-state.js';
+import { localRef, refKey, writeOnce, readRegistration, readGuardian, pause, sealRegistration, groupAlive } from '../src/delivery-local-state.js';
 import { createDeliveryStore } from '../src/delivery-store.js';
 import { createDeliveryExecutionCoordinator } from '../src/delivery-execution.js';
 import { executionRef } from '../src/delivery-execution-state.js';
@@ -134,10 +134,65 @@ test('a supervisor arriving after confirmed closure cannot launch its delayed jo
   assert.equal((await f.backend().inspect(ref)).state, 'stopped');
 });
 
-test('a dead supervisor with a surviving group remains held until its descendants actually stop', { skip: !supported }, async () => {
+test('loss of either controller closes its live process group without resubmitting work', { skip: !supported }, async () => {
+  for (const target of ['supervisor', 'guardian']) {
+    const f = fixture(), candidate = path.join(f.cwd, 'candidate'); let registration;
+    f.job.args = ['-e', `require('fs').writeFileSync(${JSON.stringify(candidate)}, 'kept');process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`];
+    try {
+      await f.backend().start(ref); await until(() => fs.existsSync(candidate));
+      registration = readRegistration(f.runDir, ref);
+      const guardian = readGuardian(f.runDir, ref, registration);
+      assert.ok(guardian); assert.notEqual(guardian.pid, registration.pid);
+      process.kill(target === 'supervisor' ? registration.pid : guardian.pid, 'SIGKILL');
+      await until(async () => (await f.backend().inspect(ref)).state === 'stopped');
+      assert.equal(await groupAlive(registration.pid), false);
+      assert.equal((await f.backend().start(ref)).closed, true);
+      assert.equal(fs.readFileSync(candidate, 'utf8'), 'kept');
+      assert.equal(fs.existsSync(guardian.socket), false);
+    } finally { await f.backend().close(ref); }
+  }
+});
+
+test('a guardian can stop a hung supervisor through authenticated control', { skip: !supported }, async () => {
   const f = fixture(); let registration;
   try {
     await f.backend().start(ref); registration = readRegistration(f.runDir, ref);
+    process.kill(registration.pid, 'SIGSTOP');
+    await f.backend().close(ref);
+    assert.equal((await f.backend().inspect(ref)).state, 'stopped');
+    assert.equal(await groupAlive(registration.pid), false);
+  } finally {
+    if (registration) { try { process.kill(registration.pid, 'SIGCONT'); } catch {} }
+    await f.backend().close(ref);
+  }
+});
+
+test('guardian registration failure prevents the job from starting', { skip: !supported }, async () => {
+  const f = fixture(), launched = path.join(f.cwd, 'must-not-launch');
+  fs.mkdirSync(f.runDir, { recursive: true });
+  writeOnce(path.join(f.runDir, 'guardian.json'), { uncertain: 'preserve this registration' });
+  f.job.args = ['-e', `require('fs').writeFileSync(${JSON.stringify(launched)},'started');setInterval(()=>{},1000);`];
+  try {
+    await assert.rejects(f.backend().start(ref), /acknowledgement/);
+    const registration = readRegistration(f.runDir, ref);
+    await until(async () => !await groupAlive(registration.pid));
+    assert.equal(fs.existsSync(launched), false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.runDir, 'guardian.json'))).uncertain, 'preserve this registration');
+    await assert.rejects(f.backend().inspect(ref), /registration/);
+  } finally {
+    // This deliberately corrupt fixture has no trustworthy backend close path.
+    const registration = readRegistration(f.runDir, ref);
+    if (registration) { try { process.kill(-registration.pid, 'SIGKILL'); } catch {} }
+  }
+});
+
+test('loss of both controllers with surviving writers remains held until those writers stop', { skip: !supported }, async () => {
+  const f = fixture(); let registration;
+  try {
+    await f.backend().start(ref); registration = readRegistration(f.runDir, ref);
+    const guardian = readGuardian(f.runDir, ref, registration);
+    process.kill(registration.pid, 'SIGSTOP');
+    process.kill(guardian.pid, 'SIGKILL');
     process.kill(registration.pid, 'SIGKILL');
     await pause(50);
     assert.equal(await groupAlive(registration.pid), true);
@@ -204,6 +259,11 @@ test('the real backend completes coordinator reservation, dispatch, closure obse
     assert.equal((await coordinator().reconcile(ref.task_id, command())).ok, true);
     assert.equal(store.read(ref.task_id).execution.phase, 'running');
     assert.equal(coordinator().release(ref.task_id, command({ handoff: { evidence: 'candidate:kept', next_action: 'review' } })).code, 'stop_unconfirmed');
+    const registration = readRegistration(path.join(f.directory, refKey(active)), active);
+    process.kill(registration.pid, 'SIGKILL');
+    await until(async () => (await f.backend().inspect(active)).state === 'stopped');
+    assert.equal(store.read(ref.task_id).lease.id, active.lease_id, 'controller death never silently releases durable ownership');
+    assert.equal(coordinator().release(ref.task_id, command({ handoff: { evidence: 'candidate:kept', next_action: 'review' } })).code, 'stop_unconfirmed');
     assert.equal((await coordinator().stop(ref.task_id, command())).ok, true);
     assert.equal((await coordinator().reconcile(ref.task_id, command())).ok, true);
     assert.equal(coordinator().release(ref.task_id, command({ handoff: { evidence: 'candidate:kept', next_action: 'review' } })).ok, true);
@@ -217,10 +277,12 @@ test('wrong control credentials cannot stop an execution, and corrupt registrati
   try {
     await f.backend().start(ref);
     const r = readRegistration(f.runDir, ref);
-    await new Promise(resolve => {
-      const socket = net.createConnection(r.socket, () => socket.write('{"nonce":"wrong","action":"stop"}\n'));
-      socket.on('close', resolve); socket.on('error', resolve);
-    });
+    for (const controller of [r, readGuardian(f.runDir, ref, r)]) {
+      await new Promise(resolve => {
+        const socket = net.createConnection(controller.socket, () => socket.write('{"nonce":"wrong","action":"stop"}\n'));
+        socket.on('close', resolve); socket.on('error', resolve);
+      });
+    }
     assert.equal((await f.backend().inspect(ref)).state, 'running');
     const file = path.join(f.runDir, 'supervisor.json'); good = fs.readFileSync(file);
     fs.writeFileSync(file, '{broken');
@@ -230,6 +292,32 @@ test('wrong control credentials cannot stop an execution, and corrupt registrati
     await f.backend().close(ref);
   } finally {
     if (good) fs.writeFileSync(path.join(f.runDir, 'supervisor.json'), good);
+    await f.backend().close(ref);
+  }
+});
+
+test('a guardian bound to another supervisor cannot authorize control or closure', { skip: !supported }, async () => {
+  const f = fixture(); let good, supervisor;
+  try {
+    await f.backend().start(ref);
+    const file = path.join(f.runDir, 'guardian.json'); good = fs.readFileSync(file);
+    const { checksum, ...record } = JSON.parse(good);
+    for (const change of [{ group_pid: record.group_pid + 1 }, { supervisor_checksum: 'a'.repeat(64) }, { host: 'foreign' }]) {
+      fs.writeFileSync(file, JSON.stringify(sealRegistration({ ...record, ...change })));
+      await assert.rejects(f.backend().inspect(ref), /guardian registration/);
+      await assert.rejects(f.backend().close(ref), /guardian registration/);
+      assert.equal(await groupAlive(record.group_pid), true);
+    }
+    // A misplaced guardian record must not turn its non-leader PID into false
+    // group-absence evidence, including when the guardian file is missing.
+    supervisor = fs.readFileSync(path.join(f.runDir, 'supervisor.json'));
+    fs.unlinkSync(file);
+    fs.writeFileSync(path.join(f.runDir, 'supervisor.json'), good);
+    await assert.rejects(f.backend().inspect(ref), /supervisor registration/);
+    await assert.rejects(f.backend().close(ref), /supervisor registration/);
+  } finally {
+    if (supervisor) fs.writeFileSync(path.join(f.runDir, 'supervisor.json'), supervisor);
+    if (good) fs.writeFileSync(path.join(f.runDir, 'guardian.json'), good);
     await f.backend().close(ref);
   }
 });

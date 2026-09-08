@@ -97,9 +97,10 @@ release because the task is still delivery-managed.
 
 ## Remaining integration
 
-The local backend and [shared admission gate](delivery-admission.md) are implemented,
-including exact dead-metadata-transaction recovery. Remote backends, server-owned
-role grants, source fencing shared with every writer, external orphan recovery,
-and revision-checked task projection/migration remain required. Repository and
+The local backend, its guardian for orphaned local writers, and the
+[shared admission gate](delivery-admission.md) are implemented, including exact
+dead-metadata-transaction recovery. Remote backends, server-owned
+role grants, source fencing shared with every writer, recovery after loss of all
+local controllers, remote orphan reconciliation, and revision-checked task projection/migration remain required. Repository and
 launch ownership still require external reconciliation. No active card, candidate,
 or attempt history is migrated, reset, or rewritten by the coordinator.
