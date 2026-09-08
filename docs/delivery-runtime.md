@@ -62,8 +62,9 @@ same hold; viewer writes still return 403 before reaching the ownership guard.
 
 This is a compatibility guard, not a new execution adapter. It does not acquire
 or release a lease, dispatch a delivery-owned task, reconcile an accepted remote
-job, or remove a transaction lock. No public initialization, migration, activation,
-or ownership-write endpoint is provided.
+job, or remove a transaction lock. No public initialization, migration, or launch
+activation endpoint is provided. The separate [scoped recovery transport](delivery-access.md)
+can stop and reconcile registered local executions and release confirmed closure.
 
 The next adapter must coordinate source revision checks and durable admission
 with legacy and remote writers, resolve trusted roles/grants, verify exact stop
@@ -76,7 +77,9 @@ gates in the [update plan](delivery-workflow-update-plan.md) pass.
 The internal [execution coordinator](delivery-execution.md) now implements the
 durable dispatch/closure journal. The [local backend](delivery-local-backend.md) and
 [shared admission gate](delivery-admission.md) are implemented. External writers
-and production authority adapters still need to participate before enabling execution.
+and provider integrations still need to participate before enabling execution.
+Project-scoped credentials and current job policy now bind individual request
+sessions; neither capability establishes writer quiescence on its own.
 
 On an existing hold, keep candidate and history intact. The project owner must
 inspect the recorded execution and pending operation using the

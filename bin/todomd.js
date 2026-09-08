@@ -12,9 +12,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]|delivery-access <repo> <status|issue|revoke|jobs>] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
+if (args[0] === 'delivery-access') {
+  const { deliveryAccessCommand } = await import('../src/delivery-access-cli.js');
+  const result = deliveryAccessCommand(args.slice(1));
+  console.log(JSON.stringify(result.report, null, 2));
+  process.exit(result.exit);
+}
 const VALUE_FLAGS = new Set(['--port', '--epoch', '--nonce']);
 const positional = [];
 for (let i = 0; i < args.length; i++) {

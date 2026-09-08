@@ -3,6 +3,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { previewDeliveryMigration } from './delivery-preview.js';
 import { deliveryRuntimeStatus, legacyMutationGuard } from './delivery-runtime.js';
+import { createDeliveryAccess } from './delivery-access.js';
+import { createDeliverySession } from './delivery-session.js';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -182,6 +184,36 @@ export function startServer({ port = 7337, lan = false } = {}) {
   async function handleApi(req, res, url) {
     if (!hostOk(req)) return json(res, 403, { error: 'bad host' });
     if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
+    if (url.pathname.startsWith('/api/delivery/executions/')) {
+      res.setHeader('cache-control', 'no-store');
+      // Dedicated loopback recovery capability. Board/mobile/viewer tokens do
+      // not identify an owner, and a delivery token grants no legacy API access.
+      const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
+      if (!loopback(req.socket.localAddress) || !loopback(req.socket.remoteAddress) || !originOk(req)) return json(res, 403, { error: 'loopback recovery only' });
+      if ([...url.searchParams.keys()].some(k => k !== 'project') || url.searchParams.getAll('project').length !== 1) return json(res, 400, { error: 'supply one project; credentials belong in the delivery header' });
+      const project = findProject(url.searchParams.get('project'));
+      if (!project) return json(res, 401, { error: 'bad delivery credential' });
+      const sent = req.headers['x-todomd-delivery-token'];
+      const headerCount = req.rawHeaders.filter((v, i) => i % 2 === 0 && v.toLowerCase() === 'x-todomd-delivery-token').length;
+      if (headerCount !== 1 || !createDeliveryAccess(project.path, { enabled: true }).authenticate(sent)) return json(res, 401, { error: 'bad delivery credential' });
+      const route = url.pathname.match(/^\/api\/delivery\/executions\/([\w.-]+)(?:\/(stop|reconcile|release))?$/);
+      if (!route || !CARD_ID.test(route[1])) return json(res, 404, { error: 'unknown recovery action' });
+      if (req.method !== (route[2] ? 'POST' : 'GET')) return json(res, 405, { error: 'method not allowed' });
+      let command;
+      if (route[2]) {
+        if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return json(res, 415, { error: 'JSON required' });
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large' });
+        try { command = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      }
+      try {
+        // No jobs or admission callback: this route can never reserve/dispatch.
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent });
+        const result = route[2] ? await session[route[2]](route[1], command) : session.read(route[1]);
+        const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
+        return json(res, status, result);
+      } catch { return json(res, 409, { ok: false, code: 'recovery_unavailable' }); }
+    }
     // reads work with either token; anything that mutates or spawns
     // requires the full token (the viewer/QR link is monitor-only)
     const agentAccess = agentAuthed(req);

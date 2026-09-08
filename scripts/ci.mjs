@@ -106,6 +106,8 @@ async function packSmoke() {
     await run('npm', ['install', '--no-audit', '--no-fund', '--prefer-offline', tarball], { cwd: proj });
     const bin = path.join(proj, 'node_modules', '.bin', 'todomd');
     if (!fs.existsSync(bin)) throw new Error('the installed package has no todomd bin');
+    const access = JSON.parse(await run(bin, ['delivery-access', repo, 'status'], { env: { ...process.env, TODOMD_HOME: home } }));
+    if (access.ok !== true || access.revision !== 0 || access.credentials.length !== 0) throw new Error('Packaged delivery access was not read-only by default');
 
     // Exercise the packaged backend AND its detached supervisor entry point.
     // Source imports alone cannot catch a missing worker in an installed tarball.

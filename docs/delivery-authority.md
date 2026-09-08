@@ -3,8 +3,10 @@
 `createDeliveryAuthority` in `src/delivery-authority.js` connects authenticated
 project identities, durable owner assignments, approved local jobs, the admission
 gate, and the execution coordinator. It is an internal adapter, disabled by
-default. No HTTP, CLI, provider-credential, or migration entry point enables it.
-Existing boards continue to use the legacy runtime.
+default. The [credential-bound recovery transport](delivery-access.md) enables
+only inspection, stop, reconciliation, and release for existing executions.
+No HTTP launch or migration entry point enables delivery work. Existing boards
+continue to use the legacy runtime.
 
 ## Server configuration and authentication
 
@@ -104,7 +106,9 @@ the card changed, the lease expired, or the job profile was removed.
 
 ## Remaining production integration
 
-The transport must supply real authenticated credentials and current job policy.
+The [session adapter](delivery-access.md) now supplies project-scoped credentials
+and current private job approval. Provider setup must distribute those credentials
+and supply approved job definitions.
 The admission callback must integrate every legacy, shell/budget, and remote
 writer with authoritative source/stop checks; booleans copied from a request or
 stale heartbeat do not meet this contract. Keep activation off until those

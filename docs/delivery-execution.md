@@ -5,8 +5,9 @@ to trusted execution backends. It records dispatch before calling a backend,
 reconciles uncertain acknowledgements without resubmitting, and releases only
 after a committed observation confirms the exact execution is permanently
 closed. It is disabled by default. A concrete [local process backend](delivery-local-backend.md)
-now implements this contract on macOS/Linux. No server, CLI, or migration command
-enables this path yet. Existing boards retain their runtime.
+now implements this contract on macOS/Linux. The [scoped recovery transport](delivery-access.md)
+can inspect and close existing registered executions. No server, CLI, or migration
+command enables new delivery launches. Existing boards retain their runtime.
 
 This completes the journal/coordinator portion of phase 3, not its production
 integration or pilot acceptance gates. Tests now exercise the coordinator with
@@ -31,8 +32,9 @@ The adapter must derive that context under an actual admission fence shared by
 legacy/remote writers and source changes. The boolean is an attestation from the
 trusted adapter, not a lock implemented by this module. The trusted authority
 adapter now holds the shared local admission gate through launch. Production
-credential and policy bindings, including proof that remote writers participate
-in the fence, remain required before initialization or execution on live boards.
+provider integration, including proof that remote writers participate in the
+fence, remains required before initialization or execution on live boards. The
+[credential-bound transport](delivery-access.md) exposes recovery for existing executions.
 
 Every dispatch/recovery command includes `expected_revision`,
 `idempotency_key`, and the execution reference: `task_id`, `lease_id`, `run_id`,
@@ -102,7 +104,7 @@ The local backend, its guardian for orphaned local writers, and the
 [shared admission gate](delivery-admission.md) are implemented, including exact
 dead-metadata-transaction recovery. The [trusted role/job adapter](delivery-authority.md)
 now implements project-scoped role grants and registered local-job selection.
-Remote backends, production credential/policy bindings, source fencing shared
+Remote backends, provider credential/configuration distribution, source fencing shared
 with every writer, recovery after loss of all local controllers, remote orphan
 reconciliation, and revision-checked task projection/migration remain required. Repository and
 launch ownership still require external reconciliation. No active card, candidate,

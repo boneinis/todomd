@@ -5,7 +5,8 @@ import { isOwnerId } from './delivery.js';
 const fail = (code, message) => ({ ok: false, code, message });
 const clone = value => JSON.parse(JSON.stringify(value));
 
-// Internal coordinator for explicitly mapped tasks. No server/CLI activates it.
+// Coordinator for explicitly mapped tasks. HTTP exposes recovery only; no
+// server/CLI entry point activates new delivery launches.
 // Backends and resolveContext are server-owned capabilities, never request data.
 // A backend must durably close a dispatch identity: a delayed start after close
 // must be rejected, even when the earlier start acknowledgement was lost.
