@@ -795,7 +795,12 @@ export function startServer({ port = 7337, lan = false } = {}) {
     }
     const retryVerifyMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/retry-verify$/);
     if (retryVerifyMatch && req.method === 'POST') {
-      const result = await pipeline.retryVerification(project, retryVerifyMatch[1]);
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let baseBranch = '';
+      try { ({ base_branch: baseBranch = '' } = JSON.parse(body || '{}')); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      if (typeof baseBranch !== 'string') return json(res, 400, { error: 'base_branch must be a string' });
+      const result = await pipeline.retryVerification(project, retryVerifyMatch[1], { baseBranch });
       return json(res, result.ok ? 202 : 400, result);
     }
     const resumeBuildMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/resume-build$/);

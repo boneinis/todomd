@@ -43,6 +43,120 @@ async function seedCandidate(repo, wt, reason = 'ci_failed') {
   return head;
 }
 
+for (const owner of ['queued', 'prompt-claim']) {
+  test(`reset and recovery consistently reject ${owner} without changing the candidate`, async () => {
+    const { repo, project: p, wt } = fixture('process.exit(0);\n');
+    const head = await seedCandidate(repo, wt);
+    try {
+      pipeline.pauseQueue(p);
+      if (owner === 'queued') {
+        scheduler.schedule(p, 'task-0001', 'Build', () => assert.fail('blocked work must not start'), { blocked: () => true });
+      } else {
+        assert.equal((await pipeline.promptCard(p, 'task-0001', 'Inspect the candidate')).ok, true);
+        // Exercise the claim-only window independently of scheduler tracking.
+        scheduler.dequeue(p.name, 'task-0001');
+        assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+      }
+      const before = readCard(repo, 'task-0001').raw;
+      const actions = await pipeline.recoveryActions(p, 'task-0001');
+      for (const key of ['resume_build', 'restart_build', 'retry_verification', 'return_to_build', 'reset_attempts']) {
+        assert.equal(actions[key], false, key);
+      }
+      assert.equal((await pipeline.humanMove(p, 'task-0001', 'Planned')).ok, false);
+      assert.equal((await pipeline.returnToBuild(p, 'task-0001')).ok, false);
+      assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, false);
+      assert.equal(readCard(repo, 'task-0001').raw, before);
+      assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
+      assert.equal(fs.readFileSync(path.join(wt, 'implementation.txt'), 'utf8'), 'reviewed implementation\n');
+    } finally { await cleanup(p); }
+  });
+}
+
+test('a recovery admission owns the card before asynchronous worktree validation', async () => {
+  const { repo, project: p, wt } = fixture('process.exit(0);\n');
+  const head = await seedCandidate(repo, wt, 'merge_conflict');
+  try {
+    pipeline.pauseQueue(p);
+    const first = pipeline.returnToBuild(p, 'task-0001');
+    assert.equal(pipeline.hasLiveRun(p.name, 'task-0001'), true);
+    assert.equal(pipeline.projectHasLiveRun(p.name), true);
+    const competing = await Promise.all([
+      pipeline.returnToBuild(p, 'task-0001'),
+      pipeline.retryVerification(p, 'task-0001'),
+      pipeline.humanMove(p, 'task-0001', 'Planned'),
+      pipeline.promptCard(p, 'task-0001', 'competing prompt'),
+    ]);
+    assert.ok(competing.every((result) => !result.ok));
+    assert.equal((await first).ok, true);
+    assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
+    assert.equal(readCard(repo, 'task-0001').data.status, 'Queue');
+    assert.equal(scheduler.queuedEntries(p.name).filter(e => e.card === 'task-0001').length, 1);
+    assert.match(readCard(repo, 'task-0001').raw, /Repair the preserved candidate after merge_conflict/);
+  } finally { await cleanup(p); }
+});
+
+test('published candidate remains recoverable after a remote CI interruption', async () => {
+  useFakeAgent({ verdict: 'pass' });
+  const blocked = path.join(tmp('published-ci'), 'blocked');
+  const { repo, project: p, wt } = fixture(`import fs from 'node:fs'; process.exit(fs.existsSync(${JSON.stringify(blocked)}) ? 2 : 0);\n`);
+  await seedCandidate(repo, wt, 'publication_review_required');
+  await patchFrontmatter(repo, 'task-0001', { base_branch: git(repo, ['branch', '--show-current']),
+    verification: { attempts: 2, max_attempts: 3, last_verdict: 'pass' } });
+  git(repo, ['merge', '--no-ff', '--no-verify', 'todomd/task-0001', '-m', 'external publication']);
+  fs.writeFileSync(blocked, '1');
+  try {
+    assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, true);
+    await until(() => parked(repo, p), { timeout: BUDGET.chain });
+    assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'ci_blocked');
+    fs.unlinkSync(blocked);
+    assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, true);
+    await until(() => readCard(repo, 'task-0001').data.status === 'Done' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+    assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2);
+  } finally { await cleanup(p); }
+});
+
+for (const reason of ['merge_conflict', 'merge_noop', 'base_branch_moved', 'base_branch_unknown']) {
+  test(`${reason} can recover through verification without rebuilding or resetting attempts`, async () => {
+    useFakeAgent({ verdict: 'pass' });
+    const { repo, project: p, wt } = fixture('process.exit(0);\n');
+    const head = await seedCandidate(repo, wt, reason);
+    const target = git(repo, ['branch', '--show-current']);
+    await patchFrontmatter(repo, 'task-0001', { recovery_stage: 'Verify',
+      base_branch: reason === 'base_branch_unknown' ? 'unknown' : target,
+      verification: { attempts: 3, max_attempts: 3, last_verdict: 'pass' } });
+    try {
+      const actions = await pipeline.recoveryActions(p, 'task-0001');
+      assert.equal(actions.retry_verification, true);
+      assert.equal(actions.return_to_build, ['merge_conflict', 'merge_noop'].includes(reason));
+      assert.equal(actions.reset_attempts, true);
+      if (reason === 'base_branch_unknown') {
+        const before = readCard(repo, 'task-0001').raw;
+        for (const baseBranch of ['', 'not-checked-out', 'todomd/task-0001', '--help']) {
+          assert.equal((await pipeline.retryVerification(p, 'task-0001', { baseBranch })).ok, false);
+          assert.equal(readCard(repo, 'task-0001').raw, before);
+        }
+      } else if (reason === 'base_branch_moved') {
+        git(repo, ['checkout', '-b', 'wrong-target']);
+        const before = readCard(repo, 'task-0001').raw;
+        assert.equal((await pipeline.retryVerification(p, 'task-0001')).ok, false);
+        assert.equal((await pipeline.retryVerification(p, 'task-0001', { baseBranch: 'wrong-target' })).ok, false);
+        assert.equal(readCard(repo, 'task-0001').raw, before);
+        assert.equal(git(wt, ['rev-parse', 'HEAD']), head);
+        git(repo, ['checkout', target]);
+      }
+      const result = await pipeline.retryVerification(p, 'task-0001', reason === 'base_branch_unknown' ? { baseBranch: target } : {});
+      assert.equal(result.ok, true, result.error);
+      await until(() => readCard(repo, 'task-0001').data.status === 'Done' && !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.chain });
+      const card = readCard(repo, 'task-0001');
+      assert.equal(card.data.verification.attempts, 3);
+      assert.equal(card.data.verification.max_attempts, 3);
+      assert.doesNotMatch(card.raw, /Return to Build|Build attempt 4/);
+      assert.equal(git(repo, ['merge-base', '--is-ancestor', head, 'HEAD']), '');
+      assert.equal(fs.readFileSync(path.join(repo, 'implementation.txt'), 'utf8'), 'reviewed implementation\n');
+    } finally { await cleanup(p); }
+  });
+}
+
 for (const lastVerdict of ['', 'fail']) {
   test(`CI-failed candidate offers a preserved repair Build with ${lastVerdict || 'no'} verifier verdict`, async () => {
     useFakeAgent({ build: 'good', verdict: 'pass' });

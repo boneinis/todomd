@@ -326,6 +326,40 @@ test('UI smoke: hostile card shapes render, drawer opens, console stays clean', 
   }
 });
 
+test('merge recovery explains preserved repair, publication review, and explicit target selection', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const repo = makeRepo();
+  const configFile = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(configFile, fs.readFileSync(configFile, 'utf8').replace('mode: launcher', 'mode: budget'));
+  const reasons = ['merge_conflict', 'publication_review_required', 'base_branch_unknown'];
+  for (const [i, reason] of reasons.entries()) {
+    const id = `task-000${i + 1}`;
+    writeCard(repo, id, { status: 'Needs Human', title: reason,
+      extra: `tldr: Recovery control fixture.\nneeds_human_reason: ${reason}\nworktree: todomd/${id}\nbase_branch: ${i === 2 ? 'unknown' : git(repo, ['branch', '--show-current'])}\n` });
+  }
+  git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'merge recovery UI fixtures']);
+  for (let i = 1; i <= 3; i++) git(repo, ['worktree', 'add', '-q', '-b', `todomd/task-000${i}`, path.join(repo, `.todomd/worktrees/task-000${i}`)]);
+  addProject(repo);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(path.basename(repo))}`);
+  await until(async () => await page.eval(`!!document.querySelector('[data-id="task-0001"]')`));
+  for (const [i, reason] of reasons.entries()) {
+    await page.eval(`openDrawer('task-000${i + 1}')`);
+    await until(async () => (await page.eval(`document.getElementById('drawer-title').textContent`)) === reason);
+    assert.equal(await page.eval(`document.getElementById('drawer-retry-verify').hidden`), false);
+    assert.equal(await page.eval(`document.getElementById('drawer-return-build').hidden`), i !== 0);
+    assert.equal(await page.eval(`document.getElementById('drawer-merge-target-field').hidden`), i !== 2);
+    assert.match(await page.eval(`document.getElementById('drawer-recovery-hint').textContent`),
+      i === 0 ? /preserved candidate/ : i === 1 ? /review workflow.*will not bypass publication review/ : /enter its name/);
+    assert.match(await page.eval(`[...document.getElementById('move-select').options].find(o => o.value === 'Planned').textContent`), /discard candidate; reset attempts/);
+    assert.equal(await page.eval(`[...document.getElementById('move-select').options].find(o => o.value === 'Build').disabled`), i !== 0);
+  }
+  await page.eval(`document.getElementById('drawer-merge-target').value = 'not-checked-out'; document.getElementById('drawer-retry-verify').click()`);
+  await until(async () => /check out the intended local target branch/.test(await page.eval(`document.body.textContent`)));
+  assert.equal(readCard(repo, 'task-0003').data.base_branch, 'unknown');
+  assert.equal(readCard(repo, 'task-0003').data.status, 'Needs Human');
+  assert.deepEqual(page.errors, []);
+});
+
 test('UI smoke: Add Card is prompt-first and preserves Advanced options', async (t) => {
   if (!page) return t.skip(SKIP);
   const repo = makeRepo();

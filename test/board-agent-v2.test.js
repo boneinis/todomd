@@ -6,7 +6,7 @@ import { isolateHome, makeRepo, writeCard, tmp, useFakeAgent, clearFakeAgent, gi
 import { createBoardAgent } from '../src/board-agent.js';
 import { savePublicationPolicies, agentPublicationPolicy } from '../src/board-agent-policy.js';
 import { commitPaths, mergeBranch, addWorktree } from '../src/git.js';
-import { readCard } from '../src/board.js';
+import { readCard, patchFrontmatter } from '../src/board.js';
 import * as pipeline from '../src/pipeline.js';
 
 after(async () => { await pipeline.killAllChildren({ graceMs: 1000 }); });
@@ -195,6 +195,25 @@ test('verified fake build stops for publication review, preserves work, and neve
   assert.equal(git(repo, ['rev-parse', 'HEAD']), head);
   assert.equal(fs.existsSync(path.join(repo, '.todomd/worktrees/task-0001')), true);
   assert.doesNotMatch(fs.readFileSync(path.join(repo, 'src/calc.js'), 'utf8'), /export function prod/);
+  await until(() => !pipeline.hasLiveRun(project.name, 'task-0001'));
+  assert.equal((await pipeline.recoveryActions(project, 'task-0001')).retry_verification, true);
+  assert.equal((await pipeline.retryVerification(project, 'task-0001')).ok, true);
+  await until(() => readCard(repo, 'task-0001').data.status === 'Needs Human'
+    && !pipeline.hasLiveRun(project.name, 'task-0001'), { timeout: BUDGET.chain });
+  assert.equal(readCard(repo, 'task-0001').data.needs_human_reason, 'publication_review_required');
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), head, 'retry cannot authorize publication');
+
+  // Simulate the repository's external human review and merge. The policy
+  // stays review_required; the board only recognizes already-landed work.
+  git(repo, ['merge', '--no-ff', '--no-verify', card.data.worktree, '-m', 'human reviewed publication']);
+  const published = git(repo, ['rev-parse', 'HEAD']);
+  await patchFrontmatter(repo, 'task-0001', { ci_evidence: {} });
+  assert.equal((await pipeline.retryVerification(project, 'task-0001')).ok, true);
+  await until(() => readCard(repo, 'task-0001').data.status === 'Done'
+    && !pipeline.hasLiveRun(project.name, 'task-0001'), { timeout: BUDGET.chain });
+  assert.equal(git(repo, ['rev-parse', 'HEAD']), published, 'reconciliation creates no new merge');
+  assert.equal(readCard(repo, 'task-0001').data.verification.attempts, card.data.verification.attempts);
+  assert.equal(agentPublicationPolicy(repo).publication, 'review_required');
 });
 
 test('duplicate proposals retain both request receipts and revoking scope blocks old reads', async (t) => {
