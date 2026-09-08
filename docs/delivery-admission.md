@@ -26,7 +26,9 @@ Scheduler starts acquire admission and recheck delivery ownership immediately
 before invoking the job. Busy projects stay queued without consuming capacity.
 Local release triggers a rescan; releases by another process are picked up by the
 normal scheduler tick. This gates a start, not the whole lifetime of an execution.
-Execution leases and backend closure remain necessary for surviving work.
+Execution leases and backend closure remain necessary for surviving work. The
+[trusted role/job adapter](delivery-authority.md) additionally holds asynchronous
+launch admission through local supervisor acknowledgement.
 
 ## Local operator commands
 
@@ -65,8 +67,8 @@ quiesced operator reconciliation because they lack this ownership protocol.
 The legacy shell/budget lock protocol does not yet participate in this gate.
 Enabling a gate does not fence work that started beforehand, a direct shell writer,
 or an accepted remote job. Initial activation/migration must establish quiescence
-and integrate every writer and authoritative stop/source check. Production role/job
-resolution, remote closure, projection/migration, and the pilot acceptance gates
+and integrate every writer and authoritative stop/source check. Production
+credential and job-policy bindings, remote closure, projection/migration, and the pilot acceptance gates
 remain required. Gate history retention is currently unbounded.
 
 Tests cover independent recovery callers, stale recovery against a newer owner,

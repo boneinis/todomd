@@ -120,7 +120,9 @@ candidate files. All commands and private state are isolated test fixtures.
 
 The [shared admission gate](delivery-admission.md) now coordinates board writers,
 scheduler starts, and metadata transactions, with supported recovery of exact dead
-metadata owners. Live activation still requires server-owned job/role resolution,
+metadata owners. The [trusted role/job adapter](delivery-authority.md) now derives
+role grants and resolves registered local jobs. Live activation still requires
+production credential and job-policy bindings,
 source fencing shared with all legacy/remote writers, recovery when every local
 controller is lost, remote orphan reconciliation, revision-checked
 projection/migration, and the pilot gates in the [update plan](delivery-workflow-update-plan.md). Remote fleet execution needs

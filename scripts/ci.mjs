@@ -114,6 +114,8 @@ async function packSmoke() {
         import { pathToFileURL } from 'node:url';
         import path from 'node:path';
         const { createLocalDeliveryBackend } = await import(pathToFileURL(path.join(process.argv[1], 'src/delivery-local-backend.js')));
+        const { createDeliveryAuthority } = await import(pathToFileURL(path.join(process.argv[1], 'src/delivery-authority.js')));
+        if (createDeliveryAuthority(process.argv[3]).reserve('pack-task', {}).code !== 'disabled') throw new Error('Packaged delivery authority activated by default');
         const { readRegistration, readGuardian, refKey } = await import(pathToFileURL(path.join(process.argv[1], 'src/delivery-local-state.js')));
         const backend = createLocalDeliveryBackend(process.argv[2], { enabled: true, graceMs: 50,
           authorizeStart: () => true, resolveJob: () => ({ command: process.execPath,
@@ -129,7 +131,7 @@ async function packSmoke() {
         } finally { await backend.close(ref); }
         const result = await backend.inspect(ref);
         if (result.state !== 'stopped' || result.closed !== true) throw new Error('Packaged local execution did not close');
-      `, path.join(proj, 'node_modules/todomd'), path.join(work, 'execution'), repo]);
+      `, path.join(proj, 'node_modules/todomd'), path.join(work, 'execution'), repo], { env: { ...process.env, TODOMD_HOME: home } });
     }
 
     // 3. scaffold a board in a fresh git repo

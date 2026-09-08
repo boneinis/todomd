@@ -1,6 +1,6 @@
 # To-do MD delivery workflow update plan
 
-Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, and shared admission core implemented; activation off
+Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, shared admission core, and trusted role/job adapter implemented; activation off
 
 Date: September 8, 2026  
 Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)  
@@ -17,9 +17,11 @@ claims and reconciles backend closure before releasing a lease. The concrete
 and retains control after the launcher exits. New executions include a guardian
 that stops orphaned writers when either local controller dies. The
 [shared admission gate](delivery-admission.md) now coordinates board writes, scheduler starts, and metadata transactions, including
-recovery of exact dead metadata owners. Existing boards still use the legacy runtime.
+recovery of exact dead metadata owners. The internal [trusted role/job adapter](delivery-authority.md)
+now derives grants from authenticated project identities and binds approved job
+profiles to persistent recovery authority. Existing boards still use the legacy runtime.
 Remote authority and remaining external-writer admission, recovery after loss of
-all local controllers, trusted role/job adapters, cycles, the new board view, evidence adapters, migration, and
+all local controllers, production credential/job-policy bindings, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime
 integration and recovery acceptance gates pass.
 
