@@ -6,9 +6,9 @@ POSIX supervisor and guardian on the worker host. The coordinator retains its
 lease through connection failures and releases only after it commits an exact,
 authoritative stopped-and-closed observation.
 
-These are internal modules. The board server mounts no worker route, the trusted
-role/job adapter still selects local jobs only, and no CLI enables remote delivery
-launches. Deployment does not provision workers or credentials, migrate fleet
+These are internal modules. The trusted role/job adapter now registers remote
+profiles and recovers them through a host-supplied credential capability. The board
+server mounts no worker route, and no CLI enables remote delivery launches. Deployment does not provision workers or credentials, migrate fleet
 jobs, change board policy, or activate the delivery workflow.
 
 ## Worker provisioning and identity
@@ -74,7 +74,7 @@ commands, output, and backend receipts never leave the worker response.
 endpoint, credential, timeoutMs })` returns a coordinator backend. The endpoint
 must use HTTPS, except literal loopback IPs for local operation/tests, and the
 exact worker route without userinfo, query, or fragment. Redirects are rejected.
-`credential()` supplies the current transport credential at each operation;
+`credential(action, execution)` supplies the current transport credential at each operation;
 credential distribution and renewal belong to trusted provider setup.
 
 Enabled construction durably pins the exact endpoint, namespace, authority, and
@@ -111,16 +111,86 @@ own acceptance and closure protocol; wrapper exit is not remote-job closure.
 Stopped-and-closed also does not establish successful CI, review, integration,
 or deployment; those require their separate evidence policies.
 
+## Trusted registration and credential lookup
+
+`createDeliveryAuthority` and `createDeliverySession` accept `remoteJobs`, a map
+of profile names to exactly these non-secret fields:
+
+```js
+{
+  backend,        // provisioned remote-job-<SHA-256> namespace
+  authority_id,   // provisioned worker UUID
+  project_id,     // shared project SHA-256 identity
+  job_digest,     // provisioned fixed job digest
+  endpoint,       // exact HTTPS worker route; literal loopback HTTP for tests
+  credential_key // trusted provider selector, never a credential value
+}
+```
+
+Trusted setup maps the shared project identity to the canonical coordinator
+repository. The backend must match the digest of the provisioned worker identity,
+project, and job. Profile names cannot collide with local jobs or alias a worker
+namespace. Enabled construction publishes an immutable checksummed registration
+under `remote-authorities/<backend>.json`; transport pins remain under
+`remote-pins/`. Registrations bind the canonical repository, profile, worker,
+endpoint, and credential selector. Repointing an existing namespace, copying its
+registration to another repository, or corrupting its receipt denies access.
+Configuration is copied; later mutation does not change an existing adapter.
+
+`remoteCredential(request)` is a synchronous trusted-host capability. It receives
+an immutable object containing `repository`, the registered `profile` and six
+fields above, the operation `action`, and the immutable exact `execution`.
+It must return a fresh, appropriately scoped worker credential, or null. It can
+select separate implementation and recovery credentials by action. Enforce the
+full repository/worker/project/selector binding; do not resolve only a convenient
+profile label or use a shared mutable current principal. Returning a Promise or
+an unavailable credential fails closed. Tokens are never persisted in registration,
+request bodies, task records, or recovery responses. Credential rotation changes
+the provider's returned token, not the registered selector or worker identity.
+
+Sessions require the private access allowlist to approve the exact
+`remote-job-<SHA-256>` backend. The authority applies the same current owner,
+lease, card-source, dependency and writer-preflight checks as local execution.
+It holds project admission through the network acknowledgement, and rechecks
+launch authority after credential lookup immediately before sending. The worker
+must independently enforce fresh start policy at acceptance, including after
+network delay. Coordinator permission alone cannot authorize the worker.
+
+Removing a profile or revoking its launch approval prevents new dispatch through
+that configuration. The original registration remains available for close and
+inspect with a recovery credential. `startServer({ deliveryRemoteCredential })`
+passes only this trusted capability to its existing owner-authenticated loopback
+recovery routes. No request can supply a profile, endpoint, token selector, or
+worker credential. The default CLI server supplies no provider capability and
+therefore cannot contact remote workers. Private configuration and credential
+distribution still require the deployment's provider setup.
+
+## Abandoned remote launch admission
+
+Remote launch owners record `registered-remote-job-v1` and the exact execution.
+`recoverProjectAdmission(repo, { epoch, nonce }, { remoteCredential, remoteTimeoutMs })`
+requires a verified dead launcher on the same host/boot, the matching dispatching
+journal, and the original registered worker. It closes and inspects that exact
+remote execution, then rechecks identity before completing only the launch gate.
+The task lease, journal, card, and candidate remain intact for normal owner
+reconciliation and handoff. A local-only recovery callback cannot retire a remote
+gate. Missing credentials, worker unavailability, wrong registration, or uncertain
+closure retain admission. The unconfigured administrative CLI has no remote
+credential provider, so it retains remote gates; use the trusted host adapter.
+
 ## Remaining integration
 
-Remote role/job registration, scoped credential distribution, provider and
-candidate policy, source fencing on every participating host, recovery transport
-registration, and revision-checked migration remain required before activation.
-The preflight's remote-work holds remain enforced. No public launch operation or
-automatic migration is introduced by this protocol.
+Production credential distribution, provider and candidate policy, source fencing
+on every participating host, existing fleet-controller integration, and
+revision-checked migration remain required before activation. The preflight's
+remote-work holds remain enforced. No public launch operation or automatic
+migration is introduced by this integration.
 
 Tests exercise actual HTTP calls, supervised processes, a killed and restarted
 worker service, idempotent starts, closure before delayed start, lost start/close
 acknowledgements, timeouts, revoked credentials, removed profiles, identity/root
 replacement, malformed responses, and coordinator lease release after closure.
-The installed-package smoke also checks the remote delayed-start barrier.
+Registration tests cover scoped policy, source drift, rebinding rejection, owner
+revocation during an observation, and launcher crashes before send and after
+worker acceptance. The installed-package smoke checks registered remote recovery
+and its delayed-start barrier.

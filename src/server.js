@@ -129,7 +129,7 @@ function lanAddress() {
   return null;
 }
 
-export function startServer({ port = 7337, lan = false } = {}) {
+export function startServer({ port = 7337, lan = false, deliveryRemoteCredential } = {}) {
   const token = loadToken('token');
   const viewerToken = loadToken('token-viewer');
   const mobileToken = loadToken('token-mobile'); // full control, revocable per device class
@@ -208,7 +208,7 @@ export function startServer({ port = 7337, lan = false } = {}) {
       }
       try {
         // No jobs or admission callback: this route can never reserve/dispatch.
-        const session = createDeliverySession(project.path, { enabled: true, credential: sent });
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent, remoteCredential: deliveryRemoteCredential });
         const result = route[2] ? await session[route[2]](route[1], command) : session.read(route[1]);
         const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
         return json(res, status, result);

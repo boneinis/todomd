@@ -10,6 +10,8 @@ import { sameExecution, executionRef } from './delivery-execution-state.js';
 import { deliveryStoreDirectory } from './delivery-paths.js';
 import { admissionHeld, withAdmission } from './delivery-admission.js';
 import { registerAuthority, registeredAuthority } from './delivery-authority-state.js';
+import { remoteProfile, registerRemoteAuthority, registeredRemoteAuthority, registeredRemoteBackend } from './delivery-remote-authority.js';
+import { remoteName } from './delivery-remote-state.js';
 import { deliveryWriterPreflight } from './delivery-writer-preflight.js';
 
 const identity = v => typeof v === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
@@ -48,13 +50,23 @@ function approvedJobs(repo, jobs) {
 // The canonical store + backend namespace is also the recovery authority: do
 // not remap it to arbitrary backend directories when a job profile is removed.
 export function createDeliveryAuthority(repoPath, { enabled = false, authenticate, resolveAdmission,
-  jobs = {}, now = Date.now, localOptions = {} } = {}) {
+  jobs = {}, remoteJobs = {}, remoteCredential, remoteTimeoutMs, now = Date.now, localOptions = {} } = {}) {
   const repo = fs.realpathSync(repoPath), directory = deliveryStoreDirectory(repo), gate = path.join(directory, 'admission');
   if (!object(localOptions) || Object.keys(localOptions).some(k => !['graceMs', 'closeTimeoutMs'].includes(k))) throw new Error('Invalid local delivery options.');
-  const profiles = approvedJobs(repo, jobs), byBackend = new Map([...profiles.values()].map(p => [p.backend, p]));
+  const profiles = approvedJobs(repo, jobs);
+  if (!object(remoteJobs) || remoteCredential !== undefined && typeof remoteCredential !== 'function') throw new Error('Invalid remote job configuration.');
+  for (const [name, value] of Object.entries(remoteJobs)) {
+    if (!identity(name) || profiles.has(name)) throw new Error('Duplicate or invalid job profile.');
+    profiles.set(name, remoteProfile(value));
+  }
+  const byBackend = new Map([...profiles.values()].map(p => [p.backend, p]));
+  if (byBackend.size !== profiles.size) throw new Error('A job authority must have one profile.');
   // Enabled construction installs server-owned configuration bindings, not
   // executions. No command text or environment is written to these receipts.
-  if (enabled === true) for (const [name, profile] of profiles) registerAuthority(directory, profile.backend, repo, name);
+  if (enabled === true) for (const [name, profile] of profiles) {
+    if (remoteName(profile.backend)) registerRemoteAuthority(directory, repo, name, profile);
+    else registerAuthority(directory, profile.backend, repo, name);
+  }
   const readStore = createDeliveryStore(directory);
 
   function principal() {
@@ -90,16 +102,34 @@ export function createDeliveryAuthority(repoPath, { enabled = false, authenticat
         facts: { admission: { owner: owners.implementation, authorized: p.actor_id === owners.implementation, dependencies_satisfied: true } } };
     } catch { return result; }
   }
+  function startAllowed(ref, profile) {
+    if (!admissionHeld(gate) || !profile) return false;
+    const record = readStore.read(ref.task_id), time = now();
+    if (!record?.lease || !record.execution || !sameExecution(executionRef(record), ref) ||
+      record.execution.phase !== 'dispatching' || !Number.isSafeInteger(time) || record.lease.expires_at <= time) return false;
+    const c = context(record, { action: 'dispatch' });
+    return c?.grants.includes('delivery:dispatch') && c.busy === false && c.execution_admission?.fenced === true;
+  }
   function backend(name) {
     const profile = byBackend.get(name);
+    if (remoteName(name)) {
+      const remote = registeredRemoteBackend(directory, repo, name, { enabled, remoteTimeoutMs,
+        remoteCredential: request => {
+          const token = remoteCredential?.(request);
+          // Credential lookup may revoke actor/job policy or change the source.
+          // Check again immediately before the transport sends a start request.
+          if (request.action === 'start' && !startAllowed(request.execution, profile)) throw new Error('Remote launch is not authorized.');
+          return token;
+        } });
+      return { inspect: remote.inspect, close: remote.close,
+        start: ref => withAdmission(gate, 'launch', ref.task_id, () => {
+          if (!startAllowed(ref, profile)) throw new Error('Remote launch is not authorized.');
+          return remote.start(ref);
+        }, { remoteExecution: ref }) };
+    }
     const local = createLocalDeliveryBackend(path.join(directory, 'local-executions', name), { ...localOptions, enabled, name,
       authorizeStart: ref => {
-        if (!admissionHeld(gate) || !profile || !registeredAuthority(directory, name, repo)) return false;
-        const record = readStore.read(ref.task_id), time = now();
-        if (!record?.lease || !record.execution || !sameExecution(executionRef(record), ref) ||
-          record.execution.phase !== 'dispatching' || !Number.isSafeInteger(time) || record.lease.expires_at <= time) return false;
-        const c = context(record, { action: 'dispatch' });
-        return c?.grants.includes('delivery:dispatch') && c.busy === false && c.execution_admission?.fenced === true;
+        return registeredAuthority(directory, name, repo) && startAllowed(ref, profile);
       },
       resolveJob: ref => profile && { ...profile.job,
         args: profile.job.args.map(arg => {
@@ -119,8 +149,9 @@ export function createDeliveryAuthority(repoPath, { enabled = false, authenticat
   function coordinator(record) {
     const names = new Set(byBackend.keys());
     // A removed profile is close/inspect-only in its ORIGINAL namespace. Old
-    // generic `local` or remote records are never guessed into this authority.
+    // generic or unregistered records are never guessed into this authority.
     if (backendId(record?.execution?.backend) && registeredAuthority(directory, record.execution.backend, repo)) names.add(record.execution.backend);
+    if (remoteName(record?.execution?.backend) && registeredRemoteAuthority(directory, record.execution.backend, repo)) names.add(record.execution.backend);
     return createDeliveryExecutionCoordinator(directory, { enabled, now, resolveContext: context,
       backends: Object.fromEntries([...names].map(name => [name, backend(name)])) });
   }

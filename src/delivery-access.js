@@ -7,7 +7,7 @@ import { privateDirectory, refKey, writeOnce } from './delivery-local-state.js';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, fields) => object(v) && Object.keys(v).every(k => fields.includes(k));
-const backend = v => typeof v === 'string' && /^local-job-[a-f0-9]{64}$/.test(v);
+const backend = v => typeof v === 'string' && /^(local|remote)-job-[a-f0-9]{64}$/.test(v);
 const digest = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const time = v => Number.isSafeInteger(v) && v >= 0;
 const TOKEN = /^tdmd_delivery_[a-f0-9]{64}$/;

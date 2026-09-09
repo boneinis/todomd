@@ -29,6 +29,10 @@ export function deliveryRuntimeStatus(repoPath, id) {
       return hold('delivery_launch_pending', 'A local delivery launch owns admission or requires recovery.',
         'The project owner must inspect and recover the recorded local launch, then reconcile its task lease. Keep the candidate and attempt history.');
     }
+    if (admission.owner?.launch_authority === 'registered-remote-job-v1' && admission.owner.task_id === id) {
+      return hold('delivery_launch_pending', 'A remote delivery launch owns admission or requires recovery.',
+        'The project owner must recover the recorded launch through its original remote worker and credential provider, then reconcile its task lease. Keep the candidate and attempt history.');
+    }
     // lstat distinguishes absence from unreadability and dangling symlinks.
     for (const file of [`${id}.lock`, `${id}.json`]) {
       let stat;

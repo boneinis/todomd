@@ -94,3 +94,7 @@ Tests cover expired ownership, absent/corrupt/nonregular records, path aliases,
 scheduler capacity, direct recovery and low-level writes, reader permissions,
 all legacy per-card write routes, restart with a preserved remote journal, and
 full/viewer drawer behavior. All fixtures use isolated homes and fake agents.
+
+Bound remote launches use the same `delivery_launch_pending` hold, directing the
+project owner to the original worker and credential provider before task-lease
+reconciliation. Viewer responses omit worker endpoints and credential selectors.

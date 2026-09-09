@@ -22,6 +22,7 @@ const ownerFile = (root, epoch) => path.join(root, `${epoch}.owner.json`);
 const doneFile = (root, epoch) => path.join(root, `${epoch}.done.json`);
 const seal = value => ({ ...value, checksum: refKey(value) });
 const LOCAL_LAUNCH = 'registered-local-job-v1';
+const REMOTE_LAUNCH = 'registered-remote-job-v1';
 const REPOSITORY_COMMAND = 'local-repository-command-v1';
 function repositoryBinding(kind, taskId, command) {
   if (command === undefined) return {};
@@ -31,12 +32,12 @@ function repositoryBinding(kind, taskId, command) {
   if (execution.task_id !== 'repository-write' || Object.keys(command.execution).length !== Object.keys(execution).length) throw new Error('Invalid repository command identity.');
   return { repository_authority: REPOSITORY_COMMAND, repository_command: { execution, lock_nonce: command.lock_nonce } };
 }
-function launchBinding(kind, taskId, execution) {
+function launchBinding(kind, taskId, execution, remote = false) {
   if (execution === undefined) return {};
-  if (kind !== 'launch' || !/^local-job-[a-f0-9]{64}$/.test(execution?.backend)) throw new Error('Invalid local launch scope.');
+  if (kind !== 'launch' || !(remote ? /^remote-job-[a-f0-9]{64}$/ : /^local-job-[a-f0-9]{64}$/).test(execution?.backend)) throw new Error('Invalid launch scope.');
   const ref = localRef(execution, execution.backend);
-  if (ref.task_id !== taskId || Object.keys(execution).length !== Object.keys(ref).length) throw new Error('Invalid local launch identity.');
-  return { launch_authority: LOCAL_LAUNCH, execution: ref };
+  if (ref.task_id !== taskId || Object.keys(execution).length !== Object.keys(ref).length) throw new Error('Invalid launch identity.');
+  return { launch_authority: remote ? REMOTE_LAUNCH : LOCAL_LAUNCH, execution: ref };
 }
 function read(file) {
   let fd;
@@ -75,8 +76,8 @@ export function admissionStatus(directory) {
       typeof owner.host !== 'string' || !owner.host || typeof owner.boot !== 'string' || !owner.boot ||
       !(owner.task_id === null || identity(owner.task_id))) throw new Error('Invalid admission owner.');
     if (owner.launch_authority !== undefined || owner.execution !== undefined) {
-      if (owner.launch_authority !== LOCAL_LAUNCH || owner.execution === undefined ||
-        JSON.stringify(launchBinding(owner.kind, owner.task_id, owner.execution).execution) !== JSON.stringify(owner.execution)) throw new Error('Invalid launch binding.');
+      if (![LOCAL_LAUNCH, REMOTE_LAUNCH].includes(owner.launch_authority) || owner.execution === undefined ||
+        JSON.stringify(launchBinding(owner.kind, owner.task_id, owner.execution, owner.launch_authority === REMOTE_LAUNCH).execution) !== JSON.stringify(owner.execution)) throw new Error('Invalid launch binding.');
     }
     if (owner.repository_authority !== undefined || owner.repository_command !== undefined) {
       if (owner.repository_authority !== REPOSITORY_COMMAND || owner.repository_command === undefined ||
@@ -99,10 +100,11 @@ function release(token) {
     owner_checksum: owner.checksum, outcome: 'released' }));
   changed();
 }
-function acquire(directory, kind, taskId, { existingOnly = false, borrow = true, localExecution, repositoryCommand } = {}) {
-  const binding = { ...launchBinding(kind, taskId, localExecution), ...repositoryBinding(kind, taskId, repositoryCommand) };
+function acquire(directory, kind, taskId, { existingOnly = false, borrow = true, localExecution, remoteExecution, repositoryCommand } = {}) {
+  if (localExecution !== undefined && remoteExecution !== undefined) throw new Error('Ambiguous launch authority.');
+  const binding = { ...launchBinding(kind, taskId, localExecution ?? remoteExecution, remoteExecution !== undefined), ...repositoryBinding(kind, taskId, repositoryCommand) };
   const root = path.resolve(directory), inherited = context.getStore()?.get(root);
-  if (borrow && localExecution === undefined && repositoryCommand === undefined && inherited?.active) return { ok: true, token: { ...inherited, borrowed: true } };
+  if (borrow && localExecution === undefined && remoteExecution === undefined && repositoryCommand === undefined && inherited?.active) return { ok: true, token: { ...inherited, borrowed: true } };
   const status = admissionStatus(root);
   if (!status.enabled && existingOnly) return { ok: true, token: null };
   if (status.owner) return fail('write_busy', 'A project admission owner is active or requires reconciliation.');
@@ -130,16 +132,17 @@ export function retainAdmission(directory) {
   if (!token?.active || !token.owner.repository_command) throw new Error('No repository command admission is held.');
   token.retained = true;
 }
-export async function withAdmission(directory, kind, taskId, fn, { existingOnly = false, localExecution, repositoryCommand } = {}) {
+export async function withAdmission(directory, kind, taskId, fn, { existingOnly = false, localExecution, remoteExecution, repositoryCommand } = {}) {
   if (!['repository', 'launch'].includes(kind)) throw new Error('Asynchronous metadata admission is not supported.');
-  const execution = launchBinding(kind, taskId, localExecution).execution;
+  if (localExecution !== undefined && remoteExecution !== undefined) throw new Error('Ambiguous launch authority.');
+  const execution = launchBinding(kind, taskId, localExecution ?? remoteExecution, remoteExecution !== undefined).execution;
   const repository = repositoryBinding(kind, taskId, repositoryCommand).repository_command;
   const root = path.resolve(directory);
   // A synchronous launch token must not be borrowed across an await. Nested
   // repository work is already handled by board.js's revocable repo context.
   const deadline = Date.now() + 10000;
   while (true) {
-    const claim = acquire(root, kind, taskId, { existingOnly, borrow: false, localExecution: execution, repositoryCommand: repository });
+    const claim = acquire(root, kind, taskId, { existingOnly, borrow: false, ...(remoteExecution !== undefined ? { remoteExecution: execution } : { localExecution: execution }), repositoryCommand: repository });
     if (claim.ok) {
       try { return await enter(claim.token, fn); }
       finally { if (claim.token) release(claim.token); }
@@ -184,17 +187,18 @@ function finishRecovery(root, owner, evidence, effect) {
   changed();
   return { ok: true, epoch, effect };
 }
-export function recoverAdmission(directory, command = {}, { reconcileLaunch, reconcileRepository } = {}) {
+export function recoverAdmission(directory, command = {}, { reconcileLaunch, reconcileRemoteLaunch, reconcileRepository } = {}) {
   const { epoch, nonce } = command || {};
   if (!command || Object.keys(command).some(k => !['epoch', 'nonce'].includes(k)) || !Number.isSafeInteger(epoch) || epoch < 1 || !identity(nonce)) return fail('invalid_request', 'Supply only the exact admission epoch and nonce.');
   const root = path.resolve(directory), current = recoveryState(root, epoch, nonce);
   if (!current.ok || current.replayed) return current;
   const owner = current.owner;
   if (owner.kind === 'metadata') return finishRecovery(root, owner, 'same-host-and-boot:transaction-process-absent', 'transaction_gate_only');
-  // A binding attests that this scope launches ONLY this registered local job.
+  // A binding attests that this scope launches ONLY this registered job.
   // Unbound launch/repository owners may have unrelated children or remote work.
   const repository = owner.kind === 'repository' && owner.repository_authority === REPOSITORY_COMMAND;
-  const reconcile = repository ? reconcileRepository : owner.kind === 'launch' && owner.launch_authority === LOCAL_LAUNCH ? reconcileLaunch : null;
+  const remote = owner.kind === 'launch' && owner.launch_authority === REMOTE_LAUNCH;
+  const reconcile = repository ? reconcileRepository : remote ? reconcileRemoteLaunch : owner.kind === 'launch' && owner.launch_authority === LOCAL_LAUNCH ? reconcileLaunch : null;
   if (typeof reconcile !== 'function') return fail('external_reconciliation_required', 'Confirm all repository or launch work stopped through its execution authority.');
   const ref = repository ? owner.repository_command.execution : owner.execution;
   const dead = deadOwner(owner);
@@ -203,8 +207,8 @@ export function recoverAdmission(directory, command = {}, { reconcileLaunch, rec
     let observation;
     try { observation = await reconcile(Object.freeze({ ...owner, ...(owner.execution ? { execution: Object.freeze({ ...owner.execution }) } : {}),
       ...(repository ? { repository_command: Object.freeze({ ...owner.repository_command, execution: Object.freeze({ ...ref }) }) } : {}) })); }
-    catch { return fail('stop_unconfirmed', 'Local execution closure could not be verified; admission remains held.'); }
-    if (!sameExecution(ref, observation) || observation.state !== 'stopped' || observation.closed !== true) return fail('stop_unconfirmed', 'The exact local execution must be stopped and permanently closed.');
-    return finishRecovery(root, owner, repository ? 'local-repository-command:stopped-and-closed' : 'registered-local-job:stopped-and-closed', repository ? 'repository_gate_only' : 'launch_gate_only');
+    catch { return fail('stop_unconfirmed', 'Execution closure could not be verified; admission remains held.'); }
+    if (!sameExecution(ref, observation) || observation.state !== 'stopped' || observation.closed !== true) return fail('stop_unconfirmed', 'The exact execution must be stopped and permanently closed.');
+    return finishRecovery(root, owner, repository ? 'local-repository-command:stopped-and-closed' : remote ? 'registered-remote-job:stopped-and-closed' : 'registered-local-job:stopped-and-closed', repository ? 'repository_gate_only' : 'launch_gate_only');
   })();
 }

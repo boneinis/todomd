@@ -15,29 +15,45 @@
 <script>if (localStorage.getItem('todomd-theme') === 'light') document.body.classList.add('light');</script>
 
 <header class="topbar">
-  <h1 class="wordmark" id="wordmark" title="getting started">todo<span>md</span></h1>
+  <div class="workspace-bar">
+    <div class="workspace-identity">
+      <h1 class="wordmark" id="wordmark" title="getting started">todo<span>md</span></h1>
+      <span class="workspace-divider" aria-hidden="true"></span>
+      <label class="sr-only" for="project">Project</label>
+      <select id="project" title="project"></select>
+    </div>
+    <div class="workspace-actions">
+      <div class="utility-actions" role="group" aria-label="Workspace tools">
+        <button id="help-btn" class="qr-btn" title="getting started guide" aria-label="Getting started">?</button>
+        <button id="theme-btn" class="qr-btn" title="toggle light / dark" aria-label="Toggle light or dark theme">◐</button>
+        <button id="qr-btn" class="qr-btn" title="mobile monitor link" aria-label="Mobile monitor link">▦</button>
+        <button id="manage-projects" class="qr-btn" title="add / remove projects" aria-label="Manage projects">⊕</button>
+        <button id="intake-btn" class="qr-btn" title="email intake (IMAP) settings" aria-label="Email intake settings">✉</button>
+        <button id="prompts-btn" class="qr-btn" title="edit column prompts" aria-label="Column prompts">⚙</button>
+      </div>
+      <button id="board-agent-open" class="view-toggle" type="button">board agent</button>
+      <button id="new-card" class="new-card">+ card</button>
+    </div>
+  </div>
   <div class="topbar-right">
-    <button id="help-btn" class="qr-btn" title="getting started guide">?</button>
-    <button id="theme-btn" class="qr-btn" title="toggle light / dark">◐</button>
-    <button id="qr-btn" class="qr-btn" title="mobile monitor link">▦</button>
-    <button id="board-agent-open" class="view-toggle" type="button">board agent</button>
-    <button id="new-card" class="new-card">+ card</button>
-    <button id="queue-pause" class="view-toggle" type="button" aria-pressed="false" title="let active work finish, then hold new starts">pause queue</button>
-    <button id="queue-run" class="view-toggle" type="button" title="wake this project's already-approved Queue cards">▶ run queue</button>
-    <button id="layout-toggle" class="view-toggle" type="button" title="switch between board and list" aria-pressed="false">list view</button>
-    <button id="view-toggle" class="view-toggle" title="click: team / my work · ⌥-click: change your name">team</button>
-    <button id="archived-toggle" class="view-toggle" title="show / hide archived cards">archived</button>
-    <input id="filter" type="search" placeholder="filter…" spellcheck="false" autocomplete="off" />
-    <select id="project" title="project"></select>
-    <button id="manage-projects" class="qr-btn" title="add / remove projects">⊕</button>
-    <button id="intake-btn" class="qr-btn" title="email intake (IMAP) settings">✉</button>
-    <button id="prompts-btn" class="qr-btn" title="edit column prompts">⚙</button>
+    <label class="board-search" for="filter"><span aria-hidden="true">⌕</span><span class="sr-only">Filter cards</span><input id="filter" type="search" placeholder="Filter cards…" spellcheck="false" autocomplete="off" /></label>
+    <div class="view-actions" role="group" aria-label="Board views">
+      <button id="layout-toggle" class="view-toggle" type="button" title="switch between board and list" aria-pressed="false">list view</button>
+      <button id="view-toggle" class="view-toggle" aria-pressed="false" title="click: team / my work · ⌥-click: change your name">team</button>
+      <button id="archived-toggle" class="view-toggle" aria-pressed="false" title="show / hide archived cards">archived</button>
+    </div>
+    <div class="queue-actions" role="group" aria-label="Queue controls">
+      <button id="queue-pause" class="view-toggle" type="button" aria-pressed="false" title="let active work finish, then hold new starts">pause queue</button>
+      <button id="queue-run" class="view-toggle" type="button" title="wake this project's already-approved Queue cards">▶ run queue</button>
+    </div>
+  </div>
+  <div class="workspace-status">
+    <span class="usage" id="usage" title="model usage this month"></span>
     <div id="voice-widget" class="voice-widget" hidden>
       <button id="voice-btn" class="voice-btn" type="button" data-voice-state="inactive" aria-pressed="false" aria-label="voice control — voice off">🎙</button>
       <button id="voice-ptt" class="voice-btn voice-ptt" type="button" hidden aria-label="push to talk — press and hold">🎙 hold to talk</button>
       <span id="voice-diag" class="voice-diag" role="status" aria-live="polite"></span>
     </div>
-    <span class="usage" id="usage" title="model usage this month"></span>
     <span class="conn" id="conn" title="live connection"><span class="conn-dot"></span><span id="conn-label">SYNC</span></span>
   </div>
 </header>

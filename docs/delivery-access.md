@@ -4,7 +4,7 @@ The local administrative CLI now provisions credentials for a stable owner in
 one canonical project. `createDeliverySession` binds a credential to an individual
 request and feeds fresh authentication and job-policy reads into the authority
 adapter. The server exposes loopback recovery for already mapped tasks and
-registered local executions. No HTTP route reserves or launches delivery work,
+registered local and remote executions. No HTTP route reserves or launches delivery work,
 and existing boards are not migrated or activated.
 
 ## Local administration
@@ -19,6 +19,7 @@ todomd delivery-access <repo> issue --revision N --owner agent-role:builder --tt
 todomd delivery-access <repo> issue --revision N --owner human:operator --ttl-ms 3600000 --operator
 todomd delivery-access <repo> revoke --revision N --credential-id ID
 todomd delivery-access <repo> jobs --revision N --backend local-job-<SHA-256>
+todomd delivery-access <repo> jobs --revision N --backend remote-job-<SHA-256>
 todomd delivery-access <repo> jobs --revision N
 ```
 
@@ -95,6 +96,10 @@ observations. Concurrent requests each retain their own credential. Revocation
 does not retroactively cancel an already accepted stop; it prevents later
 authorized transactions. Missing or corrupt credentials never fall back to a
 board-wide token.
+
+Remote recovery additionally requires the server-owned
+[worker credential provider](delivery-remote-backend.md). Delivery owner tokens
+are not worker tokens. No endpoint or provider secret is accepted from HTTP.
 
 ## Remaining activation work
 

@@ -50,6 +50,34 @@ export async function addWorktree(repoPath, worktreePath, branch) {
   return res.ok ? { ok: true } : { ok: false, reason: res.stderr };
 }
 
+// Refresh only a clean, correctly checked-out candidate. Never stash, reset or
+// resolve conflicts on behalf of a stage agent; a failed refresh costs no Build.
+export async function refreshWorktreeBase(worktreePath, branch, base) {
+  if (!base || base === 'unknown' || base === branch) return { ok: false, reason: 'base_branch_unknown' };
+  if (await currentBranch(worktreePath) !== branch) return { ok: false, reason: 'worktree_failed' };
+  const target = await git(worktreePath, ['rev-parse', '--verify', '--end-of-options', `${base}^{commit}`]);
+  if (!target.ok) return { ok: false, reason: 'base_branch_unknown' };
+  if ((await git(worktreePath, ['merge-base', '--is-ancestor', target.stdout, 'HEAD'])).ok) return { ok: true, changed: false };
+  // Board bookkeeping advances the base during every stage. It is not a
+  // source refresh and must not dirty a resumed candidate's source identity.
+  const ancestor = await git(worktreePath, ['merge-base', target.stdout, 'HEAD']);
+  if (!ancestor.ok) return { ok: false, reason: 'base_sync_conflict' };
+  const changed = await git(worktreePath, ['diff', '--name-only', ancestor.stdout, target.stdout, '--', '.', ':(exclude).todomd']);
+  if (!changed.ok) return { ok: false, reason: 'base_sync_conflict' };
+  if (!changed.stdout) return { ok: true, changed: false };
+  const dirty = await git(worktreePath, ['status', '--porcelain']);
+  if (!dirty.ok || dirty.stdout) return { ok: false, reason: 'base_sync_dirty' };
+  for (const name of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD']) {
+    if ((await git(worktreePath, ['rev-parse', '--verify', name])).ok) return { ok: false, reason: 'base_sync_dirty' };
+  }
+  const merged = await git(worktreePath, ['merge', '--no-verify', '--no-edit', '--no-gpg-sign', target.stdout]);
+  if (!merged.ok) {
+    await git(worktreePath, ['merge', '--abort']);
+    return { ok: false, reason: 'base_sync_conflict' };
+  }
+  return { ok: true, changed: true };
+}
+
 // A fresh Restart Build must fork from the current base branch, but an older
 // orphan can have lost only its worktree while its task branch still survives.
 // Preserve that branch under a deterministic backup ref before freeing the
