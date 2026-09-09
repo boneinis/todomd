@@ -51,6 +51,22 @@ async function until(fn) {
   throw new Error('Timed out waiting for authority fixture');
 }
 
+test('known legacy writers veto trusted positive admission facts and preserve recovery', { skip: !supported }, async () => {
+  const f = fixture(), s = f.service();
+  writeCard(f.repo, 'task-0002', { status: 'Done', extra: 'lease: "1 old-worker"\n' });
+  assert.equal(s.reserve(id, f.reserve()).ok, false);
+  assert.equal(f.store.read(id).lease, null);
+  writeCard(f.repo, 'task-0002', { status: 'Done' });
+  assert.equal(s.reserve(id, f.reserve()).ok, true);
+  writeCard(f.repo, 'task-0002', { status: 'Done', extra: 'ci_execution: remote\n' });
+  try {
+    assert.equal((await s.dispatch(id, f.command())).ok, false);
+    assert.equal(fs.existsSync(f.marker), false);
+    // Preflight holds must never prevent stopping and releasing existing work.
+    await f.finish(s);
+  } finally { if (f.store.read(id).lease) await f.finish(s); }
+});
+
 test('disabled authority and invalid server job definitions create no state', { skip: !supported }, () => {
   isolateHome(); const repo = makeRepo(), dir = deliveryStoreDirectory(repo);
   const s = createDeliveryAuthority(repo);
