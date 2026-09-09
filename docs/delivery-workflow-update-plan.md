@@ -32,7 +32,11 @@ quiescent migration boundary.
 The [writer preflight](delivery-writer-preflight.md) now reports known legacy,
 interactive, and remote boundaries and vetoes delivery admission when one is
 present. A clear scan is not proof of quiescence and never enables execution.
-Remote authority and remaining external-writer admission, recovery after loss of
+The opt-in [remote worker/client protocol](delivery-remote-backend.md) now pins
+worker identity and reconciles supervised remote process closure, including
+worker restart and delayed submissions. Production role/provider registration
+and existing fleet-controller integration remain separate.
+Remaining external-writer admission, recovery after loss of
 all local controllers, provider credential/configuration distribution, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime
 integration and recovery acceptance gates pass.
