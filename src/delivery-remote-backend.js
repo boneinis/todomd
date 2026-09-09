@@ -24,7 +24,7 @@ export function createRemoteDeliveryBackend(directory, { enabled = false, name, 
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
-      const token = credential();
+      const token = credential(action, ref);
       if (typeof token !== 'string' || !token || token.length > 4096 || /[\r\n]/.test(token)) throw new Error('Credential unavailable.');
       response = await fetch(url.href, { method: 'POST', redirect: 'error', signal: controller.signal,
         headers: { 'Content-Type': 'application/json', 'x-todomd-worker-token': token },

@@ -70,6 +70,12 @@ write endpoint. Board viewers continue to receive sanitized hold information.
   process absence, registration, and task identity before publishing completion.
   Missing or corrupt authority, a different journal, or uncertain closure holds
   admission. No persisted PID is used to signal a job.
+- For a bound remote `launch` owner, the trusted host recovery adapter requires
+  the original worker registration and a credential provider. It verifies the
+  matching dispatch journal and exact remote stopped-and-closed evidence. Local
+  process absence alone cannot close this gate. The default administrative CLI
+  has no remote credential provider and retains it; see
+  [remote launch recovery](delivery-remote-backend.md).
 - For a supervised repository command, recovery verifies its private command
   receipt and backend closure, releases only its original legacy-lock nonce,
   and completes that exact repository gate. Commands and partial edits are never
@@ -105,7 +111,7 @@ Old raw-lock scripts and long interactive budget sessions still do not participa
 Enabling a gate does not fence work that started beforehand, a direct shell writer,
 or an accepted remote job. Initial activation/migration must establish quiescence
 and integrate every writer and authoritative stop/source check. Production
-provider credential/configuration integration, remote closure, projection/migration, and the pilot acceptance gates
+provider credential/configuration integration, fleet-controller closure, projection/migration, and the pilot acceptance gates
 remain required. Gate history retention is currently unbounded.
 
 Tests cover independent recovery callers, stale recovery against a newer owner,

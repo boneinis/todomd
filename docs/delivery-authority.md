@@ -1,7 +1,7 @@
 # Trusted delivery roles and jobs
 
 `createDeliveryAuthority` in `src/delivery-authority.js` connects authenticated
-project identities, durable owner assignments, approved local jobs, the admission
+project identities, durable owner assignments, approved local and remote jobs, the admission
 gate, and the execution coordinator. It is an internal adapter, disabled by
 default. The [credential-bound recovery transport](delivery-access.md) enables
 only inspection, stop, reconciliation, and release for existing executions.
@@ -23,6 +23,8 @@ The factory receives a canonical project path and server-owned options:
   `writers_fenced: true`, `busy: false`, and `dependencies_satisfied: true`.
   Missing, asynchronous, uncertain, or revoked evidence denies new execution.
 - `jobs`: a server-approved map of named implementation-job definitions.
+- `remoteJobs`, `remoteCredential`, and optional `remoteTimeoutMs`: the
+  [registered remote worker and provider contract](delivery-remote-backend.md).
 - Optional `now` clock and `localOptions` containing only stop deadlines.
 
 Enabled construction durably registers approved job namespaces. It does not
@@ -77,7 +79,7 @@ store. These paths are derived by the adapter and never accepted from a request.
 
 Removing a profile prevents its old reservation from dispatching through the
 new configuration. Its registered namespace remains available for authenticated
-stop, inspection, and release. Generic `local`, remote, and unregistered backend
+stop, inspection, and release. Generic `local` and unregistered backend
 identities are never guessed into this namespace. Corrupt registrations hold
 recovery; they are not overwritten. Do not delete registrations during cleanup
 or repoint their directories to another backend.
@@ -119,7 +121,8 @@ The admission callback must integrate every legacy, shell/budget, and remote
 writer with authoritative source/stop checks; booleans copied from a request or
 stale heartbeat do not meet this contract. Keep activation off until those
 adapters, revision-checked projection/migration, recovery of unbound launch
-owners, and the pilot gates pass. Remote execution still needs its own backend.
+owners, and the pilot gates pass. Registered supervised remote workers now have their own backend; existing fleet
+controllers still require independent acceptance and closure integration.
 
 Tests cover role/project isolation, command/permission injection rejection,
 authentication and policy revocation, source drift, copied job definitions,
