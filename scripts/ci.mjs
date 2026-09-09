@@ -157,6 +157,10 @@ async function packSmoke() {
     const preview = JSON.parse(await run(bin, ['delivery-preview', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
     if (preview.read_only !== true || preview.execution_enabled !== false) throw new Error('installed CLI lost the read-only delivery preview');
 
+    // init scaffolds files without committing them. Writer checks require an
+    // authoritative committed configuration as well as the working copy.
+    execFileSync('git', ['add', '.todomd/config.yml'], { cwd: repo });
+    execFileSync('git', ['commit', '-qm', 'fixture board configuration'], { cwd: repo });
     const writers = JSON.parse(await run(bin, ['delivery-writers', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
     if (writers.read_only !== true || writers.execution_enabled !== false || writers.writers_fenced !== false || writers.blocked !== false) throw new Error('Packaged writer preflight must be read-only and never authorize execution');
 
