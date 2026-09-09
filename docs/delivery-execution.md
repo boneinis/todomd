@@ -100,6 +100,10 @@ release because the task is still delivery-managed.
 
 ## Remaining integration
 
+The authority now runs a [writer preflight](delivery-writer-preflight.md) to veto
+known legacy/interactive/remote blockers. A clear scan is not closure evidence.
+
+
 The local backend, its guardian for orphaned local writers, and the
 [shared admission gate](delivery-admission.md) are implemented, including exact
 dead-metadata-transaction recovery. The [trusted role/job adapter](delivery-authority.md)

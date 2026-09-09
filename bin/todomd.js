@@ -12,9 +12,19 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]|delivery-access <repo> <status|issue|revoke|jobs>|budget-write <repo> -- /absolute/executable [args...]] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-writers [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]|delivery-access <repo> <status|issue|revoke|jobs>|budget-write <repo> -- /absolute/executable [args...]] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
+if (args[0] === 'delivery-writers') {
+  const positional = args.slice(1).filter(a => a !== '--json');
+  if (positional.length > 1 || positional.some(a => a.startsWith('-')) || args.filter(a => a === '--json').length > 1) {
+    console.error('usage: todomd delivery-writers [repo] [--json] (read only)'); process.exit(1);
+  }
+  const { deliveryWriterPreflight, formatWriterPreflight } = await import('../src/delivery-writer-preflight.js');
+  const report = deliveryWriterPreflight(path.resolve(positional[0] || process.cwd()));
+  console.log(args.includes('--json') ? JSON.stringify(report, null, 2) : formatWriterPreflight(report));
+  process.exit(report.blocked ? 2 : 0);
+}
 if (args[0] === 'budget-write') {
   const usage = 'usage: todomd budget-write <repo> [--timeout-ms N] -- /absolute/executable [args...]';
   const separator = args.indexOf('--'), before = args.slice(1, separator);

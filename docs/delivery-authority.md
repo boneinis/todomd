@@ -89,6 +89,10 @@ The adapter hashes the current raw card and checks it against the mapped
 gate. A changed, malformed, mismatched, or archived card cannot launch. This is
 the mapping's card digest, not Git candidate/release evidence. The trusted
 admission callback must establish any further candidate and policy requirements.
+The [writer preflight](delivery-writer-preflight.md) independently vetoes known
+legacy/interactive/remote blockers during reservation and every dispatch/start
+authorization. Callback facts cannot override it. A clear scan still needs
+trusted writer fencing; recovery operations remain available when it blocks.
 
 The launch gate remains held across asynchronous local authorization, job
 resolution, and supervisor acknowledgement. Waiting writers cannot race that
