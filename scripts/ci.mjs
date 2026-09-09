@@ -73,7 +73,9 @@ const freePort = () => new Promise((resolve, reject) => {
 
 /* ── stages ── */
 
-const unit = () => run('node', ['--test', ...fs.readdirSync(path.join(ROOT, 'test'))
+// Each file can launch several supervised processes. Bound file parallelism so
+// desktop pre-push checks do not starve process inspection and fixture writes.
+const unit = () => run('node', ['--test', `--test-concurrency=${Math.min(4, os.availableParallelism())}`, ...fs.readdirSync(path.join(ROOT, 'test'))
   .filter((f) => f.endsWith('.test.js')).map((f) => path.join('test', f))]);
 
 const ui = () => run('node', ['--test', 'test/ui/ui-smoke.test.js']);

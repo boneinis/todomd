@@ -310,6 +310,7 @@ function applyViewToggle() {
   const btn = $('#view-toggle');
   btn.textContent = viewMode === 'mine' ? `mine: ${myName}` : 'team';
   btn.classList.toggle('active', viewMode === 'mine');
+  btn.setAttribute('aria-pressed', String(viewMode === 'mine'));
 }
 function promptName(initial) {
   const n = prompt("Your name for 'my work' — match the assignee on your cards:", initial || '');
@@ -332,6 +333,7 @@ $('#view-toggle').addEventListener('click', (e) => {
 /* ── archived view ── */
 function applyArchivedToggle() {
   $('#archived-toggle').classList.toggle('active', showArchived);
+  $('#archived-toggle').setAttribute('aria-pressed', String(showArchived));
   document.body.classList.toggle('archived-view', showArchived);
 }
 $('#archived-toggle').addEventListener('click', () => {
@@ -589,6 +591,11 @@ function renderCard(card, color, i, nestedIds) {
   el.style.setProperty('--col', color);
   el.style.setProperty('--i', i);
   el.dataset.id = card.id;
+  el.tabIndex = 0;
+  el.setAttribute('aria-label', `Open ${card.title || card.id || card.file}`);
+  el.addEventListener('keydown', (event) => {
+    if (event.target === el && ['Enter', ' '].includes(event.key)) { event.preventDefault(); openDrawer(card.id || card.file); }
+  });
   if (card.archived) el.classList.add('archived');
   el.querySelector('.card-id').textContent = card.id || card.file;
   const prio = el.querySelector('.card-prio');
@@ -856,12 +863,15 @@ function drawerFocusable() {
     .filter((el) => !el.disabled && el.tabIndex !== -1 && !el.closest('[hidden]') && el.getClientRects().length);
 }
 
-function showDrawer() {
-  if (drawerEl.hidden) drawerReturnFocus = document.activeElement;
+function showDrawer(returnFocus) {
+  if (drawerEl.hidden) drawerReturnFocus = returnFocus;
   drawerBackdropEl.hidden = false;
   drawerEl.hidden = false;
   drawerBackground.forEach((el) => { el.inert = true; });
-  requestAnimationFrame(() => $('#drawer-close').focus());
+  const seq = drawerOpenSeq;
+  requestAnimationFrame(() => {
+    if (!drawerEl.hidden && seq === drawerOpenSeq) $('#drawer-close').focus();
+  });
 }
 
 function closeDrawer() {
@@ -873,9 +883,17 @@ function closeDrawer() {
   if (location.hash) {
     history.replaceState(null, '', location.pathname + location.search);
   }
-  const target = drawerReturnFocus;
+  const origin = drawerReturnFocus;
   drawerReturnFocus = null;
-  if (target?.isConnected) target.focus();
+  if (!origin) return;
+  // Live board updates replace card nodes, including while the drawer is open.
+  // Restore the logical card when its original DOM node no longer exists.
+  const row = origin.project === currentProject && origin.cardId
+    ? [...boardEl.querySelectorAll('[data-id]')].find((el) => el.dataset.id === origin.cardId)
+    : null;
+  const target = origin.element?.isConnected && origin.element !== document.body
+    ? origin.element : row?.querySelector('.list-card') || row || $('#filter');
+  target.focus();
 }
 
 function setDrawerTab(tab) {
@@ -945,6 +963,14 @@ setInterval(() => renderBuildProgress(), 15_000);
 
 async function openDrawer(id) {
   const seq = ++drawerOpenSeq;
+  // Capture before the fetch: a board refresh can detach the opener while
+  // awaiting card data. Child navigation keeps the original background opener.
+  const element = document.activeElement;
+  const returnFocus = drawerEl.hidden ? {
+    element,
+    project: currentProject,
+    cardId: element?.closest('.card, .subtask-row, .list-row')?.dataset.id,
+  } : drawerReturnFocus;
   const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
   // Bail before touching the DOM if the modal was closed (Escape/backdrop/close)
   // or another card was opened while this fetch was in flight — otherwise
@@ -1120,7 +1146,7 @@ async function openDrawer(id) {
   if (q) { $('#question-text').textContent = q; $('#answer-input').value = ''; }
   $('#agent-prompt').value = '';
   syncPromptComposer();
-  showDrawer();
+  showDrawer(returnFocus);
   if (!card.parseError) refreshCardSummaries(id, seq);
   else { $('#description-tldr').textContent = 'Fix the frontmatter error in the card file.'; $('#description-tldr').classList.remove('is-pending'); }
 }

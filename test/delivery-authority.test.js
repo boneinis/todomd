@@ -124,7 +124,9 @@ test('approved jobs run with derived references and require journaled closure be
     const ref = executionRef(f.store.read(id)); assert.match(ref.backend, /^local-job-[a-f0-9]{64}$/);
     const dispatch = f.command(); assert.equal((await s.dispatch(id, dispatch)).ok, true);
     assert.equal((await s.dispatch(id, dispatch)).replayed, true);
-    await until(() => fs.existsSync(f.marker)); assert.equal(fs.readFileSync(f.marker, 'utf8'), id);
+    // Creation precedes write completion; under load an existing file can still be empty.
+    await until(() => fs.existsSync(f.marker) && fs.readFileSync(f.marker, 'utf8') === id);
+    assert.equal(fs.readFileSync(f.marker, 'utf8'), id);
     const revision = f.store.read(id).revision;
     const observation = s.reconcile(id, f.command()); f.who = null;
     assert.equal((await observation).code, 'not_authorized');
