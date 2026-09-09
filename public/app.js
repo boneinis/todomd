@@ -609,7 +609,7 @@ function renderCard(card, color, i, nestedIds) {
   // label pills — a needs-human flag replaces them with a warning pill
   const chips = el.querySelector('.card-chips');
   if (card.needs_human_reason) {
-    chips.innerHTML = `<span class="chip chip-warn">⚠ ${esc(String(card.needs_human_reason))}</span>`;
+    chips.innerHTML = `<span class="chip chip-warn">⚠ ${esc(String(card.needs_human_reason === 'ci_blocked' && card.ci_remote?.reason || card.needs_human_reason))}</span>`;
   } else {
     const pills = [];
     if (card.type) pills.push(`<span class="chip chip-type">${esc(String(card.type))}</span>`);
@@ -1124,6 +1124,15 @@ async function openDrawer(id) {
   $('#drawer-merge-target-field').hidden = !unknownTarget;
   $('#drawer-merge-target').value = '';
   const hints = {
+    base_sync_conflict: 'The base advanced and conflicts with this candidate. Resolve and commit the merge in the preserved worktree, then Return to Build. No Build attempt was spent on this conflict.',
+    base_sync_dirty: 'The base advanced while this candidate has pending changes. Preserve and commit those changes, then Return to Build to refresh the base.',
+    ci_blocked: ({
+      approval_required: 'Review and approve this source snapshot, then retry CI on the same candidate.',
+      approval_stale: 'The source approval is stale. Review and approve the current snapshot, then retry CI.',
+      admission_contention: 'Remote capacity is occupied. Wait for admission, then retry CI on the same candidate.',
+      remote_state_unknown: 'Remote job state is unconfirmed. Reconcile the accepted job before submitting any new work.',
+    }[card.data.ci_remote?.reason] || 'Reconcile remote CI prerequisites and any accepted job, then retry the preserved candidate.') +
+      (card.data.ci_remote?.run_id ? ` Remote run: ${card.data.ci_remote.run_id}.` : ''),
     merge_conflict: 'Repair the merge conflict in the preserved candidate, then retry verification. Return to Build can request agent help.',
     merge_noop: 'The candidate did not land. Inspect the merge failure, then retry verification or return the preserved work to Build.',
     base_branch_moved: `Check out the recorded target branch ${target || ''}, then retry verification. Your candidate is preserved.`,

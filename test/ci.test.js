@@ -41,6 +41,7 @@ test('normalizeConfig fills the ci: defaults for a board that never sets the key
   assert.deepEqual(cfg.ci, {
     enabled: true,
     execution: 'local',
+    statusCommand: '', pollSeconds: 5,
     profile: 'quick',
     quick: 'npm run typecheck',
     full: 'npm run typecheck && npm test && npm run e2e',
@@ -53,7 +54,7 @@ test('normalizeConfig honors an explicit ci: block, including disabling it', () 
     ci: { enabled: false, profile: 'full', quick: 'npm run lint', full: 'npm run lint && npm test', timeout_seconds: 120 },
   });
   assert.deepEqual(cfg.ci, {
-    enabled: false, execution: 'local', profile: 'full', quick: 'npm run lint', full: 'npm run lint && npm test', timeoutSeconds: 120,
+    enabled: false, execution: 'local', statusCommand: '', pollSeconds: 5, profile: 'full', quick: 'npm run lint', full: 'npm run lint && npm test', timeoutSeconds: 120,
   });
 });
 

@@ -265,6 +265,7 @@ for (const r of results) {
 console.log(c.dim(`\n  ${(total / 1000).toFixed(1)}s total`));
 if (failed) {
   console.log(c.red('\nCI failed.') + c.dim(' To push anyway: git push --no-verify\n'));
-  process.exit(1);
-}
-console.log(c.green('\nCI passed.\n'));
+  // Let piped stdout drain; immediate exit can truncate the failing test's
+  // diagnostics after printing thousands of earlier passing TAP assertions.
+  process.exitCode = 1;
+} else console.log(c.green('\nCI passed.\n'));
