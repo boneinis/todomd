@@ -167,6 +167,21 @@ test('untrusted request fields and foreign authority cannot select commands or a
     assert.equal(fs.existsSync(f.marker), false);
   } finally { await f.close(); }
 });
+test('concurrent recovery and implementation credentials keep distinct start authority', { skip: !supported }, async () => {
+  const f = await fixture();
+  const operator = createRemoteDeliveryBackend(f.pins, { ...f.config, credential: () => 'fixture-recovery-only' });
+  f.replace(createRemoteDeliveryWorker(f.root, { ...f.options,
+    authenticate: token => [f.secret, 'fixture-recovery-only'].includes(token),
+    authorizeStart: async (ref, token) => { assert.equal(ref.backend, f.identity.backend); await pause(25); return token === f.secret; } }));
+  const other = { ...f.ref, run_id: 'operator-must-not-start', lease_id: 'operator-lease' };
+  try {
+    const requests = await Promise.allSettled([f.client.start(f.ref), operator.start(other)]);
+    assert.equal(requests[0].status, 'fulfilled'); assert.equal(requests[1].status, 'rejected');
+    await until(() => fs.existsSync(f.marker));
+    await operator.close(f.ref); assert.equal((await operator.inspect(f.ref)).closed, true);
+    assert.equal(fs.readFileSync(f.marker, 'utf8'), 'accepted\n');
+  } finally { await f.close(); }
+});
 test('client rejects redirects and malformed, mismatched or oversized closure evidence', { skip: !supported }, async () => {
   const f = await fixture(); let response;
   f.replace((_req, res) => { res.writeHead(response.status || 200, { 'Content-Type': 'application/json', ...(response.headers || {}) }); res.end(response.body); });

@@ -50,8 +50,10 @@ within its original namespace.
 `authenticate(credential)` is a synchronous host capability that must enforce
 credential scope, expiry, and revocation. Use strong dedicated worker credentials;
 board/viewer/delivery-owner tokens are not automatically worker credentials.
-`authorizeStart(ref)` must freshly establish source, assignment, candidate, and
-writer-fencing policy for that exact reference. Missing policy denies starts.
+`authorizeStart(ref, credential)` must freshly establish source, assignment,
+candidate, and writer-fencing policy for that exact reference and request-bound
+credential. Do not keep a shared mutable current principal. Credentials permitted
+to recover work must not inherit implementation-start permission. Missing policy denies starts.
 The worker rechecks authentication and authority around asynchronous policy and
 backend operations. An authentication function returning a Promise is rejected.
 

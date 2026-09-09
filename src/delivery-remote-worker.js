@@ -52,7 +52,7 @@ export function createRemoteDeliveryWorker(directory, { enabled = false, expecte
       const backend = createLocalDeliveryBackend(path.join(root, 'executions'), { ...localOptions, enabled: true, name: authority.backend,
         authorizeStart: async value => {
           verify(); if (!configured || !authenticated()) return false;
-          const allowed = await authorizeStart?.(value);
+          const allowed = await authorizeStart?.(value, credential);
           verify(); return allowed === true && authenticated();
         },
         resolveJob: value => configured && { ...configured, args: configured.args.map(arg => {
