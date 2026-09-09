@@ -133,6 +133,24 @@ async function packSmoke() {
         } finally { await backend.close(ref); }
         const result = await backend.inspect(ref);
         if (result.state !== 'stopped' || result.closed !== true) throw new Error('Packaged local execution did not close');
+        const { default: http } = await import('node:http');
+        const { provisionRemoteDeliveryWorker } = await import(pathToFileURL(path.join(process.argv[1], 'src/delivery-remote-state.js')));
+        const { createRemoteDeliveryWorker } = await import(pathToFileURL(path.join(process.argv[1], 'src/delivery-remote-worker.js')));
+        const { createRemoteDeliveryBackend } = await import(pathToFileURL(path.join(process.argv[1], 'src/delivery-remote-backend.js')));
+        const root = path.join(process.argv[2], 'remote-worker');
+        const job = { command: process.execPath, args: ['-e', 'process.exit(0)'], cwd: process.argv[3], containment: 'local_process_group' };
+        const identity = provisionRemoteDeliveryWorker(root, { projectId: 'c'.repeat(64), job });
+        const host = http.createServer(createRemoteDeliveryWorker(root, { enabled: true, expectedAuthority: identity.authority_id, job,
+          authenticate: token => token === 'pack-fixture-only', authorizeStart: () => true }));
+        await new Promise(resolve => host.listen(0, '127.0.0.1', resolve));
+        try {
+          const client = createRemoteDeliveryBackend(path.join(process.argv[2], 'remote-pins'), { enabled: true,
+            name: identity.backend, authorityId: identity.authority_id, projectId: identity.project_id,
+            endpoint: 'http://127.0.0.1:' + host.address().port + '/v1/delivery/execution', credential: () => 'pack-fixture-only' });
+          const remoteRef = { ...ref, backend: identity.backend };
+          await client.close(remoteRef);
+          if ((await client.start(remoteRef)).closed !== true || (await client.inspect(remoteRef)).closed !== true) throw new Error('Packaged remote authority failed its delayed-start barrier');
+        } finally { await new Promise(resolve => { host.close(resolve); host.closeAllConnections(); }); }
       `, path.join(proj, 'node_modules/todomd'), path.join(work, 'execution'), repo], { env: { ...process.env, TODOMD_HOME: home } });
     }
 

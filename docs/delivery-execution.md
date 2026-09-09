@@ -5,7 +5,9 @@ to trusted execution backends. It records dispatch before calling a backend,
 reconciles uncertain acknowledgements without resubmitting, and releases only
 after a committed observation confirms the exact execution is permanently
 closed. It is disabled by default. A concrete [local process backend](delivery-local-backend.md)
-now implements this contract on macOS/Linux. The [scoped recovery transport](delivery-access.md)
+now implements this contract on macOS/Linux. The opt-in
+[remote worker/client](delivery-remote-backend.md) implements the same contract
+over authenticated HTTP to a separately provisioned POSIX worker. The [scoped recovery transport](delivery-access.md)
 can inspect and close existing registered executions. No server, CLI, or migration
 command enables new delivery launches. Existing boards retain their runtime.
 
@@ -108,7 +110,7 @@ The local backend, its guardian for orphaned local writers, and the
 [shared admission gate](delivery-admission.md) are implemented, including exact
 dead-metadata-transaction recovery. The [trusted role/job adapter](delivery-authority.md)
 now implements project-scoped role grants and registered local-job selection.
-Remote backends, provider credential/configuration distribution, source fencing shared
+Production remote role/job registration, provider credential/configuration distribution, source fencing shared
 with every writer, recovery after loss of all local controllers, remote orphan
 reconciliation, and revision-checked task projection/migration remain required.
 Bound local launch owners now support [gate recovery](delivery-admission.md)
