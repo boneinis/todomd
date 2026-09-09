@@ -1,6 +1,6 @@
 # To-do MD delivery workflow update plan
 
-Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, shared admission core, trusted role/job adapter, scoped credentials/job policy, HTTP recovery, and bound local/remote launch recovery implemented; launch activation off
+Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, shared admission core, trusted role/job adapter, scoped credentials/job policy, HTTP recovery, bound local/remote launch recovery, and authenticated task preparation implemented; launch activation off
 
 Date: September 8, 2026  
 Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)  
@@ -39,6 +39,13 @@ identity and a non-secret credential selector to the project, with owner-scoped
 admission, HTTP recovery, and dead-launcher reconciliation against the original
 worker. Production provider setup and existing fleet-controller integration
 remain separate.
+The [workflow session](delivery-workflow-session.md) now connects authenticated
+Backlog initialization, assignments, readiness, blockers, and preserved-candidate
+review handoffs to the existing local execution service. End-to-end tests prepare
+a task without direct store writes, run a supervised local job, and replace its
+owner only after confirmed closure. Production preparation/launch routes remain
+disabled. Normal repository CI runs on its executing machine and does not depend
+on a separate CI-team service.
 Remaining external-writer admission, recovery after loss of
 all local controllers, provider credential/configuration distribution, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime
