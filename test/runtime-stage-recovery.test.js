@@ -19,14 +19,14 @@ function setup() {
   const wt = path.join(repo, '.todomd/worktrees/task-0001');
   writeCard(repo, 'task-0001', { status: 'Planned' });
   git(repo, ['add', '-A']); git(repo, ['commit', '-qm', 'seed card']);
-  return { repo, dir, project, wt };
+  return { repo, dir, project, wt, base: git(repo, ['branch', '--show-current']) };
 }
 async function candidate(f, extra = {}) {
   git(f.repo, ['worktree', 'add', '-b', 'todomd/task-0001', f.wt]);
   fs.writeFileSync(path.join(f.wt, 'candidate.txt'), 'candidate\n');
   git(f.wt, ['add', 'candidate.txt']); git(f.wt, ['commit', '-qm', 'candidate']);
   await patchFrontmatter(f.repo, 'task-0001', { status: 'Needs Human', needs_human_reason: 'ci_failed',
-    recovery_stage: 'CI', worktree: 'todomd/task-0001', base_branch: 'main',
+    recovery_stage: 'CI', worktree: 'todomd/task-0001', base_branch: f.base,
     verification: { attempts: 2, max_attempts: 3, last_verdict: '' }, ...extra });
   return git(f.wt, ['rev-parse', 'HEAD']);
 }
@@ -72,7 +72,7 @@ test('board-only base updates do not churn source or overwrite dirty candidate w
   git(f.repo, ['add', '.todomd']); git(f.repo, ['commit', '-qm', 'board bookkeeping']);
   const head = git(f.wt, ['rev-parse', 'HEAD']);
   try {
-    assert.deepEqual(await refreshWorktreeBase(f.wt, 'todomd/task-0001', 'main'), { ok: true, changed: false });
+    assert.deepEqual(await refreshWorktreeBase(f.wt, 'todomd/task-0001', f.base), { ok: true, changed: false });
     assert.equal(git(f.wt, ['rev-parse', 'HEAD']), head);
   } finally { await cleanup(f); }
 });
