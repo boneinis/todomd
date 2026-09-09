@@ -157,6 +157,9 @@ async function packSmoke() {
     const preview = JSON.parse(await run(bin, ['delivery-preview', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
     if (preview.read_only !== true || preview.execution_enabled !== false) throw new Error('installed CLI lost the read-only delivery preview');
 
+    const writers = JSON.parse(await run(bin, ['delivery-writers', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
+    if (writers.read_only !== true || writers.execution_enabled !== false || writers.writers_fenced !== false || writers.blocked !== false) throw new Error('Packaged writer preflight must be read-only and never authorize execution');
+
     const admission = JSON.parse(await run(bin, ['delivery-admission', repo, '--json'], { env: { ...process.env, TODOMD_HOME: home } }));
     if (admission.read_only !== true || admission.enabled !== false || admission.owner !== null) throw new Error('installed CLI activated an ordinary project admission gate');
 
