@@ -808,3 +808,57 @@ test('UI smoke: delivery ownership hold is visible to full and viewer readers an
   await until(async () => await page.eval(`drawerCard === 'task-0001' && !document.getElementById('drawer').hidden`));
   assert.equal(await page.eval(`document.getElementById('drawer-delivery-hold').hidden && !document.getElementById('drawer-archive').disabled`), true);
 });
+
+test('UI: workspace controls fit narrow screens and list groups never clip their cards', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null, { timeout: BUDGET.stage });
+  try {
+    for (const theme of ['dark', 'light']) {
+      await page.eval(`document.body.classList.toggle('light', ${theme === 'light'})`);
+      for (const width of [320, 390, 768, 1280]) {
+        await page.setViewport(width, 844);
+        const overflow = await page.eval(`(() => {
+          const controls = [...document.querySelectorAll('.topbar button, .topbar select, .topbar input')];
+          return controls.filter(el => { const r = el.getBoundingClientRect(); return r.width > 0 && (r.left < -1 || r.right > innerWidth + 1); }).map(el => el.id);
+        })()`);
+        assert.deepEqual(overflow, [], `${theme} toolbar fits ${width}px without losing controls`);
+        assert.equal(await page.eval(`document.body.scrollWidth <= innerWidth`), true, 'only the board lanes scroll horizontally');
+      }
+    }
+    await page.eval(`document.getElementById('layout-toggle').click()`);
+    for (const width of [390, 1280]) {
+      await page.setViewport(width, 844);
+      assert.equal(await page.eval(`document.querySelectorAll('.list-row').length > 0`), true);
+      assert.equal(await page.eval(`[...document.querySelectorAll('.list-group')].every(el => el.scrollHeight <= el.clientHeight + 1)`), true,
+        `list groups show all their rows at ${width}px instead of shrinking and clipping`);
+    }
+  } finally {
+    await page.eval(`document.body.classList.remove('light'); if (layout === 'list') document.getElementById('layout-toggle').click()`);
+    await page.setViewport(1280, 900);
+  }
+});
+
+test('UI: cards open from the keyboard and long epic content cannot widen a lane', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelector('.card[data-id="task-0001"]') !== null`)), { timeout: BUDGET.stage });
+  await page.eval(`(() => {
+    const card = document.querySelector('.card[data-id="task-0001"]'); card.focus();
+    card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  })()`);
+  await until(async () => await page.eval(`!document.getElementById('drawer').hidden`), { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`document.getElementById('drawer-id').textContent`), 'task-0001');
+  await page.eval(`closeDrawer()`);
+  assert.equal(await page.eval(`document.activeElement.dataset.id`), 'task-0001');
+  const widths = await page.eval(`(() => {
+    const card = document.querySelector('.card[data-id="task-0001"]');
+    const list = document.createElement('ul'); list.className = 'card-subtasks';
+    const row = document.createElement('li'); row.className = 'subtask-row';
+    const title = document.createElement('span'); title.className = 'subtask-title'; title.textContent = 'Long dependency title '.repeat(40);
+    const dep = document.createElement('span'); dep.className = 'subtask-dep'; dep.textContent = 'waiting-on-a-very-long-reference'.repeat(20);
+    row.append(title, dep); list.append(row); card.append(list);
+    return [...document.querySelectorAll('.column')].map(el => Math.round(el.getBoundingClientRect().width));
+  })()`);
+  assert.equal(new Set(widths).size, 1, 'expanded epics have the same lane width as other cards');
+});

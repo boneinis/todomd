@@ -310,6 +310,7 @@ function applyViewToggle() {
   const btn = $('#view-toggle');
   btn.textContent = viewMode === 'mine' ? `mine: ${myName}` : 'team';
   btn.classList.toggle('active', viewMode === 'mine');
+  btn.setAttribute('aria-pressed', String(viewMode === 'mine'));
 }
 function promptName(initial) {
   const n = prompt("Your name for 'my work' — match the assignee on your cards:", initial || '');
@@ -332,6 +333,7 @@ $('#view-toggle').addEventListener('click', (e) => {
 /* ── archived view ── */
 function applyArchivedToggle() {
   $('#archived-toggle').classList.toggle('active', showArchived);
+  $('#archived-toggle').setAttribute('aria-pressed', String(showArchived));
   document.body.classList.toggle('archived-view', showArchived);
 }
 $('#archived-toggle').addEventListener('click', () => {
@@ -589,6 +591,11 @@ function renderCard(card, color, i, nestedIds) {
   el.style.setProperty('--col', color);
   el.style.setProperty('--i', i);
   el.dataset.id = card.id;
+  el.tabIndex = 0;
+  el.setAttribute('aria-label', `Open ${card.title || card.id || card.file}`);
+  el.addEventListener('keydown', (event) => {
+    if (event.target === el && ['Enter', ' '].includes(event.key)) { event.preventDefault(); openDrawer(card.id || card.file); }
+  });
   if (card.archived) el.classList.add('archived');
   el.querySelector('.card-id').textContent = card.id || card.file;
   const prio = el.querySelector('.card-prio');
