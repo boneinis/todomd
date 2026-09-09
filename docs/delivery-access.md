@@ -38,8 +38,10 @@ lasts between one second and seven days. Reissue at expiry; old credentials are
 never silently renewed. If an issue response is lost, inspect status and revoke
 the newly issued ID before issuing a replacement.
 
-`--operator` is accepted only for a human identity. It grants recovery authority,
-not implementation dispatch or renewal. Other permissions still derive from the
+`--operator` is accepted only for a human identity. It grants recovery authority and, when the internal
+[workflow preparation adapter](delivery-workflow-session.md) is explicitly
+configured with trusted fencing evidence, task preparation. It does not grant
+implementation dispatch or renewal. Other permissions still derive from the
 task's durable owner assignments. The primary, mobile, viewer, and Board Agent
 tokens are not delivery identities and cannot substitute for this credential.
 

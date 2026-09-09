@@ -3,10 +3,11 @@ import { createDeliveryAuthority } from './delivery-authority.js';
 import { createDeliveryStore } from './delivery-store.js';
 import { deliveryStoreDirectory } from './delivery-paths.js';
 import { executionRef } from './delivery-execution-state.js';
+import { createDeliveryWorkflow } from './delivery-workflow.js';
 
 // Capture the credential for THIS request. Authentication and job policy are
 // fresh private reads at every authority check, including asynchronous returns.
-export function createDeliverySession(repo, { credential, enabled = false, jobs = {}, remoteJobs = {}, remoteCredential, remoteTimeoutMs, resolveAdmission,
+export function createDeliverySession(repo, { credential, enabled = false, jobs = {}, remoteJobs = {}, remoteCredential, remoteTimeoutMs, resolveAdmission, resolveWorkflow,
   now = Date.now, localOptions = {} } = {}) {
   const access = createDeliveryAccess(repo, { enabled, now });
   const service = createDeliveryAuthority(repo, { enabled, jobs, remoteJobs, remoteCredential, remoteTimeoutMs, now, localOptions,
@@ -17,7 +18,9 @@ export function createDeliverySession(repo, { credential, enabled = false, jobs 
       return { ...facts, job_approved: facts.job_approved === true && access.jobApproved(ref.backend) };
     },
   });
-  return Object.freeze({ ...service,
+  const workflow = createDeliveryWorkflow(repo, { enabled, now, resolveWorkflow,
+    authenticate: () => access.authenticate(credential) });
+  return Object.freeze({ ...service, ...workflow,
     read(id) {
       const p = access.authenticate(credential);
       if (!p) return { ok: false, code: 'not_authorized' };
