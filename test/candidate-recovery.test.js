@@ -262,7 +262,8 @@ test('repair admission and cancel preserve candidate ancestry and running fleet 
     await until(() => fs.existsSync(path.join(dir, 'descendant')), { timeout: BUDGET.chain });
     assert.equal(readCard(repo, 'task-0001').data.verification.attempts, 2, 'real failure admitted bounded repair');
     assert.equal(git(wt, ['merge-base', '--is-ancestor', head, 'HEAD']), '');
-    assert.equal(git(wt, ['rev-parse', 'HEAD']), head, 'admission performed no base sync');
+    assert.notEqual(git(wt, ['rev-parse', 'HEAD']), head, 'repair admission refreshed the advanced base');
+    assert.equal(fs.readFileSync(path.join(wt, 'local-bookkeeping.txt'), 'utf8'), 'main-only\n');
     assert.equal(fs.readFileSync(journal, 'utf8'), journalBytes);
     const leader = Number(fs.readFileSync(path.join(dir, 'leader')));
     const descendant = Number(fs.readFileSync(path.join(dir, 'descendant')));
@@ -311,7 +312,7 @@ for (const damaged of ['missing', 'wrong-branch']) {
     if (damaged === 'missing') git(repo, ['worktree', 'remove', wt]);
     else git(wt, ['checkout', '-b', 'operator-inspection']);
     // Model a persisted Queue recovery at boot, not a user-requested Restart.
-    await patchFrontmatter(repo, 'task-0001', { status: 'Queue' });
+    await patchFrontmatter(repo, 'task-0001', { status: 'Queue', recovery_stage: '' });
     try {
       pipeline.kickQueue(p);
       await until(() => parked(repo, p), { timeout: BUDGET.stage });
