@@ -1,6 +1,6 @@
 # To-do MD delivery workflow update plan
 
-Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, shared admission core, trusted role/job adapter, scoped credentials/job policy, HTTP recovery, and bound local launch recovery implemented; launch activation off
+Status: approved; foundation, ownership, compatibility guard, coordinator, local backend with orphan guardian, shared admission core, trusted role/job adapter, scoped credentials/job policy, HTTP recovery, and bound local/remote launch recovery implemented; launch activation off
 
 Date: September 8, 2026  
 Baseline: `ce1d1a0` (includes runtime recovery corrections in PR #17)  
@@ -34,8 +34,11 @@ interactive, and remote boundaries and vetoes delivery admission when one is
 present. A clear scan is not proof of quiescence and never enables execution.
 The opt-in [remote worker/client protocol](delivery-remote-backend.md) now pins
 worker identity and reconciles supervised remote process closure, including
-worker restart and delayed submissions. Production role/provider registration
-and existing fleet-controller integration remain separate.
+worker restart and delayed submissions. Trusted remote profiles now bind worker
+identity and a non-secret credential selector to the project, with owner-scoped
+admission, HTTP recovery, and dead-launcher reconciliation against the original
+worker. Production provider setup and existing fleet-controller integration
+remain separate.
 Remaining external-writer admission, recovery after loss of
 all local controllers, provider credential/configuration distribution, cycles, the new board view, evidence adapters, migration, and
 pilot activation remain future work. Phase 3 is not complete until its runtime

@@ -6,10 +6,10 @@ import { executionRef } from './delivery-execution-state.js';
 
 // Capture the credential for THIS request. Authentication and job policy are
 // fresh private reads at every authority check, including asynchronous returns.
-export function createDeliverySession(repo, { credential, enabled = false, jobs = {}, resolveAdmission,
+export function createDeliverySession(repo, { credential, enabled = false, jobs = {}, remoteJobs = {}, remoteCredential, remoteTimeoutMs, resolveAdmission,
   now = Date.now, localOptions = {} } = {}) {
   const access = createDeliveryAccess(repo, { enabled, now });
-  const service = createDeliveryAuthority(repo, { enabled, jobs, now, localOptions,
+  const service = createDeliveryAuthority(repo, { enabled, jobs, remoteJobs, remoteCredential, remoteTimeoutMs, now, localOptions,
     authenticate: () => access.authenticate(credential),
     resolveAdmission: (id, ref) => {
       const facts = resolveAdmission?.(id, ref);
