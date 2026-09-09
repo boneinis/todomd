@@ -863,12 +863,15 @@ function drawerFocusable() {
     .filter((el) => !el.disabled && el.tabIndex !== -1 && !el.closest('[hidden]') && el.getClientRects().length);
 }
 
-function showDrawer() {
-  if (drawerEl.hidden) drawerReturnFocus = document.activeElement;
+function showDrawer(returnFocus) {
+  if (drawerEl.hidden) drawerReturnFocus = returnFocus;
   drawerBackdropEl.hidden = false;
   drawerEl.hidden = false;
   drawerBackground.forEach((el) => { el.inert = true; });
-  requestAnimationFrame(() => $('#drawer-close').focus());
+  const seq = drawerOpenSeq;
+  requestAnimationFrame(() => {
+    if (!drawerEl.hidden && seq === drawerOpenSeq) $('#drawer-close').focus();
+  });
 }
 
 function closeDrawer() {
@@ -880,9 +883,17 @@ function closeDrawer() {
   if (location.hash) {
     history.replaceState(null, '', location.pathname + location.search);
   }
-  const target = drawerReturnFocus;
+  const origin = drawerReturnFocus;
   drawerReturnFocus = null;
-  if (target?.isConnected) target.focus();
+  if (!origin) return;
+  // Live board updates replace card nodes, including while the drawer is open.
+  // Restore the logical card when its original DOM node no longer exists.
+  const row = origin.project === currentProject && origin.cardId
+    ? [...boardEl.querySelectorAll('[data-id]')].find((el) => el.dataset.id === origin.cardId)
+    : null;
+  const target = origin.element?.isConnected && origin.element !== document.body
+    ? origin.element : row?.querySelector('.list-card') || row || $('#filter');
+  target.focus();
 }
 
 function setDrawerTab(tab) {
@@ -952,6 +963,14 @@ setInterval(() => renderBuildProgress(), 15_000);
 
 async function openDrawer(id) {
   const seq = ++drawerOpenSeq;
+  // Capture before the fetch: a board refresh can detach the opener while
+  // awaiting card data. Child navigation keeps the original background opener.
+  const element = document.activeElement;
+  const returnFocus = drawerEl.hidden ? {
+    element,
+    project: currentProject,
+    cardId: element?.closest('.card, .subtask-row, .list-row')?.dataset.id,
+  } : drawerReturnFocus;
   const card = normalizeCardLists(await api(`cards/${id}?project=${encodeURIComponent(currentProject)}`));
   // Bail before touching the DOM if the modal was closed (Escape/backdrop/close)
   // or another card was opened while this fetch was in flight — otherwise
@@ -1127,7 +1146,7 @@ async function openDrawer(id) {
   if (q) { $('#question-text').textContent = q; $('#answer-input').value = ''; }
   $('#agent-prompt').value = '';
   syncPromptComposer();
-  showDrawer();
+  showDrawer(returnFocus);
   if (!card.parseError) refreshCardSummaries(id, seq);
   else { $('#description-tldr').textContent = 'Fix the frontmatter error in the card file.'; $('#description-tldr').classList.remove('is-pending'); }
 }

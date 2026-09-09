@@ -12,7 +12,7 @@ preview with planning, epic, dependency, recovery, and completed-card states.
 | Expanded epic rows can force a lane wider than every other column. | Give lanes an explicit width and zero minimum intrinsic width; wrap subtask titles and dependencies within the card. |
 | Small labels and many competing colors make task titles harder to scan. | Increase title and summary readability, strengthen spacing, and use neutral label chips while retaining semantic priority, complexity, and warning colors. Keep full summaries available. |
 | List view lacks a clear container and row hierarchy. | Group rows into full-width sections, preserve child indentation, and allow the list to scroll vertically without shrinking/clipping groups. |
-| Cards require a pointer to open. | Make card surfaces keyboard-focusable; Enter/Space opens details, with existing drawer focus restoration. Nested controls retain their own behavior. |
+| Cards require a pointer to open. | Make card surfaces keyboard-focusable; Enter/Space opens details. Restore focus to the same card or list row even if a live refresh replaces it during loading or while details are open. Nested controls retain their own behavior. |
 | Phone drawer metadata squeezes summary copy into a narrow column. | Stack summary metadata, preserve full-width copy, and keep long drawer content scrollable with an accessible close control. |
 
 ## Verification

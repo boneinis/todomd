@@ -846,11 +846,23 @@ test('UI: cards open from the keyboard and long epic content cannot widen a lane
   await page.eval(`(() => {
     const card = document.querySelector('.card[data-id="task-0001"]'); card.focus();
     card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    // A live update can replace the focused card before its fetch completes.
+    renderBoard();
   })()`);
   await until(async () => await page.eval(`!document.getElementById('drawer').hidden`), { timeout: BUDGET.quick });
   assert.equal(await page.eval(`document.getElementById('drawer-id').textContent`), 'task-0001');
-  await page.eval(`closeDrawer()`);
+  await page.eval(`renderBoard(); closeDrawer()`);
   assert.equal(await page.eval(`document.activeElement.dataset.id`), 'task-0001');
+  // A queued drawer animation must not steal focus back after closing.
+  await page.eval(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  assert.equal(await page.eval(`document.activeElement.dataset.id`), 'task-0001');
+  await page.eval(`document.getElementById('layout-toggle').click();
+    const opener = document.querySelector('.list-row[data-id="task-0001"] .list-card');
+    opener.focus(); opener.click(); renderBoard();`);
+  await until(async () => await page.eval(`!document.getElementById('drawer').hidden`), { timeout: BUDGET.quick });
+  await page.eval(`renderBoard(); closeDrawer()`);
+  assert.equal(await page.eval(`document.activeElement.matches('.list-card') && document.activeElement.closest('.list-row').dataset.id`), 'task-0001');
+  await page.eval(`document.getElementById('layout-toggle').click()`);
   const widths = await page.eval(`(() => {
     const card = document.querySelector('.card[data-id="task-0001"]');
     const list = document.createElement('ul'); list.className = 'card-subtasks';
