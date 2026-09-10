@@ -8,7 +8,7 @@ import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
 import { withFileLock } from './lockfile.js';
 import { resourcesConfig } from './resources.js';
-import { legacyMutationGuard } from './delivery-runtime.js';
+import { legacyMutationGuard, projectDeliveryTask } from './delivery-runtime.js';
 import { withExistingProjectAdmission, withoutAdmissionContext } from './delivery-admission.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'];
@@ -195,7 +195,13 @@ export function setStageRouting(repoPath, col, updates) {
     if ('agent' in updates) clean.agent = String(updates.agent || '').replace(/[^\w-]/g, '');
     if ('model' in updates) clean.model = String(updates.model || '').replace(/[^\w.-]/g, '');
     if ('effort' in updates) clean.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(updates.effort || '')) ? String(updates.effort) : '';
-    if ('workflow' in updates) clean.workflow = String(updates.workflow || '') === 'ultra_code' ? 'ultra_code' : '';
+    if ('workflow' in updates) {
+      const w = String(updates.workflow || '');
+      clean.workflow = ['ultra_code', 'teamwork'].includes(w) ? w : '';
+    }
+    if ('teamwork' in updates) {
+      clean.teamwork = updates.teamwork === true || updates.teamwork === 'true';
+    }
     // the nested difficulty map is replaced as a whole block, never merged
     const routeMap = 'route_by_complexity' in updates ? cleanRouteMap(updates.route_by_complexity) : undefined;
     if (!Object.keys(clean).length && routeMap === undefined) return { ok: true, unchanged: true };
@@ -478,7 +484,7 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
         // Keep archived dependencies available until reference resolution below.
         cards.push({
           file,
-          ...parsed.data,
+          ...projectDeliveryTask(repoPath, parsed.data),
           ...listFields(parsed.data),
           tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data),
           criteria: criteriaProgress(parsed.content),
@@ -784,7 +790,7 @@ export function patchFrontmatter(repoPath, id, updates) {
     let fm = m[1];
     for (const [key, value] of Object.entries(updates)) {
       const line = `${key}: ${flowYaml(value)}`.trimEnd();
-      const re = new RegExp(`^${key}:.*$`, 'm');
+      const re = new RegExp(`^${key}:(?:[ \\t].*)?(?:\\r?\\n[ \\t]+.*)*$`, 'm');
       // function replacer so '$&', '$1', etc. in a value aren't expanded
       fm = re.test(fm) ? fm.replace(re, () => line) : `${fm}\n${line}`;
     }
@@ -857,7 +863,7 @@ dependencies: [${deps.join(', ')}]${parent ? `\nparent: ${parent}` : ''}
 created_date: ${new Date().toISOString().slice(0, 10)}
 source: ${fmScalar(fields.source, 'ui')}
 assignee:${fields.assignee ? ' ' + String(fields.assignee).replace(/[^\w.@ -]/g, '').trim() : ''}
-agent:${['claude', 'codex', 'gemini', 'kimi'].includes(fields.agent) ? ' ' + fields.agent : ''}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? `\neffort: ${fields.effort}` : ''}${fields.workflow === 'ultra_code' ? '\nworkflow: ultra_code' : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
+agent:${['claude', 'codex', 'gemini', 'kimi'].includes(fields.agent) ? ' ' + fields.agent : ''}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? `\neffort: ${fields.effort}` : ''}${['ultra_code', 'teamwork'].includes(fields.workflow) ? `\nworkflow: ${fields.workflow}` : ''}${fields.teamwork ? '\nteamwork: true' : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
 build_profile: ${['long', 'split_required'].includes(fields.build_profile) ? fields.build_profile : 'standard'}
 session_id:
 worktree:

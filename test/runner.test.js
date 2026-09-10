@@ -299,6 +299,42 @@ test('Gemini Verify passes a private schema and retains a structured diagnostic'
   }
 });
 
+test('Gemini with teamwork omits --disable-slash-commands and prefixes /teamwork-preview', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  const dir = tmp('gemini-teamwork');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+  const result = await runStage({
+    vendor: 'gemini', stage: 'Plan', cwd: dir, prompt: 'plan this epic',
+    teamwork: true,
+  }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_ARGV_LOG;
+
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.equal(argv.includes('--disable-slash-commands'), false, 'teamwork allows slash command expansion');
+  const sentPrompt = argv[argv.indexOf('-p') + 1];
+  assert.ok(sentPrompt.startsWith('/teamwork-preview plan this epic'), 'prompt is prefixed with /teamwork-preview');
+  assert.equal(result.diagnostic.teamwork, true);
+});
+
+test('Gemini with workflow: teamwork activates teamwork automatically', async () => {
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
+  const dir = tmp('gemini-workflow-teamwork');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+  const result = await runStage({
+    vendor: 'gemini', stage: 'Build', cwd: dir, prompt: 'build feature',
+    workflow: 'teamwork',
+  }).done;
+  delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_ARGV_LOG;
+
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.equal(argv.includes('--disable-slash-commands'), false);
+  const sentPrompt = argv[argv.indexOf('-p') + 1];
+  assert.ok(sentPrompt.startsWith('/teamwork-preview build feature'));
+  assert.equal(result.diagnostic.teamwork, true);
+});
+
 test('Gemini Verify preserves unsuccessful exit, stderr, and final message', async () => {
   process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI;
   process.env.FAKE_GEMINI_NO_VERDICT = '1';

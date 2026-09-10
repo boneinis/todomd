@@ -62,3 +62,18 @@ export function legacyMutationGuard(repoPath, id) {
   return status.legacy_execution_allowed ? null : { ok: false, code: status.code,
     error: `${status.message} ${status.next_action}`, delivery_runtime: status };
 }
+
+// Markdown remains the authored source. Display the current canonical task
+// without rewriting that source or invalidating its execution binding.
+export function projectDeliveryTask(repoPath, task) {
+  if (!task?.id) return task;
+  try {
+    const record = createDeliveryStore(deliveryStoreDirectory(repoPath)).read(task.id);
+    if (!record) return task;
+    const { blocker, ...source } = task;
+    return { ...source, ...record.task };
+  } catch {
+    // The runtime status separately exposes the reconciliation hold.
+    return task;
+  }
+}

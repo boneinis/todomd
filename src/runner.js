@@ -84,10 +84,11 @@ export function describeDeniedActions(raw) {
 // zero-dollar subscription run is never mistaken for a zero-usage run.
 export function runStage(opts) {
   const vendor = opts.vendor || 'claude';
+  const teamwork = Boolean(opts.teamwork || opts.workflow === 'teamwork');
   const streamed = normalizeUsage();
   let initializedModel = '';
   const callerEvent = opts.onEvent || (() => {});
-  const wrapped = { ...opts, vendor, onEvent: (event) => {
+  const wrapped = { ...opts, vendor, teamwork, onEvent: (event) => {
     if (event?.type === 'system' && event.subtype === 'init' && typeof event.model === 'string') {
       initializedModel = event.model;
     }
@@ -420,6 +421,7 @@ function runGemini({
   resume,
   logFile,
   onEvent = () => {},
+  teamwork = false,
 }) {
   const tmp = (name) =>
     path.join(os.tmpdir(), `todomd-gemini-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -457,8 +459,12 @@ function runGemini({
         + `write into the checkout), and do not write files through shell redirects or heredocs — those are refused.`
       : '',
   ].filter(Boolean).join('\n');
-  const args = ['-p', prompt + notes, '--output-format', streaming ? 'stream-json' : 'json',
-    '--mode', mode, '--disable-slash-commands'];
+  const effectivePrompt = teamwork && !prompt.trim().startsWith('/teamwork')
+    ? `/teamwork-preview ${prompt}`
+    : prompt;
+  const args = ['-p', effectivePrompt + notes, '--output-format', streaming ? 'stream-json' : 'json',
+    '--mode', mode];
+  if (!teamwork) args.push('--disable-slash-commands');
   // The task worktree IS the agent's workspace. Headless, the CLI opens no
   // workspace on its own: its file-writing tool then only accepts paths under
   // its private artifact directory ("not a valid artifact path" for anything
@@ -518,6 +524,7 @@ function runGemini({
         effectiveEffort: effectiveEffort || null,
         mode,
         sandbox: sandboxed,
+        teamwork: Boolean(teamwork),
         deniedActions: denied,
       };
       // A denied run reports success and exit 0, so it has to be failed here or

@@ -65,6 +65,20 @@ Add `--json` for structured output. Legacy Done cards keep deployment **unknown*
 See the [foundation contract](docs/delivery-foundation.md) and
 [implementation plan](docs/delivery-workflow-update-plan.md).
 
+**Delivery mutations:** migrated tasks use a private canonical record; the board
+and drawer project its current state while Markdown remains the authored source.
+Delivery actions require a scoped owner credential from `todomd delivery-access`
+in addition to board access. Paste it into the drawer's **owner credential** field;
+it is kept only in the open page. Assignment and blocker resolution require
+handoff evidence and a next action. Commands check the current revision and reuse
+their idempotency key on retry. Unsupported transitions and missing candidate,
+review, integration, or deployment evidence are rejected, never inferred as success.
+
+`todomd delivery-rollback /path/to/repo` checks for active writers and unreleased
+execution ownership before restoring legacy operation. Inactive private records
+are archived under the project's private delivery store `history/` directory.
+Changed source files or unresolved execution require reconciliation first.
+
 ## Task file
 
 ```markdown

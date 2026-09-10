@@ -452,6 +452,7 @@ function stageConfig(config, stageName, card) {
         : (card?.data?.model || stage.model || config.default_model),
     effort,
     workflow,
+    teamwork: Boolean(card?.data?.teamwork ?? stage.teamwork ?? (workflow === 'teamwork')),
     // Zero deliberately means "let the provider choose its per-session cap".
     // Build continuations below still turn a provider cap into a checkpoint.
     maxTurns: stage.max_turns ?? 30,
@@ -2329,6 +2330,8 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
     prompt,
     model: stage.model,
     effort: stage.effort,
+    workflow: stage.workflow,
+    teamwork: stage.teamwork,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
     terminalSandbox: stage.terminalSandbox,
@@ -3287,6 +3290,8 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     cwd: worktreeAbs,
     model: repair?.model || stage.model,
     effort: repair?.effort || stage.effort,
+    workflow: stage.workflow,
+    teamwork: stage.teamwork,
     maxTurns: stage.maxTurns,
     allowedTools: stage.allowedTools,
     terminalSandbox: stage.terminalSandbox,
@@ -3717,6 +3722,8 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     prompt: verifyPrompt,
     model: stage.model,
     effort: stage.effort,
+    workflow: stage.workflow,
+    teamwork: stage.teamwork,
     maxTurns: stage.maxTurns,
     allowedTools: options.reviewOnly ? [] : stage.allowedTools,
     terminalSandbox: stage.terminalSandbox,
@@ -4070,6 +4077,8 @@ async function runTriage(project, id, config, t, vendor, claim) {
     prompt: nonClaudeTriage ? prompt.replaceAll('.todomd/tasks/', '') : prompt,
     model: t.model || config.default_model,
     effort: t.effort || config.default_effort,
+    workflow: card?.data?.workflow || t.workflow || '',
+    teamwork: Boolean(card?.data?.teamwork ?? t.teamwork ?? (card?.data?.workflow === 'teamwork' || t.workflow === 'teamwork')),
     maxTurns: t.max_turns || 15,
     allowedTools: ['Read(./**)', 'Glob', 'Grep', 'Edit(.todomd/tasks/**)'], // claude-only; codex ignores this
     logFile: runLogFile(project, id, 'Triage'),

@@ -187,7 +187,7 @@ function finishRecovery(root, owner, evidence, effect) {
   changed();
   return { ok: true, epoch, effect };
 }
-export function recoverAdmission(directory, command = {}, { reconcileLaunch, reconcileRemoteLaunch, reconcileRepository } = {}) {
+export function recoverAdmission(directory, command = {}, { reconcileLaunch, reconcileRemoteLaunch, reconcileRepository, reconcileExternal } = {}) {
   const { epoch, nonce } = command || {};
   if (!command || Object.keys(command).some(k => !['epoch', 'nonce'].includes(k)) || !Number.isSafeInteger(epoch) || epoch < 1 || !identity(nonce)) return fail('invalid_request', 'Supply only the exact admission epoch and nonce.');
   const root = path.resolve(directory), current = recoveryState(root, epoch, nonce);
@@ -198,7 +198,7 @@ export function recoverAdmission(directory, command = {}, { reconcileLaunch, rec
   // Unbound launch/repository owners may have unrelated children or remote work.
   const repository = owner.kind === 'repository' && owner.repository_authority === REPOSITORY_COMMAND;
   const remote = owner.kind === 'launch' && owner.launch_authority === REMOTE_LAUNCH;
-  const reconcile = repository ? reconcileRepository : remote ? reconcileRemoteLaunch : owner.kind === 'launch' && owner.launch_authority === LOCAL_LAUNCH ? reconcileLaunch : null;
+  const reconcile = repository ? reconcileRepository : remote ? reconcileRemoteLaunch : owner.kind === 'launch' && owner.launch_authority === LOCAL_LAUNCH ? reconcileLaunch : reconcileExternal;
   if (typeof reconcile !== 'function') return fail('external_reconciliation_required', 'Confirm all repository or launch work stopped through its execution authority.');
   const ref = repository ? owner.repository_command.execution : owner.execution;
   const dead = deadOwner(owner);
@@ -208,7 +208,9 @@ export function recoverAdmission(directory, command = {}, { reconcileLaunch, rec
     try { observation = await reconcile(Object.freeze({ ...owner, ...(owner.execution ? { execution: Object.freeze({ ...owner.execution }) } : {}),
       ...(repository ? { repository_command: Object.freeze({ ...owner.repository_command, execution: Object.freeze({ ...ref }) }) } : {}) })); }
     catch { return fail('stop_unconfirmed', 'Execution closure could not be verified; admission remains held.'); }
-    if (!sameExecution(ref, observation) || observation.state !== 'stopped' || observation.closed !== true) return fail('stop_unconfirmed', 'The exact execution must be stopped and permanently closed.');
-    return finishRecovery(root, owner, repository ? 'local-repository-command:stopped-and-closed' : remote ? 'registered-remote-job:stopped-and-closed' : 'registered-local-job:stopped-and-closed', repository ? 'repository_gate_only' : 'launch_gate_only');
+    if (ref && (!sameExecution(ref, observation) || observation.state !== 'stopped' || observation.closed !== true)) return fail('stop_unconfirmed', 'The exact execution must be stopped and permanently closed.');
+    if (!ref && (observation?.state !== 'stopped' || observation?.closed !== true)) return fail('stop_unconfirmed', 'External quiescence could not be verified.');
+    const outcomeEvidence = repository ? 'local-repository-command:stopped-and-closed' : remote ? 'registered-remote-job:stopped-and-closed' : owner.launch_authority === LOCAL_LAUNCH ? 'registered-local-job:stopped-and-closed' : 'external-work:confirmed-quiescent';
+    return finishRecovery(root, owner, outcomeEvidence, repository ? 'repository_gate_only' : 'launch_gate_only');
   })();
 }

@@ -152,11 +152,16 @@ export function createDeliveryStore(directory, { enabled = false, now = Date.now
           } else {
             if (busy()) return fail('active_work', 'Existing execution/admission must be reconciled; lease expiry never permits another writer.');
             if (c.action === 'assign') {
-              if (!OWNER_ROLES.includes(c.role) || !isOwnerId(c.owner)) return fail('invalid_owner', 'Select a stable owner and supported responsibility.');
+              const owners = c.ownership === undefined ? { [c.role]: c.owner } : c.ownership;
+              if (!object(owners) || !Object.keys(owners).length ||
+                (c.ownership !== undefined && (c.role !== undefined || c.owner !== undefined)) ||
+                !Object.entries(owners).every(([role, owner]) => OWNER_ROLES.includes(role) && isOwnerId(owner))) return fail('invalid_owner', 'Select stable owners and supported responsibilities.');
               if (!handoff(c.handoff)) return fail('handoff_required', 'Record evidence and the next action for the assignment.');
-              const from = record.task.ownership[c.role] || null;
-              record.task.ownership[c.role] = c.owner;
-              record.last_handoff = { ...clone(c.handoff), role: c.role, from, to: c.owner, at: time };
+              const from = clone(record.task.ownership);
+              Object.assign(record.task.ownership, owners);
+              record.last_handoff = c.ownership === undefined
+                ? { ...clone(c.handoff), role: c.role, from: from[c.role] || null, to: c.owner, at: time }
+                : { ...clone(c.handoff), from, to: clone(record.task.ownership), at: time };
             } else if (c.action === 'block') {
               if (record.task.blocker) return fail('already_blocked', 'Resolve the existing blocker before replacing it.');
               if (!object(c.blocker)) return fail('invalid_blocker', 'Supply a structured blocker.');
