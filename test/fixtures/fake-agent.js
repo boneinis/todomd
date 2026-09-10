@@ -37,6 +37,9 @@ const argv = process.argv.slice(2);
 if (process.env.FAKE_ARGV_LOG) {
   fs.appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(argv) + '\n');
 }
+if (process.env.FAKE_ENV_LOG) {
+  fs.writeFileSync(process.env.FAKE_ENV_LOG, JSON.stringify({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS }));
+}
 // record the permission bits of the --settings file (the runner deletes it as
 // soon as the run ends, so only the child can see them)
 if (process.env.FAKE_STAT_SETTINGS) {

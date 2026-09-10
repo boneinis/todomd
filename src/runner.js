@@ -214,7 +214,10 @@ function runClaude({
     args.push('--settings', settingsFile);
   }
 
-  const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const env = teamwork
+    ? { ...process.env, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }
+    : process.env;
+  const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
 
   const log = streaming && logFile ? openLog(logFile) : null;
 
@@ -324,6 +327,7 @@ function runCodex({
   args.push('--skip-git-repo-check');
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('-m', model);
   if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);
+  if (teamwork) args.push('-c', 'features.multi_agent=true');
   let schemaFile, outFile;
   if (jsonSchema) {
     schemaFile = tmp('schema.json');

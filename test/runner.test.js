@@ -502,21 +502,25 @@ test('Gemini reported turns are preserved and absent metrics stay unknown', asyn
   }
 });
 
-test('Claude with teamwork enables slash commands and injects multi-agent protocol', async () => {
+test('Claude with teamwork enables slash commands, agent teams env, and injects multi-agent protocol', async () => {
   process.env.TODOMD_CLAUDE_BIN = FAKE;
   process.env.FAKE_MODE = 'parsing';
   const log = path.join(tmp('claude-teamwork'), 'argv.jsonl');
+  const envLog = path.join(tmp('claude-teamwork'), 'env.json');
   process.env.FAKE_ARGV_LOG = log;
+  process.env.FAKE_ENV_LOG = envLog;
   try {
     const res = await runStage({ cwd: process.cwd(), prompt: 'build feature', vendor: 'claude', teamwork: true }).done;
     assert.equal(res.teamwork, true);
     const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
     assert.ok(argv.includes('--safe-mode'));
     assert.equal(argv.includes('--disable-slash-commands'), false, 'slash commands must be enabled for teamwork');
+    const envData = JSON.parse(fs.readFileSync(envLog, 'utf8'));
+    assert.equal(envData.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, '1', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS must be set to 1');
     const promptArg = argv[argv.indexOf('-p') + 1];
     assert.ok(promptArg.includes('Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork)'));
   } finally {
-    delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_ARGV_LOG;
+    delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_ARGV_LOG; delete process.env.FAKE_ENV_LOG;
   }
 });
 
@@ -530,6 +534,7 @@ test('Codex with teamwork injects multi-agent protocol and reports teamwork in d
     assert.equal(res.diagnostic?.teamwork, true);
     if (fs.existsSync(log)) {
       const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+      assert.ok(argv.includes('features.multi_agent=true'), 'features.multi_agent must be enabled for Codex teamwork');
       const promptArg = argv[argv.length - 1];
       assert.ok(promptArg.includes('Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork)'));
     }
