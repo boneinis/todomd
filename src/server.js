@@ -5,6 +5,8 @@ import { previewDeliveryMigration } from './delivery-preview.js';
 import { deliveryRuntimeStatus, legacyMutationGuard, projectDeliveryTask } from './delivery-runtime.js';
 import { createDeliveryAccess } from './delivery-access.js';
 import { createDeliverySession } from './delivery-session.js';
+import { createDeliveryStore } from './delivery-store.js';
+import { deliveryStoreDirectory } from './delivery-paths.js';
 import { listCycles, getActiveCycle, createCycle, updateCycleScope, closeCycle, checkWipLimit } from './cycles.js';
 import { listReleases, recordRelease, recordRollback, resolveTaskEvidence } from './delivery-releases.js';
 import { migrateDeliveryBoard, rollbackDeliveryBoard } from './delivery-migration.js';
@@ -135,6 +137,165 @@ function lanAddress() {
   return null;
 }
 
+export function makeApprovedJobs(projectPath) {
+  const nodeBin = process.execPath;
+  const todomdCli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../bin/todomd.js');
+  try {
+    const realRepo = fs.realpathSync(projectPath);
+    if (!fs.existsSync(todomdCli) || !fs.statSync(realRepo).isDirectory()) return {};
+    return {
+      build: {
+        command: nodeBin,
+        args: [todomdCli, 'delivery-cycles', realRepo, '{task_id}'],
+        cwd: realRepo,
+        containment: 'local_process_group',
+      },
+      verify: {
+        command: nodeBin,
+        args: [todomdCli, 'delivery-releases', realRepo, '{task_id}'],
+        cwd: realRepo,
+        containment: 'local_process_group',
+      },
+    };
+  } catch {
+    return {};
+  }
+}
+
+function getEnrichedCardsForWip(projectPath) {
+  try {
+    const board = loadBoard(projectPath, { includeArchived: false });
+    const storeDir = deliveryStoreDirectory(projectPath);
+    let store = null;
+    try { store = createDeliveryStore(storeDir); } catch {}
+    return board.cards.map(card => {
+      let delState = card.delivery?.state;
+      if (store) {
+        try {
+          const rec = store.read(card.id);
+          if (rec?.task?.delivery?.state) {
+            delState = rec.task.delivery.state;
+          }
+        } catch {}
+      }
+      return {
+        ...card,
+        delivery: {
+          ...card.delivery,
+          state: delState || (
+            card.status === 'Done' ? 'completed' :
+            ['Planned', 'Queue'].includes(card.status) ? 'ready' :
+            card.status === 'Build' ? 'in_progress' :
+            ['CI', 'Verify', 'Needs Human'].includes(card.status) ? 'in_review' : 'backlog'
+          ),
+        },
+      };
+    });
+  } catch {
+    return projectPath;
+  }
+}
+
+export function makeServerDeliveryResolvers(projectPath) {
+  const resolveWorkflow = (taskId, context = {}) => {
+    const preflight = deliveryWriterPreflight(projectPath);
+    if (preflight.blocked) return null;
+    const board = loadBoard(projectPath, { includeArchived: true });
+    const card = board.cards.find(c => c.id === taskId);
+    const project = listProjects().find(p => p.path === projectPath);
+    const busy = Boolean(project && Object.values(pipeline.getRunStates(project.name)).some(run => run.state === 'running'));
+    const evidence = resolveTaskEvidence(projectPath, card || { id: taskId }, context);
+    const authored = readCard(projectPath, taskId);
+    const plan = authored?.body.match(/^## Implementation Plan\s*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1]?.trim();
+    const deps = card?.dependencyIssues;
+
+    return {
+      writers_fenced: !busy && !preflight.blocked,
+      busy,
+      ready: {
+        scope_defined: !!(card?.description || card?.title),
+        criteria_defined: card?.criteria?.total > 0,
+        validation_plan: Boolean(plan),
+        target_known: card?.delivery?.completion_policy === 'completed' || Boolean(card?.delivery?.target_environment),
+        dependencies_valid: Boolean(deps) && !deps.missing.length && !deps.unparseable.length && !deps.waiting.length,
+        planning_approved: ['Planned', 'Queue'].includes(authored?.data.status),
+      },
+      candidate: evidence.candidate,
+      checks: evidence.checks,
+      review: evidence.review,
+      policy_revision: evidence.policy_revision,
+      target_branch: evidence.target_branch,
+      integration: evidence.integration,
+      release: evidence.release,
+      acceptance: evidence.acceptance,
+    };
+  };
+
+  const resolveAdmission = (taskId, ref = {}) => {
+    const targetCards = getEnrichedCardsForWip(projectPath);
+    const wip = checkWipLimit(targetCards, { limit: 2, candidateTaskId: taskId });
+    if (!wip.allowed || wip.current >= 2) {
+      return {
+        admitted: false,
+        ok: false,
+        reason: wip.reason || `WIP capacity limit reached (${wip.current}/${wip.limit} active tasks). Finish or withdraw existing work first.`,
+        currentWip: wip.current,
+        maxWip: wip.limit,
+        job_approved: false,
+        writers_fenced: false,
+        busy: true,
+        dependencies_satisfied: true,
+      };
+    }
+
+    const project = listProjects().find(p => p.path === projectPath);
+    const busy = Boolean(project && Object.values(pipeline.getRunStates(project.name)).some(run => run.state === 'running'));
+    if (busy) {
+      return {
+        admitted: false,
+        ok: false,
+        reason: 'Project busy with active pipeline execution',
+        currentWip: wip.current,
+        maxWip: wip.limit,
+        job_approved: false,
+        writers_fenced: false,
+        busy: true,
+        dependencies_satisfied: true,
+      };
+    }
+
+    const board = loadBoard(projectPath, { includeArchived: true });
+    const card = board.cards.find(c => c.id === taskId);
+    const deps = card?.dependencyIssues;
+    const dependencies_satisfied = !deps || (!deps.missing.length && !deps.unparseable.length && !deps.waiting.length);
+    if (!dependencies_satisfied) {
+      return {
+        admitted: false,
+        ok: false,
+        reason: 'Dependencies not satisfied',
+        currentWip: wip.current,
+        maxWip: wip.limit,
+        job_approved: false,
+        writers_fenced: false,
+        busy: false,
+        dependencies_satisfied: false,
+      };
+    }
+
+    return {
+      job_approved: true,
+      writers_fenced: true,
+      busy: false,
+      dependencies_satisfied: true,
+      admitted: true,
+      currentWip: wip.current,
+      maxWip: wip.limit,
+    };
+  };
+
+  return { resolveWorkflow, resolveAdmission };
+}
+
 export function startServer({ port = 7337, lan = false, deliveryRemoteCredential } = {}) {
   const token = loadToken('token');
   const viewerToken = loadToken('token-viewer');
@@ -187,43 +348,6 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
 
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
-  function makeServerDeliveryResolvers(projectPath) {
-    const resolveWorkflow = (taskId) => {
-      const preflight = deliveryWriterPreflight(projectPath);
-      if (preflight.blocked) return null;
-      const board = loadBoard(projectPath, { includeArchived: true });
-      const card = board.cards.find(c => c.id === taskId);
-      const project = listProjects().find(p => p.path === projectPath);
-      const busy = !project || Object.values(pipeline.getRunStates(project.name)).some(run => run.state === 'running');
-      const evidence = resolveTaskEvidence(projectPath, card || { id: taskId });
-      const authored = readCard(projectPath, taskId);
-      const plan = authored?.body.match(/^## Implementation Plan\s*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1]?.trim();
-      const deps = card?.dependencyIssues;
-
-      return {
-        writers_fenced: !busy && !preflight.blocked,
-        busy,
-        ready: {
-          scope_defined: !!(card?.description || card?.title),
-          criteria_defined: card?.criteria?.total > 0,
-          validation_plan: Boolean(plan),
-          target_known: card?.delivery?.completion_policy === 'completed' || Boolean(card?.delivery?.target_environment),
-          dependencies_valid: Boolean(deps) && !deps.missing.length && !deps.unparseable.length && !deps.waiting.length,
-          planning_approved: ['Planned', 'Queue'].includes(authored?.data.status),
-        },
-        candidate: evidence.candidate,
-        checks: evidence.checks,
-        review: evidence.review,
-        policy_revision: evidence.policy_revision,
-        target_branch: evidence.target_branch,
-        integration: evidence.integration,
-        release: evidence.release,
-        acceptance: evidence.acceptance,
-      };
-    };
-    return { resolveWorkflow };
-  }
-
   async function handleApi(req, res, url) {
     if (!hostOk(req)) return json(res, 403, { error: 'bad host' });
     if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
@@ -251,7 +375,15 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       }
       try {
         const resolvers = makeServerDeliveryResolvers(project.path);
-        const session = createDeliverySession(project.path, { enabled: true, credential: sent, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
+        const session = createDeliverySession(project.path, {
+          enabled: true,
+          credential: sent,
+          jobs: makeApprovedJobs(project.path),
+          resolveWorkflow: resolvers.resolveWorkflow,
+          resolveAdmission: resolvers.resolveAdmission,
+          remoteCredential: deliveryRemoteCredential,
+          enableReleaseTransitions: true,
+        });
         const result = route[2] ? await session[route[2]](route[1], command) : session.read(route[1]);
         const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
         return json(res, status, result);
@@ -280,7 +412,15 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       }
       try {
         const resolvers = makeServerDeliveryResolvers(project.path);
-        const session = createDeliverySession(project.path, { enabled: true, credential: sent, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
+        const session = createDeliverySession(project.path, {
+          enabled: true,
+          credential: sent,
+          jobs: makeApprovedJobs(project.path),
+          resolveWorkflow: resolvers.resolveWorkflow,
+          resolveAdmission: resolvers.resolveAdmission,
+          remoteCredential: deliveryRemoteCredential,
+          enableReleaseTransitions: true,
+        });
         const result = route[2] ? await session[route[2]](route[1], command) : session.readTask(route[1]);
         if (result.ok && route[2]) broadcast({ type: 'board-changed', project: project.name });
         const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
@@ -727,8 +867,13 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       } else {
         for (const field of fields[action]) if (field in parsed) command[field] = parsed[field];
       }
-      const session = createDeliverySession(project.path, { enabled: true, credential,
-        ...makeServerDeliveryResolvers(project.path), enableReleaseTransitions: true });
+      const session = createDeliverySession(project.path, {
+        enabled: true,
+        credential,
+        jobs: makeApprovedJobs(project.path),
+        ...makeServerDeliveryResolvers(project.path),
+        enableReleaseTransitions: true,
+      });
       const result = session[method](cid, command);
       if (result.ok) broadcast({ type: 'board-changed', project: project.name });
       return json(res, result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409,

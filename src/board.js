@@ -48,7 +48,7 @@ export function dependencyIssues(card, cards) {
     const dependency = cards.find((c) => c.id === id);
     if (!dependency) missing.push(id);
     else if (dependency.unparseable) unparseable.push(id);
-    else if (dependency.status !== 'Done') waiting.push({ id, status: dependency.status });
+    else if (dependency.status !== 'Done' && !['released', 'completed'].includes(dependency.delivery?.state)) waiting.push({ id, status: dependency.status });
   }
   return { missing, waiting, unparseable };
 }

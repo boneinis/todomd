@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makeRepo, isolateHome, git } from './helpers.js';
 import { readCard, parseChunks, moveCard, setArchived } from '../src/board.js';
-import { materializeChunks, advanceEpicChildren } from '../src/chunks.js';
+import { materializeChunks, advanceEpicChildren, calculateEpicRollup } from '../src/chunks.js';
 
 const status = (repo, id) => readCard(repo, id).data.status;
 
@@ -135,3 +135,45 @@ test('materializeChunks: createCard failure on chunk 2 rolls back chunk 1 and re
   assert.ok(!epicAfter.data.epic, 'epic flag must not be set after aborted materialize');
   assert.ok(!epicAfter.data.children, 'children must not be set after aborted materialize');
 });
+
+/* ── 4. calculateEpicRollup returns string epic_id and calculates canonical state ── */
+
+test('calculateEpicRollup: returns string epic_id when invoked with cardObj and allCards array', () => {
+  const epicCard = { id: 'epic-100', title: 'Major Epic', epic: true };
+  const child1 = { id: 'chunk-1', parent: 'epic-100', status: 'Done', delivery: { state: 'completed' } };
+  const child2 = { id: 'chunk-2', parent: 'epic-100', status: 'Review', delivery: { state: 'released' } };
+  const unrelated = { id: 'task-other', parent: 'epic-999', status: 'Planned' };
+  const allCards = [epicCard, child1, child2, unrelated];
+
+  const rollup = calculateEpicRollup(epicCard, allCards);
+
+  assert.equal(typeof rollup.epic_id, 'string');
+  assert.equal(rollup.epic_id, 'epic-100');
+  assert.equal(rollup.total, 2);
+  assert.equal(rollup.active_total, 2);
+  assert.equal(rollup.completed, 1);
+  assert.equal(rollup.released, 1);
+  assert.equal(rollup.progress_ratio, 1);
+  assert.equal(rollup.is_accepted, true);
+  assert.deepEqual(rollup.children, ['chunk-1', 'chunk-2']);
+});
+
+test('calculateEpicRollup: excludes cancelled children from active_total and does not accept incomplete epic', () => {
+  const epicCard = { id: 'epic-200', title: 'Sprint Epic' };
+  const child1 = { id: 'c-1', parent: 'epic-200', status: 'Done', delivery: { state: 'completed' } };
+  const child2 = { id: 'c-2', parent: 'epic-200', status: 'Cancelled', delivery: { state: 'cancelled' } };
+  const child3 = { id: 'c-3', parent: 'epic-200', status: 'Build', delivery: { state: 'in_progress' } };
+  const cards = [epicCard, child1, child2, child3];
+
+  const rollup = calculateEpicRollup(epicCard, cards);
+
+  assert.equal(rollup.epic_id, 'epic-200');
+  assert.equal(rollup.total, 3);
+  assert.equal(rollup.cancelled, 1);
+  assert.equal(rollup.active_total, 2); // 3 total - 1 cancelled
+  assert.equal(rollup.completed, 1);
+  assert.equal(rollup.in_progress, 1);
+  assert.equal(rollup.is_accepted, false);
+  assert.equal(rollup.progress_ratio, 0.5); // 1 completed / 2 active
+});
+

@@ -129,7 +129,7 @@ export function calculateEpicRollup(cardsOrRepoPath, epicId) {
   const is_accepted = activeTotal > 0 && finished === activeTotal;
 
   return {
-    epic_id: epicId,
+    epic_id: id,
     total,
     active_total: activeTotal,
     completed,
