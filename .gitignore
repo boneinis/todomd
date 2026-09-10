@@ -13,3 +13,5 @@ spike/demo-repo/
 !.todomd/tasks/*.md
 spike/
 RECOMMENDATIONS.md
+.agents/
+ORIGINAL_REQUEST.md

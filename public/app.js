@@ -755,8 +755,9 @@ function renderCard(card, color, i, nestedIds) {
   // epic/chunk relationship badge (sequential chunking)
   const rel = el.querySelector('.card-rel');
   if (card.epic) {
+    const isTeamwork = Boolean(card.epic_build_mode === 'teamwork' || card.teamwork || card.workflow === 'teamwork');
     const { done, total } = TodomdHierarchy.epicProgress(boardData.cards, card.id);
-    rel.textContent = `⊞ epic ${done}/${total}`;
+    rel.textContent = isTeamwork && total === 0 ? '⊞ epic · teamwork' : `⊞ epic ${done}/${total}`;
     const epicBox = el.querySelector('.card-epic');
     const subtasksEl = el.querySelector('.card-subtasks');
     const kids = TodomdHierarchy.childrenOf(boardData.cards, card.id)
@@ -1207,6 +1208,11 @@ async function openDrawer(id) {
   $('#route-model').value = card.data.model || '';
   $('#route-effort').value = card.data.effort || '';
   $('#route-workflow').value = card.data.workflow || '';
+  const epicModeWrap = $('#route-epic-mode-wrap');
+  if (epicModeWrap) {
+    epicModeWrap.hidden = !isEpic;
+    $('#route-epic-mode').value = card.data.epic_build_mode || (card.data.teamwork || card.data.workflow === 'teamwork' ? 'teamwork' : 'chunks');
+  }
   const buildProfile = card.data.build_profile || card.recovery?.build_profile || 'standard';
   $('#route-build-profile').value = buildProfile;
   const buildLimits = card.recovery?.build_limits || card.data.build_limits || {};
@@ -1567,6 +1573,7 @@ $('#route-save').addEventListener('click', async () => {
         model: $('#route-model').value.trim(),
         effort: $('#route-effort').value,
         workflow: $('#route-workflow').value,
+        epic_build_mode: $('#route-epic-mode')?.value || '',
         build_profile: $('#route-build-profile').value,
         skill: $('#route-skill').value.trim(),
         assignee: $('#route-assignee').value.trim(),

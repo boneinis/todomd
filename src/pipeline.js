@@ -267,8 +267,9 @@ function enqueueQueue(project) {
   try {
     const board = loadBoard(project.path, { includeArchived: true });
     for (const card of sortCardsByBoardOrder(board.cards.filter((c) => !c.archived && c.status === 'Queue'))) {
-      // epics sit in Queue as trackers — they never build (their chunks do)
-      if (card.id && !card.epic &&
+      const isTeamwork = Boolean(card?.epic_build_mode === 'teamwork' || card?.teamwork || card?.workflow === 'teamwork');
+      // epics sit in Queue as trackers unless teamwork build mode is active
+      if (card.id && (!card.epic || isTeamwork) &&
           !queueCardBlocker(card, board.cards) &&
           !children.has(runKey(project.name, card.id)) && !pending.has(runKey(project.name, card.id))) {
         if (enqueueBuild(project, card.id)) enqueued++;
@@ -392,12 +393,14 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
     return { ok: false, error: `agent "${agent}" not supported (have: ${[...SUPPORTED_VENDORS].join(', ')})` };
   }
   // Epic approval follows its separate child-cascade path and does not build
-  // the epic's own plan or apply the ordinary card dependency gate.
-  if (card.data.epic) return { ok: true };
-  if (normalizeBuildProfile(card.data.build_profile) === 'split_required') {
+  // the epic's own plan or apply the ordinary card dependency gate, UNLESS
+  // teamwork build mode is active (where the epic builds directly).
+  const isTeamwork = Boolean(card.data?.epic_build_mode === 'teamwork' || card.data?.teamwork || card.data?.workflow === 'teamwork');
+  if (card.data.epic && !isTeamwork) return { ok: true };
+  if (normalizeBuildProfile(card.data.build_profile) === 'split_required' && !isTeamwork) {
     return { ok: false, error: `${id}'s plan requires splitting before Build. Move it back to Plan so child cards can be created.` };
   }
-  if (parseChunks(card.body).length >= 2) {
+  if (parseChunks(card.body).length >= 2 && !isTeamwork && !(card.data?.epic_split === false)) {
     return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
   }
   // Include archived cards so a completed-then-archived dependency still counts.
@@ -421,8 +424,9 @@ function dependencyBlocker(card, cards) {
 
 function queueCardBlocker(card, cards) {
   if (card.parseError) return cardParseFailure(card);
-  if (card.epic) return { ok: false, code: 'epic_tracker', error: 'epic tracker — its child cards build separately' };
-  if (card.build_profile === 'split_required') return { ok: false, code: 'split_required', error: 'plan requires splitting before Build' };
+  const isTeamwork = Boolean(card?.epic_build_mode === 'teamwork' || card?.teamwork || card?.workflow === 'teamwork');
+  if (card.epic && !isTeamwork) return { ok: false, code: 'epic_tracker', error: 'epic tracker — its child cards build separately' };
+  if (card.build_profile === 'split_required' && !isTeamwork) return { ok: false, code: 'split_required', error: 'plan requires splitting before Build' };
   return dependencyBlocker(card, cards);
 }
 
@@ -1586,6 +1590,14 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
     const eligible = await approvalEligibility(project, card, config);
     if (!eligible.ok) return eligible;
     if (card.data.epic) {
+      const isTeamwork = Boolean(card.data?.epic_build_mode === 'teamwork' || card.data?.teamwork || card.data?.workflow === 'teamwork');
+      if (isTeamwork && (!card.data.children || card.data.children.length === 0 || card.data.epic_build_mode === 'teamwork')) {
+        const moved = await moveCard(project.path, id, 'Queue', { reason: 'epic approved — teamwork build' });
+        if (moved.ok && !moved.unchanged && (config.mode || 'launcher') !== 'budget') {
+          enqueueBuild(project, id);
+        }
+        return moved;
+      }
       // approving an epic starts the cascade — it never builds itself; it parks
       // in Queue as a tracker while its chunk children build in sequence
       const moved = await moveCard(project.path, id, 'Queue', { reason: 'epic approved — chunks building' });
@@ -2401,20 +2413,35 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
           // fan it out into sequential child cards; otherwise it's a normal plan
           const chunks = structuredPlan?.chunks || parseChunks(readCard(project.path, id)?.body || '');
           const plannedCard = readCard(project.path, id);
-          const plannedProfile = chunks.length >= 2
+          const isTeamwork = Boolean(plannedCard?.data?.teamwork || plannedCard?.data?.workflow === 'teamwork' || stage.teamwork || stage.workflow === 'teamwork');
+          const allowSplit = plannedCard?.data?.epic_split === true || plannedCard?.data?.epic_build_mode === 'chunks';
+          const shouldFanOut = chunks.length >= 2 && (!isTeamwork || allowSplit);
+          const plannedProfile = shouldFanOut
             ? 'split_required'
             : normalizeBuildProfile(structuredPlan?.build_profile || plannedCard?.data?.build_profile);
-          await patchFrontmatter(project.path, id, { build_profile: plannedProfile, build_limits: {}, ...(structuredPlan?.complexity ? { complexity: structuredPlan.complexity } : {}) });
+          await patchFrontmatter(project.path, id, {
+            build_profile: plannedProfile,
+            build_limits: {},
+            ...(isTeamwork && !allowSplit ? { epic_build_mode: 'teamwork' } : {}),
+            ...(structuredPlan?.complexity ? { complexity: structuredPlan.complexity } : {}),
+          });
           if (structuredPlan) {
-            const plan = chunks.length === 1 ? chunks[0].plan : structuredPlan.plan;
+            const plan = (isTeamwork && !allowSplit && chunks.length >= 2)
+              ? chunks.map((c, i) => `### Milestone ${i + 1}: ${c.title}\n${c.plan}`).join('\n\n')
+              : (chunks.length === 1 ? chunks[0].plan : structuredPlan.plan);
             if (plan) await writeImplementationPlan(project, id, plan);
           }
-          if (chunks.length >= 2) {
+          if (shouldFanOut) {
             await fanOutChunks(project, id, chunks);
           } else {
-            if (chunks.length === 1 && !structuredPlan) {
-              await writeImplementationPlan(project, id, chunks[0].plan || '');
-              await appendRunLog(project.path, id, '  - note: single-chunk plan folded into Implementation Plan');
+            if (chunks.length >= 1 && !structuredPlan) {
+              const combined = (isTeamwork && chunks.length >= 2)
+                ? chunks.map((c, i) => `### Milestone ${i + 1}: ${c.title}\n${c.plan}`).join('\n\n')
+                : (chunks[0]?.plan || '');
+              await writeImplementationPlan(project, id, combined);
+              await appendRunLog(project.path, id, (isTeamwork && chunks.length >= 2)
+                ? `  - note: ${chunks.length} milestones unified into Multi-Agent Teamwork Implementation Plan`
+                : '  - note: single-chunk plan folded into Implementation Plan');
             }
             await orchMove(project, id, 'Planned', 'plan complete');
           }
@@ -4324,7 +4351,8 @@ export async function reconcileOnBoot() {
       // an approved epic re-releases any ready chunk (a crash between epic
       // approval and the chunk-1 enqueue would otherwise strand it in Planned)
       for (const card of board.cards) {
-        if (card.epic && card.status === 'Queue') await advanceChildren(project, card.id);
+        const isTeamwork = Boolean(card.epic_build_mode === 'teamwork' || card.teamwork || card.workflow === 'teamwork');
+        if (card.epic && card.status === 'Queue' && !isTeamwork) await advanceChildren(project, card.id);
       }
       // re-triage anything now eligible (incl. the transient-failure cards just reset)
       triageSweep(project);
@@ -4571,7 +4599,8 @@ export async function kickQueue(project) {
     : (config.mode || 'launcher') === 'budget' ? { code: 'budget_mode', error: 'budget-mode work is started by its dispatcher' } : null;
   if (!gate) {
     for (const card of loadBoard(project.path).cards) {
-      if (card.epic && card.status === 'Queue') await advanceChildren(project, card.id);
+      const isTeamwork = Boolean(card.epic_build_mode === 'teamwork' || card.teamwork || card.workflow === 'teamwork');
+      if (card.epic && card.status === 'Queue' && !isTeamwork) await advanceChildren(project, card.id);
     }
   }
   const board = loadBoard(project.path, { includeArchived: true });

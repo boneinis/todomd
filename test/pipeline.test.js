@@ -3471,3 +3471,49 @@ test('Gemini Verify with workflow: teamwork omits disable-slash-commands and pre
     clearFakeAgent();
   }
 });
+
+test('Plan with teamwork unifies chunks into multi-agent implementation plan without child-card fanout', async () => {
+  isolateHome();
+  useFakeAgent({ chunks: '2' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Review', extra: 'teamwork: true\n' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.status, 'Planned');
+    assert.equal(card.data.epic_build_mode, 'teamwork');
+    assert.ok(card.body.includes('Milestone 1: Chunk 1'));
+    assert.ok(card.body.includes('Milestone 2: Chunk 2'));
+    const board = loadBoard(repo);
+    const children = board.cards.filter((c) => c.parent === 'task-0001');
+    assert.equal(children.length, 0, 'no child cards should be fanned out under teamwork');
+  } finally {
+    clearFakeAgent();
+  }
+});
+
+test('Epic with teamwork build mode is approved and enqueued into Build directly', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', {
+    status: 'Planned',
+    title: 'Epic Teamwork Feature',
+    extra: 'epic: true\nteamwork: true\nepic_build_mode: teamwork\n',
+  });
+  try {
+    const moveRes = await pipeline.humanMove(p, 'task-0001', 'Queue');
+    assert.equal(moveRes.ok, true, 'approval must succeed for teamwork epic');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+    assert.equal(status(repo, 'task-0001'), 'Done');
+  } finally {
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+

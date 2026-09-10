@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmp } from './helpers.js';
-import { runStage, stopHookSettings, describeDeniedActions, normalizeDeniedActions } from '../src/runner.js';
+import { runStage, stopHookSettings, describeDeniedActions, normalizeDeniedActions, claudeTeamworkInstructions, codexTeamworkInstructions } from '../src/runner.js';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-agent.js');
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
@@ -499,5 +499,41 @@ test('Gemini reported turns are preserved and absent metrics stay unknown', asyn
     assert.equal(unknown.envelope.is_error, false);
   } finally {
     delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_REAL_STREAM; delete process.env.FAKE_GEMINI_DENIED;
+  }
+});
+
+test('Claude with teamwork enables slash commands and injects multi-agent protocol', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  const log = path.join(tmp('claude-teamwork'), 'argv.jsonl');
+  process.env.FAKE_ARGV_LOG = log;
+  try {
+    const res = await runStage({ cwd: process.cwd(), prompt: 'build feature', vendor: 'claude', teamwork: true }).done;
+    assert.equal(res.teamwork, true);
+    const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+    assert.ok(argv.includes('--safe-mode'));
+    assert.equal(argv.includes('--disable-slash-commands'), false, 'slash commands must be enabled for teamwork');
+    const promptArg = argv[argv.indexOf('-p') + 1];
+    assert.ok(promptArg.includes('Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork)'));
+  } finally {
+    delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_ARGV_LOG;
+  }
+});
+
+test('Codex with teamwork injects multi-agent protocol and reports teamwork in diagnostic', async () => {
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  const log = path.join(tmp('codex-teamwork'), 'argv.jsonl');
+  process.env.FAKE_CODEX_ARGV_LOG = log;
+  try {
+    const res = await runStage({ cwd: process.cwd(), prompt: 'implement epic', vendor: 'codex', teamwork: true }).done;
+    assert.equal(res.teamwork, true);
+    assert.equal(res.diagnostic?.teamwork, true);
+    if (fs.existsSync(log)) {
+      const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+      const promptArg = argv[argv.length - 1];
+      assert.ok(promptArg.includes('Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork)'));
+    }
+  } finally {
+    delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
   }
 });

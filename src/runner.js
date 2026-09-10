@@ -132,9 +132,28 @@ export function runStage(opts) {
         executable: result?.diagnostic?.executable || executable,
         executionType,
         usage,
+        teamwork: Boolean(teamwork),
       };
     }),
   };
+}
+
+export function claudeTeamworkInstructions() {
+  return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork)
+You are leading an autonomous multi-agent engineering team for this task. Execute using the following phases:
+1. **Lead Architect**: Decompose this objective into concrete milestones, identify cross-file dependencies, invariants to protect, and edge cases.
+2. **Implementation Specialist**: Implement the solution surgically across all required modules and components. Follow clean code and repository standards.
+3. **Adversarial Reviewer**: Adversarially review your diff against existing tests and invariants. Hunt for boundary conditions, null/undefined bugs, missing awaits, and race conditions.
+4. **Integration & Verification**: Run the project's verification and test suites. Do not declare completion until all criteria are satisfied and tests pass cleanly.\n`;
+}
+
+export function codexTeamworkInstructions() {
+  return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork)
+You are acting as an autonomous multi-agent teamwork swarm. Execute using the following phases:
+1. **Architect & Decomposer**: Outline milestones, affected files, and edge-case risks.
+2. **Implementation Specialist**: Make precise edits across the codebase to fulfill all acceptance criteria.
+3. **Critic & Adversary**: Stress-test your changes for regressions, boundary errors, and integration failures.
+4. **Verification & Audit**: Run the project test suite and ensure all checks pass before finishing.\n`;
 }
 
 // Spawn one headless claude run for a pipeline stage.
@@ -159,14 +178,20 @@ function runClaude({
   logFile,             // jsonl tee target (streaming mode)
   onEvent = () => {},
   reviewOnly = false,
+  teamwork = false,
 }) {
   const streaming = !jsonSchema;
   // Board automation must not inherit user/project plugins, MCP servers,
   // hooks, skills, memory, or CLAUDE.md. The pipeline supplies the complete
   // prompt and tool boundary explicitly.
-  const args = ['--safe-mode', '--disable-slash-commands', '-p'];
+  const args = ['--safe-mode'];
+  if (!teamwork) args.push('--disable-slash-commands');
+  args.push('-p');
   if (resume) args.push('--resume', resume);
-  args.push(prompt);
+  const effectivePrompt = teamwork && !prompt.includes('## Multi-Agent Teamwork Orchestration Protocol')
+    ? prompt + claudeTeamworkInstructions()
+    : prompt;
+  args.push(effectivePrompt);
   args.push('--output-format', streaming ? 'stream-json' : 'json');
   if (streaming) args.push('--verbose');
   if (jsonSchema) args.push('--json-schema', JSON.stringify(jsonSchema));
@@ -276,6 +301,7 @@ function runCodex({
   logFile,
   onEvent = () => {},
   reviewOnly = false,
+  teamwork = false,
 }) {
   const tmp = (name) =>
     path.join(os.tmpdir(), `todomd-codex-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -305,7 +331,10 @@ function runCodex({
     fs.writeFileSync(schemaFile, JSON.stringify(jsonSchema));
     args.push('--output-schema', schemaFile, '--output-last-message', outFile);
   }
-  args.push(prompt);
+  const effectivePrompt = teamwork && !prompt.includes('## Multi-Agent Teamwork Orchestration Protocol')
+    ? prompt + codexTeamworkInstructions()
+    : prompt;
+  args.push(effectivePrompt);
 
   const log = logFile ? openLog(logFile) : null;
   // Keep the invocation even when spawn itself fails. This deliberately omits
@@ -335,6 +364,7 @@ function runCodex({
         stderr,
         finalMessage: lastMessage,
         structuredOutput: structuredOutput ?? null,
+        teamwork: Boolean(teamwork),
       };
       const ok = exitCode === 0 && !signal && !spawnError && !failed;
       const result = {

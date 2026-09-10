@@ -1267,6 +1267,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
       if ('workflow' in fields) updates.workflow = ['ultra_code', 'teamwork'].includes(fields.workflow) ? fields.workflow : '';
       if ('teamwork' in fields) updates.teamwork = fields.teamwork === true || fields.teamwork === 'true';
+      if ('epic_build_mode' in fields) updates.epic_build_mode = ['teamwork', 'chunks'].includes(fields.epic_build_mode) ? fields.epic_build_mode : '';
       if ('build_profile' in fields) {
         const profile = String(fields.build_profile || '');
         if (!['standard', 'long', 'split_required'].includes(profile)) {
