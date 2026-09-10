@@ -27,6 +27,10 @@ import { recordUsage } from '../../src/runstore.js';
 import { loadConfig, readCard, runSummaryHash, writeSummaryCache } from '../../src/board.js';
 import { openPage } from '../browser.js';
 import { seedDelivery } from '../delivery-fixture.js';
+import { migrateDeliveryBoard } from '../../src/delivery-migration.js';
+import { createDeliveryAccess } from '../../src/delivery-access.js';
+import { createDeliveryStore } from '../../src/delivery-store.js';
+import { deliveryStoreDirectory } from '../../src/delivery-paths.js';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -873,4 +877,51 @@ test('UI: cards open from the keyboard and long epic content cannot widen a lane
     return [...document.querySelectorAll('.column')].map(el => Math.round(el.getBoundingClientRect().width));
   })()`);
   assert.equal(new Set(widths).size, 1, 'expanded epics have the same lane width as other cards');
+});
+
+test('UI: delivery view toggling, owner filtering, and drawer delivery actions', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null);
+
+  // Toggle delivery view
+  await page.eval(`document.getElementById('delivery-view-toggle').click()`);
+  assert.equal(await page.eval(`document.getElementById('delivery-view-toggle').getAttribute('aria-pressed')`), 'true');
+  const deliveryCols = await page.eval(`[...document.querySelectorAll('.column.delivery-column')].map(c => c.dataset.status)`);
+  assert.deepEqual(deliveryCols, ['backlog', 'ready', 'in_progress', 'in_review', 'ready_to_release', 'released', 'completed', 'cancelled']);
+
+  // Toggle back to pipeline view
+  await page.eval(`document.getElementById('delivery-view-toggle').click()`);
+  assert.equal(await page.eval(`document.getElementById('delivery-view-toggle').getAttribute('aria-pressed')`), 'false');
+
+  // Open card drawer and verify delivery section
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}#task-0001`);
+  await until(async () => await page.eval(`!document.getElementById('drawer').hidden`));
+  const deliveryState = await page.eval(`document.getElementById('delivery-state-badge').textContent`);
+  assert.ok(deliveryState);
+  assert.equal(await page.eval(`!!document.getElementById('drawer-delivery-section')`), true);
+  assert.equal(await page.eval(`document.getElementById('delivery-transition-select').options.length > 0`), true);
+});
+
+test('UI: scoped delivery action updates the canonical board without editing its source', async (t) => {
+  if (!page) return t.skip(SKIP);
+  const repo = makeRepo();
+  writeCard(repo, 'task-0001', { status: 'Review', extra: 'tldr: Delivery mutation fixture.\n' });
+  assert.equal(migrateDeliveryBoard(repo).ok, true);
+  const raw = readCard(repo, 'task-0001').raw;
+  const credential = createDeliveryAccess(repo, { enabled: true }).issue({ expected_revision: 0,
+    actor_id: 'human:project-owner', operator: true, ttl_ms: 60000 }).token;
+  addProject(repo);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(path.basename(repo))}#task-0001`);
+  await until(async () => await page.eval(`!document.getElementById('drawer').hidden && document.getElementById('delivery-state-badge').textContent === 'backlog'`));
+  await page.eval(`document.getElementById('delivery-transition-select').value = 'cancelled';
+    document.getElementById('delivery-transition-reason').value = 'No longer needed';
+    document.getElementById('delivery-credential').value = ${JSON.stringify(credential)};
+    document.getElementById('delivery-transition-btn').click();`);
+  await until(async () => await page.eval(`document.getElementById('delivery-state-badge').textContent === 'cancelled'`));
+  const record = createDeliveryStore(deliveryStoreDirectory(repo)).read('task-0001');
+  assert.equal(record.task.delivery.state, 'cancelled');
+  assert.equal(record.revision, 2);
+  assert.equal(readCard(repo, 'task-0001').raw, raw);
+  assert.equal(await page.eval(`Object.values(localStorage).some(v => v.includes(${JSON.stringify(credential)}))`), false);
 });

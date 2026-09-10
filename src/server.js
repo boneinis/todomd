@@ -2,9 +2,15 @@ import { createBoardAgent } from './board-agent.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import { previewDeliveryMigration } from './delivery-preview.js';
-import { deliveryRuntimeStatus, legacyMutationGuard } from './delivery-runtime.js';
+import { deliveryRuntimeStatus, legacyMutationGuard, projectDeliveryTask } from './delivery-runtime.js';
 import { createDeliveryAccess } from './delivery-access.js';
 import { createDeliverySession } from './delivery-session.js';
+import { listCycles, getActiveCycle, createCycle, updateCycleScope, closeCycle, checkWipLimit } from './cycles.js';
+import { listReleases, recordRelease, recordRollback, resolveTaskEvidence } from './delivery-releases.js';
+import { migrateDeliveryBoard, rollbackDeliveryBoard } from './delivery-migration.js';
+import { calculateEpicRollup } from './chunks.js';
+import { deliveryActions } from './delivery.js';
+import { deliveryWriterPreflight } from './delivery-writer-preflight.js';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -181,6 +187,43 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
 
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
+  function makeServerDeliveryResolvers(projectPath) {
+    const resolveWorkflow = (taskId) => {
+      const preflight = deliveryWriterPreflight(projectPath);
+      if (preflight.blocked) return null;
+      const board = loadBoard(projectPath, { includeArchived: true });
+      const card = board.cards.find(c => c.id === taskId);
+      const project = listProjects().find(p => p.path === projectPath);
+      const busy = !project || Object.values(pipeline.getRunStates(project.name)).some(run => run.state === 'running');
+      const evidence = resolveTaskEvidence(projectPath, card || { id: taskId });
+      const authored = readCard(projectPath, taskId);
+      const plan = authored?.body.match(/^## Implementation Plan\s*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1]?.trim();
+      const deps = card?.dependencyIssues;
+
+      return {
+        writers_fenced: !busy && !preflight.blocked,
+        busy,
+        ready: {
+          scope_defined: !!(card?.description || card?.title),
+          criteria_defined: card?.criteria?.total > 0,
+          validation_plan: Boolean(plan),
+          target_known: card?.delivery?.completion_policy === 'completed' || Boolean(card?.delivery?.target_environment),
+          dependencies_valid: Boolean(deps) && !deps.missing.length && !deps.unparseable.length && !deps.waiting.length,
+          planning_approved: ['Planned', 'Queue'].includes(authored?.data.status),
+        },
+        candidate: evidence.candidate,
+        checks: evidence.checks,
+        review: evidence.review,
+        policy_revision: evidence.policy_revision,
+        target_branch: evidence.target_branch,
+        integration: evidence.integration,
+        release: evidence.release,
+        acceptance: evidence.acceptance,
+      };
+    };
+    return { resolveWorkflow };
+  }
+
   async function handleApi(req, res, url) {
     if (!hostOk(req)) return json(res, 403, { error: 'bad host' });
     if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
@@ -207,12 +250,42 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
         try { command = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON' }); }
       }
       try {
-        // No jobs or admission callback: this route can never reserve/dispatch.
-        const session = createDeliverySession(project.path, { enabled: true, credential: sent, remoteCredential: deliveryRemoteCredential });
+        const resolvers = makeServerDeliveryResolvers(project.path);
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
         const result = route[2] ? await session[route[2]](route[1], command) : session.read(route[1]);
         const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
         return json(res, status, result);
       } catch { return json(res, 409, { ok: false, code: 'recovery_unavailable' }); }
+    }
+
+    if (url.pathname.startsWith('/api/delivery/tasks/')) {
+      res.setHeader('cache-control', 'no-store');
+      const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
+      if (!loopback(req.socket.localAddress) || !loopback(req.socket.remoteAddress) || !originOk(req)) return json(res, 403, { error: 'loopback delivery preparation only' });
+      if ([...url.searchParams.keys()].some(k => k !== 'project') || url.searchParams.getAll('project').length !== 1) return json(res, 400, { error: 'supply one project; credentials belong in the delivery header' });
+      const project = findProject(url.searchParams.get('project'));
+      if (!project) return json(res, 401, { error: 'bad delivery credential' });
+      const sent = req.headers['x-todomd-delivery-token'];
+      const headerCount = req.rawHeaders.filter((v, i) => i % 2 === 0 && v.toLowerCase() === 'x-todomd-delivery-token').length;
+      if (headerCount !== 1 || !createDeliveryAccess(project.path, { enabled: true }).authenticate(sent)) return json(res, 401, { error: 'bad delivery credential' });
+      const route = url.pathname.match(/^\/api\/delivery\/tasks\/([\w.-]+)(?:\/(initialize|assign|block|resolve|transition))?$/);
+      if (!route || !CARD_ID.test(route[1])) return json(res, 404, { error: 'unknown task action' });
+      if (req.method !== (route[2] ? 'POST' : 'GET')) return json(res, 405, { error: 'method not allowed' });
+      let command;
+      if (route[2]) {
+        if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return json(res, 415, { error: 'JSON required' });
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large' });
+        try { command = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      }
+      try {
+        const resolvers = makeServerDeliveryResolvers(project.path);
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
+        const result = route[2] ? await session[route[2]](route[1], command) : session.readTask(route[1]);
+        if (result.ok && route[2]) broadcast({ type: 'board-changed', project: project.name });
+        const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
+        return json(res, status, result);
+      } catch { return json(res, 409, { ok: false, code: 'task_operation_failed' }); }
     }
     // reads work with either token; anything that mutates or spawns
     // requires the full token (the viewer/QR link is monitor-only)
@@ -416,7 +489,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     if (!project) return json(res, 404, { error: 'unknown project' });
 
     const deliveryCardWrite = url.pathname.match(/^\/api\/cards\/([\w.-]+)(?:\/|$)/);
-    if (deliveryCardWrite && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (deliveryCardWrite && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !/^\/api\/cards\/[\w.-]+\/delivery-(transition|blocker|assign)$/.test(url.pathname)) {
       const held = legacyMutationGuard(project.path, deliveryCardWrite[1]);
       if (held) return json(res, 409, held);
     }
@@ -431,6 +504,235 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       if (req.method !== 'GET') return json(res, 405, { error: 'delivery preview is read-only; activation is not available' });
       try { return json(res, 200, previewDeliveryMigration(project.path)); }
       catch (error) { return json(res, error.code === 'board_not_found' ? 404 : 500, { error: 'delivery preview unavailable', code: error.code || 'read_failed' }); }
+    }
+
+    if (url.pathname === '/api/delivery/board') {
+      const board = loadBoard(project.path, { includeArchived: url.searchParams.get('archived') === '1' });
+      const allCards = board.cards;
+      const enriched = allCards.map(card => {
+        const delState = card.delivery?.state || (
+          card.status === 'Done' ? 'completed' :
+          ['Planned', 'Queue'].includes(card.status) ? 'ready' :
+          card.status === 'Build' ? 'in_progress' :
+          ['CI', 'Verify', 'Needs Human'].includes(card.status) ? 'in_review' : 'backlog'
+        );
+        const cardObj = {
+          ...card,
+          delivery: {
+            state: delState,
+            completion_policy: card.delivery?.completion_policy || (card.status === 'Done' ? 'completed' : 'released'),
+            target_environment: card.delivery?.target_environment || 'production',
+            cycle_id: card.delivery?.cycle_id || null,
+          },
+          ownership: card.ownership || {
+            delivery_lead: 'human:project-owner',
+            implementation: 'agent-role:todomd-maintainer',
+            reviewer: 'agent-role:todomd-reviewer',
+            release: 'human:project-owner',
+          },
+          blocker: card.blocker || (card.status === 'Needs Human' ? {
+            category: 'product_decision',
+            owner: 'human:project-owner',
+            since: new Date().toISOString(),
+            evidence: card.needs_human_reason || 'Needs Human hold',
+            next_action: 'Resolve hold',
+          } : null),
+          delivery_runtime: deliveryRuntimeStatus(project.path, card.id),
+        };
+        try {
+          cardObj.delivery_actions = deliveryActions(cardObj);
+        } catch {
+          cardObj.delivery_actions = [];
+        }
+        if (card.children && Array.isArray(card.children) && card.children.length > 0) {
+          try {
+            cardObj.epic_rollup = calculateEpicRollup(cardObj, allCards);
+          } catch {
+            cardObj.epic_rollup = null;
+          }
+        }
+        return cardObj;
+      });
+
+      const columns = {
+        backlog: enriched.filter(c => c.delivery.state === 'backlog'),
+        ready: enriched.filter(c => c.delivery.state === 'ready'),
+        in_progress: enriched.filter(c => c.delivery.state === 'in_progress'),
+        in_review: enriched.filter(c => c.delivery.state === 'in_review'),
+        ready_to_release: enriched.filter(c => c.delivery.state === 'ready_to_release'),
+        released: enriched.filter(c => c.delivery.state === 'released'),
+        completed: enriched.filter(c => c.delivery.state === 'completed'),
+        cancelled: enriched.filter(c => c.delivery.state === 'cancelled'),
+      };
+
+      let activeCycle = null;
+      let cycles = [];
+      try {
+        activeCycle = getActiveCycle(project.path);
+        cycles = listCycles(project.path);
+      } catch {}
+
+      let releases = [];
+      try {
+        releases = listReleases(project.path);
+      } catch {}
+
+      let wipStatus = { limit: 2, current: 0, ok: true };
+      try {
+        wipStatus = checkWipLimit(project.path, { limit: 2 });
+      } catch {}
+
+      return json(res, 200, {
+        ok: true,
+        mode: board.config.mode || 'delivery',
+        access: fullAccess ? 'full' : 'viewer',
+        project: project.name,
+        projects: listProjects().map(p => p.name),
+        columns,
+        cards: enriched,
+        active_cycle: activeCycle,
+        cycles,
+        releases,
+        wip_status: wipStatus,
+      });
+    }
+
+    if (url.pathname === '/api/delivery/cycles') {
+      if (req.method === 'GET') {
+        return json(res, 200, { ok: true, cycles: listCycles(project.path), active: getActiveCycle(project.path) });
+      }
+      if (req.method === 'POST') {
+        if (!fullAccess) return json(res, 403, { error: 'full access required' });
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+        let fields = {};
+        try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        try {
+          const cycle = createCycle(project.path, fields);
+          return json(res, 200, { ok: true, cycle });
+        } catch (e) {
+          return json(res, 400, { error: e.message });
+        }
+      }
+    }
+    const cycleScopeMatch = url.pathname.match(/^\/api\/delivery\/cycles\/([\w.-]+)\/scope$/);
+    if (cycleScopeMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields = {};
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      try {
+        const cycle = updateCycleScope(project.path, cycleScopeMatch[1], fields);
+        return json(res, 200, { ok: true, cycle });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+    const cycleCloseMatch = url.pathname.match(/^\/api\/delivery\/cycles\/([\w.-]+)\/close$/);
+    if (cycleCloseMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields = {};
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      try {
+        const cycle = closeCycle(project.path, cycleCloseMatch[1], fields);
+        return json(res, 200, { ok: true, cycle });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+
+    if (url.pathname === '/api/delivery/releases') {
+      if (req.method === 'GET') {
+        return json(res, 200, { ok: true, releases: listReleases(project.path) });
+      }
+      if (req.method === 'POST') {
+        if (!fullAccess) return json(res, 403, { error: 'full access required' });
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+        let fields = {};
+        try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        try {
+          const release = recordRelease(project.path, fields);
+          return json(res, 200, { ok: true, release });
+        } catch (e) {
+          return json(res, 400, { error: e.message });
+        }
+      }
+    }
+    const releaseRollbackMatch = url.pathname.match(/^\/api\/delivery\/releases\/([\w.-]+)\/rollback$/);
+    if (releaseRollbackMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields = {};
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      try {
+        const release = recordRollback(project.path, releaseRollbackMatch[1], fields);
+        return json(res, 200, { ok: true, release });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+
+    if (url.pathname === '/api/delivery/migrate' && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let opts = {};
+      try { opts = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = migrateDeliveryBoard(project.path, opts);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    if (url.pathname === '/api/delivery/rollback' && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let opts = {};
+      try { opts = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = rollbackDeliveryBoard(project.path, opts);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+
+    const deliveryMutation = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-(transition|blocker|assign)$/);
+    if (deliveryMutation && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const [, cid, action] = deliveryMutation;
+      if (!CARD_ID.test(cid)) return json(res, 400, { error: 'invalid card id' });
+      // Board access does not identify a delivery owner. Require the scoped
+      // credential that the existing durable workflow authenticates afresh.
+      const credential = req.headers['x-todomd-delivery-token'];
+      const count = req.rawHeaders.filter((v, i) => i % 2 === 0 && v.toLowerCase() === 'x-todomd-delivery-token').length;
+      if (count !== 1 || !createDeliveryAccess(project.path, { enabled: true }).authenticate(credential)) {
+        return json(res, 401, { error: 'A valid delivery owner credential is required.' });
+      }
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large' });
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json(res, 400, { error: 'JSON object required' });
+      const common = ['expected_revision', 'idempotency_key'];
+      const fields = { transition: ['to', 'reason'], assign: ['role', 'owner', 'ownership', 'handoff'],
+        blocker: ['action', 'blocker', 'handoff'] };
+      if (Object.keys(parsed).some(k => ![...common, ...fields[action]].includes(k))) return json(res, 400, { error: 'unknown command field' });
+      const command = { expected_revision: parsed.expected_revision, idempotency_key: parsed.idempotency_key };
+      let method = action;
+      if (action === 'blocker') {
+        if (parsed.action !== undefined && !['block', 'resolve'].includes(parsed.action)) return json(res, 400, { error: 'unknown blocker action' });
+        method = parsed.action === 'resolve' ? 'resolve' : 'block';
+        if (method === 'resolve') command.handoff = parsed.handoff;
+        else command.blocker = parsed.blocker;
+      } else {
+        for (const field of fields[action]) if (field in parsed) command[field] = parsed[field];
+      }
+      const session = createDeliverySession(project.path, { enabled: true, credential,
+        ...makeServerDeliveryResolvers(project.path), enableReleaseTransitions: true });
+      const result = session[method](cid, command);
+      if (result.ok) broadcast({ type: 'board-changed', project: project.name });
+      return json(res, result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409,
+        { ...result, ...(!result.ok ? { error: result.message || result.code } : {}) });
     }
 
     // column prompts = the .claude/commands/*.md files. Full token only (editing repo files).
@@ -495,8 +797,16 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       if ('model' in fields) updates.model = String(fields.model || '');
       if ('effort' in fields) updates.effort = String(fields.effort || '');
       if ('workflow' in fields) {
-        if (col !== 'Build') return json(res, 400, { error: 'workflow presets are available only for Build' });
+        if (!['Plan', 'Build', 'Review', 'CI', 'Verify'].includes(col)) {
+          return json(res, 400, { error: 'workflow presets are available only for Plan, Build, Review, and Verify' });
+        }
+        if (col !== 'Build' && fields.workflow === 'ultra_code') {
+          return json(res, 400, { error: 'Ultra Code is available only for Build' });
+        }
         updates.workflow = String(fields.workflow || '');
+      }
+      if ('teamwork' in fields) {
+        updates.teamwork = fields.teamwork === true || fields.teamwork === 'true';
       }
       if ('route_by_complexity' in fields) {
         if (col !== 'Build') return json(res, 400, { error: 'route_by_complexity is available only for Build' });
@@ -538,9 +848,31 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     }
     if (url.pathname === '/api/board') {
       const board = loadBoard(project.path, { includeArchived: url.searchParams.get('archived') === '1' });
-      board.cards = board.cards.map(card => ({ ...card, delivery_runtime: deliveryRuntimeStatus(project.path, card.id) }));
+      board.cards = board.cards.map(card => {
+        const enriched = { ...card, delivery_runtime: deliveryRuntimeStatus(project.path, card.id) };
+        if (card.children && Array.isArray(card.children) && card.children.length > 0) {
+          try {
+            enriched.epic_rollup = calculateEpicRollup(enriched, board.cards);
+          } catch {}
+        }
+        return enriched;
+      });
+      let activeCycle = null;
+      let cycles = [];
+      let releases = [];
+      let wipStatus = null;
+      try {
+        activeCycle = getActiveCycle(project.path);
+        cycles = listCycles(project.path);
+        releases = listReleases(project.path);
+        wipStatus = checkWipLimit(project.path, { limit: 2 });
+      } catch {}
       return json(res, 200, {
         ...board,
+        active_cycle: activeCycle,
+        cycles,
+        releases,
+        wip_status: wipStatus,
         mode: board.config.mode || 'launcher',
         access: fullAccess ? 'full' : 'viewer',
         // `access: full` includes the revocable mobile-control token. Voice
@@ -677,9 +1009,16 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     if (cardMatch && req.method === 'GET') {
       const card = readCard(project.path, cardMatch[1]);
       if (!card) return json(res, 404, { error: 'card not found' });
+      card.data = projectDeliveryTask(project.path, card.data);
       const summary = loadBoard(project.path, { includeArchived: true }).cards.find((c) => c.file === card.file);
+      let actions = [];
+      try {
+        const fullCard = { id: cardMatch[1], ...card.data };
+        actions = deliveryActions(fullCard);
+      } catch {}
       return json(res, 200, { ...card, dependencyIssues: summary?.dependencyIssues,
         delivery_runtime: deliveryRuntimeStatus(project.path, cardMatch[1]),
+        delivery_actions: actions,
         recovery: card.parseError ? {} : await pipeline.recoveryActions(project, cardMatch[1]) });
     }
     // the streamed events of the card's most recent run, to back-fill the drawer
@@ -781,7 +1120,8 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       }
       if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
-      if ('workflow' in fields) updates.workflow = fields.workflow === 'ultra_code' ? 'ultra_code' : '';
+      if ('workflow' in fields) updates.workflow = ['ultra_code', 'teamwork'].includes(fields.workflow) ? fields.workflow : '';
+      if ('teamwork' in fields) updates.teamwork = fields.teamwork === true || fields.teamwork === 'true';
       if ('build_profile' in fields) {
         const profile = String(fields.build_profile || '');
         if (!['standard', 'long', 'split_required'].includes(profile)) {

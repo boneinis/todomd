@@ -3389,3 +3389,85 @@ test('long and split work is never routed by complexity', async () => {
     clearFakeAgent();
   }
 });
+
+test('Gemini Plan with workflow: teamwork omits disable-slash-commands and prefixes /teamwork-preview', async () => {
+  isolateHome();
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI_BIN;
+  const dir = tmp('gemini-plan-tw');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+  process.env.FAKE_GEMINI_PLAN_COMPLEXITY = 'medium';
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  await setStageRouting(repo, 'Plan', { agent: 'gemini', model: 'gemini-3.7-flash-high', workflow: 'teamwork' });
+  writeCard(repo, 'task-0001', {});
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+    assert.equal(readCard(repo, 'task-0001').data.complexity, 'medium');
+    const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+    assert.equal(argv.includes('--disable-slash-commands'), false, 'teamwork allows slash commands');
+    const sent = argv[argv.indexOf('-p') + 1];
+    assert.ok(sent.startsWith('/teamwork-preview '), 'plan prompt prefixed with /teamwork-preview');
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    delete process.env.FAKE_GEMINI_ARGV_LOG;
+    delete process.env.FAKE_GEMINI_PLAN_COMPLEXITY;
+    clearFakeAgent();
+  }
+});
+
+test('Gemini Build with workflow: teamwork omits disable-slash-commands and prefixes /teamwork-preview', async () => {
+  isolateHome();
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI_BIN;
+  const dir = tmp('gemini-build-tw');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  await setStageRouting(repo, 'Build', { agent: 'gemini', model: 'gemini-3.7-flash-high', workflow: 'teamwork' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  await patchFrontmatter(repo, 'task-0001', { agent: 'gemini' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => ['CI', 'Needs Human', 'Done'].includes(status(repo, 'task-0001')), { timeout: BUDGET.stage });
+    const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+    assert.equal(argv.includes('--disable-slash-commands'), false, 'build teamwork allows slash commands');
+    const sent = argv[argv.indexOf('-p') + 1];
+    assert.ok(sent.startsWith('/teamwork-preview '), 'build prompt prefixed with /teamwork-preview');
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    delete process.env.FAKE_GEMINI_ARGV_LOG;
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('Gemini Verify with workflow: teamwork omits disable-slash-commands and prefixes /teamwork-preview', async () => {
+  isolateHome();
+  useFakeAgent();
+  process.env.TODOMD_GEMINI_BIN = FAKE_GEMINI_BIN;
+  const dir = tmp('gemini-verify-tw');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_GEMINI_ARGV_LOG = argvLog;
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  await setStageRouting(repo, 'Verify', { agent: 'gemini', model: 'gemini-3.7-flash-high', workflow: 'teamwork' });
+  writeCard(repo, 'task-0001', { status: 'Planned' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Queue');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+    const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+    assert.equal(argv.includes('--disable-slash-commands'), false, 'verify teamwork allows slash commands');
+    const sent = argv[argv.indexOf('-p') + 1];
+    assert.ok(sent.startsWith('/teamwork-preview '), 'verify prompt prefixed with /teamwork-preview');
+  } finally {
+    delete process.env.TODOMD_GEMINI_BIN;
+    delete process.env.FAKE_GEMINI_ARGV_LOG;
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});

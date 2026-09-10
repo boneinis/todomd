@@ -37,7 +37,12 @@
   </div>
   <div class="topbar-right">
     <label class="board-search" for="filter"><span aria-hidden="true">⌕</span><span class="sr-only">Filter cards</span><input id="filter" type="search" placeholder="Filter cards…" spellcheck="false" autocomplete="off" /></label>
+    <label class="sr-only" for="owner-filter">Filter by owner</label>
+    <select id="owner-filter" class="owner-filter" title="filter by owner">
+      <option value="">all owners</option>
+    </select>
     <div class="view-actions" role="group" aria-label="Board views">
+      <button id="delivery-view-toggle" class="view-toggle" type="button" title="switch between pipeline and delivery views" aria-pressed="false">delivery view</button>
       <button id="layout-toggle" class="view-toggle" type="button" title="switch between board and list" aria-pressed="false">list view</button>
       <button id="view-toggle" class="view-toggle" aria-pressed="false" title="click: team / my work · ⌥-click: change your name">team</button>
       <button id="archived-toggle" class="view-toggle" aria-pressed="false" title="show / hide archived cards">archived</button>
@@ -172,13 +177,77 @@
       <span class="rail-label">move to</span>
       <select id="move-select" class="rail-input"></select>
       <button id="move-apply" class="rail-btn rail-primary">move</button>
+      <div id="drawer-delivery-section" class="drawer-delivery-section">
+        <span class="rail-label">delivery workflow</span>
+        <label class="rail-field">owner credential
+          <input id="delivery-credential" type="password" class="rail-input" placeholder="Delivery credential" autocomplete="off" />
+        </label>
+        <label class="rail-field">handoff evidence
+          <input id="delivery-handoff-evidence" class="rail-input" placeholder="Reason for assignment or resolution" />
+        </label>
+        <label class="rail-field">next action
+          <input id="delivery-handoff-next" class="rail-input" placeholder="What should happen next" />
+        </label>
+        <div class="delivery-status-row">
+          <span class="delivery-state-badge" id="delivery-state-badge">backlog</span>
+        </div>
+        <div id="delivery-blocker-display" class="delivery-blocker-display" hidden>
+          <span class="rail-label blocker-heading">active blocker</span>
+          <p id="delivery-blocker-text" class="delivery-blocker-text"></p>
+          <button id="delivery-resolve-blocker-btn" class="rail-btn" type="button">resolve blocker</button>
+        </div>
+        <details id="delivery-declare-blocker-details" class="delivery-details">
+          <summary class="delivery-summary">declare blocker</summary>
+          <label class="rail-field">category
+            <select id="delivery-blocker-category" class="rail-input">
+              <option value="dependency">dependency</option>
+              <option value="environment">environment</option>
+              <option value="provider">provider</option>
+              <option value="implementation">implementation</option>
+              <option value="review">review</option>
+              <option value="publication">publication</option>
+              <option value="product_decision">product decision</option>
+            </select>
+          </label>
+          <label class="rail-field">evidence
+            <input id="delivery-blocker-evidence" class="rail-input" placeholder="evidence / reason" autocomplete="off" />
+          </label>
+          <label class="rail-field">next action
+            <input id="delivery-blocker-next-action" class="rail-input" placeholder="action to unblock" autocomplete="off" />
+          </label>
+          <label class="rail-field">owner
+            <input id="delivery-blocker-owner" class="rail-input" placeholder="responsible owner" autocomplete="off" />
+          </label>
+          <button id="delivery-declare-blocker-btn" class="rail-btn" type="button">declare blocker</button>
+        </details>
+        <span class="rail-label">delivery transition</span>
+        <select id="delivery-transition-select" class="rail-input"></select>
+        <input id="delivery-transition-reason" class="rail-input" placeholder="reason (optional)" autocomplete="off" />
+        <button id="delivery-transition-btn" class="rail-btn rail-primary" type="button">transition</button>
+        <details id="delivery-ownership-details" class="delivery-details">
+          <summary class="delivery-summary">ownership roles</summary>
+          <label class="rail-field">lead
+            <input id="delivery-owner-lead" class="rail-input" placeholder="human:owner" autocomplete="off" />
+          </label>
+          <label class="rail-field">implementation
+            <input id="delivery-owner-impl" class="rail-input" placeholder="agent-role:maintainer" autocomplete="off" />
+          </label>
+          <label class="rail-field">reviewer
+            <input id="delivery-owner-rev" class="rail-input" placeholder="agent-role:reviewer" autocomplete="off" />
+          </label>
+          <label class="rail-field">release
+            <input id="delivery-owner-rel" class="rail-input" placeholder="human:owner" autocomplete="off" />
+          </label>
+          <button id="delivery-assign-btn" class="rail-btn rail-primary" type="button">save owners</button>
+        </details>
+      </div>
       <span class="rail-label">routing</span>
       <label class="rail-field">agent
         <select id="route-agent" class="rail-input"><option value="">auto</option><option>claude</option><option>codex</option><option>gemini</option></select>
       </label>
       <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
       <label class="rail-field">effort <select id="route-effort" class="rail-input"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-      <label class="rail-field">build workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
+      <label class="rail-field">workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select></label>
       <label class="rail-field">build length <select id="route-build-profile" class="rail-input"><option value="standard">Standard</option><option value="long">Long</option><option value="split_required">Split required</option></select></label>
       <p id="build-profile-hint" class="route-hint"></p>
       <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
@@ -258,7 +327,7 @@
           </label>
           <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
           <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-          <label>build workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option></select></label>
+          <label>workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select></label>
           <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
         </div>
         <label>additional context <textarea name="description" rows="3"></textarea></label>
@@ -297,8 +366,8 @@
       <label>effort
         <select id="stage-effort"><option value="">board default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
       </label>
-      <label id="stage-workflow-row">build workflow
-        <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option></select>
+      <label id="stage-workflow-row">workflow
+        <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select>
       </label>
       <span id="stage-routing-note" class="qr-note"></span>
       <div id="stage-route-map" class="prompt-routing" hidden>
