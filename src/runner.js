@@ -498,7 +498,9 @@ function runGemini({
     : prompt;
   const args = ['-p', effectivePrompt + notes, '--output-format', streaming ? 'stream-json' : 'json',
     '--mode', mode];
-  if (!teamwork) args.push('--disable-slash-commands');
+  // In agy, --mode plan has no effect while slash command expansion is disabled:
+  // passing both emits a warning and causes agy to silently fall back to default mode.
+  if (!teamwork && mode !== 'plan') args.push('--disable-slash-commands');
   // The task worktree IS the agent's workspace. Headless, the CLI opens no
   // workspace on its own: its file-writing tool then only accepts paths under
   // its private artifact directory ("not a valid artifact path" for anything

@@ -279,6 +279,7 @@ test('Gemini Verify passes a private schema and retains a structured diagnostic'
 
   const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
   assert.deepEqual(argv.slice(argv.indexOf('--mode'), argv.indexOf('--mode') + 2), ['--mode', 'plan']);
+  assert.equal(argv.includes('--disable-slash-commands'), false, 'plan mode must not disable slash commands to preserve mode');
   assert.deepEqual(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2), ['--add-dir', dir]);
   const sentVerify = argv[argv.indexOf('-p') + 1];
   assert.ok(sentVerify.includes(`task worktree at ${dir}`) && !sentVerify.includes('write_file'), 'review stages get the workspace note only');
