@@ -12,7 +12,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TODOMD_BIN = fileURLToPath(import.meta.url);
 const TODOMD_DIR = path.join(process.env.TODOMD_HOME || process.env.HOME || process.env.USERPROFILE, '.todomd');
 const PID_FILE = path.join(TODOMD_DIR, 'server.pid');
-const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-writers [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]|delivery-access <repo> <status|issue|revoke|jobs>|budget-write <repo> -- /absolute/executable [args...]] [--port N] [--lan] [--no-open]';
+const USAGE = 'usage: todomd [init|serve|revoke|stop|install-launcher|upgrade-commands|intake-test <project>|delivery-preview [repo] [--json]|delivery-writers [repo] [--json]|delivery-admission [repo] [--json] [--recover --epoch N --nonce ID [--confirm-external-quiescence]]|delivery-access <repo> <status|issue|revoke|jobs>|delivery-migrate [repo] [--dry-run|--apply] [--json]|delivery-rollback [repo] [--json]|delivery-cycles [repo] [--json]|delivery-releases [repo] [--json]|budget-write <repo> -- /absolute/executable [args...]] [--port N] [--lan] [--no-open]';
 
 const args = process.argv.slice(2);
 if (args[0] === 'delivery-writers') {
@@ -24,6 +24,39 @@ if (args[0] === 'delivery-writers') {
   const report = deliveryWriterPreflight(path.resolve(positional[0] || process.cwd()));
   console.log(args.includes('--json') ? JSON.stringify(report, null, 2) : formatWriterPreflight(report));
   process.exit(report.blocked ? 2 : 0);
+}
+if (args[0] === 'delivery-migrate') {
+  const positional = args.slice(1).filter(a => !a.startsWith('-'));
+  const targetRepo = path.resolve(positional[0] || process.cwd());
+  const apply = args.includes('--apply');
+  const { migrateDeliveryBoard } = await import('../src/delivery-migration.js');
+  const result = migrateDeliveryBoard(targetRepo, { dryRun: !apply });
+  console.log(JSON.stringify(result, null, args.includes('--json') ? undefined : 2));
+  process.exit(result.ok ? 0 : 1);
+}
+if (args[0] === 'delivery-rollback') {
+  const positional = args.slice(1).filter(a => !a.startsWith('-'));
+  const targetRepo = path.resolve(positional[0] || process.cwd());
+  const { rollbackDeliveryBoard } = await import('../src/delivery-migration.js');
+  const result = rollbackDeliveryBoard(targetRepo);
+  console.log(JSON.stringify(result, null, args.includes('--json') ? undefined : 2));
+  process.exit(result.ok ? 0 : 1);
+}
+if (args[0] === 'delivery-cycles') {
+  const positional = args.slice(1).filter(a => !a.startsWith('-'));
+  const targetRepo = path.resolve(positional[0] || process.cwd());
+  const { listCycles, getActiveCycle } = await import('../src/cycles.js');
+  const result = { cycles: listCycles(targetRepo), active: getActiveCycle(targetRepo) };
+  console.log(JSON.stringify(result, null, args.includes('--json') ? undefined : 2));
+  process.exit(0);
+}
+if (args[0] === 'delivery-releases') {
+  const positional = args.slice(1).filter(a => !a.startsWith('-'));
+  const targetRepo = path.resolve(positional[0] || process.cwd());
+  const { listReleases } = await import('../src/delivery-releases.js');
+  const result = { releases: listReleases(targetRepo) };
+  console.log(JSON.stringify(result, null, args.includes('--json') ? undefined : 2));
+  process.exit(0);
 }
 if (args[0] === 'budget-write') {
   const usage = 'usage: todomd budget-write <repo> [--timeout-ms N] -- /absolute/executable [args...]';
@@ -82,10 +115,10 @@ const flag = (name, fallback) => {
 };
 
 if (cmd === 'delivery-admission') {
-  const allowed = new Set(['--json', '--recover', '--epoch', '--nonce']);
+  const allowed = new Set(['--json', '--recover', '--epoch', '--nonce', '--confirm-external-quiescence']);
   if (positional.length > 2 || args.some(a => a.startsWith('-') && !allowed.has(a)) ||
     (!args.includes('--recover') && (args.includes('--epoch') || args.includes('--nonce')))) {
-    console.error('usage: todomd delivery-admission [repo] [--json] [--recover --epoch N --nonce ID]');
+    console.error('usage: todomd delivery-admission [repo] [--json] [--recover --epoch N --nonce ID [--confirm-external-quiescence]]');
     process.exit(1);
   }
   try {
@@ -94,7 +127,7 @@ if (cmd === 'delivery-admission') {
     const { recoverProjectAdmission } = await import('../src/delivery-launch-recovery.js');
     const directory = projectAdmissionDirectory(path.resolve(positional[1] || process.cwd()));
     const report = args.includes('--recover')
-      ? await recoverProjectAdmission(path.resolve(positional[1] || process.cwd()), { epoch: Number(flag('--epoch')), nonce: flag('--nonce') })
+      ? await recoverProjectAdmission(path.resolve(positional[1] || process.cwd()), { epoch: Number(flag('--epoch')), nonce: flag('--nonce') }, { confirmExternalQuiescence: args.includes('--confirm-external-quiescence') })
       : { read_only: true, ...admissionStatus(directory) };
     console.log(JSON.stringify(report, null, args.includes('--json') ? undefined : 2));
     process.exit(report.ok === false ? 1 : 0);

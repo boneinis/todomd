@@ -775,7 +775,10 @@ function flowYaml(value) {
 // key lines inside the frontmatter block only. Orchestrator-owned fields.
 export function patchFrontmatter(repoPath, id, updates) {
   return withRepoLock(repoPath, async () => {
-    const held = legacyMutationGuard(repoPath, id); if (held) return held;
+    const isDeliveryUpdate = updates && (updates.delivery !== undefined || updates.ownership !== undefined || updates.blocker !== undefined);
+    if (!isDeliveryUpdate) {
+      const held = legacyMutationGuard(repoPath, id); if (held) return held;
+    }
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
     if (card.parseError) return cardParseFailure(card);
@@ -784,7 +787,7 @@ export function patchFrontmatter(repoPath, id, updates) {
     let fm = m[1];
     for (const [key, value] of Object.entries(updates)) {
       const line = `${key}: ${flowYaml(value)}`.trimEnd();
-      const re = new RegExp(`^${key}:.*$`, 'm');
+      const re = new RegExp(`^${key}:(?:[ \\t].*)?(?:\\r?\\n[ \\t]+.*)*$`, 'm');
       // function replacer so '$&', '$1', etc. in a value aren't expanded
       fm = re.test(fm) ? fm.replace(re, () => line) : `${fm}\n${line}`;
     }

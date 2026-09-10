@@ -874,3 +874,27 @@ test('UI: cards open from the keyboard and long epic content cannot widen a lane
   })()`);
   assert.equal(new Set(widths).size, 1, 'expanded epics have the same lane width as other cards');
 });
+
+test('UI: delivery view toggling, owner filtering, and drawer delivery actions', async (t) => {
+  if (!page) return t.skip(SKIP);
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => (await page.eval(`document.querySelectorAll('.card').length`)) || null);
+
+  // Toggle delivery view
+  await page.eval(`document.getElementById('delivery-view-toggle').click()`);
+  assert.equal(await page.eval(`document.getElementById('delivery-view-toggle').getAttribute('aria-pressed')`), 'true');
+  const deliveryCols = await page.eval(`[...document.querySelectorAll('.column.delivery-column')].map(c => c.dataset.status)`);
+  assert.deepEqual(deliveryCols, ['backlog', 'ready', 'in_progress', 'in_review', 'ready_to_release', 'released', 'completed', 'cancelled']);
+
+  // Toggle back to pipeline view
+  await page.eval(`document.getElementById('delivery-view-toggle').click()`);
+  assert.equal(await page.eval(`document.getElementById('delivery-view-toggle').getAttribute('aria-pressed')`), 'false');
+
+  // Open card drawer and verify delivery section
+  await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}#task-0001`);
+  await until(async () => await page.eval(`!document.getElementById('drawer').hidden`));
+  const deliveryState = await page.eval(`document.getElementById('delivery-state-badge').textContent`);
+  assert.ok(deliveryState);
+  assert.equal(await page.eval(`!!document.getElementById('drawer-delivery-section')`), true);
+  assert.equal(await page.eval(`document.getElementById('delivery-transition-select').options.length > 0`), true);
+});

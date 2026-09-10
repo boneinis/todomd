@@ -88,3 +88,60 @@ export async function advanceEpicChildren(repoPath, epicId) {
   }
   return moved;
 }
+
+export function calculateEpicRollup(cardsOrRepoPath, epicId) {
+  let cards;
+  let id = epicId;
+  if (typeof epicId !== 'string' && typeof cardsOrRepoPath === 'object' && !Array.isArray(cardsOrRepoPath) && cardsOrRepoPath?.id) {
+    id = cardsOrRepoPath.id;
+    cards = Array.isArray(epicId) ? epicId : (epicId?.cards || []);
+  } else if (typeof cardsOrRepoPath === 'string') {
+    cards = loadBoard(cardsOrRepoPath, { includeArchived: true }).cards;
+  } else if (Array.isArray(cardsOrRepoPath)) {
+    cards = cardsOrRepoPath;
+  } else if (cardsOrRepoPath && Array.isArray(cardsOrRepoPath.cards)) {
+    cards = cardsOrRepoPath.cards;
+  } else {
+    cards = [];
+  }
+
+  const kids = cards.filter(c => c.parent === id && !c.epic && c.id !== id);
+  const total = kids.length;
+  let completed = 0, released = 0, in_progress = 0, in_review = 0, ready = 0, backlog = 0, cancelled = 0, blocked = 0;
+
+  for (const child of kids) {
+    const deliveryState = child.delivery?.state || (child.status === 'Done' ? 'completed' : child.status === 'Review' || child.status === 'CI' || child.status === 'Verify' ? 'in_review' : child.status === 'Build' ? 'in_progress' : child.status === 'Queue' || child.status === 'Planned' ? 'ready' : 'backlog');
+    if (child.blocker) blocked++;
+    if (deliveryState === 'released') released++;
+    else if (deliveryState === 'completed') completed++;
+    else if (deliveryState === 'cancelled') cancelled++;
+    else if (deliveryState === 'in_progress') in_progress++;
+    else if (deliveryState === 'in_review') in_review++;
+    else if (deliveryState === 'ready') ready++;
+    else backlog++;
+  }
+
+  const activeTotal = total - cancelled;
+  const finished = completed + released;
+  const progress_ratio = activeTotal > 0 ? finished / activeTotal : 0;
+  // An epic becomes accepted only when its required children meet their completion policies
+  // Cancelled children do NOT count as successful completion
+  const is_accepted = activeTotal > 0 && finished === activeTotal;
+
+  return {
+    epic_id: epicId,
+    total,
+    active_total: activeTotal,
+    completed,
+    released,
+    in_progress,
+    in_review,
+    ready,
+    backlog,
+    cancelled,
+    blocked,
+    progress_ratio,
+    is_accepted,
+    children: kids.map(k => k.id),
+  };
+}

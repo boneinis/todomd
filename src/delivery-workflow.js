@@ -20,12 +20,10 @@ const fields = {
   block: [...common, 'blocker'], resolve: [...common, 'handoff'],
   transition: [...common, 'to', 'reason'],
 };
-const destinations = ['backlog', 'ready', 'in_review', 'cancelled'];
-
-// Preparation and execution use the same canonical store and fresh identity.
-// This internal adapter is not a migration or publication endpoint. The trusted
-// synchronous resolver must establish fencing; a clear preflight cannot do so.
-export function createDeliveryWorkflow(repoPath, { enabled = false, authenticate, resolveWorkflow, now = Date.now } = {}) {
+export function createDeliveryWorkflow(repoPath, { enabled = false, authenticate, resolveWorkflow, now = Date.now, enableReleaseTransitions = false } = {}) {
+  const destinations = enableReleaseTransitions
+    ? ['backlog', 'ready', 'in_review', 'ready_to_release', 'released', 'completed', 'cancelled']
+    : ['backlog', 'ready', 'in_review', 'cancelled'];
   const repo = fs.realpathSync(repoPath), directory = deliveryStoreDirectory(repo), gate = path.join(directory, 'admission');
   function principal() {
     try {
@@ -45,6 +43,10 @@ export function createDeliveryWorkflow(repoPath, { enabled = false, authenticate
     if (record && Object.values(owners).includes(p.actor_id)) {
       if (command.blocker?.owner === p.actor_id) grants.add('delivery:block');
       if (p.actor_id === owners.implementation) grants.add('delivery:in_review');
+      if (p.actor_id === owners.release) {
+        grants.add('delivery:ready_to_release');
+        grants.add('delivery:released');
+      }
     }
     if (record?.task.blocker?.owner === p.actor_id) grants.add('delivery:resolve');
     const result = { actor_id: p.actor_id, grants: [...grants] };
@@ -65,7 +67,17 @@ export function createDeliveryWorkflow(repoPath, { enabled = false, authenticate
       if (!current || current.actor_id !== p.actor_id || current.operator !== p.operator) return null;
       const latest = readCard(repo, id);
       if (!latest || createHash('sha256').update(latest.raw).digest('hex') !== source) return result;
-      return { ...result, busy: false, facts: clone({ ready: facts.ready || {}, candidate: facts.candidate || {} }) };
+      return { ...result, busy: false, facts: clone({
+        ready: facts.ready || {},
+        candidate: facts.candidate || {},
+        checks: facts.checks,
+        review: facts.review,
+        policy_revision: facts.policy_revision,
+        target_branch: facts.target_branch,
+        integration: facts.integration,
+        release: facts.release,
+        acceptance: facts.acceptance,
+      }) };
     } catch { return result; }
   }
   const store = createDeliveryStore(directory, { enabled, now, resolveContext: context });

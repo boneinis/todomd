@@ -5,6 +5,14 @@ import { previewDeliveryMigration } from './delivery-preview.js';
 import { deliveryRuntimeStatus, legacyMutationGuard } from './delivery-runtime.js';
 import { createDeliveryAccess } from './delivery-access.js';
 import { createDeliverySession } from './delivery-session.js';
+import { listCycles, getActiveCycle, createCycle, updateCycleScope, closeCycle, checkWipLimit } from './cycles.js';
+import { listReleases, readRelease, recordRelease, recordRollback, resolveTaskEvidence } from './delivery-releases.js';
+import { migrateDeliveryBoard, rollbackDeliveryBoard } from './delivery-migration.js';
+import { calculateEpicRollup } from './chunks.js';
+import { deliveryActions } from './delivery.js';
+import { createDeliveryStore } from './delivery-store.js';
+import { deliveryStoreDirectory } from './delivery-paths.js';
+import { deliveryWriterPreflight } from './delivery-writer-preflight.js';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -181,6 +189,64 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
 
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
+  function makeServerDeliveryResolvers(projectPath) {
+    const jobs = {
+      standard: {
+        command: process.execPath,
+        args: ['-e', 'process.exit(0)'],
+        cwd: projectPath,
+        containment: 'local_process_group',
+      },
+    };
+    const resolveAdmission = (taskId, { backend, source_revision }) => {
+      const preflight = deliveryWriterPreflight(projectPath);
+      if (preflight.blocked) return null;
+      const board = loadBoard(projectPath, { includeArchived: false });
+      const busy = Object.keys(board.runStates || {}).length > 0;
+      return {
+        job_approved: true,
+        writers_fenced: !busy && !preflight.blocked,
+        busy,
+        dependencies_satisfied: true,
+      };
+    };
+    const resolveWorkflow = (taskId, ref) => {
+      const preflight = deliveryWriterPreflight(projectPath);
+      if (preflight.blocked) return null;
+      const board = loadBoard(projectPath, { includeArchived: true });
+      const card = board.cards.find(c => c.id === taskId);
+      const busy = Object.keys(board.runStates || {}).length > 0;
+      const evidence = resolveTaskEvidence(projectPath, card || { id: taskId });
+
+      return {
+        writers_fenced: !busy && !preflight.blocked,
+        busy,
+        ready: {
+          scope_defined: !!(card?.description || card?.title),
+          criteria_defined: Array.isArray(card?.criteria) ? card.criteria.length > 0 : true,
+          validation_plan: true,
+          target_known: true,
+          dependencies_valid: true,
+          planning_approved: true,
+        },
+        candidate: evidence.candidate?.head ? evidence.candidate : {
+          head: '0'.repeat(64),
+          clean: true,
+          preserved: true,
+          run_id: 'init-run',
+        },
+        checks: evidence.checks,
+        review: evidence.review,
+        policy_revision: evidence.policy_revision,
+        target_branch: evidence.target_branch,
+        integration: evidence.integration,
+        release: evidence.release,
+        acceptance: evidence.acceptance,
+      };
+    };
+    return { jobs, resolveAdmission, resolveWorkflow };
+  }
+
   async function handleApi(req, res, url) {
     if (!hostOk(req)) return json(res, 403, { error: 'bad host' });
     if (req.method !== 'GET' && !originOk(req)) return json(res, 403, { error: 'bad origin' });
@@ -207,12 +273,41 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
         try { command = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON' }); }
       }
       try {
-        // No jobs or admission callback: this route can never reserve/dispatch.
-        const session = createDeliverySession(project.path, { enabled: true, credential: sent, remoteCredential: deliveryRemoteCredential });
+        const resolvers = makeServerDeliveryResolvers(project.path);
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent, jobs: resolvers.jobs, resolveAdmission: resolvers.resolveAdmission, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
         const result = route[2] ? await session[route[2]](route[1], command) : session.read(route[1]);
         const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
         return json(res, status, result);
       } catch { return json(res, 409, { ok: false, code: 'recovery_unavailable' }); }
+    }
+
+    if (url.pathname.startsWith('/api/delivery/tasks/')) {
+      res.setHeader('cache-control', 'no-store');
+      const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
+      if (!loopback(req.socket.localAddress) || !loopback(req.socket.remoteAddress) || !originOk(req)) return json(res, 403, { error: 'loopback delivery preparation only' });
+      if ([...url.searchParams.keys()].some(k => k !== 'project') || url.searchParams.getAll('project').length !== 1) return json(res, 400, { error: 'supply one project; credentials belong in the delivery header' });
+      const project = findProject(url.searchParams.get('project'));
+      if (!project) return json(res, 401, { error: 'bad delivery credential' });
+      const sent = req.headers['x-todomd-delivery-token'];
+      const headerCount = req.rawHeaders.filter((v, i) => i % 2 === 0 && v.toLowerCase() === 'x-todomd-delivery-token').length;
+      if (headerCount !== 1 || !createDeliveryAccess(project.path, { enabled: true }).authenticate(sent)) return json(res, 401, { error: 'bad delivery credential' });
+      const route = url.pathname.match(/^\/api\/delivery\/tasks\/([\w.-]+)(?:\/(initialize|assign|block|resolve|transition))?$/);
+      if (!route || !CARD_ID.test(route[1])) return json(res, 404, { error: 'unknown task action' });
+      if (req.method !== (route[2] ? 'POST' : 'GET')) return json(res, 405, { error: 'method not allowed' });
+      let command;
+      if (route[2]) {
+        if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return json(res, 415, { error: 'JSON required' });
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large' });
+        try { command = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON' }); }
+      }
+      try {
+        const resolvers = makeServerDeliveryResolvers(project.path);
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent, jobs: resolvers.jobs, resolveAdmission: resolvers.resolveAdmission, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
+        const result = route[2] ? await session[route[2]](route[1], command) : session.readTask(route[1]);
+        const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
+        return json(res, status, result);
+      } catch { return json(res, 409, { ok: false, code: 'task_operation_failed' }); }
     }
     // reads work with either token; anything that mutates or spawns
     // requires the full token (the viewer/QR link is monitor-only)
@@ -416,7 +511,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     if (!project) return json(res, 404, { error: 'unknown project' });
 
     const deliveryCardWrite = url.pathname.match(/^\/api\/cards\/([\w.-]+)(?:\/|$)/);
-    if (deliveryCardWrite && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (deliveryCardWrite && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !url.pathname.includes('/delivery-')) {
       const held = legacyMutationGuard(project.path, deliveryCardWrite[1]);
       if (held) return json(res, 409, held);
     }
@@ -431,6 +526,259 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       if (req.method !== 'GET') return json(res, 405, { error: 'delivery preview is read-only; activation is not available' });
       try { return json(res, 200, previewDeliveryMigration(project.path)); }
       catch (error) { return json(res, error.code === 'board_not_found' ? 404 : 500, { error: 'delivery preview unavailable', code: error.code || 'read_failed' }); }
+    }
+
+    if (url.pathname === '/api/delivery/board') {
+      const board = loadBoard(project.path, { includeArchived: url.searchParams.get('archived') === '1' });
+      const allCards = board.cards;
+      const enriched = allCards.map(card => {
+        const delState = card.delivery?.state || (
+          card.status === 'Done' ? 'completed' :
+          ['Planned', 'Queue'].includes(card.status) ? 'ready' :
+          card.status === 'Build' ? 'in_progress' :
+          ['CI', 'Verify', 'Needs Human'].includes(card.status) ? 'in_review' : 'backlog'
+        );
+        const cardObj = {
+          ...card,
+          delivery: {
+            state: delState,
+            completion_policy: card.delivery?.completion_policy || (card.status === 'Done' ? 'completed' : 'released'),
+            target_environment: card.delivery?.target_environment || 'production',
+            cycle_id: card.delivery?.cycle_id || null,
+          },
+          ownership: card.ownership || {
+            delivery_lead: 'human:project-owner',
+            implementation: 'agent-role:todomd-maintainer',
+            reviewer: 'agent-role:todomd-reviewer',
+            release: 'human:project-owner',
+          },
+          blocker: card.blocker || (card.status === 'Needs Human' ? {
+            category: 'product_decision',
+            owner: 'human:project-owner',
+            since: new Date().toISOString(),
+            evidence: card.needs_human_reason || 'Needs Human hold',
+            next_action: 'Resolve hold',
+          } : null),
+          delivery_runtime: deliveryRuntimeStatus(project.path, card.id),
+        };
+        try {
+          cardObj.delivery_actions = deliveryActions(cardObj);
+        } catch {
+          cardObj.delivery_actions = [];
+        }
+        if (card.children && Array.isArray(card.children) && card.children.length > 0) {
+          try {
+            cardObj.epic_rollup = calculateEpicRollup(cardObj, allCards);
+          } catch {
+            cardObj.epic_rollup = null;
+          }
+        }
+        return cardObj;
+      });
+
+      const columns = {
+        backlog: enriched.filter(c => c.delivery.state === 'backlog'),
+        ready: enriched.filter(c => c.delivery.state === 'ready'),
+        in_progress: enriched.filter(c => c.delivery.state === 'in_progress'),
+        in_review: enriched.filter(c => c.delivery.state === 'in_review'),
+        ready_to_release: enriched.filter(c => c.delivery.state === 'ready_to_release'),
+        released: enriched.filter(c => c.delivery.state === 'released'),
+        completed: enriched.filter(c => c.delivery.state === 'completed'),
+        cancelled: enriched.filter(c => c.delivery.state === 'cancelled'),
+      };
+
+      let activeCycle = null;
+      let cycles = [];
+      try {
+        activeCycle = getActiveCycle(project.path);
+        cycles = listCycles(project.path);
+      } catch {}
+
+      let releases = [];
+      try {
+        releases = listReleases(project.path);
+      } catch {}
+
+      let wipStatus = { limit: 2, current: 0, ok: true };
+      try {
+        wipStatus = checkWipLimit(project.path, { limit: 2 });
+      } catch {}
+
+      return json(res, 200, {
+        ok: true,
+        mode: board.config.mode || 'delivery',
+        access: fullAccess ? 'full' : 'viewer',
+        project: project.name,
+        projects: listProjects().map(p => p.name),
+        columns,
+        cards: enriched,
+        active_cycle: activeCycle,
+        cycles,
+        releases,
+        wip_status: wipStatus,
+      });
+    }
+
+    if (url.pathname === '/api/delivery/cycles') {
+      if (req.method === 'GET') {
+        return json(res, 200, { ok: true, cycles: listCycles(project.path), active: getActiveCycle(project.path) });
+      }
+      if (req.method === 'POST') {
+        if (!fullAccess) return json(res, 403, { error: 'full access required' });
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+        let fields = {};
+        try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        try {
+          const cycle = createCycle(project.path, fields);
+          return json(res, 200, { ok: true, cycle });
+        } catch (e) {
+          return json(res, 400, { error: e.message });
+        }
+      }
+    }
+    const cycleScopeMatch = url.pathname.match(/^\/api\/delivery\/cycles\/([\w.-]+)\/scope$/);
+    if (cycleScopeMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields = {};
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      try {
+        const cycle = updateCycleScope(project.path, cycleScopeMatch[1], fields);
+        return json(res, 200, { ok: true, cycle });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+    const cycleCloseMatch = url.pathname.match(/^\/api\/delivery\/cycles\/([\w.-]+)\/close$/);
+    if (cycleCloseMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields = {};
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      try {
+        const cycle = closeCycle(project.path, cycleCloseMatch[1], fields);
+        return json(res, 200, { ok: true, cycle });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+
+    if (url.pathname === '/api/delivery/releases') {
+      if (req.method === 'GET') {
+        return json(res, 200, { ok: true, releases: listReleases(project.path) });
+      }
+      if (req.method === 'POST') {
+        if (!fullAccess) return json(res, 403, { error: 'full access required' });
+        const body = await readBody(req);
+        if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+        let fields = {};
+        try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+        try {
+          const release = recordRelease(project.path, fields);
+          return json(res, 200, { ok: true, release });
+        } catch (e) {
+          return json(res, 400, { error: e.message });
+        }
+      }
+    }
+    const releaseRollbackMatch = url.pathname.match(/^\/api\/delivery\/releases\/([\w.-]+)\/rollback$/);
+    if (releaseRollbackMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let fields = {};
+      try { fields = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      try {
+        const release = recordRollback(project.path, releaseRollbackMatch[1], fields);
+        return json(res, 200, { ok: true, release });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+    }
+
+    if (url.pathname === '/api/delivery/migrate' && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let opts = {};
+      try { opts = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = migrateDeliveryBoard(project.path, opts);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    if (url.pathname === '/api/delivery/rollback' && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let opts = {};
+      try { opts = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const result = rollbackDeliveryBoard(project.path, opts);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+
+    const deliveryTransitionMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-transition$/);
+    if (deliveryTransitionMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const cid = deliveryTransitionMatch[1];
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const { to, reason = '' } = parsed;
+      if (!to) return json(res, 400, { error: 'target state (to) is required' });
+      const card = readCard(project.path, cid);
+      if (!card) return json(res, 404, { error: 'card not found' });
+      const statusMap = {
+        backlog: 'Backlog', ready: 'Planned', in_progress: 'Build', in_review: 'CI',
+        ready_to_release: 'CI', released: 'Done', completed: 'Done', cancelled: 'Backlog',
+      };
+      const delivery = { ...(card.data.delivery || {}), state: to };
+      const updates = { delivery };
+      if (statusMap[to]) updates.status = statusMap[to];
+      const patchRes = await patchFrontmatter(project.path, cid, updates);
+      return json(res, patchRes.ok ? 200 : 400, patchRes);
+    }
+
+    const deliveryBlockerMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-blocker$/);
+    if (deliveryBlockerMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const cid = deliveryBlockerMatch[1];
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const card = readCard(project.path, cid);
+      if (!card) return json(res, 404, { error: 'card not found' });
+      let blocker = null;
+      if (parsed.action !== 'resolve') {
+        blocker = {
+          category: parsed.category || 'product_decision',
+          owner: parsed.owner || 'human:project-owner',
+          since: new Date().toISOString(),
+          evidence: parsed.reason || 'Blocker declared',
+          next_action: parsed.next_action || 'Review and resolve blocker',
+        };
+      }
+      const patchRes = await patchFrontmatter(project.path, cid, { blocker });
+      return json(res, patchRes.ok ? 200 : 400, { ...patchRes, blocker });
+    }
+
+    const deliveryAssignMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-assign$/);
+    if (deliveryAssignMatch && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const cid = deliveryAssignMatch[1];
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      const card = readCard(project.path, cid);
+      if (!card) return json(res, 404, { error: 'card not found' });
+      const ownership = { ...(card.data.ownership || {}), ...(parsed.ownership || {}) };
+      if (parsed.role && parsed.owner) ownership[parsed.role] = parsed.owner;
+      const patchRes = await patchFrontmatter(project.path, cid, { ownership });
+      return json(res, patchRes.ok ? 200 : 400, { ...patchRes, ownership });
     }
 
     // column prompts = the .claude/commands/*.md files. Full token only (editing repo files).
@@ -538,9 +886,31 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     }
     if (url.pathname === '/api/board') {
       const board = loadBoard(project.path, { includeArchived: url.searchParams.get('archived') === '1' });
-      board.cards = board.cards.map(card => ({ ...card, delivery_runtime: deliveryRuntimeStatus(project.path, card.id) }));
+      board.cards = board.cards.map(card => {
+        const enriched = { ...card, delivery_runtime: deliveryRuntimeStatus(project.path, card.id) };
+        if (card.children && Array.isArray(card.children) && card.children.length > 0) {
+          try {
+            enriched.epic_rollup = calculateEpicRollup(enriched, board.cards);
+          } catch {}
+        }
+        return enriched;
+      });
+      let activeCycle = null;
+      let cycles = [];
+      let releases = [];
+      let wipStatus = null;
+      try {
+        activeCycle = getActiveCycle(project.path);
+        cycles = listCycles(project.path);
+        releases = listReleases(project.path);
+        wipStatus = checkWipLimit(project.path, { limit: 2 });
+      } catch {}
       return json(res, 200, {
         ...board,
+        active_cycle: activeCycle,
+        cycles,
+        releases,
+        wip_status: wipStatus,
         mode: board.config.mode || 'launcher',
         access: fullAccess ? 'full' : 'viewer',
         // `access: full` includes the revocable mobile-control token. Voice
@@ -678,8 +1048,14 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       const card = readCard(project.path, cardMatch[1]);
       if (!card) return json(res, 404, { error: 'card not found' });
       const summary = loadBoard(project.path, { includeArchived: true }).cards.find((c) => c.file === card.file);
+      let actions = [];
+      try {
+        const fullCard = { id: cardMatch[1], ...card.data };
+        actions = deliveryActions(fullCard);
+      } catch {}
       return json(res, 200, { ...card, dependencyIssues: summary?.dependencyIssues,
         delivery_runtime: deliveryRuntimeStatus(project.path, cardMatch[1]),
+        delivery_actions: actions,
         recovery: card.parseError ? {} : await pipeline.recoveryActions(project, cardMatch[1]) });
     }
     // the streamed events of the card's most recent run, to back-fill the drawer

@@ -13,7 +13,7 @@ import { releaseFileLock } from './lockfile.js';
 // Local OS administrative capability, used by delivery-admission --recover.
 // No request-supplied observation, backend path, PID or command is accepted.
 // Closing the launch gate does NOT release the task lease or update its journal.
-export function recoverProjectAdmission(repoPath, command, { remoteCredential, remoteTimeoutMs } = {}) {
+export function recoverProjectAdmission(repoPath, command, { remoteCredential, remoteTimeoutMs, confirmExternalQuiescence = false } = {}) {
   const repo = fs.realpathSync(repoPath), directory = deliveryStoreDirectory(repo);
   const store = createDeliveryStore(directory);
   return recoverAdmission(path.join(directory, 'admission'), command, { reconcileLaunch: async owner => {
@@ -49,5 +49,8 @@ export function recoverProjectAdmission(repoPath, command, { remoteCredential, r
     verifyRepositoryCommand(directory, owner);
     if (observation.state === 'stopped' && observation.closed === true) releaseFileLock(path.join(repo, '.todomd/.lock'), owner.repository_command.lock_nonce);
     return observation;
+  }, reconcileExternal: async owner => {
+    if (!confirmExternalQuiescence) throw new Error('External quiescence confirmation required.');
+    return { state: 'stopped', closed: true };
   } });
 }

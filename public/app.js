@@ -26,6 +26,27 @@ const COL_COLORS = {
   Review: 'var(--dim)', Plan: 'var(--cyan)', Planned: 'var(--cyan)',
   Queue: 'var(--violet)', Build: 'var(--amber)', Verify: 'var(--amber)',
   'Needs Human': 'var(--red)', Done: 'var(--green)',
+  backlog: 'var(--dim)', ready: 'var(--accent)', in_progress: '#f0883e',
+  in_review: '#a371f7', ready_to_release: '#3fb950', released: 'var(--green)',
+  completed: '#58a6ff', cancelled: 'var(--faint)',
+};
+
+const DELIVERY_EDGES = Object.freeze({
+  backlog: ['ready', 'cancelled'],
+  ready: ['backlog', 'in_progress', 'cancelled'],
+  in_progress: ['in_review', 'backlog', 'cancelled'],
+  in_review: ['in_progress', 'ready_to_release', 'completed', 'backlog', 'cancelled'],
+  ready_to_release: ['released', 'in_progress', 'cancelled'],
+  released: ['backlog'],
+  completed: ['backlog'],
+  cancelled: ['backlog'],
+});
+
+const DELIVERY_COLUMNS = ['backlog', 'ready', 'in_progress', 'in_review', 'ready_to_release', 'released', 'completed', 'cancelled'];
+const DELIVERY_COLUMN_TITLES = {
+  backlog: 'Backlog', ready: 'Ready', in_progress: 'In Progress',
+  in_review: 'In Review', ready_to_release: 'Ready to Release', released: 'Released',
+  completed: 'Completed', cancelled: 'Cancelled',
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -41,6 +62,8 @@ let drawerDelivery = null;
 let myName = localStorage.getItem('todomd-me') || '';
 let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'mine' : 'all';
 let layout = localStorage.getItem('todomd-layout') === 'list' ? 'list' : 'board';
+let deliveryView = localStorage.getItem('todomd-view-type') === 'delivery';
+let selectedOwner = '';
 const expandedListEpics = new Set();
 let showArchived = false;   // the "archived" view shows only archived cards
 let drawerArchived = false; // is the open card archived?
@@ -217,6 +240,30 @@ async function loadBoard() {
   $('#usage').title = ['Current-month normalized model usage. Dollar value is provider-reported legacy estimate, not a bill.', ...providers].join('\n');
   document.body.classList.toggle('viewer', viewer);
   applyQueuePause(usage.queue_paused === true);
+  if (boardData.mode === 'delivery' && localStorage.getItem('todomd-view-type') === null) {
+    deliveryView = true;
+  }
+  const deliveryBtn = $('#delivery-view-toggle');
+  if (deliveryBtn) {
+    deliveryBtn.textContent = deliveryView ? 'pipeline view' : 'delivery view';
+    deliveryBtn.setAttribute('aria-pressed', String(deliveryView));
+  }
+  const ownerSel = $('#owner-filter');
+  if (ownerSel) {
+    const currentVal = ownerSel.value;
+    const owners = new Set();
+    for (const c of boardData.cards || []) {
+      if (c.ownership?.delivery_lead) owners.add(String(c.ownership.delivery_lead));
+      if (c.ownership?.implementation) owners.add(String(c.ownership.implementation));
+      if (c.ownership?.reviewer) owners.add(String(c.ownership.reviewer));
+      if (c.ownership?.release) owners.add(String(c.ownership.release));
+      if (c.assignee) owners.add(String(c.assignee));
+    }
+    const sortedOwners = [...owners].sort();
+    ownerSel.innerHTML = '<option value="">all owners</option>' + sortedOwners.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('');
+    if (sortedOwners.includes(currentVal)) ownerSel.value = currentVal;
+    else selectedOwner = '';
+  }
   renderBoard();
   const targetHash = (location.hash || '').slice(1);
   if (targetHash && /^task-[\w-]+$/.test(targetHash) && !drawerCard) {
@@ -295,8 +342,25 @@ $('#queue-run').addEventListener('click', async () => {
 
 function renderBanners(list) {
   const el = $('#banners');
-  el.innerHTML = list.map((b) =>
-    `<div class="banner ${esc(b.level)}">${esc(b.text)}${b.level === 'warn'
+  const items = [...list];
+  if (boardData?.active_cycle) {
+    const ac = boardData.active_cycle;
+    items.unshift({
+      level: 'cycle',
+      text: `🎯 Active Cycle: ${ac.goal || ac.id} (${ac.start_date || ''} to ${ac.end_date || ''}) · ${ac.scope?.length || 0} card${ac.scope?.length === 1 ? '' : 's'} in scope`,
+      action: false,
+    });
+  }
+  if (boardData?.wip_status && !boardData.wip_status.ok) {
+    const wip = boardData.wip_status;
+    items.unshift({
+      level: 'warn',
+      text: `⚠ WIP Limit Exceeded: ${wip.current}/${wip.limit} active implementation tasks. Finish or unblock existing work before starting new tasks.`,
+      action: false,
+    });
+  }
+  el.innerHTML = items.map((b) =>
+    `<div class="banner ${esc(b.level)}">${esc(b.text)}${b.level === 'warn' && b.action !== false
       ? ' <button class="banner-resume">resume</button>' : ''}</div>`
   ).join('');
   el.querySelectorAll('.banner-resume').forEach((btn) =>
@@ -384,7 +448,14 @@ function renderBoard() {
   const passesView = (c) =>
     (showArchived ? c.archived : true) && // archived view shows only archived cards
     (!mine || String(c.assignee || '').toLowerCase() === mine) &&
-    (!filter || `${c.id} ${c.title} ${asList(c.labels).join(' ')} ${String(c.assignee || '')}`.toLowerCase().includes(filter));
+    (!selectedOwner || [
+      c.ownership?.delivery_lead,
+      c.ownership?.implementation,
+      c.ownership?.reviewer,
+      c.ownership?.release,
+      c.assignee,
+    ].filter(Boolean).map((o) => String(o).toLowerCase()).includes(selectedOwner.toLowerCase())) &&
+    (!filter || `${c.id} ${c.title} ${asList(c.labels).join(' ')} ${String(c.assignee || '')} ${c.delivery?.state || ''} ${c.blocker?.evidence || ''}`.toLowerCase().includes(filter));
   // ids that nest under an epic card THIS render: structurally nestable (per
   // hierarchy.js), and their epic parent will actually be shown. A parent
   // hidden by the filter/mine/archived view must not swallow a child that
@@ -405,6 +476,39 @@ function renderBoard() {
   $('#layout-toggle').setAttribute('aria-pressed', String(layout === 'list'));
   if (layout === 'list') return renderList(boardData.cards.filter(passesView));
   boardEl.innerHTML = '';
+  if (deliveryView) {
+    const getDelState = (c) => c.delivery?.state || (
+      c.status === 'Done' ? 'completed' :
+      ['Planned', 'Queue'].includes(c.status) ? 'ready' :
+      c.status === 'Build' ? 'in_progress' :
+      ['CI', 'Verify', 'Needs Human'].includes(c.status) ? 'in_review' : 'backlog'
+    );
+    for (const col of DELIVERY_COLUMNS) {
+      const color = COL_COLORS[col] || 'var(--dim)';
+      const cards = boardData.cards.filter(
+        (c) => getDelState(c) === col && passesView(c) && !shownNested.has(c.id)
+      ).sort((a, b) => {
+        const ao = Number(a.board_order), bo = Number(b.board_order);
+        const aRanked = Number.isFinite(ao), bRanked = Number.isFinite(bo);
+        if (aRanked && bRanked && ao !== bo) return ao - bo;
+        if (aRanked !== bRanked) return aRanked ? -1 : 1;
+        return String(a.file || a.id || '').localeCompare(String(b.file || b.id || ''));
+      });
+      const colEl = document.createElement('section');
+      colEl.className = 'column delivery-column';
+      colEl.style.setProperty('--col', color);
+      colEl.dataset.status = col;
+      const title = DELIVERY_COLUMN_TITLES[col] || col;
+      colEl.innerHTML = `<header class="col-head"><span class="col-name">${esc(title)}</span><span class="col-head-right"><span class="col-count">${cards.length}</span></span></header>`;
+      const list = document.createElement('div');
+      list.className = 'col-cards';
+      if (!cards.length) list.innerHTML = `<p class="col-empty">empty</p>`;
+      cards.forEach((card, i) => list.appendChild(renderCard(card, color, i, shownNested)));
+      colEl.appendChild(list);
+      boardEl.appendChild(colEl);
+    }
+    return;
+  }
   for (const col of boardData.config.columns) {
     const color = COL_COLORS[col] || 'var(--dim)';
     // .col-count must match what's actually appended below — a nested child is
@@ -608,20 +712,40 @@ function renderCard(card, color, i, nestedIds) {
   renderCardDiagnostic(el.querySelector('.card-diagnostics'), card);
   // label pills — a needs-human flag replaces them with a warning pill
   const chips = el.querySelector('.card-chips');
+  const getDelState = (c) => c.delivery?.state || (
+    c.status === 'Done' ? 'completed' :
+    ['Planned', 'Queue'].includes(c.status) ? 'ready' :
+    c.status === 'Build' ? 'in_progress' :
+    ['CI', 'Verify', 'Needs Human'].includes(c.status) ? 'in_review' : 'backlog'
+  );
+  const delState = getDelState(card);
   if (card.needs_human_reason) {
     chips.innerHTML = `<span class="chip chip-warn">⚠ ${esc(String(card.needs_human_reason === 'ci_blocked' && card.ci_remote?.reason || card.needs_human_reason))}</span>`;
   } else {
     const pills = [];
+    if (deliveryView || card.delivery) {
+      pills.push(`<span class="chip chip-delivery chip-delivery-${esc(delState)}">${esc(delState.replace(/_/g, ' '))}</span>`);
+    }
+    if (card.delivery?.cycle_id) {
+      pills.push(`<span class="chip chip-cycle">${esc(card.delivery.cycle_id)}</span>`);
+    }
     if (card.type) pills.push(`<span class="chip chip-type">${esc(String(card.type))}</span>`);
     if (card.complexity) pills.push(`<span class="chip chip-cx chip-cx-${esc(String(card.complexity))}">cx: ${esc(String(card.complexity))}</span>`);
     if (card.build_profile) pills.push(`<span class="chip chip-profile">build: ${esc(String(card.build_profile))}</span>`);
     for (const l of asList(card.labels)) pills.push(`<span class="chip chip-c${labelHue(l)}">${esc(l)}</span>`);
     chips.innerHTML = pills.join('');
   }
+  if (card.blocker) {
+    const banner = document.createElement('div');
+    banner.className = 'card-blocker-banner';
+    banner.innerHTML = `⚠ <b>blocked (${esc(card.blocker.category || '')}):</b> ${esc(card.blocker.evidence || card.blocker.next_action || '')}`;
+    el.insertBefore(banner, chips);
+  }
   const av = el.querySelector('.card-assignee');
-  if (card.assignee) {
-    const who = String(card.assignee);
-    av.textContent = initials(who); av.title = `@${who}`;
+  const who = card.ownership?.implementation || card.assignee;
+  if (who) {
+    av.textContent = initials(who);
+    av.title = card.ownership?.implementation ? `@${who} (impl)` : `@${who}`;
   }
   const crit = el.querySelector('.card-criteria');
   if (card.criteria) {
@@ -1149,6 +1273,44 @@ async function openDrawer(id) {
   for (const selector of ['#drawer-attach', '#drawer-archive', '#drawer-delete', '#drawer-cancel', '#move-apply', '#move-select', '#route-save', '#answer-submit']) {
     const control = $(selector); if (control) control.disabled = !!drawerDelivery?.managed;
   }
+  // Populate Delivery Section
+  const delState = card.data?.delivery?.state || (
+    card.data?.status === 'Done' ? 'completed' :
+    ['Planned', 'Queue'].includes(card.data?.status) ? 'ready' :
+    card.data?.status === 'Build' ? 'in_progress' :
+    ['CI', 'Verify', 'Needs Human'].includes(card.data?.status) ? 'in_review' : 'backlog'
+  );
+  const badge = $('#delivery-state-badge');
+  if (badge) {
+    badge.textContent = delState.replace(/_/g, ' ');
+    badge.dataset.state = delState;
+  }
+  const blockerDisplay = $('#delivery-blocker-display');
+  const declareBlocker = $('#delivery-declare-blocker-details');
+  if (card.data?.blocker) {
+    if (blockerDisplay) {
+      blockerDisplay.hidden = false;
+      $('#delivery-blocker-text').textContent = `${card.data.blocker.category}: ${card.data.blocker.evidence || ''} (owner: ${card.data.blocker.owner || ''}${card.data.blocker.next_action ? ` · next: ${card.data.blocker.next_action}` : ''})`;
+    }
+    if (declareBlocker) declareBlocker.hidden = true;
+  } else {
+    if (blockerDisplay) blockerDisplay.hidden = true;
+    if (declareBlocker) declareBlocker.hidden = false;
+    if ($('#delivery-blocker-evidence')) $('#delivery-blocker-evidence').value = '';
+    if ($('#delivery-blocker-next-action')) $('#delivery-blocker-next-action').value = '';
+    if ($('#delivery-blocker-owner')) $('#delivery-blocker-owner').value = card.data?.ownership?.delivery_lead || 'human:project-owner';
+  }
+  const transSelect = $('#delivery-transition-select');
+  if (transSelect) {
+    const targets = DELIVERY_EDGES[delState] || [];
+    transSelect.innerHTML = targets.map((t) => `<option value="${t}">${t.replace(/_/g, ' ')}</option>`).join('');
+    if ($('#delivery-transition-reason')) $('#delivery-transition-reason').value = '';
+  }
+  if ($('#delivery-owner-lead')) $('#delivery-owner-lead').value = card.data?.ownership?.delivery_lead || '';
+  if ($('#delivery-owner-impl')) $('#delivery-owner-impl').value = card.data?.ownership?.implementation || '';
+  if ($('#delivery-owner-rev')) $('#delivery-owner-rev').value = card.data?.ownership?.reviewer || '';
+  if ($('#delivery-owner-rel')) $('#delivery-owner-rel').value = card.data?.ownership?.release || '';
+
   // pending agent question
   const q = card.data.question;
   $('#drawer-question').hidden = !q;
@@ -1159,6 +1321,106 @@ async function openDrawer(id) {
   if (!card.parseError) refreshCardSummaries(id, seq);
   else { $('#description-tldr').textContent = 'Fix the frontmatter error in the card file.'; $('#description-tldr').classList.remove('is-pending'); }
 }
+
+$('#delivery-transition-btn')?.addEventListener('click', async () => {
+  if (!drawerCard) return;
+  const to = $('#delivery-transition-select').value;
+  const reason = $('#delivery-transition-reason').value.trim();
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/delivery-transition?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ to, reason }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'transition failed');
+    toast(`transitioned to ${to}`);
+    await loadBoard();
+    openDrawer(drawerCard);
+  } catch {
+    toast('server unreachable');
+  }
+});
+
+$('#delivery-declare-blocker-btn')?.addEventListener('click', async () => {
+  if (!drawerCard) return;
+  const category = $('#delivery-blocker-category').value;
+  const reason = $('#delivery-blocker-evidence').value.trim() || 'Blocker declared';
+  const next_action = $('#delivery-blocker-next-action').value.trim() || 'Resolve blocker';
+  const owner = $('#delivery-blocker-owner').value.trim() || 'human:project-owner';
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/delivery-blocker?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ category, reason, next_action, owner }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'failed to declare blocker');
+    toast('blocker declared');
+    await loadBoard();
+    openDrawer(drawerCard);
+  } catch {
+    toast('server unreachable');
+  }
+});
+
+$('#delivery-resolve-blocker-btn')?.addEventListener('click', async () => {
+  if (!drawerCard) return;
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/delivery-blocker?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'resolve' }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'failed to resolve blocker');
+    toast('blocker resolved');
+    await loadBoard();
+    openDrawer(drawerCard);
+  } catch {
+    toast('server unreachable');
+  }
+});
+
+$('#delivery-assign-btn')?.addEventListener('click', async () => {
+  if (!drawerCard) return;
+  const ownership = {
+    delivery_lead: $('#delivery-owner-lead').value.trim() || 'human:project-owner',
+    implementation: $('#delivery-owner-impl').value.trim() || 'agent-role:todomd-maintainer',
+    reviewer: $('#delivery-owner-rev').value.trim() || 'agent-role:todomd-reviewer',
+    release: $('#delivery-owner-rel').value.trim() || 'human:project-owner',
+  };
+  try {
+    const res = await fetch(`/api/cards/${drawerCard}/delivery-assign?project=${encodeURIComponent(currentProject)}`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ ownership }),
+    });
+    const out = await res.json();
+    if (!res.ok) return toast(out.error || 'failed to save owners');
+    toast('ownership saved');
+    await loadBoard();
+    openDrawer(drawerCard);
+  } catch {
+    toast('server unreachable');
+  }
+});
+
+$('#delivery-view-toggle')?.addEventListener('click', () => {
+  deliveryView = !deliveryView;
+  localStorage.setItem('todomd-view-type', deliveryView ? 'delivery' : 'pipeline');
+  const btn = $('#delivery-view-toggle');
+  if (btn) {
+    btn.textContent = deliveryView ? 'pipeline view' : 'delivery view';
+    btn.setAttribute('aria-pressed', String(deliveryView));
+  }
+  renderBoard();
+});
+
+$('#owner-filter')?.addEventListener('change', (e) => {
+  selectedOwner = e.target.value;
+  renderBoard();
+});
 
 $('#drawer-rel').addEventListener('click', (e) => {
   const chip = e.target.closest('[data-id]');
@@ -1758,7 +2020,7 @@ function appendRunEvent(event) {
 
 /* minimal markdown renderer: headings, checkboxes, lists, code, bold/inline code */
 function esc(s) {
-  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 // only attachment paths and http(s) are renderable; everything else (e.g.
 // javascript:) is dropped to plain text — no XSS via card-authored links
