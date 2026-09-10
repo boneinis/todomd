@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isolateHome, makeRepo } from './helpers.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { isolateHome, makeRepo, tmp } from './helpers.js';
 import {
   recordRelease,
   readRelease,
@@ -11,6 +13,39 @@ import {
 } from '../src/delivery-releases.js';
 
 const VALID_COMMIT = '1234567890abcdef1234567890abcdef12345678';
+
+const releaseFixture = id => ({ schema_version: 2, release_id: id, environment: 'production', tasks: ['task-001'],
+  deployed_commit: VALID_COMMIT, target_branch: 'main', approval: { approver: 'human:owner', approved_at: '2026-09-10T00:00:00Z' },
+  deployment: { deployed: true, reference: 'deploy' }, verification: { verified: true, reference: 'verify' } });
+
+test('release paths reject traversal and directory symlinks without changing outside files', () => {
+  isolateHome();
+  const repo = makeRepo(), outside = tmp('release-outside');
+  const sentinel = path.join(repo, 'sentinel.json');
+  fs.writeFileSync(sentinel, 'original');
+  for (const id of ['../../sentinel', '../sentinel', '/tmp/sentinel', '..', '.', 'a/b', 'a\\b', 'a'.repeat(65)]) {
+    assert.equal(validateReleaseRecord(releaseFixture(id)).ok, false);
+    assert.throws(() => recordRelease(repo, releaseFixture(id)), /release_id/);
+    assert.equal(readRelease(repo, id), null);
+  }
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'original');
+  fs.symlinkSync(outside, path.join(repo, '.todomd', 'releases'));
+  assert.throws(() => recordRelease(repo, releaseFixture('safe-id')), /symlinks/);
+  assert.equal(fs.readdirSync(outside).length, 0);
+});
+
+test('release reads do not follow symlinks or accept a different stored identity', () => {
+  isolateHome();
+  const repo = makeRepo(), outside = tmp('release-outside');
+  recordRelease(repo, releaseFixture('safe-id'));
+  const target = path.join(outside, 'target.json');
+  fs.writeFileSync(target, JSON.stringify(releaseFixture('linked')));
+  fs.symlinkSync(target, path.join(repo, '.todomd', 'releases', 'linked.json'));
+  assert.equal(readRelease(repo, 'linked'), null);
+  fs.writeFileSync(path.join(repo, '.todomd', 'releases', 'wrong.json'), JSON.stringify(releaseFixture('different')));
+  assert.equal(readRelease(repo, 'wrong'), null);
+  assert.deepEqual(listReleases(repo).map(r => r.release_id), ['safe-id']);
+});
 
 test('delivery-releases: validation, recording, reading, and listing', () => {
   isolateHome();

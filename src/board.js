@@ -8,7 +8,7 @@ import yaml from 'js-yaml';
 import { commitCard, commitPaths } from './git.js';
 import { withFileLock } from './lockfile.js';
 import { resourcesConfig } from './resources.js';
-import { legacyMutationGuard } from './delivery-runtime.js';
+import { legacyMutationGuard, projectDeliveryTask } from './delivery-runtime.js';
 import { withExistingProjectAdmission, withoutAdmissionContext } from './delivery-admission.js';
 
 const DEFAULT_COLUMNS = ['Review', 'Plan', 'Planned', 'Queue', 'Build', 'CI', 'Verify', 'Needs Human', 'Done'];
@@ -484,7 +484,7 @@ export function loadBoard(repoPath, { includeArchived = false } = {}) {
         // Keep archived dependencies available until reference resolution below.
         cards.push({
           file,
-          ...parsed.data,
+          ...projectDeliveryTask(repoPath, parsed.data),
           ...listFields(parsed.data),
           tldr: cachedDescriptionTldr(repoPath, parsed.content, parsed.data),
           criteria: criteriaProgress(parsed.content),
@@ -781,10 +781,7 @@ function flowYaml(value) {
 // key lines inside the frontmatter block only. Orchestrator-owned fields.
 export function patchFrontmatter(repoPath, id, updates) {
   return withRepoLock(repoPath, async () => {
-    const isDeliveryUpdate = updates && (updates.delivery !== undefined || updates.ownership !== undefined || updates.blocker !== undefined);
-    if (!isDeliveryUpdate) {
-      const held = legacyMutationGuard(repoPath, id); if (held) return held;
-    }
+    const held = legacyMutationGuard(repoPath, id); if (held) return held;
     const card = readCard(repoPath, id);
     if (!card) return { ok: false, error: `card not found: ${id}` };
     if (card.parseError) return cardParseFailure(card);

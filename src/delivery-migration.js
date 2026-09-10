@@ -8,8 +8,9 @@ import { deliveryStoreDirectory } from './delivery-paths.js';
 import { withAdmissionSync } from './delivery-admission.js';
 import { validateDeliveryTask } from './delivery.js';
 import { createDeliveryStore } from './delivery-store.js';
+import { readCard } from './board.js';
+import { privateDirectory } from './delivery-local-state.js';
 
-const nonempty = v => typeof v === 'string' && v.trim().length > 0;
 const digest = value => createHash('sha256').update(value).digest('hex');
 
 const DEFAULT_OWNERS = Object.freeze({
@@ -48,7 +49,6 @@ export function migrateDeliveryBoard(repoPath, options = {}) {
     const results = [];
     const tasksDir = path.join(repo, '.todomd', 'tasks');
     fs.mkdirSync(directory, { recursive: true });
-    const store = createDeliveryStore(directory, { enabled: true });
 
     const rows = preview.cards || preview.tasks || [];
     for (const row of rows) {
@@ -220,30 +220,57 @@ export function rollbackDeliveryBoard(repoPath, options = {}) {
   const gate = path.join(directory, 'admission');
 
   const admission = withAdmissionSync(gate, 'metadata', null, () => {
-    const tasksDir = path.join(repo, '.todomd', 'tasks');
-    let rolledCount = 0;
-    if (fs.existsSync(tasksDir)) {
-      const files = fs.readdirSync(tasksDir).filter(f => f.endsWith('.md'));
-      for (const file of files) {
-        const filePath = path.join(tasksDir, file);
-        const raw = fs.readFileSync(filePath, 'utf8');
-        const match = raw.match(/^\uFEFF?---(?:yaml)?\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/);
-        if (!match) continue;
-        let frontmatter;
-        try { frontmatter = yaml.load(match[1]); } catch { continue; }
-        const body = match[2];
-        if (frontmatter.schema_version === 2 || frontmatter.delivery) {
-          delete frontmatter.schema_version;
-          delete frontmatter.delivery;
-          delete frontmatter.ownership;
-          delete frontmatter.blocker;
-          const yamlStr = yaml.dump(frontmatter, { lineWidth: -1 });
-          const newContent = `---\n${yamlStr}---\n${body}`;
-          const tmp = `${filePath}.${randomUUID()}.tmp`;
-          fs.writeFileSync(tmp, newContent, 'utf8');
-          fs.renameSync(tmp, filePath);
-          rolledCount++;
+    // Check every private record before changing any card. An expired lease
+    // still owns execution; config switches never retire that ownership.
+    const preflight = deliveryWriterPreflight(repo);
+    if (preflight.blocked) return { ok: false, code: 'writers_active', preflight };
+    const store = createDeliveryStore(directory);
+    const entries = fs.existsSync(directory) ? fs.readdirSync(directory) : [];
+    if (entries.some(name => name.endsWith('.lock'))) return { ok: false, code: 'write_busy' };
+    const plan = [];
+    try {
+      for (const name of entries.filter(name => name.endsWith('.json'))) {
+        const id = name.slice(0, -5), record = store.read(id);
+        if (!record || record.lease || record.execution && record.execution.phase !== 'stopped') {
+          return { ok: false, code: 'active_work', task_id: id };
         }
+        const card = readCard(repo, id);
+        if (!card || card.parseError || digest(card.raw) !== record.source_revision) {
+          return { ok: false, code: 'source_changed', task_id: id };
+        }
+        const match = card.raw.match(/^\uFEFF?---(?:yaml)?\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/);
+        if (!match) return { ok: false, code: 'source_changed', task_id: id };
+        const frontmatter = yaml.load(match[1]);
+        delete frontmatter.schema_version;
+        delete frontmatter.delivery;
+        delete frontmatter.ownership;
+        delete frontmatter.blocker;
+        // Preserve the current delivery result when returning to the legacy
+        // pipeline, without making an unfinished task look completed.
+        const status = { backlog: 'Review', ready: 'Planned', in_progress: 'Build', in_review: 'CI',
+          ready_to_release: 'CI', released: 'Done', completed: 'Done', cancelled: 'Review' };
+        if (record.events.length > 1) frontmatter.status = status[record.task.delivery.state];
+        plan.push({ id, file: path.join(repo, '.todomd', 'tasks', card.file), recordFile: path.join(directory, name),
+          content: `---\n${yaml.dump(frontmatter, { lineWidth: -1 })}---\n${match[2]}` });
+      }
+    } catch { return { ok: false, code: 'corrupt_store' }; }
+
+    let rolledCount = 0;
+    if (plan.length) {
+      const history = path.join(directory, 'history');
+      privateDirectory(history, true);
+      const archive = path.join(history, `rollback-${randomUUID()}`);
+      privateDirectory(archive, true);
+      // Persist the rollback intent before retiring anything. If a filesystem
+      // failure interrupts publication, the remaining records continue to hold
+      // their tasks and this archive contains the intended restoration.
+      fs.writeFileSync(path.join(archive, 'manifest.json'), JSON.stringify({ at: new Date().toISOString(), tasks: plan }, null, 2), { flag: 'wx', mode: 0o600 });
+      for (const item of plan) {
+        const tmp = `${item.file}.${randomUUID()}.tmp`;
+        fs.writeFileSync(tmp, item.content, { flag: 'wx' });
+        fs.renameSync(tmp, item.file);
+        fs.renameSync(item.recordFile, path.join(archive, `${item.id}.json`));
+        rolledCount++;
       }
     }
 
@@ -263,7 +290,7 @@ export function rollbackDeliveryBoard(repoPath, options = {}) {
       ok: true,
       mode: 'launcher',
       rolled_back: rolledCount,
-      message: 'Delivery workflow deactivated; legacy runtime restored with all private records and history preserved.',
+      message: 'Delivery workflow deactivated; inactive ownership retired and private history archived.',
     };
   });
   if (!admission.ok) return admission;

@@ -16,7 +16,7 @@ const fail = code => ({ ok: false, code });
 const common = ['expected_revision', 'idempotency_key'];
 const fields = {
   initialize: [...common, 'task', 'source_revision'],
-  assign: [...common, 'role', 'owner', 'handoff'],
+  assign: [...common, 'role', 'owner', 'ownership', 'handoff'],
   block: [...common, 'blocker'], resolve: [...common, 'handoff'],
   transition: [...common, 'to', 'reason'],
 };

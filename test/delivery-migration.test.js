@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isolateHome, makeRepo, writeCard } from './helpers.js';
-import { readCard, loadConfig } from '../src/board.js';
+import { readCard, loadConfig, patchFrontmatter, moveCard } from '../src/board.js';
+import { deliveryRuntimeStatus } from '../src/delivery-runtime.js';
+import { seedDelivery } from './delivery-fixture.js';
 import { createDeliveryStore } from '../src/delivery-store.js';
 import { deliveryStoreDirectory } from '../src/delivery-paths.js';
 import { migrateDeliveryBoard, rollbackDeliveryBoard } from '../src/delivery-migration.js';
@@ -46,7 +48,7 @@ test('delivery-migration: active legacy tasks veto migration unless external qui
   assert.equal(allowedResult.plan[0].to_state, 'in_progress');
 });
 
-test('delivery-migration: full migration and rollback', () => {
+test('delivery-migration: full migration and rollback restores usable legacy actions', async () => {
   isolateHome();
   const repo = makeRepo();
 
@@ -101,4 +103,28 @@ test('delivery-migration: full migration and rollback', () => {
   assert.equal(rolledBuild.data.status, 'Build');
   assert.equal(rolledBuild.data.schema_version, undefined);
   assert.equal(rolledBuild.data.delivery, undefined);
+  assert.equal(deliveryRuntimeStatus(repo, 'task-build').legacy_execution_allowed, true);
+  assert.equal((await patchFrontmatter(repo, 'task-build', { title: 'Editable again' })).ok, true);
+  assert.equal((await moveCard(repo, 'task-build', 'Review')).ok, true);
+  const directory = deliveryStoreDirectory(repo);
+  assert.equal(store.read('task-build'), null);
+  const archive = fs.readdirSync(path.join(directory, 'history'))[0];
+  const preserved = JSON.parse(fs.readFileSync(path.join(directory, 'history', archive, 'task-build.json')));
+  assert.equal(preserved.checksum, storeRec.checksum);
+});
+
+test('rollback refuses even expired ownership before changing any card or record', () => {
+  isolateHome();
+  const repo = makeRepo();
+  writeCard(repo, 'task-001', { status: 'Review' });
+  const { directory } = seedDelivery(repo, 'task-001', { leased: true });
+  const raw = readCard(repo, 'task-001').raw;
+  const record = fs.readFileSync(path.join(directory, 'task-001.json'), 'utf8');
+  const config = fs.readFileSync(path.join(repo, '.todomd', 'config.yml'), 'utf8');
+  const result = rollbackDeliveryBoard(repo, { confirmExternalQuiescence: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'active_work');
+  assert.equal(readCard(repo, 'task-001').raw, raw);
+  assert.equal(fs.readFileSync(path.join(directory, 'task-001.json'), 'utf8'), record);
+  assert.equal(fs.readFileSync(path.join(repo, '.todomd', 'config.yml'), 'utf8'), config);
 });

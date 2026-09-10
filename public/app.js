@@ -1322,89 +1322,51 @@ async function openDrawer(id) {
   else { $('#description-tldr').textContent = 'Fix the frontmatter error in the card file.'; $('#description-tldr').classList.remove('is-pending'); }
 }
 
-$('#delivery-transition-btn')?.addEventListener('click', async () => {
+// Keep a command's key and timestamp stable after an uncertain response.
+const deliveryCommands = new Map();
+async function mutateDelivery(action, fields) {
   if (!drawerCard) return;
-  const to = $('#delivery-transition-select').value;
-  const reason = $('#delivery-transition-reason').value.trim();
+  const credential = $('#delivery-credential').value.trim();
+  if (!credential) return toast('Enter your delivery owner credential first.');
+  if (!drawerDelivery?.managed || !Number.isSafeInteger(drawerDelivery.revision)) return toast('Migrate this task before using delivery actions.');
+  const project = currentProject, id = drawerCard;
+  const signature = JSON.stringify([project, id, drawerDelivery.revision, action, fields]);
+  let command = deliveryCommands.get(signature);
+  if (!command) {
+    command = { ...fields, expected_revision: drawerDelivery.revision, idempotency_key: crypto.randomUUID() };
+    if (command.blocker) command.blocker = { ...command.blocker, since: new Date().toISOString() };
+    deliveryCommands.set(signature, command);
+  }
   try {
-    const res = await fetch(`/api/cards/${drawerCard}/delivery-transition?project=${encodeURIComponent(currentProject)}`, {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ to, reason }),
+    const res = await fetch(`/api/cards/${id}/delivery-${action}?project=${encodeURIComponent(project)}`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json', 'x-todomd-delivery-token': credential },
+      body: JSON.stringify(command),
     });
     const out = await res.json();
-    if (!res.ok) return toast(out.error || 'transition failed');
-    toast(`transitioned to ${to}`);
+    if (!res.ok) return toast(out.error || out.message || out.code || 'Delivery action failed');
+    deliveryCommands.delete(signature);
+    toast('Delivery task updated');
     await loadBoard();
-    openDrawer(drawerCard);
+    if (drawerCard === id && currentProject === project) await openDrawer(id);
   } catch {
-    toast('server unreachable');
+    toast('Response unavailable. Retry the same action to check its result.');
   }
-});
-
-$('#delivery-declare-blocker-btn')?.addEventListener('click', async () => {
-  if (!drawerCard) return;
-  const category = $('#delivery-blocker-category').value;
-  const reason = $('#delivery-blocker-evidence').value.trim() || 'Blocker declared';
-  const next_action = $('#delivery-blocker-next-action').value.trim() || 'Resolve blocker';
-  const owner = $('#delivery-blocker-owner').value.trim() || 'human:project-owner';
-  try {
-    const res = await fetch(`/api/cards/${drawerCard}/delivery-blocker?project=${encodeURIComponent(currentProject)}`, {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ category, reason, next_action, owner }),
-    });
-    const out = await res.json();
-    if (!res.ok) return toast(out.error || 'failed to declare blocker');
-    toast('blocker declared');
-    await loadBoard();
-    openDrawer(drawerCard);
-  } catch {
-    toast('server unreachable');
-  }
-});
-
-$('#delivery-resolve-blocker-btn')?.addEventListener('click', async () => {
-  if (!drawerCard) return;
-  try {
-    const res = await fetch(`/api/cards/${drawerCard}/delivery-blocker?project=${encodeURIComponent(currentProject)}`, {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'resolve' }),
-    });
-    const out = await res.json();
-    if (!res.ok) return toast(out.error || 'failed to resolve blocker');
-    toast('blocker resolved');
-    await loadBoard();
-    openDrawer(drawerCard);
-  } catch {
-    toast('server unreachable');
-  }
-});
-
-$('#delivery-assign-btn')?.addEventListener('click', async () => {
-  if (!drawerCard) return;
-  const ownership = {
-    delivery_lead: $('#delivery-owner-lead').value.trim() || 'human:project-owner',
-    implementation: $('#delivery-owner-impl').value.trim() || 'agent-role:todomd-maintainer',
-    reviewer: $('#delivery-owner-rev').value.trim() || 'agent-role:todomd-reviewer',
-    release: $('#delivery-owner-rel').value.trim() || 'human:project-owner',
-  };
-  try {
-    const res = await fetch(`/api/cards/${drawerCard}/delivery-assign?project=${encodeURIComponent(currentProject)}`, {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ ownership }),
-    });
-    const out = await res.json();
-    if (!res.ok) return toast(out.error || 'failed to save owners');
-    toast('ownership saved');
-    await loadBoard();
-    openDrawer(drawerCard);
-  } catch {
-    toast('server unreachable');
-  }
-});
+}
+const deliveryHandoff = () => ({ evidence: $('#delivery-handoff-evidence').value.trim(), next_action: $('#delivery-handoff-next').value.trim() });
+$('#delivery-transition-btn')?.addEventListener('click', () => mutateDelivery('transition', {
+  to: $('#delivery-transition-select').value, reason: $('#delivery-transition-reason').value.trim(),
+}));
+$('#delivery-declare-blocker-btn')?.addEventListener('click', () => mutateDelivery('blocker', { blocker: {
+  category: $('#delivery-blocker-category').value, evidence: $('#delivery-blocker-evidence').value.trim(),
+  next_action: $('#delivery-blocker-next-action').value.trim(), owner: $('#delivery-blocker-owner').value.trim(),
+} }));
+$('#delivery-resolve-blocker-btn')?.addEventListener('click', () => mutateDelivery('blocker', { action: 'resolve', handoff: deliveryHandoff() }));
+$('#delivery-assign-btn')?.addEventListener('click', () => mutateDelivery('assign', {
+  ownership: {
+    delivery_lead: $('#delivery-owner-lead').value.trim(), implementation: $('#delivery-owner-impl').value.trim(),
+    reviewer: $('#delivery-owner-rev').value.trim(), release: $('#delivery-owner-rel').value.trim(),
+  }, handoff: deliveryHandoff(),
+}));
 
 $('#delivery-view-toggle')?.addEventListener('click', () => {
   deliveryView = !deliveryView;

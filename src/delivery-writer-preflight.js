@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { admissionHeld, admissionStatus } from './delivery-admission.js';
-import { projectAdmissionDirectory } from './delivery-paths.js';
+import { projectAdmissionDirectory, deliveryStoreDirectory } from './delivery-paths.js';
+import { createDeliveryStore } from './delivery-store.js';
 
 const object = v => v && typeof v === 'object' && !Array.isArray(v);
 const identity = v => typeof v === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
@@ -48,7 +49,7 @@ export function deliveryWriterPreflight(repoPath) {
   }
   function config(raw) {
     const value = yaml.load(raw);
-    if (!object(value) || value.mode !== undefined && !['budget', 'launcher'].includes(value.mode) ||
+    if (!object(value) || value.mode !== undefined && !['budget', 'launcher', 'delivery'].includes(value.mode) ||
       value.ci !== undefined && (!object(value.ci) || value.ci.execution !== undefined && !['local', 'remote'].includes(value.ci.execution))) throw new Error('Invalid configuration');
     if (value.mode === 'budget') add('interactive_sessions_unfenced');
     if (value.ci?.execution === 'remote') add('remote_authority_required');
@@ -69,7 +70,11 @@ export function deliveryWriterPreflight(repoPath) {
         const frontmatter = raw.match(/^\uFEFF?---(?:yaml)?\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
         const task = frontmatter && yaml.load(frontmatter[1]);
         if (!object(task) || !identity(task.id) || typeof task.status !== 'string') throw new Error('Invalid task');
-        if (active.has(task.status)) add('legacy_task_active', task.id);
+        // Migration leaves the authored status intact. Its exact private
+        // source binding, not an editable schema flag, establishes ownership.
+        const managed = createDeliveryStore(deliveryStoreDirectory(repo)).read(task.id);
+        const sourceOwned = managed && task.schema_version === 2 && managed.source_revision === hash(raw);
+        if (active.has(task.status) && !sourceOwned) add('legacy_task_active', task.id);
         // Never use lease expiry, archive status, Done, or caller-authored
         // ci_evidence as proof that an old writer/remote submission is closed.
         if (task.lease !== undefined && task.lease !== null && task.lease !== '') add('legacy_lease_present', task.id);

@@ -1,14 +1,36 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { isOwnerId } from './delivery.js';
 
 const sha = v => typeof v === 'string' && /^[a-f0-9]{40}([a-f0-9]{24})?$/.test(v);
 const nonempty = v => typeof v === 'string' && v.trim().length > 0;
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const releaseId = v => typeof v === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(v);
 
 export function releasesDirectory(repoPath) {
-  return path.join(path.resolve(repoPath), '.todomd', 'releases');
+  return path.join(fs.realpathSync(repoPath), '.todomd', 'releases');
+}
+
+function safeDirectory(repoPath, create = false) {
+  const dir = releasesDirectory(repoPath);
+  for (const part of [path.dirname(dir), dir]) {
+    if (create) {
+      try { fs.mkdirSync(part); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    }
+    try { if (!fs.lstatSync(part).isDirectory()) throw new Error('Release directories must not be symlinks.'); }
+    catch (error) { if (!create && error.code === 'ENOENT') return null; throw error; }
+  }
+  return dir;
+}
+
+function releaseFile(repoPath, id, create = false) {
+  if (!releaseId(id)) throw new Error('Invalid release ID. Use an alphanumeric identifier up to 64 characters.');
+  const dir = safeDirectory(repoPath, create);
+  if (!dir) return null;
+  const file = path.resolve(dir, `${id}.json`);
+  if (path.dirname(file) !== dir) throw new Error('Release path is outside the releases directory.');
+  return file;
 }
 
 export function validateReleaseRecord(record) {
@@ -16,7 +38,7 @@ export function validateReleaseRecord(record) {
   const issue = (path, code, message) => issues.push({ path, code, message });
   if (!object(record)) return { ok: false, issues: [{ path: '', code: 'invalid_record', message: 'Record must be an object.' }] };
   if (record.schema_version !== 2) issue('schema_version', 'unsupported_version', 'schema_version must be 2.');
-  if (!nonempty(record.release_id)) issue('release_id', 'required', 'release_id must be a nonempty string.');
+  if (!releaseId(record.release_id)) issue('release_id', 'invalid_id', 'release_id must be an alphanumeric identifier up to 64 characters.');
   if (!nonempty(record.environment)) issue('environment', 'required', 'environment must be a nonempty string.');
   if (!Array.isArray(record.tasks) || record.tasks.length === 0 || record.tasks.some(t => !nonempty(t))) {
     issue('tasks', 'required', 'tasks must be a nonempty array of task IDs.');
@@ -43,30 +65,31 @@ export function validateReleaseRecord(record) {
 }
 
 export function listReleases(repoPath) {
-  const dir = releasesDirectory(repoPath);
-  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return [];
+  const dir = safeDirectory(repoPath);
+  if (!dir) return [];
   const entries = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
   const results = [];
   for (const file of entries) {
     try {
-      const content = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-      const validation = validateReleaseRecord(content);
-      if (validation.ok) results.push(content);
+      const content = readRelease(repoPath, file.slice(0, -5));
+      if (content) results.push(content);
     } catch {}
   }
   return results;
 }
 
 export function readRelease(repoPath, releaseId) {
-  if (!nonempty(releaseId)) return null;
-  const file = path.join(releasesDirectory(repoPath), `${releaseId}.json`);
-  if (!fs.existsSync(file)) return null;
+  let fd;
   try {
-    const content = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return validateReleaseRecord(content).ok ? content : null;
+    const file = releaseFile(repoPath, releaseId);
+    if (!file) return null;
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    if (!fs.fstatSync(fd).isFile()) return null;
+    const content = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    return content.release_id === releaseId && validateReleaseRecord(content).ok ? content : null;
   } catch {
     return null;
-  }
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
 export function recordRelease(repoPath, releaseRecord) {
@@ -76,12 +99,14 @@ export function recordRelease(repoPath, releaseRecord) {
     error.issues = validation.issues;
     throw error;
   }
-  const dir = releasesDirectory(repoPath);
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${releaseRecord.release_id}.json`);
-  const tmp = `${file}.${createHash('sha256').update(String(Date.now())).digest('hex').slice(0, 8)}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(releaseRecord, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, file);
+  const file = releaseFile(repoPath, releaseRecord.release_id, true);
+  const tmp = `${file}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(releaseRecord, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
   return releaseRecord;
 }
 

@@ -2,16 +2,14 @@ import { createBoardAgent } from './board-agent.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import { previewDeliveryMigration } from './delivery-preview.js';
-import { deliveryRuntimeStatus, legacyMutationGuard } from './delivery-runtime.js';
+import { deliveryRuntimeStatus, legacyMutationGuard, projectDeliveryTask } from './delivery-runtime.js';
 import { createDeliveryAccess } from './delivery-access.js';
 import { createDeliverySession } from './delivery-session.js';
 import { listCycles, getActiveCycle, createCycle, updateCycleScope, closeCycle, checkWipLimit } from './cycles.js';
-import { listReleases, readRelease, recordRelease, recordRollback, resolveTaskEvidence } from './delivery-releases.js';
+import { listReleases, recordRelease, recordRollback, resolveTaskEvidence } from './delivery-releases.js';
 import { migrateDeliveryBoard, rollbackDeliveryBoard } from './delivery-migration.js';
 import { calculateEpicRollup } from './chunks.js';
 import { deliveryActions } from './delivery.js';
-import { createDeliveryStore } from './delivery-store.js';
-import { deliveryStoreDirectory } from './delivery-paths.js';
 import { deliveryWriterPreflight } from './delivery-writer-preflight.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -190,51 +188,30 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
   const findProject = (name) => listProjects().find((p) => p.name === name);
 
   function makeServerDeliveryResolvers(projectPath) {
-    const jobs = {
-      standard: {
-        command: process.execPath,
-        args: ['-e', 'process.exit(0)'],
-        cwd: projectPath,
-        containment: 'local_process_group',
-      },
-    };
-    const resolveAdmission = (taskId, { backend, source_revision }) => {
-      const preflight = deliveryWriterPreflight(projectPath);
-      if (preflight.blocked) return null;
-      const board = loadBoard(projectPath, { includeArchived: false });
-      const busy = Object.keys(board.runStates || {}).length > 0;
-      return {
-        job_approved: true,
-        writers_fenced: !busy && !preflight.blocked,
-        busy,
-        dependencies_satisfied: true,
-      };
-    };
-    const resolveWorkflow = (taskId, ref) => {
+    const resolveWorkflow = (taskId) => {
       const preflight = deliveryWriterPreflight(projectPath);
       if (preflight.blocked) return null;
       const board = loadBoard(projectPath, { includeArchived: true });
       const card = board.cards.find(c => c.id === taskId);
-      const busy = Object.keys(board.runStates || {}).length > 0;
+      const project = listProjects().find(p => p.path === projectPath);
+      const busy = !project || Object.values(pipeline.getRunStates(project.name)).some(run => run.state === 'running');
       const evidence = resolveTaskEvidence(projectPath, card || { id: taskId });
+      const authored = readCard(projectPath, taskId);
+      const plan = authored?.body.match(/^## Implementation Plan\s*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m)?.[1]?.trim();
+      const deps = card?.dependencyIssues;
 
       return {
         writers_fenced: !busy && !preflight.blocked,
         busy,
         ready: {
           scope_defined: !!(card?.description || card?.title),
-          criteria_defined: Array.isArray(card?.criteria) ? card.criteria.length > 0 : true,
-          validation_plan: true,
-          target_known: true,
-          dependencies_valid: true,
-          planning_approved: true,
+          criteria_defined: card?.criteria?.total > 0,
+          validation_plan: Boolean(plan),
+          target_known: card?.delivery?.completion_policy === 'completed' || Boolean(card?.delivery?.target_environment),
+          dependencies_valid: Boolean(deps) && !deps.missing.length && !deps.unparseable.length && !deps.waiting.length,
+          planning_approved: ['Planned', 'Queue'].includes(authored?.data.status),
         },
-        candidate: evidence.candidate?.head ? evidence.candidate : {
-          head: '0'.repeat(64),
-          clean: true,
-          preserved: true,
-          run_id: 'init-run',
-        },
+        candidate: evidence.candidate,
         checks: evidence.checks,
         review: evidence.review,
         policy_revision: evidence.policy_revision,
@@ -244,7 +221,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
         acceptance: evidence.acceptance,
       };
     };
-    return { jobs, resolveAdmission, resolveWorkflow };
+    return { resolveWorkflow };
   }
 
   async function handleApi(req, res, url) {
@@ -274,7 +251,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       }
       try {
         const resolvers = makeServerDeliveryResolvers(project.path);
-        const session = createDeliverySession(project.path, { enabled: true, credential: sent, jobs: resolvers.jobs, resolveAdmission: resolvers.resolveAdmission, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
         const result = route[2] ? await session[route[2]](route[1], command) : session.read(route[1]);
         const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
         return json(res, status, result);
@@ -303,8 +280,9 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       }
       try {
         const resolvers = makeServerDeliveryResolvers(project.path);
-        const session = createDeliverySession(project.path, { enabled: true, credential: sent, jobs: resolvers.jobs, resolveAdmission: resolvers.resolveAdmission, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
+        const session = createDeliverySession(project.path, { enabled: true, credential: sent, resolveWorkflow: resolvers.resolveWorkflow, remoteCredential: deliveryRemoteCredential, enableReleaseTransitions: true });
         const result = route[2] ? await session[route[2]](route[1], command) : session.readTask(route[1]);
+        if (result.ok && route[2]) broadcast({ type: 'board-changed', project: project.name });
         const status = result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409;
         return json(res, status, result);
       } catch { return json(res, 409, { ok: false, code: 'task_operation_failed' }); }
@@ -511,7 +489,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     if (!project) return json(res, 404, { error: 'unknown project' });
 
     const deliveryCardWrite = url.pathname.match(/^\/api\/cards\/([\w.-]+)(?:\/|$)/);
-    if (deliveryCardWrite && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !url.pathname.includes('/delivery-')) {
+    if (deliveryCardWrite && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !/^\/api\/cards\/[\w.-]+\/delivery-(transition|blocker|assign)$/.test(url.pathname)) {
       const held = legacyMutationGuard(project.path, deliveryCardWrite[1]);
       if (held) return json(res, 409, held);
     }
@@ -718,67 +696,43 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       return json(res, result.ok ? 200 : 400, result);
     }
 
-    const deliveryTransitionMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-transition$/);
-    if (deliveryTransitionMatch && req.method === 'POST') {
+    const deliveryMutation = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-(transition|blocker|assign)$/);
+    if (deliveryMutation && req.method === 'POST') {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
-      const cid = deliveryTransitionMatch[1];
-      const body = await readBody(req);
-      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
-      let parsed;
-      try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-      const { to, reason = '' } = parsed;
-      if (!to) return json(res, 400, { error: 'target state (to) is required' });
-      const card = readCard(project.path, cid);
-      if (!card) return json(res, 404, { error: 'card not found' });
-      const statusMap = {
-        backlog: 'Backlog', ready: 'Planned', in_progress: 'Build', in_review: 'CI',
-        ready_to_release: 'CI', released: 'Done', completed: 'Done', cancelled: 'Backlog',
-      };
-      const delivery = { ...(card.data.delivery || {}), state: to };
-      const updates = { delivery };
-      if (statusMap[to]) updates.status = statusMap[to];
-      const patchRes = await patchFrontmatter(project.path, cid, updates);
-      return json(res, patchRes.ok ? 200 : 400, patchRes);
-    }
-
-    const deliveryBlockerMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-blocker$/);
-    if (deliveryBlockerMatch && req.method === 'POST') {
-      if (!fullAccess) return json(res, 403, { error: 'full access required' });
-      const cid = deliveryBlockerMatch[1];
-      const body = await readBody(req);
-      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
-      let parsed;
-      try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-      const card = readCard(project.path, cid);
-      if (!card) return json(res, 404, { error: 'card not found' });
-      let blocker = null;
-      if (parsed.action !== 'resolve') {
-        blocker = {
-          category: parsed.category || 'product_decision',
-          owner: parsed.owner || 'human:project-owner',
-          since: new Date().toISOString(),
-          evidence: parsed.reason || 'Blocker declared',
-          next_action: parsed.next_action || 'Review and resolve blocker',
-        };
+      const [, cid, action] = deliveryMutation;
+      if (!CARD_ID.test(cid)) return json(res, 400, { error: 'invalid card id' });
+      // Board access does not identify a delivery owner. Require the scoped
+      // credential that the existing durable workflow authenticates afresh.
+      const credential = req.headers['x-todomd-delivery-token'];
+      const count = req.rawHeaders.filter((v, i) => i % 2 === 0 && v.toLowerCase() === 'x-todomd-delivery-token').length;
+      if (count !== 1 || !createDeliveryAccess(project.path, { enabled: true }).authenticate(credential)) {
+        return json(res, 401, { error: 'A valid delivery owner credential is required.' });
       }
-      const patchRes = await patchFrontmatter(project.path, cid, { blocker });
-      return json(res, patchRes.ok ? 200 : 400, { ...patchRes, blocker });
-    }
-
-    const deliveryAssignMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/delivery-assign$/);
-    if (deliveryAssignMatch && req.method === 'POST') {
-      if (!fullAccess) return json(res, 403, { error: 'full access required' });
-      const cid = deliveryAssignMatch[1];
       const body = await readBody(req);
-      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      if (body === null) return json(res, 413, { error: 'body too large' });
       let parsed;
-      try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-      const card = readCard(project.path, cid);
-      if (!card) return json(res, 404, { error: 'card not found' });
-      const ownership = { ...(card.data.ownership || {}), ...(parsed.ownership || {}) };
-      if (parsed.role && parsed.owner) ownership[parsed.role] = parsed.owner;
-      const patchRes = await patchFrontmatter(project.path, cid, { ownership });
-      return json(res, patchRes.ok ? 200 : 400, { ...patchRes, ownership });
+      try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json(res, 400, { error: 'JSON object required' });
+      const common = ['expected_revision', 'idempotency_key'];
+      const fields = { transition: ['to', 'reason'], assign: ['role', 'owner', 'ownership', 'handoff'],
+        blocker: ['action', 'blocker', 'handoff'] };
+      if (Object.keys(parsed).some(k => ![...common, ...fields[action]].includes(k))) return json(res, 400, { error: 'unknown command field' });
+      const command = { expected_revision: parsed.expected_revision, idempotency_key: parsed.idempotency_key };
+      let method = action;
+      if (action === 'blocker') {
+        if (parsed.action !== undefined && !['block', 'resolve'].includes(parsed.action)) return json(res, 400, { error: 'unknown blocker action' });
+        method = parsed.action === 'resolve' ? 'resolve' : 'block';
+        if (method === 'resolve') command.handoff = parsed.handoff;
+        else command.blocker = parsed.blocker;
+      } else {
+        for (const field of fields[action]) if (field in parsed) command[field] = parsed[field];
+      }
+      const session = createDeliverySession(project.path, { enabled: true, credential,
+        ...makeServerDeliveryResolvers(project.path), enableReleaseTransitions: true });
+      const result = session[method](cid, command);
+      if (result.ok) broadcast({ type: 'board-changed', project: project.name });
+      return json(res, result.ok ? 200 : result.code === 'not_authorized' ? 403 : result.code === 'not_initialized' ? 404 : result.code === 'invalid_request' ? 400 : 409,
+        { ...result, ...(!result.ok ? { error: result.message || result.code } : {}) });
     }
 
     // column prompts = the .claude/commands/*.md files. Full token only (editing repo files).
@@ -1055,6 +1009,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     if (cardMatch && req.method === 'GET') {
       const card = readCard(project.path, cardMatch[1]);
       if (!card) return json(res, 404, { error: 'card not found' });
+      card.data = projectDeliveryTask(project.path, card.data);
       const summary = loadBoard(project.path, { includeArchived: true }).cards.find((c) => c.file === card.file);
       let actions = [];
       try {
