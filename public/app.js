@@ -2180,7 +2180,8 @@ function renderRoutingNote(item) {
   const agent = item.agent || `${promptDefaults.agent} (board)`;
   const model = item.model || (promptDefaults.model ? `${promptDefaults.model} (board)` : 'CLI default');
   const effort = item.effort || (promptDefaults.effort ? `${promptDefaults.effort} (board)` : 'CLI default');
-  const workflow = item.workflow === 'ultra_code' ? ' · Ultra Code workflow' : '';
+  const workflow = item.workflow === 'ultra_code' ? ' · Ultra Code workflow'
+    : item.workflow === 'teamwork' ? ' · Teamwork workflow' : '';
   $('#stage-routing-note').textContent = `runs as ${agent} · ${model} · ${effort} effort${workflow} — a card can still override per-card`;
 }
 async function updateRoutingRow(item) {
@@ -2190,7 +2191,9 @@ async function updateRoutingRow(item) {
   $('#stage-agent').value = item.agent || '';
   $('#stage-effort').value = item.effort || '';
   $('#stage-workflow').value = item.workflow || '';
-  $('#stage-workflow-row').hidden = item.column !== 'Build';
+  const ultraOpt = $('#stage-workflow option[value="ultra_code"]');
+  if (ultraOpt) ultraOpt.hidden = item.column !== 'Build';
+  $('#stage-workflow-row').hidden = !['Plan', 'Build', 'Review', 'CI', 'Verify'].includes(item.column);
   $('#stage-route-map').hidden = item.column !== 'Build';
   if (item.column === 'Build') fillRouteMap(item.route_by_complexity || {});
   row.hidden = false;

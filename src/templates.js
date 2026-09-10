@@ -161,6 +161,7 @@ stages:
     model: claude-sonnet-5
     effort: high
     # workflow: ultra_code  # Sonnet at xhigh plus required self-review before Verify
+    # workflow: teamwork    # Gemini with multi-agent teamwork (/teamwork-preview)
     # sandbox: false  # providers with a terminal sandbox only (gemini/agy).
     # The sandbox confines shell commands, not the agent's own edits, and it
     # cannot reach a worktree checkout's git metadata — so a sandboxed Build

@@ -843,8 +843,16 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       if ('model' in fields) updates.model = String(fields.model || '');
       if ('effort' in fields) updates.effort = String(fields.effort || '');
       if ('workflow' in fields) {
-        if (col !== 'Build') return json(res, 400, { error: 'workflow presets are available only for Build' });
+        if (!['Plan', 'Build', 'Review', 'CI', 'Verify'].includes(col)) {
+          return json(res, 400, { error: 'workflow presets are available only for Plan, Build, Review, and Verify' });
+        }
+        if (col !== 'Build' && fields.workflow === 'ultra_code') {
+          return json(res, 400, { error: 'Ultra Code is available only for Build' });
+        }
         updates.workflow = String(fields.workflow || '');
+      }
+      if ('teamwork' in fields) {
+        updates.teamwork = fields.teamwork === true || fields.teamwork === 'true';
       }
       if ('route_by_complexity' in fields) {
         if (col !== 'Build') return json(res, 400, { error: 'route_by_complexity is available only for Build' });
@@ -1157,7 +1165,8 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       }
       if ('model' in fields) updates.model = String(fields.model || '').replace(/[^\w.-]/g, '');
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
-      if ('workflow' in fields) updates.workflow = fields.workflow === 'ultra_code' ? 'ultra_code' : '';
+      if ('workflow' in fields) updates.workflow = ['ultra_code', 'teamwork'].includes(fields.workflow) ? fields.workflow : '';
+      if ('teamwork' in fields) updates.teamwork = fields.teamwork === true || fields.teamwork === 'true';
       if ('build_profile' in fields) {
         const profile = String(fields.build_profile || '');
         if (!['standard', 'long', 'split_required'].includes(profile)) {
