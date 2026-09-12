@@ -247,7 +247,8 @@
       </label>
       <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
       <label class="rail-field">effort <select id="route-effort" class="rail-input"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-      <label class="rail-field">workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select></label>
+      <label class="rail-field">workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Multi-Agent Swarm)</option></select></label>
+      <label id="route-epic-mode-wrap" class="rail-field" hidden>epic build mode <select id="route-epic-mode" class="rail-input"><option value="teamwork">Teamwork Swarm (Unified)</option><option value="chunks">Sequential Chunks (Split)</option></select></label>
       <label class="rail-field">build length <select id="route-build-profile" class="rail-input"><option value="standard">Standard</option><option value="long">Long</option><option value="split_required">Split required</option></select></label>
       <p id="build-profile-hint" class="route-hint"></p>
       <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
@@ -327,7 +328,7 @@
           </label>
           <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
           <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-          <label>workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select></label>
+          <label>workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Multi-Agent Swarm)</option></select></label>
           <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
         </div>
         <label>additional context <textarea name="description" rows="3"></textarea></label>
@@ -367,7 +368,7 @@
         <select id="stage-effort"><option value="">board default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
       </label>
       <label id="stage-workflow-row">workflow
-        <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select>
+        <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Multi-Agent Swarm)</option></select>
       </label>
       <span id="stage-routing-note" class="qr-note"></span>
       <div id="stage-route-map" class="prompt-routing" hidden>

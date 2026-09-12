@@ -91,10 +91,24 @@
       el('ba-pending').append(card);
     }
   }
+  let pendingRefresh = false, pendingSettings = false, reqSeq = 0;
   async function refresh(settings = false) {
-    if (loading) return;
+    if (settings) pendingSettings = true;
+    if (loading) { pendingRefresh = true; return; }
     loading = true;
-    try { render(await request(scopeQuery()), settings); } catch (e) { error(e); } finally { loading = false; }
+    const wantSettings = settings || pendingSettings;
+    pendingSettings = false;
+    pendingRefresh = false;
+    const curSeq = ++reqSeq, curScope = scope;
+    try {
+      const data = await request(scopeQuery());
+      if (curSeq === reqSeq && curScope === scope) render(data, wantSettings);
+    } catch (e) {
+      if (curSeq === reqSeq) error(e);
+    } finally {
+      loading = false;
+      if (pendingRefresh || pendingSettings) refresh(pendingSettings);
+    }
   }
   el('board-agent-open').onclick = async () => {
     dialog.showModal(); error(); await refresh(true);

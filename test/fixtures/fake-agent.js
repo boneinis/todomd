@@ -37,6 +37,9 @@ const argv = process.argv.slice(2);
 if (process.env.FAKE_ARGV_LOG) {
   fs.appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(argv) + '\n');
 }
+if (process.env.FAKE_ENV_LOG) {
+  fs.writeFileSync(process.env.FAKE_ENV_LOG, JSON.stringify({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS }));
+}
 // record the permission bits of the --settings file (the runner deletes it as
 // soon as the run ends, so only the child can see them)
 if (process.env.FAKE_STAT_SETTINGS) {
@@ -70,6 +73,14 @@ const resultEnvelope = (extra = {}) => ({
   ...extra,
 });
 
+async function safeExit(code = 0) {
+  // Empty writes run their callbacks after all preceding output is flushed.
+  // Await at each call site so no other fixture branch executes while draining.
+  await Promise.all([process.stdout, process.stderr].map(stream =>
+    new Promise(resolve => stream.write('', resolve))));
+  process.exit(code);
+}
+
 async function waitBeforeExit() {
   if (process.env.FAKE_BEFORE_EXIT_MARKER) fs.writeFileSync(process.env.FAKE_BEFORE_EXIT_MARKER, 'ready');
   const exitDelay = Number(process.env.FAKE_EXIT_DELAY_MS) || 0;
@@ -87,7 +98,7 @@ if (process.env.FAKE_CORRUPT_CARD) {
   const file = findCard(taskId);
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^title:.*$/m, 'title: Broken: agent title'));
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
-  process.exit(0);
+  await safeExit(0);
 }
 
 // ── quota-once: emit a usage-limit error on the first BUILD run, then behave ──
@@ -95,15 +106,15 @@ if (process.env.FAKE_QUOTA_MARKER && prompt.includes('build') && !fs.existsSync(
   fs.writeFileSync(process.env.FAKE_QUOTA_MARKER, '1');
   emitStream([{ type: 'system', subtype: 'init' },
     resultEnvelope({ subtype: 'error', is_error: true, result: 'usage limit reached — please try again later' })]);
-  process.exit(0);
+  await safeExit(0);
 }
 
 // ── forced-failure modes ──
-if (process.env.FAKE_FAIL === '1') { process.stderr.write('forced failure\n'); process.exit(1); }
+if (process.env.FAKE_FAIL === '1') { process.stderr.write('forced failure\n'); await safeExit(1); }
 if (process.env.FAKE_MAXTURNS_ONCE_MARKER && !fs.existsSync(process.env.FAKE_MAXTURNS_ONCE_MARKER)) {
   fs.writeFileSync(process.env.FAKE_MAXTURNS_ONCE_MARKER, '1');
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope({ subtype: 'error_max_turns', is_error: true })]);
-  process.exit(0);
+  await safeExit(0);
 }
 if (process.env.FAKE_MAXTURNS === '1') {
   if (process.env.FAKE_MAXTURNS_PROGRESS_FILE) {
@@ -112,7 +123,7 @@ if (process.env.FAKE_MAXTURNS === '1') {
     fs.appendFileSync(progressFile, `${Date.now()}-${Math.random()}\n`);
   }
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope({ subtype: 'error_max_turns', is_error: true })]);
-  process.exit(0);
+  await safeExit(0);
 }
 
 // ── raw parsing-test mode: emit a canned sequence incl. a trailing newline-less line ──
@@ -121,7 +132,7 @@ if (process.env.FAKE_MODE === 'parsing') {
   process.stdout.write(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'héllo 日本語' }] }, session_id: session }) + '\n');
   // final result with NO trailing newline — exercises the flush path
   process.stdout.write(JSON.stringify(resultEnvelope()));
-  process.exit(0);
+  await safeExit(0);
 }
 
 const promptLower = prompt.toLowerCase();
@@ -143,12 +154,12 @@ if (process.env.FAKE_RESUME_MISSING && has('--resume')) {
     result: '',
     errors: process.env.FAKE_RESUME_MISSING === 'empty' ? [] : ['No conversation found with session ID: fake-session'],
   })]);
-  process.exit(0);
+  await safeExit(0);
 }
 
 if (prompt.startsWith('TODOMD BOARD AGENT\n')) {
   process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: JSON.parse(process.env.FAKE_BOARD_AGENT_OUTPUT || '{"reply":"Your selected boards are ready for review.","actions":[]}') })));
-  process.exit(0);
+  await safeExit(0);
 }
 
 if (prompt.includes('TODOMD CARD SUMMARY REQUEST')) {
@@ -156,7 +167,7 @@ if (prompt.includes('TODOMD CARD SUMMARY REQUEST')) {
     description_tldr: process.env.FAKE_DESCRIPTION_TLDR || 'The card needs a concise semantic description summary.',
     last_run_tldr: process.env.FAKE_LAST_RUN_TLDR || 'The latest run completed and left a concrete next action.',
   } })]);
-  process.exit(0);
+  await safeExit(0);
 }
 
 if (prompt.includes('TODOMD RECOVERY REVIEW')) {
@@ -166,7 +177,7 @@ if (prompt.includes('TODOMD RECOVERY REVIEW')) {
     diagnosis: process.env.FAKE_RECOVERY_DIAGNOSIS || 'The evidence requires an explicit human decision.',
     handoff: process.env.FAKE_RECOVERY_HANDOFF || '',
   } })));
-  process.exit(0);
+  await safeExit(0);
 }
 
 // ── hang a stage until SIGTERM, so a test can cancel/timeout a LIVE run ──
@@ -228,12 +239,12 @@ if (hangNow &&
   // work but before the child exits and the stage finalizer starts.
   await waitBeforeExit();
   emitStream([{ type: 'system', subtype: 'init' }, { type: 'assistant', message: { content: [{ type: 'text', text: 'planned' }] } }, resultEnvelope()]);
-  process.exit(0);
+  await safeExit(0);
 } else if (stage === 'build') {
   // cwd is the worktree; write code + test, commit on the branch
   if (process.env.FAKE_REQUIRE_FILE && !fs.existsSync(path.join(cwd, process.env.FAKE_REQUIRE_FILE))) {
     process.stderr.write(`preserved file missing: ${process.env.FAKE_REQUIRE_FILE}\n`);
-    process.exit(1);
+    await safeExit(1);
   }
   const mode = process.env.FAKE_BUILD || 'good';
   if (mode === 'docs') {
@@ -253,7 +264,7 @@ if (hangNow &&
       fs.writeFileSync(lock, 'fixture-owned lock');
       fs.writeFileSync(process.env.FAKE_BUILD_INDEX_LOCK, lock);
       emitStream([resultEnvelope({ is_error: true, subtype: 'error', result: `fatal: Unable to create '${lock}': File exists.` })]);
-      process.exit(0);
+      await safeExit(0);
     }
     execFileSync('git', ['commit', '-qm', `${taskId}: add prod`], { cwd });
   }
@@ -264,7 +275,7 @@ if (hangNow &&
   // to spawn with ENOENT on its cwd — distinct from a missing CLI binary
   if (process.env.FAKE_RM_WORKTREE) fs.rmSync(cwd, { recursive: true, force: true });
   emitStream([{ type: 'system', subtype: 'init' }, resultEnvelope()]);
-  process.exit(0);
+  await safeExit(0);
 } else if (stage === 'verify') {
   // A deterministic checkpoint for source changes while Verify is in flight.
   while (process.env.FAKE_VERIFY_RELEASE && !fs.existsSync(process.env.FAKE_VERIFY_RELEASE)) {
@@ -301,7 +312,7 @@ if (hangNow &&
     structured.question = process.env.FAKE_QUESTION;
   }
   process.stdout.write(JSON.stringify(resultEnvelope({ structured_output: structured })));
-  process.exit(0);
+  await safeExit(0);
 } else {
   await waitBeforeExit();
   emitStream([
@@ -311,4 +322,5 @@ if (hangNow &&
       : []),
     resultEnvelope(),
   ]);
+  await safeExit(0);
 }
