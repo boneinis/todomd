@@ -3517,3 +3517,48 @@ test('Epic with teamwork build mode is approved and enqueued into Build directly
   }
 });
 
+test('pinned base_branch is preserved and forked from, even if root checkout is on a peer branch', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const base = git(repo, ['branch', '--show-current']);
+  git(repo, ['checkout', '-b', 'peer-branch']);
+  fs.writeFileSync(path.join(repo, 'peer-marker.txt'), 'peer');
+  git(repo, ['add', 'peer-marker.txt']);
+  git(repo, ['commit', '-m', 'peer commit']);
+
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned', extra: `base_branch: ${base}\n` });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Needs Human' || status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.base_branch, base, 'pinned base_branch must not be overwritten by root branch');
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  if (fs.existsSync(wt)) {
+    assert.equal(fs.existsSync(path.join(wt, 'peer-marker.txt')), false, 'worktree must fork from base, not peer branch');
+  }
+  clearFakeAgent();
+});
+
+test('execConfig reads committed config from targetBase ref if provided, ignoring peer branch HEAD', async () => {
+  const repo = makeRepo();
+  const base = git(repo, ['branch', '--show-current']);
+  fs.writeFileSync(path.join(repo, '.todomd/config.yml'), 'verify_command: npm test\n');
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-m', 'config on base']);
+
+  git(repo, ['checkout', '-b', 'peer-branch']);
+  fs.writeFileSync(path.join(repo, '.todomd/config.yml'), 'verify_command: echo peer-command\n');
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-m', 'config on peer']);
+
+  const headCfg = await pipeline.execConfig(repo);
+  assert.equal(headCfg.verify_command, 'echo peer-command');
+
+  const baseCfg = await pipeline.execConfig(repo, base);
+  assert.equal(baseCfg.verify_command, 'npm test');
+});
+

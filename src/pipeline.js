@@ -606,9 +606,13 @@ function ultraCodeInstructions() {
 // so it needs the identical COMMITTED-config-only treatment.
 const EXEC_KEYS = ['verify_command', 'ci', 'stages', 'default_agent', 'worktree_link', 'escalation', 'build_continuation'];
 
-async function execConfig(repoPath) {
+export async function execConfig(repoPath, targetBase = null) {
   const workingTree = loadConfig(repoPath);
-  const res = await git(repoPath, ['show', 'HEAD:.todomd/config.yml']);
+  const targetRef = (targetBase && targetBase !== 'unknown') ? targetBase : 'HEAD';
+  let res = await git(repoPath, ['show', `${targetRef}:.todomd/config.yml`]);
+  if ((!res.ok || !res.stdout) && targetRef !== 'HEAD') {
+    res = await git(repoPath, ['show', 'HEAD:.todomd/config.yml']);
+  }
   // no committed config at all (fresh `init` before the first commit) — the
   // working tree is all there is, but it cannot opt into remote handling
   if (!res.ok || !res.stdout) return { ...workingTree, ci: { ...workingTree.ci, execution: 'local' } };
@@ -3197,9 +3201,9 @@ async function worktreeValid(worktreeAbs, branch) {
 }
 
 async function buildChain(project, id, retry = null, recovery = null, pendingOwner = null) {
-  const config = await execConfig(project.path);
   const card = readCard(project.path, id);
   if (!card) return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const key = runKey(project.name, id);
   // a retry that arrives while the project is quota-paused (e.g. a concurrent
   // card's verify-fail at concurrency>1) must not spawn against the exhausted
@@ -3255,8 +3259,13 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     // to nothing → stamp the literal 'unknown' so the merge step escalates to
     // Needs Human instead of silently skipping the guard (a MISSING base_branch
     // stays legacy-skip for cards created before this stamping existed).
-    forkedFrom = (await baseBranch(project.path)) || 'unknown';
-    const wt = await withRepoLock(project.path, () => addWorktree(project.path, worktreeAbs, branch));
+    // Preserve an explicit base_branch pinned on the card, rather than
+    // overwriting it with whatever branch the root happens to have checked out.
+    const pinnedBase = (card?.data?.base_branch && card.data.base_branch !== 'unknown')
+      ? card.data.base_branch
+      : null;
+    forkedFrom = pinnedBase || (await baseBranch(project.path)) || 'unknown';
+    const wt = await withRepoLock(project.path, () => addWorktree(project.path, worktreeAbs, branch, forkedFrom));
     if (!wt.ok) return toNeedsHuman(project, id, fromStatus, 'worktree_failed', wt.reason);
     // make the worktree runnable: link gitignored runtime deps from the repo
     linkIntoWorktree(project.path, worktreeAbs, config.worktree_link || ['node_modules']);
