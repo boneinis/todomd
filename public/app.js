@@ -1146,7 +1146,7 @@ async function openDrawer(id) {
   // Subtasks view (epics only) replaces the raw "## Chunks" planner YAML in the
   // main details flow — the fenced block is still reachable in a collapsed,
   // closed-by-default Planner record for auditability.
-  const isEpic = !!card.data.epic;
+  const isEpic = Boolean(card.data.epic || card.data.type === 'epic');
   $('#drawer-tabs').hidden = !isEpic;
   setDrawerTab('details'); // reset so a click-through from a subtask row never lands on a tab the child doesn't have
   const { body: bodyForDisplay, planner } = isEpic ? splitChunksSection(card.body) : { body: card.body, planner: '' };
@@ -1211,7 +1211,13 @@ async function openDrawer(id) {
   const epicModeWrap = $('#route-epic-mode-wrap');
   if (epicModeWrap) {
     epicModeWrap.hidden = !isEpic;
-    $('#route-epic-mode').value = card.data.epic_build_mode || (card.data.teamwork || card.data.workflow === 'teamwork' ? 'teamwork' : 'chunks');
+    if (isEpic) {
+      $('#route-epic-mode').value = card.data.epic_build_mode || (typeof card.data.epic_split === 'boolean'
+        ? (card.data.epic_split ? 'chunks' : 'teamwork')
+        : (card.data.teamwork === true || card.data.workflow === 'teamwork' ? 'teamwork' : 'chunks'));
+    } else {
+      $('#route-epic-mode').value = '';
+    }
   }
   const buildProfile = card.data.build_profile || card.recovery?.build_profile || 'standard';
   $('#route-build-profile').value = buildProfile;
@@ -1564,26 +1570,30 @@ $('#move-apply').addEventListener('click', async () => {
 
 $('#route-save').addEventListener('click', async () => {
   if (!drawerCard) return;
+  const savedCard = drawerCard, savedProject = currentProject, savedSeq = drawerOpenSeq;
   try {
-    const res = await fetch(`/api/cards/${drawerCard}/set?project=${encodeURIComponent(currentProject)}`, {
+    const payload = {
+      agent: $('#route-agent').value,
+      model: $('#route-model').value.trim(),
+      effort: $('#route-effort').value,
+      workflow: $('#route-workflow').value,
+      build_profile: $('#route-build-profile').value,
+      skill: $('#route-skill').value.trim(),
+      assignee: $('#route-assignee').value.trim(),
+    };
+    if (!$('#route-epic-mode-wrap')?.hidden && $('#route-epic-mode')?.value) {
+      payload.epic_build_mode = $('#route-epic-mode').value;
+    }
+    const res = await fetch(`/api/cards/${savedCard}/set?project=${encodeURIComponent(savedProject)}`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        agent: $('#route-agent').value,
-        model: $('#route-model').value.trim(),
-        effort: $('#route-effort').value,
-        workflow: $('#route-workflow').value,
-        epic_build_mode: $('#route-epic-mode')?.value || '',
-        build_profile: $('#route-build-profile').value,
-        skill: $('#route-skill').value.trim(),
-        assignee: $('#route-assignee').value.trim(),
-      }),
+      body: JSON.stringify(payload),
     });
     const out = await res.json();
     toast(res.ok ? 'routing saved' : out.error || 'save failed');
-    if (res.ok) {
+    if (res.ok && currentProject === savedProject) {
       await loadBoard();
-      if (drawerCard) await openDrawer(drawerCard);
+      if (drawerCard === savedCard && drawerOpenSeq === savedSeq) await openDrawer(savedCard);
     }
   } catch {
     toast('server unreachable');

@@ -852,6 +852,7 @@ export function createCard(repoPath, fields) {
     const triaged = fields.triaged ? String(fields.triaged).replace(/[\r\n:]/g, ' ').trim() : '';
     const needsHumanReason = fields.needs_human_reason ? fmScalar(fields.needs_human_reason, '') : '';
     const plan = fields.plan ? String(fields.plan).trim().replace(/^(#{1,6}) /gm, (_, h) => '\\' + h + ' ') : '';
+    const isEpic = Boolean(fields.epic || fields.type === 'epic');
     const content = `---
 id: ${id}
 title: ${fmScalar(title, 'untitled')}
@@ -859,11 +860,11 @@ status: ${status}${needsHumanReason ? `\nneeds_human_reason: ${needsHumanReason}
 type: ${fmScalar(fields.type, 'improvement')}
 priority: ${fmScalar(fields.priority, 'medium')}
 labels: [${labels.join(', ')}]
-dependencies: [${deps.join(', ')}]${parent ? `\nparent: ${parent}` : ''}
+dependencies: [${deps.join(', ')}]${parent ? `\nparent: ${parent}` : ''}${fields.epic ? '\nepic: true' : ''}
 created_date: ${new Date().toISOString().slice(0, 10)}
 source: ${fmScalar(fields.source, 'ui')}
 assignee:${fields.assignee ? ' ' + String(fields.assignee).replace(/[^\w.@ -]/g, '').trim() : ''}
-agent:${['claude', 'codex', 'gemini', 'kimi'].includes(fields.agent) ? ' ' + fields.agent : ''}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? `\neffort: ${fields.effort}` : ''}${['ultra_code', 'teamwork'].includes(fields.workflow) ? `\nworkflow: ${fields.workflow}` : ''}${fields.teamwork ? '\nteamwork: true' : ''}${['teamwork', 'chunks'].includes(fields.epic_build_mode) ? `\nepic_build_mode: ${fields.epic_build_mode}` : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
+agent:${['claude', 'codex', 'gemini', 'kimi'].includes(fields.agent) ? ' ' + fields.agent : ''}${fields.model ? `\nmodel: ${String(fields.model).replace(/[^\w.-]/g, '')}` : ''}${['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? `\neffort: ${fields.effort}` : ''}${['ultra_code', 'teamwork'].includes(fields.workflow) ? `\nworkflow: ${fields.workflow}` : ''}${fields.teamwork ? '\nteamwork: true' : ''}${isEpic && ['teamwork', 'chunks'].includes(fields.epic_build_mode) ? `\nepic_build_mode: ${fields.epic_build_mode}` : ''}${fields.skill ? `\nskill: ${String(fields.skill).replace(/[^\w:-]/g, '')}` : ''}${triaged ? `\ntriaged: ${triaged}` : ''}
 build_profile: ${['long', 'split_required'].includes(fields.build_profile) ? fields.build_profile : 'standard'}
 session_id:
 worktree:

@@ -5,6 +5,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { loadConfig, normalizeConfig, loadBoard, readCard, cardParseFailure, dependencyIssues, readRunLog, moveCard, reorderCards, sortCardsByBoardOrder, patchFrontmatter, appendRunLog, commitCardChanges, withRepoLock, withoutRepoLockContext, parseChunks, setArchived, readLocalPrompt, ensureGitExcluded, cardTldr, explicitCardTldr, descriptionSummarySource, descriptionSummaryHash, readSummaryCache, writeSummaryCache } from './board.js';
 import { materializeChunks, advanceEpicChildren } from './chunks.js';
+import { isEpicCard, resolveCardModes, epicActiveChildren } from './build-mode.js';
 import { isGitRepo, addWorktree, refreshWorktreeBase, archiveBranchForRestart, removeWorktree, mergeBranch, branchTouchesBoard, branchAddedForbidden, linkIntoWorktree, baseBranch, currentBranch, git } from './git.js';
 import { runStage, describeDeniedActions } from './runner.js';
 import { SUPPORTED_VENDORS as SUPPORTED_VENDOR_LIST, validateModelRoute } from './models.js';
@@ -267,9 +268,9 @@ function enqueueQueue(project) {
   try {
     const board = loadBoard(project.path, { includeArchived: true });
     for (const card of sortCardsByBoardOrder(board.cards.filter((c) => !c.archived && c.status === 'Queue'))) {
-      const isTeamwork = Boolean(card?.epic_build_mode === 'teamwork' || card?.teamwork || card?.workflow === 'teamwork');
+      const modes = resolveCardModes(card);
       // epics sit in Queue as trackers unless teamwork build mode is active
-      if (card.id && (!card.epic || isTeamwork) &&
+      if (card.id && modes.buildsDirectly &&
           !queueCardBlocker(card, board.cards) &&
           !children.has(runKey(project.name, card.id)) && !pending.has(runKey(project.name, card.id))) {
         if (enqueueBuild(project, card.id)) enqueued++;
@@ -395,12 +396,25 @@ export async function approvalEligibility(project, card, config = loadConfig(pro
   // Epic approval follows its separate child-cascade path and does not build
   // the epic's own plan or apply the ordinary card dependency gate, UNLESS
   // teamwork build mode is active (where the epic builds directly).
-  const isTeamwork = Boolean(card.data?.epic_build_mode === 'teamwork' || card.data?.teamwork || card.data?.workflow === 'teamwork');
-  if (card.data.epic && !isTeamwork) return { ok: true };
-  if (normalizeBuildProfile(card.data.build_profile) === 'split_required' && !isTeamwork) {
+  const modes = resolveCardModes(card.data, config);
+  if (modes.isEpic) {
+    if (modes.epicBuildMode === 'chunks') return { ok: true };
+    if (modes.epicBuildMode === 'teamwork') {
+      const board = loadBoard(project.path, { includeArchived: true });
+      const activeKids = epicActiveChildren(id, board.cards);
+      if (activeKids.length > 0) {
+        return {
+          ok: false,
+          code: 'epic_active_children',
+          error: `${id} has ${activeKids.length} active child cards (${activeKids.map((c) => c.id).join(', ')}). Cannot approve for unified teamwork build while children exist. Convert or archive child cards first.`,
+        };
+      }
+    }
+  }
+  if (normalizeBuildProfile(card.data.build_profile) === 'split_required' && !modes.teamworkExecution) {
     return { ok: false, error: `${id}'s plan requires splitting before Build. Move it back to Plan so child cards can be created.` };
   }
-  if (parseChunks(card.body).length >= 2 && !isTeamwork && !(card.data?.epic_split === false)) {
+  if (parseChunks(card.body).length >= 2 && modes.epicBuildMode !== 'teamwork') {
     return { ok: false, error: `${id}'s plan was split into chunks that were never materialized (the plan was split into chunks but no chunk cards were created). Re-plan it as a single task, or run \`todomd fanout ${id}\` first.` };
   }
   // Include archived cards so a completed-then-archived dependency still counts.
@@ -424,19 +438,32 @@ function dependencyBlocker(card, cards) {
 
 function queueCardBlocker(card, cards) {
   if (card.parseError) return cardParseFailure(card);
-  const isTeamwork = Boolean(card?.epic_build_mode === 'teamwork' || card?.teamwork || card?.workflow === 'teamwork');
-  if (card.epic && !isTeamwork) return { ok: false, code: 'epic_tracker', error: 'epic tracker — its child cards build separately' };
-  if (card.build_profile === 'split_required' && !isTeamwork) return { ok: false, code: 'split_required', error: 'plan requires splitting before Build' };
-  return dependencyBlocker(card, cards);
+  const modes = resolveCardModes(card);
+  if (modes.isEpic) {
+    if (modes.epicBuildMode === 'chunks') {
+      return { ok: false, code: 'epic_tracker', error: 'epic tracker — its child cards build separately' };
+    }
+    const activeKids = epicActiveChildren(card.id || card.data?.id, cards);
+    if (activeKids.length > 0) {
+      return {
+        ok: false,
+        code: 'epic_active_children',
+        error: `epic has ${activeKids.length} active child cards (${activeKids.map((c) => c.id).join(', ')}) — cannot run unified teamwork build while children are active`,
+      };
+    }
+  } else if (card.build_profile === 'split_required' && !modes.teamworkExecution) {
+    return { ok: false, code: 'split_required', error: 'plan requires splitting before Build' };
+  }
+  return dependencyBlocker(card.data || card, cards);
 }
 
 function stageConfig(config, stageName, card) {
   const stage = (config.stages || {})[stageName] || {};
   const independentStage = ['Plan', 'Verify', 'Recovery'].includes(stageName) && !!stage.agent;
-  const workflow = card?.data?.workflow || stage.workflow || '';
+  const workflow = card?.data?.workflow || card?.workflow || stage.workflow || '';
   let effort = independentStage
     ? (stage.effort || config.default_effort)
-    : (card?.data?.effort || stage.effort || config.default_effort);
+    : (card?.data?.effort || card?.effort || stage.effort || config.default_effort);
   // Ultra Code is the board's high-rigor Build contract, not merely an extra
   // sentence in the prompt. A stale per-card Low/Medium/High override must not
   // silently weaken that contract. Preserve Max, otherwise enforce XHigh as
@@ -447,16 +474,17 @@ function stageConfig(config, stageName, card) {
   // A complexity-routed Build takes the map entry's model (or that provider's
   // default) — never the column's model, which may belong to another provider.
   const routed = complexityRoute(config, card, stageName);
+  const modes = resolveCardModes(card?.data || card, stage);
   return {
     command: stage.command || `todomd-${stageName.toLowerCase()}`,
     // A model selected for the card's Build provider may be invalid for the
     // independent verifier. Prefer Verify's own routing (or provider default).
     model: independentStage ? (stage.model || undefined)
-      : routed ? (card?.data?.model || routed.model)
-        : (card?.data?.model || stage.model || config.default_model),
+      : routed ? (card?.data?.model || card?.model || routed.model)
+        : (card?.data?.model || card?.model || stage.model || config.default_model),
     effort,
     workflow,
-    teamwork: Boolean(card?.data?.teamwork ?? stage.teamwork ?? (workflow === 'teamwork')),
+    teamwork: modes.teamworkExecution,
     // Zero deliberately means "let the provider choose its per-session cap".
     // Build continuations below still turn a provider cap into a checkpoint.
     maxTurns: stage.max_turns ?? 30,
@@ -609,17 +637,32 @@ const EXEC_KEYS = ['verify_command', 'ci', 'stages', 'default_agent', 'worktree_
 export async function execConfig(repoPath, targetBase = null) {
   const workingTree = loadConfig(repoPath);
   const targetRef = (targetBase && targetBase !== 'unknown') ? targetBase : 'HEAD';
-  let res = await git(repoPath, ['show', `${targetRef}:.todomd/config.yml`]);
-  if ((!res.ok || !res.stdout) && targetRef !== 'HEAD') {
-    res = await git(repoPath, ['show', 'HEAD:.todomd/config.yml']);
+  if (targetRef !== 'HEAD') {
+    const check = await git(repoPath, ['rev-parse', '--verify', `${targetRef}^{commit}`]);
+    if (!check.ok) {
+      const err = new Error(`invalid target base ref "${targetRef}": commit does not exist`);
+      err.code = 'invalid_target_base';
+      throw err;
+    }
   }
-  // no committed config at all (fresh `init` before the first commit) — the
-  // working tree is all there is, but it cannot opt into remote handling
-  if (!res.ok || !res.stdout) return { ...workingTree, ci: { ...workingTree.ci, execution: 'local' } };
+  let res = await git(repoPath, ['show', `${targetRef}:.todomd/config.yml`]);
+  // no committed config at all (fresh `init` before the first commit or target base has no config) —
+  // if targetBase was specified, safe defaults are used without importing executable policy from peer HEAD
+  if (!res.ok || !res.stdout) {
+    if (targetRef !== 'HEAD') {
+      const safe = normalizeConfig({});
+      return { ...safe, ci: { ...safe.ci, execution: 'local' } };
+    }
+    return { ...workingTree, ci: { ...workingTree.ci, execution: 'local' } };
+  }
   let committed;
   try {
     committed = normalizeConfig(yaml.load(res.stdout) || {});
   } catch {
+    if (targetRef !== 'HEAD') {
+      const safe = normalizeConfig({});
+      return { ...safe, ci: { ...safe.ci, execution: 'local' } };
+    }
     return { ...workingTree, ci: { ...workingTree.ci, execution: 'local' } }; // remote handling requires a valid committed opt-in
   }
   // Operational keys (mode, concurrency, max_attempts, columns …) still let an
@@ -909,6 +952,82 @@ export async function cascadeEpicCleanup(project, epicId) {
   }
 }
 
+export async function convertEpicMode(project, epicId, targetMode, { archiveChildren = false } = {}) {
+  if (targetMode !== 'teamwork' && targetMode !== 'chunks') {
+    return { ok: false, error: 'invalid_mode', message: `Invalid targetMode: "${targetMode}". Must be "teamwork" or "chunks".` };
+  }
+  if (typeof archiveChildren !== 'boolean') return { ok: false, error: 'invalid_archive_children' };
+  const result = await withRepoLock(project.path, async () => {
+    const held = legacyMutationGuard(project.path, epicId); if (held) return held;
+    const card = readCard(project.path, epicId);
+    if (!card) return { ok: false, error: 'not_found', message: `Card not found: ${epicId}` };
+    if (!isEpicCard(card)) return { ok: false, error: 'not_an_epic', message: `Card ${epicId} is not an epic` };
+
+    if (card.parseError) return cardParseFailure(card);
+    if (card.data.worktree) return { ok: false, error: 'epic_has_candidate', message: 'Resolve the preserved epic candidate before converting its build mode.' };
+    if (card.data.archived || hasLiveRun(project.name, epicId) || scheduler.isQueued(project.name, epicId) || IN_FLIGHT.has(card.data.status)) {
+      return { ok: false, error: 'epic_in_flight', message: 'Stop the epic before converting its build mode.' };
+    }
+
+    const board = loadBoard(project.path, { includeArchived: true });
+    const activeChildren = epicActiveChildren(epicId, board.cards);
+
+    if (targetMode === 'teamwork' && activeChildren.length > 0) {
+      if (!archiveChildren) {
+        return {
+          ok: false,
+          error: 'epic_has_active_children',
+          message: `Epic ${epicId} has ${activeChildren.length} active child card(s). Specify archiveChildren: true to archive them.`,
+          activeChildren: activeChildren.map((c) => c.id),
+        };
+      }
+      for (const child of activeChildren) {
+        const held = legacyMutationGuard(project.path, child.id); if (held) return held;
+        if (child.parseError || child.unparseable) return { ok: false, error: 'child_unparseable', child: child.id };
+        if (child.worktree) return { ok: false, error: 'child_has_candidate', child: child.id,
+          message: 'Resolve the preserved child candidate before converting the epic.' };
+        if (hasLiveRun(project.name, child.id) || scheduler.isQueued(project.name, child.id) || child.status === 'Queue' || IN_FLIGHT.has(child.status)) {
+          return {
+            ok: false,
+            error: 'child_in_flight',
+            message: `Cannot convert epic ${epicId}: child card ${child.id} is active in ${child.status}.`,
+            child: child.id,
+          };
+        }
+      }
+      for (const child of activeChildren) {
+        const released = await releaseCardResources(project, child.id);
+        if (released?.ok === false) return released;
+        const archived = await setArchived(project.path, child.id, true);
+        if (!archived.ok) return archived;
+      }
+      await appendRunLog(project.path, epicId,
+        `- ${now()} · converted to teamwork mode; archived ${activeChildren.length} active child(ren)`);
+    }
+
+    const patched = await patchFrontmatter(project.path, epicId, {
+      epic_build_mode: targetMode,
+      ...(targetMode === 'chunks' ? { epic_split: true } : { epic_split: false }),
+    });
+    if (!patched.ok) return patched;
+    const committed = await commitCardChanges(project.path, epicId, `chore(todomd): convert ${epicId} to ${targetMode} mode`);
+    if (committed?.ok === false) return committed;
+
+    return {
+      ok: true,
+      epicId,
+      targetMode,
+      archivedChildren: targetMode === 'teamwork' && archiveChildren ? activeChildren.map((c) => c.id) : [],
+    };
+  });
+  if (result.ok && readCard(project.path, epicId)?.data.status === 'Queue') {
+    if (targetMode === 'chunks') await advanceChildren(project, epicId);
+    else enqueueQueue(project);
+    scheduler.rescan();
+  }
+  return result;
+}
+
 // The human answered the card's pending question (needs_answer). Thread the Q&A
 // into the next build (via the retry-findings channel the build prompt already
 // injects) and re-drive the card back into the build queue. No live run expected.
@@ -955,7 +1074,7 @@ async function runCardPrompt(project, id, text, claim) {
     sendState(project, id, 'idle');
     return;
   }
-  const config = await execConfig(project.path);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const stage = stageConfig(config, 'Chat', card);
   const vendor = cardVendor(config, card, 'Chat');
   const route = validateModelRoute(vendor, stage.model, config);
@@ -1081,7 +1200,7 @@ async function runRecoveryReview(project, id, claim) {
     return;
   }
   const initialReason = initialCard.data.needs_human_reason || '';
-  const config = await execConfig(project.path);
+  const config = await execConfig(project.path, initialCard?.data?.base_branch);
   const stage = stageConfig(config, 'Recovery', initialCard);
   const vendor = cardVendor(config, initialCard, 'Recovery');
   const route = validateModelRoute(vendor, stage.model, config);
@@ -1252,7 +1371,7 @@ async function generateCardSummaries(project, id, holder) {
     };
   }
 
-  const config = await execConfig(project.path);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const stage = stageConfig(config, 'Chat', card);
   const vendor = cardVendor(config, card, 'Chat');
   const route = validateModelRoute(vendor, stage.model, config);
@@ -1573,7 +1692,7 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
     }
     await patchFrontmatter(project.path, id, { needs_human_reason: '', recovery_stage: '', worktree: '', base_branch: '' });
     const result = await moveCard(project.path, id, 'Review', { reason: 'retriage' });
-    if (card.data.epic) await cascadeEpicCleanup(project, id);
+    if (isEpicCard(card)) await cascadeEpicCleanup(project, id);
     return result;
   }
 
@@ -1593,9 +1712,18 @@ export async function humanMove(project, id, to, { instruction = '' } = {}) {
   if (to === 'Queue') {
     const eligible = await approvalEligibility(project, card, config);
     if (!eligible.ok) return eligible;
-    if (card.data.epic) {
-      const isTeamwork = Boolean(card.data?.epic_build_mode === 'teamwork' || card.data?.teamwork || card.data?.workflow === 'teamwork');
-      if (isTeamwork && (!card.data.children || card.data.children.length === 0 || card.data.epic_build_mode === 'teamwork')) {
+    if (isEpicCard(card)) {
+      const modes = resolveCardModes(card.data, config);
+      if (modes.epicBuildMode === 'teamwork') {
+        const board = loadBoard(project.path, { includeArchived: true });
+        const activeKids = epicActiveChildren(id, board.cards);
+        if (activeKids.length > 0) {
+          return {
+            ok: false,
+            code: 'epic_active_children',
+            error: `Cannot approve epic for unified teamwork build: ${activeKids.length} active child cards exist (${activeKids.map((c) => c.id).join(', ')}). Archive child cards or switch mode to chunks.`,
+          };
+        }
         const moved = await moveCard(project.path, id, 'Queue', { reason: 'epic approved — teamwork build' });
         if (moved.ok && !moved.unchanged && (config.mode || 'launcher') !== 'budget') {
           enqueueBuild(project, id);
@@ -1702,7 +1830,7 @@ export async function reorder(project, id, beforeId = null) {
 // Planned: that route starts a fresh worktree and build attempt.
 async function preservedWorktree(project, card) {
   if (!card?.data?.worktree) return null;
-  const config = await execConfig(project.path);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const worktreeAbs = path.join(project.path, config.worktree_dir || '.todomd/worktrees', card.data.id);
   if (!fs.existsSync(worktreeAbs)) return null;
   if (!(await worktreeValid(worktreeAbs, card.data.worktree))) return null;
@@ -1753,7 +1881,7 @@ export async function recoveryActions(project, id, { ignoreClaim = null } = {}) 
   const delivery = deliveryRuntimeStatus(project.path, id);
   if (!delivery.legacy_execution_allowed) return { ...empty, delivery_runtime: delivery };
   if (!card) return { ...empty, build_profile: 'standard', build_limits: { max_slices: 3, budget_minutes: 60 } };
-  const profile = buildContinuationConfig(await execConfig(project.path), card);
+  const profile = buildContinuationConfig(await execConfig(project.path, card?.data?.base_branch), card);
   const summary = {
     build_profile: profile.profile,
     build_limits: { max_slices: profile.maxSlices, budget_minutes: profile.budgetMinutes },
@@ -1909,7 +2037,7 @@ async function restartBuildClaimed(project, id, admission) {
   if (await preservedWorktree(project, card)) {
     return { ok: false, error: 'preserved work is available — use Resume Build instead' };
   }
-  const config = await execConfig(project.path);
+  const config = await execConfig(project.path, card.data.base_branch);
   const verification = card.data.verification || {};
   const branch = card.data.worktree || `${config.branch_prefix || 'todomd/'}${id}`;
   const archived = await withRepoLock(project.path, () => archiveBranchForRestart(project.path, branch));
@@ -2061,7 +2189,8 @@ export async function cancel(project, id) {
   if (recoveryAdmissions.has(runKey(project.name, id))) {
     return { ok: false, error: 'recovery transition in progress — retry cancellation after it settles' };
   }
-  const config = await execConfig(project.path);
+  const card = readCard(project.path, id);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const key = runKey(project.name, id);
   const live = children.get(key);
   preserveCancelledCandidate(project, id, runs.get(key), config);
@@ -2295,13 +2424,13 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   };
 
   try {
-  const config = await execConfig(project.path);
-  if (await finishPreSpawnCancellation()) return;
   const card = readCard(project.path, id);
   if (!card || card.data.status !== stageName || card.data.archived) {
     sendState(project, id, 'idle');
     return;
   }
+  const config = await execConfig(project.path, card?.data?.base_branch);
+  if (await finishPreSpawnCancellation()) return;
   const stage = stageConfig(config, stageName, card);
   const vendor = cardVendor(config, card, stageName);
   const skill = card.data.skill;
@@ -2323,7 +2452,7 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
   if (structuredCodexPlan) {
     prompt += '\n\nDo not edit files. Return the implementation plan as the required structured output. ' +
       'Set build_profile to standard for an ordinary cohesive task, long for a cohesive task that is likely to need more than three build checkpoints, or split_required when it must become child cards. ' +
-      'Use chunks only when the work genuinely needs two or more independently verifiable child cards. ' +
+      'Teamwork exemption: if this card has epic_build_mode: teamwork, workflow: teamwork, or teamwork: true, this task will be built by an autonomous multi-agent teamwork swarm. Canonical epic_build_mode takes precedence over epic_split and workflow. Do NOT split unified epics; split only when epic_build_mode: chunks or, without a canonical mode, epic_split: true. For unified work return an empty chunks array and provide the unified plan under plan. Otherwise, use chunks only when the work genuinely needs two or more independently verifiable child cards. ' +
       'Set complexity to one of trivial|low|medium|high|very-high: your judgment of implementation difficulty ' +
       '(unfamiliarity, blast radius across consumers, coordination, tricky edge cases), independent of size.';
   } else if (stageName === 'Plan' && !skill) {
@@ -2417,20 +2546,22 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
           // fan it out into sequential child cards; otherwise it's a normal plan
           const chunks = structuredPlan?.chunks || parseChunks(readCard(project.path, id)?.body || '');
           const plannedCard = readCard(project.path, id);
-          const isTeamwork = Boolean(plannedCard?.data?.teamwork || plannedCard?.data?.workflow === 'teamwork' || stage.teamwork || stage.workflow === 'teamwork');
-          const allowSplit = plannedCard?.data?.epic_split === true || plannedCard?.data?.epic_build_mode === 'chunks';
-          const shouldFanOut = chunks.length >= 2 && (!isTeamwork || allowSplit);
+          const planModes = resolveCardModes(plannedCard, stage);
+          const isTeamworkPlan = planModes.isEpic
+            ? planModes.epicBuildMode === 'teamwork'
+            : plannedCard?.data?.epic_split !== true && planModes.teamworkExecution;
+          const shouldFanOut = chunks.length >= 2 && !isTeamworkPlan;
           const plannedProfile = shouldFanOut
             ? 'split_required'
             : normalizeBuildProfile(structuredPlan?.build_profile || plannedCard?.data?.build_profile);
           await patchFrontmatter(project.path, id, {
             build_profile: plannedProfile,
             build_limits: {},
-            ...(isTeamwork && !allowSplit ? { epic_build_mode: 'teamwork' } : {}),
+            ...(planModes.isEpic ? { epic_build_mode: planModes.epicBuildMode } : {}),
             ...(structuredPlan?.complexity ? { complexity: structuredPlan.complexity } : {}),
           });
           if (structuredPlan) {
-            const plan = (isTeamwork && !allowSplit && chunks.length >= 2)
+            const plan = (!shouldFanOut && isTeamworkPlan && chunks.length >= 2)
               ? chunks.map((c, i) => `### Milestone ${i + 1}: ${c.title}\n${c.plan}`).join('\n\n')
               : (chunks.length === 1 ? chunks[0].plan : structuredPlan.plan);
             if (plan) await writeImplementationPlan(project, id, plan);
@@ -2439,11 +2570,11 @@ async function runTriggerStage(project, id, stageName, triggerClaim = null) {
             await fanOutChunks(project, id, chunks);
           } else {
             if (chunks.length >= 1 && !structuredPlan) {
-              const combined = (isTeamwork && chunks.length >= 2)
+              const combined = (isTeamworkPlan && chunks.length >= 2)
                 ? chunks.map((c, i) => `### Milestone ${i + 1}: ${c.title}\n${c.plan}`).join('\n\n')
                 : (chunks[0]?.plan || '');
               await writeImplementationPlan(project, id, combined);
-              await appendRunLog(project.path, id, (isTeamwork && chunks.length >= 2)
+              await appendRunLog(project.path, id, (isTeamworkPlan && chunks.length >= 2)
                 ? `  - note: ${chunks.length} milestones unified into Multi-Agent Teamwork Implementation Plan`
                 : '  - note: single-chunk plan folded into Implementation Plan');
             }
@@ -2781,7 +2912,9 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   const pc = pendingCancelled(project, id);
   if (pc) return revertPendingCancel(project, id, pc, revertArgs);
 
-  const currentConfig = await execConfig(project.path);
+  const candidate = readCard(project.path, id);
+  const base = candidate?.data.base_branch || await baseBranch(project.path);
+  const currentConfig = await execConfig(project.path, base);
   const currentCommand = ciBoardColumn(currentConfig) ? ciCommandForProfile(currentConfig) : String(currentConfig.verify_command || '').trim();
   if ((currentConfig.ci?.execution || 'local') !== (config.ci?.execution || 'local') || currentCommand !== command
       || currentConfig.ci?.statusCommand !== config.ci?.statusCommand) {
@@ -2790,8 +2923,6 @@ async function ciStage(project, id, command, next, pendingOwner = null) {
   }
   // An adapter's docs-only shortcut must never turn an empty candidate green.
   // Enforce the invariant before any adapter (local or remote) is invoked.
-  const candidate = readCard(project.path, id);
-  const base = candidate?.data.base_branch || await baseBranch(project.path);
   const baseCancel = pendingCancelled(project, id);
   if (baseCancel) return revertPendingCancel(project, id, baseCancel, revertArgs);
   if (base === 'unknown') {
@@ -3203,7 +3334,27 @@ async function worktreeValid(worktreeAbs, branch) {
 async function buildChain(project, id, retry = null, recovery = null, pendingOwner = null) {
   const card = readCard(project.path, id);
   if (!card) return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
-  const config = await execConfig(project.path, card?.data?.base_branch);
+  const pinnedBase = (card?.data?.base_branch && card.data.base_branch !== 'unknown')
+    ? card.data.base_branch
+    : null;
+  const targetBase = pinnedBase || (await baseBranch(project.path)) || 'unknown';
+  if (targetBase && targetBase !== 'unknown') {
+    const check = await git(project.path, ['rev-parse', '--verify', `${targetBase}^{commit}`]);
+    if (!check.ok) {
+      return toNeedsHuman(project, id, card?.data?.status || 'Build', 'invalid_base_branch',
+        `target base "${targetBase}" does not exist in repository`, pendingOwner);
+    }
+  }
+  // Resolve and persist the target base BEFORE creating a new candidate worktree
+  if (targetBase && card?.data?.base_branch !== targetBase) {
+    await patchFrontmatter(project.path, id, { base_branch: targetBase });
+  }
+  let config;
+  try {
+    config = await execConfig(project.path, targetBase === 'unknown' ? null : targetBase);
+  } catch (err) {
+    return toNeedsHuman(project, id, card?.data?.status || 'Build', 'invalid_base_branch', err.message, pendingOwner);
+  }
   const key = runKey(project.name, id);
   // a retry that arrives while the project is quota-paused (e.g. a concurrent
   // card's verify-fail at concurrency>1) must not spawn against the exhausted
@@ -3261,12 +3412,9 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
     // stays legacy-skip for cards created before this stamping existed).
     // Preserve an explicit base_branch pinned on the card, rather than
     // overwriting it with whatever branch the root happens to have checked out.
-    const pinnedBase = (card?.data?.base_branch && card.data.base_branch !== 'unknown')
-      ? card.data.base_branch
-      : null;
-    forkedFrom = pinnedBase || (await baseBranch(project.path)) || 'unknown';
+    forkedFrom = targetBase;
     const wt = await withRepoLock(project.path, () => addWorktree(project.path, worktreeAbs, branch, forkedFrom));
-    if (!wt.ok) return toNeedsHuman(project, id, fromStatus, 'worktree_failed', wt.reason);
+    if (!wt.ok) return toNeedsHuman(project, id, fromStatus, 'worktree_failed', wt.reason, pendingOwner);
     // make the worktree runnable: link gitignored runtime deps from the repo
     linkIntoWorktree(project.path, worktreeAbs, config.worktree_link || ['node_modules']);
   }
@@ -3611,7 +3759,8 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
 }
 
 async function diagnoseEscalation(project, id, attempt, worktreeAbs, findings, escalation) {
-  const config = await execConfig(project.path);
+  const card = readCard(project.path, id);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const route = validateModelRoute(escalation.diagnosis.agent, escalation.diagnosis.model, config);
   if (!route.ok) return { ok: false, reason: 'routing_error', detail: route.error };
   const prompt = `You are TODOMD's escalation diagnostician. Task ${id} has failed two independent verification rounds. Do not edit code. Read the task, the current worktree, and the prior findings below. Return a concise root-cause diagnosis and a concrete repair strategy for the next build agent.\n\nPrior verification findings:\n${findings}`;
@@ -3649,7 +3798,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (!card) return sendState(project, id, 'idle', undefined, undefined, pendingOwner);
   if (!withinAttemptBudget(attempt, maxAttempts)) return toNeedsHuman(project, id, 'Verify', 'attempts_exhausted',
     'Verification admission refused because the recorded attempt exceeds its approved budget.', pendingOwner);
-  const config = await execConfig(project.path);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const stage = stageConfig(config, 'Verify', card);
   const vendor = cardVendor(config, card, 'Verify');
   const route = validateModelRoute(vendor, stage.model, config);
@@ -3937,7 +4086,7 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
         `merge refused. Check out ${forkedFrom}, then retry verification on the preserved candidate.`);
     }
     const merged = await withRepoLock(project.path, async () => {
-      const latest = await execConfig(project.path);
+      const latest = await execConfig(project.path, forkedFrom);
       if (forkedFrom && await currentBranch(project.path) !== forkedFrom) {
         return { ok: false, targetMoved: true, reason: `Check out ${forkedFrom}, then retry verification on the preserved candidate.` };
       }
@@ -4035,7 +4184,7 @@ export async function maybeTriage(project, id) {
   bumpRunGeneration(project.name, id);
 
   try {
-    const config = await execConfig(project.path);
+    const config = await execConfig(project.path, card?.data?.base_branch);
     const t = config.triage || {};
     if (t.enabled === false) return;
     if ((config.mode || 'launcher') === 'budget') return; // dispatcher's job there
@@ -4204,7 +4353,7 @@ async function restorePostBuildCheckpoint(project, summary, branch, worktreeAbs)
   const dirty = await git(worktreeAbs, ['status', '--porcelain']);
   if (!dirty.ok || dirty.stdout) return false;
 
-  const config = await execConfig(project.path);
+  const config = await execConfig(project.path, card?.data?.base_branch);
   const verification = card.data.verification || {};
   const attempt = Math.max(1, Number(verification.attempts) || 1);
   const maxAttempts = Number(verification.max_attempts) || config.max_attempts || 3;
@@ -4308,7 +4457,7 @@ export async function reconcileOnBoot() {
             const status = await git(wtAbs, ['status', '--porcelain']);
             worktreeHasChanges = !status.ok || !!status.stdout;
           }
-          const executionConfig = await execConfig(project.path);
+          const executionConfig = await execConfig(project.path, card.base_branch);
           const remoteCommand = ciBoardColumn(executionConfig) ? ciCommandForProfile(executionConfig) : String(executionConfig.verify_command || '').trim();
           const remoteInterrupted = executionConfig.ci?.execution === 'remote' &&
             (card.status === 'CI' || (card.status === 'Verify' &&
@@ -4360,8 +4509,8 @@ export async function reconcileOnBoot() {
       // an approved epic re-releases any ready chunk (a crash between epic
       // approval and the chunk-1 enqueue would otherwise strand it in Planned)
       for (const card of board.cards) {
-        const isTeamwork = Boolean(card.epic_build_mode === 'teamwork' || card.teamwork || card.workflow === 'teamwork');
-        if (card.epic && card.status === 'Queue' && !isTeamwork) await advanceChildren(project, card.id);
+        const modes = resolveCardModes(card);
+        if (modes.isEpic && card.status === 'Queue' && modes.epicBuildMode === 'chunks') await advanceChildren(project, card.id);
       }
       // re-triage anything now eligible (incl. the transient-failure cards just reset)
       triageSweep(project);
@@ -4608,8 +4757,8 @@ export async function kickQueue(project) {
     : (config.mode || 'launcher') === 'budget' ? { code: 'budget_mode', error: 'budget-mode work is started by its dispatcher' } : null;
   if (!gate) {
     for (const card of loadBoard(project.path).cards) {
-      const isTeamwork = Boolean(card.epic_build_mode === 'teamwork' || card.teamwork || card.workflow === 'teamwork');
-      if (card.epic && card.status === 'Queue' && !isTeamwork) await advanceChildren(project, card.id);
+      const modes = resolveCardModes(card);
+      if (modes.isEpic && card.status === 'Queue' && modes.epicBuildMode === 'chunks') await advanceChildren(project, card.id);
     }
   }
   const board = loadBoard(project.path, { includeArchived: true });

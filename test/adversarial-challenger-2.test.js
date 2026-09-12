@@ -1,4 +1,5 @@
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,6 +17,16 @@ import { createDeliveryStore } from '../src/delivery-store.js';
 import { calculateEpicRollup } from '../src/chunks.js';
 import { dependencyIssues } from '../src/board.js';
 import { runStage } from '../src/runner.js';
+
+// Unit/CI runs use a deterministic CLI. Authenticated provider delegation is a
+// separate release gate, so these tests also run on clean Linux installations.
+const originalGeminiBin = process.env.TODOMD_GEMINI_BIN;
+before(() => { process.env.TODOMD_GEMINI_BIN = fileURLToPath(new URL('./fixtures/fake-gemini.js', import.meta.url)); });
+after(() => {
+  if (originalGeminiBin === undefined) delete process.env.TODOMD_GEMINI_BIN;
+  else process.env.TODOMD_GEMINI_BIN = originalGeminiBin;
+});
+
 
 function setupDeliveryTask(repo, taskId, { state = 'backlog', cycle_id = null, owner = 'agent-role:dev', lease = null, execution = null } = {}) {
   const dir = deliveryStoreDirectory(repo);
@@ -490,9 +501,8 @@ describe('Adversarial Stress Testing: calculateEpicRollup & dependencyIssues', (
 
 });
 
-describe('Adversarial Stress Testing: Gemini Teamwork CLI with /Users/irvinbowman/.local/bin/agy', () => {
+describe('Adversarial Stress Testing: Gemini Teamwork CLI adapter', () => {
 
-  const AGY_BIN = '/Users/irvinbowman/.local/bin/agy';
 
   test('ADV-3.1: Slash command flag and /teamwork-preview prefixing rules', async () => {
     // Test prefixing and args generation behavior via runStage

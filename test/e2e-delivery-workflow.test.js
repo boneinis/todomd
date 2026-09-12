@@ -1,4 +1,5 @@
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,6 +44,16 @@ import {
   validateDeliveryTask,
   DELIVERY_STATES,
 } from '../src/delivery.js';
+
+
+// Unit/CI runs use a deterministic CLI. Authenticated provider delegation is a
+// separate release gate, so these tests also run on clean Linux installations.
+const originalGeminiBin = process.env.TODOMD_GEMINI_BIN;
+before(() => { process.env.TODOMD_GEMINI_BIN = fileURLToPath(new URL('./fixtures/fake-gemini.js', import.meta.url)); });
+after(() => {
+  if (originalGeminiBin === undefined) delete process.env.TODOMD_GEMINI_BIN;
+  else process.env.TODOMD_GEMINI_BIN = originalGeminiBin;
+});
 
 // ============================================================================
 // Test Fixture Helpers
@@ -604,8 +615,8 @@ describe('Tier 1: Feature Coverage for Evidence Verification & Delivery Workflow
     assert.equal(issues2.waiting[0].id, 'task-dep-pnd');
   });
 
-  test('F13: Real agy CLI teamwork execution with /teamwork-preview and prompt prefixing', async () => {
-    // Real end-to-end execution against installed system agy CLI
+  test('F13: Gemini CLI adapter teamwork execution with /teamwork-preview and prompt prefixing', async () => {
+    // Adapter execution against the deterministic Gemini fixture
     const run = runStage({
       vendor: 'gemini',
       stage: 'Plan',
@@ -615,7 +626,7 @@ describe('Tier 1: Feature Coverage for Evidence Verification & Delivery Workflow
     });
 
     const result = await run.done;
-    assert.equal(result.exitCode, 0, 'Real agy CLI execution must exit with code 0');
+    assert.equal(result.exitCode, 0, 'Gemini CLI adapter execution must exit with code 0');
     assert.equal(result.envelope?.is_error, false, 'Result envelope must report non-error');
     assert.equal(result.envelope?.subtype, 'success', 'Envelope subtype must be success');
     assert.ok(result.sessionId, 'Session ID must be recorded from conversation');
@@ -1210,8 +1221,8 @@ describe('Tier 4: Real-World Application Scenarios', () => {
     assert.equal(rollup.released, 1);
   });
 
-  test('Scenario 5: Real agy CLI teamwork slash command execution with streaming JSON events', async () => {
-    // Full real execution of runner with teamwork enabled
+  test('Scenario 5: Gemini CLI adapter teamwork slash command execution with streaming JSON events', async () => {
+    // Runner execution with teamwork enabled
     const events = [];
     const run = runStage({
       vendor: 'gemini',

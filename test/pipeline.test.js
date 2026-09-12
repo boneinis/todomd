@@ -2949,7 +2949,9 @@ for (const missing of ['empty', '1']) {
       await pipeline.humanMove(p, 'task-0001', 'Queue');
       await until(() => ['Done', 'Needs Human'].includes(status(repo, 'task-0001')), { timeout: BUDGET.chain });
       const card = readCard(repo, 'task-0001');
-      assert.equal(card.data.status, 'Done', card.raw);
+      const freshLog = path.join(repo, '.todomd/runs/task-0001/build-2-fresh.jsonl');
+      const diagnostics = fs.existsSync(freshLog) ? fs.readFileSync(freshLog, 'utf8') : '';
+      assert.equal(card.data.status, 'Done', card.raw + '\nFresh Build diagnostics:\n' + diagnostics);
       assert.equal(card.data.verification.attempts, 2, 'fresh fallback stays on the same retry attempt');
       assert.equal(card.data.session_id, 'fake-session-0001');
       const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
@@ -2962,6 +2964,7 @@ for (const missing of ['empty', '1']) {
       assert.match(card.raw, /resume session unavailable; retrying fresh/);
     } finally {
       delete process.env.TODOMD_CODEX_BIN;
+      delete process.env.FAKE_CODEX_FAIL_ONCE;
       clearFakeAgent();
     }
   });
@@ -3484,7 +3487,7 @@ test('Plan with teamwork unifies chunks into multi-agent implementation plan wit
     await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
     const card = readCard(repo, 'task-0001');
     assert.equal(card.data.status, 'Planned');
-    assert.equal(card.data.epic_build_mode, 'teamwork');
+    assert.equal(card.data.epic_build_mode, undefined, 'ordinary teamwork cards do not acquire epic-only metadata');
     assert.ok(card.body.includes('Milestone 1: Chunk 1'));
     assert.ok(card.body.includes('Milestone 2: Chunk 2'));
     const board = loadBoard(repo);

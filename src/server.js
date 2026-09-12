@@ -30,6 +30,7 @@ import { createMetadataScheduler } from './github-sync.js';
 import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction, invalidateProject as invalidateVoiceProject } from './voice.js';
 import { createRealtimeSession } from './realtime.js';
 import { sanitizeAssignee, resolveAttachmentFile } from './api-shared.js';
+import { cardInconsistency } from './build-mode.js';
 
 const FILE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -1161,9 +1162,11 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
         const fullCard = { id: cardMatch[1], ...card.data };
         actions = deliveryActions(fullCard);
       } catch {}
+      const inconsistency = cardInconsistency(card);
       return json(res, 200, { ...card, dependencyIssues: summary?.dependencyIssues,
         delivery_runtime: deliveryRuntimeStatus(project.path, cardMatch[1]),
         delivery_actions: actions,
+        ...(inconsistency ? { repair_candidate: inconsistency } : {}),
         recovery: card.parseError ? {} : await pipeline.recoveryActions(project, cardMatch[1]) });
     }
     // the streamed events of the card's most recent run, to back-fill the drawer
@@ -1253,6 +1256,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
         return json(res, 400, { error: 'run in progress — cancel it first' });
       }
       const current = readCard(project.path, setMatch[1]);
+      const isEpic = Boolean(current?.data?.epic || current?.data?.type === 'epic');
       const updates = {};
       if ('agent' in fields) {
         // '' / 'auto' unpins the card: Build then follows the column's routing
@@ -1267,7 +1271,13 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       if ('effort' in fields) updates.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(String(fields.effort || '')) ? fields.effort : '';
       if ('workflow' in fields) updates.workflow = ['ultra_code', 'teamwork'].includes(fields.workflow) ? fields.workflow : '';
       if ('teamwork' in fields) updates.teamwork = fields.teamwork === true || fields.teamwork === 'true';
-      if ('epic_build_mode' in fields) updates.epic_build_mode = ['teamwork', 'chunks'].includes(fields.epic_build_mode) ? fields.epic_build_mode : '';
+      if ('epic_build_mode' in fields) {
+        if (isEpic) {
+          updates.epic_build_mode = ['teamwork', 'chunks'].includes(fields.epic_build_mode) ? fields.epic_build_mode : '';
+        } else if (current?.data?.epic_build_mode) {
+          updates.epic_build_mode = '';
+        }
+      }
       if ('build_profile' in fields) {
         const profile = String(fields.build_profile || '');
         if (!['standard', 'long', 'split_required'].includes(profile)) {
@@ -1286,6 +1296,20 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       const route = validateModelRoute(effectiveAgent, effectiveModel, loadConfig(project.path));
       if (!route.ok) return json(res, 400, { error: route.error });
       const result = await patchFrontmatter(project.path, setMatch[1], updates);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+    const convertEpicModeMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/convert-epic-mode$/);
+    if (convertEpicModeMatch && req.method === 'POST') {
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: 'body too large (1 MB max)' });
+      let targetMode, archiveChildren = false;
+      try {
+        ({ target_mode: targetMode, archive_children: archiveChildren = false } = JSON.parse(body || '{}'));
+      } catch {
+        return json(res, 400, { error: 'invalid JSON body' });
+      }
+      if (!targetMode) return json(res, 400, { error: 'target_mode is required (teamwork or chunks)' });
+      const result = await pipeline.convertEpicMode(project, convertEpicModeMatch[1], targetMode, { archiveChildren });
       return json(res, result.ok ? 200 : 400, result);
     }
     const cancelMatch = url.pathname.match(/^\/api\/cards\/([\w.-]+)\/cancel$/);

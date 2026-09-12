@@ -62,3 +62,17 @@ test('persistent lock preserves staged paths and can be resumed after its owner 
   fs.unlinkSync(lock);
   assert.equal((await retryStagedCommit(repo, 'candidate')).ok, true);
 });
+
+test('progress snapshots never refresh the index for a touched but unchanged tracked file', async () => {
+  const repo = makeRepo({ automaticMaintenance: false });
+  const file = path.join(repo, 'src/calc.js');
+  const index = path.join(repo, '.git/index');
+  const before = fs.readFileSync(index);
+  const stamp = fs.statSync(index).mtimeMs;
+  const touched = new Date(Date.now() + 2000);
+  fs.utimesSync(file, touched, touched);
+  const snapshot = await progressSnapshot(repo);
+  assert.equal(snapshot.changed, 0);
+  assert.deepEqual(fs.readFileSync(index), before, 'read-only progress must not update cached file stats');
+  assert.equal(fs.statSync(index).mtimeMs, stamp);
+});

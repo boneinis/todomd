@@ -59,7 +59,7 @@ export async function materializeChunks(repoPath, epicId, chunks) {
     await moveCard(repoPath, epicId, 'Planned', { reason: 'split produced no chunks; kept as one card' });
     return ids;
   }
-  await patchFrontmatter(repoPath, epicId, { epic: true, children: ids });
+  await patchFrontmatter(repoPath, epicId, { epic: true, epic_build_mode: 'chunks', children: ids });
   await appendRunLog(repoPath, epicId,
     `- ${now()} · Plan · split into ${ids.length} ${usedDag ? 'chunks (DAG)' : 'sequential chunks'}: ${ids.join(' → ')}`);
   await moveCard(repoPath, epicId, 'Planned', { reason: `split into ${ids.length} chunks` });

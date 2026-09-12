@@ -138,7 +138,21 @@ export function runStage(opts) {
   };
 }
 
-export function claudeTeamworkInstructions() {
+export function claudeTeamworkInstructions({ stage, reviewOnly } = {}) {
+  if (stage === 'Plan') {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork - Plan Stage)
+You are leading an autonomous multi-agent planning team for this task. This stage is strictly read-only; do not edit project source files.
+1. **Lead Architect**: Analyze the task requirements and architecture. Formulate a cohesive, milestone-driven implementation plan for the upcoming build swarm.
+2. **Read-Only Inspector**: Perform targeted inspection of relevant modules, interfaces, and dependencies to validate assumptions.
+3. **Synthesis & Review**: Ensure the plan covers all acceptance criteria, milestones, invariants, and edge cases before outputting the final plan.\n`;
+  }
+  if (stage === 'Verify' || reviewOnly) {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork - Review Stage)
+You are leading an autonomous multi-agent review team for this task. This stage is strictly read-only; do not edit files or execute destructive commands.
+1. **Diff Inspector**: Independently inspect candidate diffs and git history against the acceptance criteria.
+2. **Adversarial Auditor**: Hunt for boundary regressions, missing awaits, unhandled edge cases, and concurrency hazards.
+3. **Verdict Synthesizer**: Deliver an objective, evidence-based verification review.\n`;
+  }
   return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork)
 You are leading an autonomous multi-agent engineering team for this task. Execute using the following phases:
 1. **Lead Architect**: Decompose this objective into concrete milestones, identify cross-file dependencies, invariants to protect, and edge cases.
@@ -147,7 +161,21 @@ You are leading an autonomous multi-agent engineering team for this task. Execut
 4. **Integration & Verification**: Run the project's verification and test suites. Do not declare completion until all criteria are satisfied and tests pass cleanly.\n`;
 }
 
-export function codexTeamworkInstructions() {
+export function codexTeamworkInstructions({ stage, reviewOnly } = {}) {
+  if (stage === 'Plan') {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork - Plan Stage)
+You are acting as an autonomous multi-agent planning swarm. This stage is read-only; do not edit project files.
+1. **Architect & Decomposer**: Analyze requirements and outline cohesive implementation milestones for the future build swarm.
+2. **Inspector**: Inspect relevant files and signatures to ensure technical feasibility.
+3. **Planner**: Return the comprehensive implementation plan.\n`;
+  }
+  if (stage === 'Verify' || reviewOnly) {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork - Review Stage)
+You are acting as an autonomous multi-agent review swarm. This review is read-only; do not modify files.
+1. **Diff Auditor**: Inspect the candidate diff against the requirements and acceptance criteria.
+2. **Critic & Adversary**: Check for subtle regression bugs, boundary edge cases, and integration defects.
+3. **Verification Evaluator**: Formulate the independent verification assessment.\n`;
+  }
   return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork)
 You are acting as an autonomous multi-agent teamwork swarm. Execute using the following phases:
 1. **Architect & Decomposer**: Outline milestones, affected files, and edge-case risks.
@@ -169,6 +197,7 @@ function runClaude({
   prompt,
   model,
   effort,
+  stage,
   maxTurns,
   allowedTools = [],
   permissionMode = 'acceptEdits',
@@ -189,7 +218,7 @@ function runClaude({
   args.push('-p');
   if (resume) args.push('--resume', resume);
   const effectivePrompt = teamwork && !prompt.includes('## Multi-Agent Teamwork Orchestration Protocol')
-    ? prompt + claudeTeamworkInstructions()
+    ? prompt + claudeTeamworkInstructions({ stage, reviewOnly })
     : prompt;
   args.push(effectivePrompt);
   args.push('--output-format', streaming ? 'stream-json' : 'json');
@@ -217,9 +246,11 @@ function runClaude({
   const env = teamwork
     ? { ...process.env, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }
     : process.env;
-  const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
+  const executable = process.env.TODOMD_CLAUDE_BIN || 'claude';
+  const child = spawn(executable, args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
 
-  const log = streaming && logFile ? openLog(logFile) : null;
+  const log = logFile ? openLog(logFile) : null;
+  log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
 
   child.stdout.setEncoding('utf8'); // decode multibyte chars across chunk boundaries
   const done = new Promise((resolve) => {
@@ -256,8 +287,21 @@ function runClaude({
     child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
 
     child.on('error', (err) => {
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode: -1,
+        spawnError: err.code || String(err),
+        stderr,
+        finalMessage: '',
+        structuredOutput: null,
+        teamwork: Boolean(teamwork),
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+      }
       cleanup();
-      resolve({ envelope: null, sessionId, exitCode: -1, spawnError: err.code || String(err), stderr });
+      resolve({ envelope: null, sessionId, exitCode: -1, spawnError: err.code || String(err), stderr, diagnostic });
     });
     child.on('close', (code) => {
       if (streaming) {
@@ -265,12 +309,28 @@ function runClaude({
       } else {
         try { envelope = JSON.parse(stdoutBuf); } catch { /* leave null */ }
       }
+      const finalMessage = envelope?.result || (typeof envelope?.content === 'string' ? envelope.content : '') || '';
+      const structuredOutput = envelope?.structured_output ?? null;
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode: code,
+        spawnError: null,
+        stderr,
+        finalMessage,
+        structuredOutput,
+        teamwork: Boolean(teamwork),
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+      }
       cleanup();
       resolve({
         envelope,
         sessionId: envelope?.session_id || sessionId,
         exitCode: code,
         stderr: stderr.slice(0, 2000),
+        diagnostic,
       });
     });
 
@@ -336,7 +396,7 @@ function runCodex({
     args.push('--output-schema', schemaFile, '--output-last-message', outFile);
   }
   const effectivePrompt = teamwork && !prompt.includes('## Multi-Agent Teamwork Orchestration Protocol')
-    ? prompt + codexTeamworkInstructions()
+    ? prompt + codexTeamworkInstructions({ stage, reviewOnly })
     : prompt;
   args.push(effectivePrompt);
 
