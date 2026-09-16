@@ -9,6 +9,7 @@ import { runStage, stopHookSettings, describeDeniedActions, normalizeDeniedActio
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-agent.js');
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
 const FAKE_GEMINI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-gemini.js');
+const FAKE_DEVIN = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-devin.js');
 
 test('stream-json: captures session id, final envelope, and flushes a trailing newline-less event', async () => {
   process.env.TODOMD_CLAUDE_BIN = FAKE;
@@ -542,4 +543,98 @@ test('Codex with teamwork injects multi-agent protocol and reports teamwork in d
   } finally {
     delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
   }
+});
+
+test('Devin Build runs headless with every tool pre-approved, no terminal sandbox, and reads metrics from the transcript', async () => {
+  process.env.TODOMD_DEVIN_BIN = FAKE_DEVIN;
+  const dir = tmp('devin-build');
+  const argvLog = path.join(dir, 'argv.json');
+  const runLog = path.join(dir, 'run.jsonl');
+  process.env.FAKE_DEVIN_ARGV_LOG = argvLog;
+  const events = [];
+  const result = await runStage({
+    vendor: 'devin', stage: 'Build', cwd: dir, prompt: 'build', terminalSandbox: false,
+    model: 'swe-2', effort: 'high', logFile: runLog, onEvent: (e) => events.push(e),
+  }).done;
+  delete process.env.TODOMD_DEVIN_BIN; delete process.env.FAKE_DEVIN_ARGV_LOG;
+
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  const sent = argv[argv.indexOf('-p') + 1];
+  assert.ok(sent.startsWith('build'), 'the stage prompt comes first');
+  assert.ok(sent.includes(`task worktree at ${dir}`), 'the prompt names the workspace');
+  assert.ok(sent.includes('commit your candidate'), 'Build is told it may commit');
+  assert.deepEqual(argv.slice(argv.indexOf('--permission-mode'), argv.indexOf('--permission-mode') + 2), ['--permission-mode', 'dangerous']);
+  assert.deepEqual(argv.slice(argv.indexOf('--respect-workspace-trust'), argv.indexOf('--respect-workspace-trust') + 2),
+    ['--respect-workspace-trust', 'false'], 'a fresh worktree is untrusted and print mode cannot prompt');
+  assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'swe-2-high'],
+    'a bare family id takes the configured effort as its suffix');
+  assert.equal(argv.includes('--sandbox'), false);
+  assert.ok(argv.includes('--export'), 'the transcript is requested');
+  assert.equal(fs.existsSync(argv[argv.indexOf('--export') + 1]), false, 'the transcript temp file is removed');
+  assert.equal(result.sessionId, 'fake-devin-session');
+  assert.equal(result.provider, 'devin');
+  assert.equal(result.envelope.subtype, 'success');
+  assert.equal(result.envelope.num_turns, 2, 'one turn per agent step');
+  assert.equal(result.envelope.result, 'candidate committed');
+  assert.equal(result.executionType, 'subscription_cli');
+  assert.equal(result.usage.input_tokens, 40);
+  assert.equal(result.usage.cached_input_tokens, 15);
+  assert.equal(result.usage.output_tokens, 9);
+  assert.equal(result.model, 'swe-2-high');
+  assert.ok(events.some((e) => e.type === 'turn.completed'));
+  const lines = fs.readFileSync(runLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines[0].type, 'runner-invocation');
+  assert.equal(lines[0].permissionMode, 'dangerous');
+  assert.equal(lines.filter((l) => l.type === 'devin.step').length, 4, 'system prompts are not logged, the run is');
+  assert.equal(lines.at(-1).type, 'runner-diagnostic');
+});
+
+test('Devin Verify is read-only, sandboxed by default, and parses a fenced JSON reply as structured output', async () => {
+  process.env.TODOMD_DEVIN_BIN = FAKE_DEVIN;
+  const dir = tmp('devin-verify');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_DEVIN_ARGV_LOG = argvLog;
+  const result = await runStage({
+    vendor: 'devin', stage: 'Verify', cwd: dir, prompt: 'verify', model: 'swe-2-high', effort: 'max',
+    jsonSchema: { type: 'object', required: ['verdict'] },
+  }).done;
+  delete process.env.TODOMD_DEVIN_BIN; delete process.env.FAKE_DEVIN_ARGV_LOG;
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.deepEqual(argv.slice(argv.indexOf('--permission-mode'), argv.indexOf('--permission-mode') + 2), ['--permission-mode', 'auto']);
+  assert.ok(argv.includes('--sandbox'));
+  assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'swe-2-high'],
+    'an explicit effort suffix on the model id wins over the stage effort');
+  assert.ok(argv[argv.indexOf('-p') + 1].includes('"required":["verdict"]'), 'the schema travels in the prompt');
+  assert.equal(result.envelope.subtype, 'success');
+  assert.equal(result.envelope.structured_output.verdict, 'pass');
+  assert.equal(result.diagnostic.structuredOutput.verdict, 'pass');
+});
+
+test('Devin resume, failure exit, and a missing transcript are all reported faithfully', async () => {
+  process.env.TODOMD_DEVIN_BIN = FAKE_DEVIN;
+  const dir = tmp('devin-fail');
+  const argvLog = path.join(dir, 'argv.json');
+  process.env.FAKE_DEVIN_ARGV_LOG = argvLog;
+  process.env.FAKE_DEVIN_EXIT = '3';
+  process.env.FAKE_DEVIN_STDERR = 'model unavailable';
+  process.env.FAKE_DEVIN_NO_EXPORT = '1';
+  const result = await runStage({ vendor: 'devin', stage: 'Build', cwd: dir, prompt: 'build', resume: 'prior-session' }).done;
+  delete process.env.TODOMD_DEVIN_BIN; delete process.env.FAKE_DEVIN_ARGV_LOG; delete process.env.FAKE_DEVIN_EXIT;
+  delete process.env.FAKE_DEVIN_STDERR; delete process.env.FAKE_DEVIN_NO_EXPORT;
+  const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
+  assert.deepEqual(argv.slice(argv.indexOf('-r'), argv.indexOf('-r') + 2), ['-r', 'prior-session']);
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.envelope.is_error, true);
+  assert.equal(result.envelope.num_turns, 0);
+  assert.equal(result.sessionId, null);
+  assert.equal(result.stderr, 'model unavailable');
+  assert.equal(result.diagnostic.transcriptSteps, 0);
+});
+
+test('Devin missing binary reports spawnError, not a crash', async () => {
+  process.env.TODOMD_DEVIN_BIN = '/nonexistent/todomd-no-such-devin';
+  const r = await runStage({ vendor: 'devin', stage: 'Build', cwd: process.cwd(), prompt: 'x' }).done;
+  delete process.env.TODOMD_DEVIN_BIN;
+  assert.equal(r.envelope, null);
+  assert.ok(r.spawnError);
 });

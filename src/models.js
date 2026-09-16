@@ -7,12 +7,14 @@ const FALLBACK = {
   claude: ['opus', 'sonnet', 'haiku'],
   codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'],
   gemini: ['gemini-3.7-flash-high', 'gemini-3.1-pro-high'],
+  devin: ['swe-2-high', 'swe-2-medium', 'swe-2-max'],
 };
-export const SUPPORTED_VENDORS = Object.freeze(['claude', 'codex', 'gemini']);
+export const SUPPORTED_VENDORS = Object.freeze(['claude', 'codex', 'gemini', 'devin']);
 const bin = (vendor) => {
   if (vendor === 'codex') return process.env.TODOMD_CODEX_BIN || vendor;
   if (vendor === 'gemini') return process.env.TODOMD_GEMINI_BIN || 'agy';
   if (vendor === 'kimi') return process.env.TODOMD_KIMI_BIN || vendor;
+  if (vendor === 'devin') return process.env.TODOMD_DEVIN_BIN || vendor;
   return process.env.TODOMD_CLAUDE_BIN || vendor;
 };
 
@@ -63,6 +65,14 @@ export function modelsFromCodexDebug(text) {
   } catch { return []; }
 }
 
+// `devin models list` prints one indented id per model under a family
+// heading, followed by a display name and pricing. Keep the ids only.
+export function modelsFromDevin(text) {
+  return [...new Set(String(text || '').split(/\r?\n/)
+    .map((line) => (line.match(/^\s{2,}([a-z][\w.-]+)\s{2,}/i) || [])[1])
+    .filter(Boolean))];
+}
+
 function cliModels(vendor) {
   try {
     if (vendor === 'codex') {
@@ -72,6 +82,11 @@ function cliModels(vendor) {
     }
     if (vendor === 'gemini') {
       return modelsFromAgy(execFileSync(bin(vendor), ['models'], {
+        encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
+      }));
+    }
+    if (vendor === 'devin') {
+      return modelsFromDevin(execFileSync(bin(vendor), ['models', 'list'], {
         encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
       }));
     }
@@ -103,6 +118,7 @@ const MODEL_FAMILY = [
   ['codex', /^(?:gpt-|codex|o\d)/i],
   ['gemini', /^gemini-/i],
   ['kimi', /^(?:kimi|moonshot)/i],
+  ['devin', /^(?:swe-|devin|fusion-|adaptive$)/i],
 ];
 
 export function validateModelRoute(vendor, model, config = {}) {
@@ -115,7 +131,9 @@ export function validateModelRoute(vendor, model, config = {}) {
   }
   if (!model) return { ok: true };
   const family = MODEL_FAMILY.find(([, pattern]) => pattern.test(model))?.[0];
-  if (family && family !== vendor) {
+  // Devin hosts other vendors' models as well as its own; only its native
+  // families are refused elsewhere.
+  if (family && family !== vendor && vendor !== 'devin') {
     return { ok: false, error: `model "${model}" belongs to ${family}, not ${vendor}` };
   }
   if (vendor === 'gemini') {

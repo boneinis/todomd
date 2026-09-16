@@ -98,11 +98,13 @@ export function runStage(opts) {
   const run = vendor === 'codex' ? runCodex(wrapped)
     : vendor === 'gemini' ? runGemini(wrapped)
     : vendor === 'kimi' ? runKimi(wrapped)
+    : vendor === 'devin' ? runDevin(wrapped)
     : runClaude(wrapped);
   const executionType = vendor === 'gemini' ? 'gateway' : 'subscription_cli';
   const executable = vendor === 'codex' ? (process.env.TODOMD_CODEX_BIN || 'codex')
     : vendor === 'gemini' ? (process.env.TODOMD_GEMINI_BIN || 'agy')
     : vendor === 'kimi' ? (process.env.TODOMD_KIMI_BIN || 'kimi')
+    : vendor === 'devin' ? (process.env.TODOMD_DEVIN_BIN || 'devin')
     : (process.env.TODOMD_CLAUDE_BIN || 'claude');
   return {
     child: run.child,
@@ -848,6 +850,169 @@ function runKimi({
       }
       finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
     });
+  });
+
+  return { child, done };
+}
+
+// ---------------------------------------------------------------------------
+// Devin (the `devin` CLI). `-p` runs one headless turn and prints the final
+// answer as plain text; `--export <file>` writes an ATIF transcript (session
+// id, every step with its tool calls, token totals) after each turn, which is
+// where the run's metrics come from. There is no output-schema flag, so a
+// structured stage asks for a JSON-only reply and parses stdout.
+//
+// Permission mode is the CLI's own vocabulary: `auto` approves read-only tools
+// only, `dangerous` approves everything. Build is the one stage that must
+// edit, run the repo's checks and commit its candidate from a git worktree,
+// so it runs `dangerous`; every other stage runs `auto`, where a write is
+// auto-denied because print mode cannot prompt. A CPU-pressure review
+// (reviewOnly) is never `dangerous`. `--sandbox` is the CLI's research-preview
+// terminal sandbox; like agy's it cannot reach a worktree's `.git` file, so it
+// follows the same per-stage `terminalSandbox` opt-out and is never added to a
+// `dangerous` run.
+export const DEVIN_EFFORT_SUFFIX = /-(?:none|low|medium|high|xhigh|max)(?:-fast|-priority)?$/i;
+
+function devinModel(model, effort) {
+  const id = String(model || '').trim();
+  if (!id) return '';
+  // Devin encodes effort in the model id (`swe-2-high`). A bare family id plus
+  // a configured effort becomes the suffixed id; an explicit suffix wins.
+  if (DEVIN_EFFORT_SUFFIX.test(id) || !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) return id;
+  return `${id}-${effort}`;
+}
+
+function runDevin({
+  cwd,
+  prompt,
+  model,
+  effort,
+  stage,
+  terminalSandbox = true,
+  jsonSchema,
+  resume,
+  logFile,
+  onEvent = () => {},
+  reviewOnly = false,
+}) {
+  const tmp = (name) =>
+    path.join(os.tmpdir(), `todomd-devin-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const executable = process.env.TODOMD_DEVIN_BIN || 'devin';
+  const exportFile = tmp('export.json');
+  const mode = stage === 'Build' && !reviewOnly ? 'dangerous' : 'auto';
+  const sandboxed = terminalSandbox !== false && mode !== 'dangerous';
+  const notes = [
+    `\n\n## Provider notes\n`,
+    `- Your workspace is the task worktree at ${cwd}; it is also your shell working directory. `
+      + `Every path, shell command and git command resolves there. Do not search, list or read outside it.`,
+    mode === 'dangerous'
+      ? `- Tool calls are pre-approved for this run: edit files with your own file tools, run the repository's `
+        + `checks, and stage and commit your candidate with git from the worktree. Nothing prompts; there is no one to answer.`
+      : `- This stage is read-only: writes and non-read-only commands are auto-denied, and a denied call ends the run.`,
+    jsonSchema
+      ? `- Final answer format: reply with ONLY one JSON object, no prose and no code fence, that validates against `
+        + `this JSON Schema:\n${JSON.stringify(jsonSchema)}`
+      : '',
+  ].filter(Boolean).join('\n');
+  const args = ['-p', prompt + notes, '--permission-mode', mode, '--respect-workspace-trust', 'false',
+    '--export', exportFile];
+  if (sandboxed) args.push('--sandbox');
+  if (resume) args.push('-r', resume);
+  const resolvedModel = devinModel(model, effort);
+  if (resolvedModel) args.push('--model', resolvedModel);
+
+  const log = logFile ? openLog(logFile) : null;
+  log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd, permissionMode: mode, sandboxed }) + '\n');
+
+  const child = spawn(executable, args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+
+  const done = new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const finish = ({ exitCode, signal = null, spawnError = null }) => {
+      if (settled) return;
+      settled = true;
+      const text = stdout.trim();
+      // The transcript is the only machine-readable account of the run.
+      let transcript = null;
+      try { transcript = JSON.parse(fs.readFileSync(exportFile, 'utf8')); } catch {}
+      const steps = Array.isArray(transcript?.steps) ? transcript.steps : [];
+      const sessionId = transcript?.session_id || null;
+      const turns = steps.filter((s) => s?.source === 'agent').length;
+      const metrics = transcript?.final_metrics || {};
+      const usage = {
+        input_tokens: metrics.total_prompt_tokens,
+        cached_input_tokens: metrics.total_cached_tokens,
+        output_tokens: metrics.total_completion_tokens,
+      };
+      const reportedModel = resolvedModel || transcript?.agent?.model_name || '';
+      for (const step of steps) {
+        if (step?.source === 'system') continue; // prompts and rules, not the run
+        log?.write(JSON.stringify({ type: 'devin.step', ...step }) + '\n');
+      }
+      onEvent({ vendor: 'devin', type: 'system', subtype: 'init', session_id: sessionId, model: reportedModel });
+      onEvent({ vendor: 'devin', type: 'turn.completed', session_id: sessionId, usage, num_turns: turns });
+
+      let structured;
+      if (jsonSchema && text) {
+        const body = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+        try { structured = JSON.parse(body); } catch {}
+      }
+      const ok = exitCode === 0 && !signal && !spawnError;
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode,
+        signal,
+        spawnError,
+        stderr,
+        finalMessage: text,
+        structuredOutput: structured ?? null,
+        permissionMode: mode,
+        sandboxed,
+        transcriptSteps: steps.length,
+      };
+      const result = {
+        envelope: spawnError ? null : {
+          subtype: ok ? 'success' : 'error',
+          is_error: !ok,
+          total_cost_usd: 0,
+          num_turns: turns,
+          result: text,
+          structured_output: structured,
+          usage,
+          model: reportedModel,
+        },
+        sessionId,
+        exitCode,
+        ...(spawnError ? { spawnError } : {}),
+        stderr: stderr.slice(0, 2000),
+        diagnostic,
+      };
+      const complete = () => {
+        try { fs.rmSync(exportFile, { force: true }); } catch {}
+        resolve(result);
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+        log.end(complete);
+      } else {
+        complete();
+      }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      if (stdout.length < MAX_BUF) stdout += chunk;
+      log?.write(JSON.stringify({ type: 'devin.stdout', text: chunk }) + '\n');
+    });
+    child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
+    child.on('error', (err) => {
+      finish({ exitCode: -1, spawnError: err.code || String(err) });
+    });
+    child.on('close', (code, signal) => finish({ exitCode: code, signal }));
   });
 
   return { child, done };

@@ -598,12 +598,12 @@ function escalationConfig(config) {
   return {
     afterFailedReviews: Number.isInteger(after) && after > 0 ? after : 2,
     diagnosis: {
-      agent: ['codex', 'gemini', 'kimi'].includes(e.diagnosis?.agent) ? e.diagnosis.agent : 'claude',
+      agent: ['codex', 'gemini', 'kimi', 'devin'].includes(e.diagnosis?.agent) ? e.diagnosis.agent : 'claude',
       model: e.diagnosis?.model || 'claude-fable-5',
       effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.diagnosis?.effort) ? e.diagnosis.effort : 'high',
     },
     repair: {
-      agent: ['codex', 'gemini', 'kimi'].includes(e.repair?.agent) ? e.repair.agent : 'claude',
+      agent: ['codex', 'gemini', 'kimi', 'devin'].includes(e.repair?.agent) ? e.repair.agent : 'claude',
       model: e.repair?.model || 'claude-fable-5',
       effort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(e.repair?.effort) ? e.repair.effort : 'high',
     },
@@ -4554,7 +4554,7 @@ export function agentCommandMatches(command, expectedExecutable = '') {
     .map((token) => path.basename(token.replace(/^['"]|['"]$/g, '')));
   const expected = expectedExecutable ? path.basename(expectedExecutable) : '';
   if (expected) return tokens.includes(expected);
-  return tokens.some((token) => ['claude', 'codex', 'agy', 'gemini', 'kimi'].includes(token));
+  return tokens.some((token) => ['claude', 'codex', 'agy', 'gemini', 'kimi', 'devin'].includes(token));
 }
 
 function isOurAgentProcess(pid, startedAtIso, expectedExecutable = '') {
