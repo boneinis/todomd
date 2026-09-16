@@ -45,8 +45,10 @@ export async function baseBranch(repoPath) {
   return null;
 }
 
-export async function addWorktree(repoPath, worktreePath, branch) {
-  const res = await git(repoPath, ['worktree', 'add', worktreePath, '-b', branch]);
+export async function addWorktree(repoPath, worktreePath, branch, startPoint = null) {
+  const args = ['worktree', 'add', worktreePath, '-b', branch];
+  if (startPoint && startPoint !== 'unknown') args.push(startPoint);
+  const res = await git(repoPath, args);
   return res.ok ? { ok: true } : { ok: false, reason: res.stderr };
 }
 

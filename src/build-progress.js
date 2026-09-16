@@ -27,7 +27,9 @@ export async function retryStagedCommit(cwd, message, { attempts = 5, delayMs = 
 export async function progressSnapshot(worktreeAbs) {
   const head = await git(worktreeAbs, ['--no-optional-locks', 'rev-parse', 'HEAD']);
   const changed = await git(worktreeAbs, ['--no-optional-locks', 'status', '--porcelain=v1']);
-  const tracked = await git(worktreeAbs, ['--no-optional-locks', 'diff', '--name-only', '-z', 'HEAD', '--']);
+  // diff's stat-only refresh can still acquire index.lock even with optional
+  // locks disabled. Progress sampling runs beside the agent's git add/commit.
+  const tracked = await git(worktreeAbs, ['--no-optional-locks', '-c', 'diff.autoRefreshIndex=false', 'diff', '--name-only', '-z', 'HEAD', '--']);
   const untracked = await git(worktreeAbs, ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z']);
   const digest = createHash('sha256');
   const paths = new Set();

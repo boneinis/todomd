@@ -2949,7 +2949,9 @@ for (const missing of ['empty', '1']) {
       await pipeline.humanMove(p, 'task-0001', 'Queue');
       await until(() => ['Done', 'Needs Human'].includes(status(repo, 'task-0001')), { timeout: BUDGET.chain });
       const card = readCard(repo, 'task-0001');
-      assert.equal(card.data.status, 'Done', card.raw);
+      const freshLog = path.join(repo, '.todomd/runs/task-0001/build-2-fresh.jsonl');
+      const diagnostics = fs.existsSync(freshLog) ? fs.readFileSync(freshLog, 'utf8') : '';
+      assert.equal(card.data.status, 'Done', card.raw + '\nFresh Build diagnostics:\n' + diagnostics);
       assert.equal(card.data.verification.attempts, 2, 'fresh fallback stays on the same retry attempt');
       assert.equal(card.data.session_id, 'fake-session-0001');
       const calls = fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse);
@@ -2962,6 +2964,7 @@ for (const missing of ['empty', '1']) {
       assert.match(card.raw, /resume session unavailable; retrying fresh/);
     } finally {
       delete process.env.TODOMD_CODEX_BIN;
+      delete process.env.FAKE_CODEX_FAIL_ONCE;
       clearFakeAgent();
     }
   });
@@ -3471,3 +3474,94 @@ test('Gemini Verify with workflow: teamwork omits disable-slash-commands and pre
     clearFakeAgent();
   }
 });
+
+test('Plan with teamwork unifies chunks into multi-agent implementation plan without child-card fanout', async () => {
+  isolateHome();
+  useFakeAgent({ chunks: '2' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Review', extra: 'teamwork: true\n' });
+  try {
+    await pipeline.humanMove(p, 'task-0001', 'Plan');
+    await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+    const card = readCard(repo, 'task-0001');
+    assert.equal(card.data.status, 'Planned');
+    assert.equal(card.data.epic_build_mode, undefined, 'ordinary teamwork cards do not acquire epic-only metadata');
+    assert.ok(card.body.includes('Milestone 1: Chunk 1'));
+    assert.ok(card.body.includes('Milestone 2: Chunk 2'));
+    const board = loadBoard(repo);
+    const children = board.cards.filter((c) => c.parent === 'task-0001');
+    assert.equal(children.length, 0, 'no child cards should be fanned out under teamwork');
+  } finally {
+    clearFakeAgent();
+  }
+});
+
+test('Epic with teamwork build mode is approved and enqueued into Build directly', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001', {
+    status: 'Planned',
+    title: 'Epic Teamwork Feature',
+    extra: 'epic: true\nteamwork: true\nepic_build_mode: teamwork\n',
+  });
+  try {
+    const moveRes = await pipeline.humanMove(p, 'task-0001', 'Queue');
+    assert.equal(moveRes.ok, true, 'approval must succeed for teamwork epic');
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+    assert.equal(status(repo, 'task-0001'), 'Done');
+  } finally {
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
+test('pinned base_branch is preserved and forked from, even if root checkout is on a peer branch', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const base = git(repo, ['branch', '--show-current']);
+  git(repo, ['checkout', '-b', 'peer-branch']);
+  fs.writeFileSync(path.join(repo, 'peer-marker.txt'), 'peer');
+  git(repo, ['add', 'peer-marker.txt']);
+  git(repo, ['commit', '-m', 'peer commit']);
+
+  const p = project(repo);
+  writeCard(repo, 'task-0001', { status: 'Planned', extra: `base_branch: ${base}\n` });
+
+  await pipeline.humanMove(p, 'task-0001', 'Queue');
+  await until(() => status(repo, 'task-0001') === 'Needs Human' || status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+
+  const card = readCard(repo, 'task-0001');
+  assert.equal(card.data.base_branch, base, 'pinned base_branch must not be overwritten by root branch');
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  if (fs.existsSync(wt)) {
+    assert.equal(fs.existsSync(path.join(wt, 'peer-marker.txt')), false, 'worktree must fork from base, not peer branch');
+  }
+  clearFakeAgent();
+});
+
+test('execConfig reads committed config from targetBase ref if provided, ignoring peer branch HEAD', async () => {
+  const repo = makeRepo();
+  const base = git(repo, ['branch', '--show-current']);
+  fs.writeFileSync(path.join(repo, '.todomd/config.yml'), 'verify_command: npm test\n');
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-m', 'config on base']);
+
+  git(repo, ['checkout', '-b', 'peer-branch']);
+  fs.writeFileSync(path.join(repo, '.todomd/config.yml'), 'verify_command: echo peer-command\n');
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-m', 'config on peer']);
+
+  const headCfg = await pipeline.execConfig(repo);
+  assert.equal(headCfg.verify_command, 'echo peer-command');
+
+  const baseCfg = await pipeline.execConfig(repo, base);
+  assert.equal(baseCfg.verify_command, 'npm test');
+});
+
