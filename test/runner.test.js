@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmp } from './helpers.js';
-import { runStage, stopHookSettings, describeDeniedActions, normalizeDeniedActions } from '../src/runner.js';
+import { runStage, stopHookSettings, describeDeniedActions, normalizeDeniedActions, claudeTeamworkInstructions, codexTeamworkInstructions } from '../src/runner.js';
 
 const FAKE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-agent.js');
 const FAKE_CODEX = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/fake-codex.js');
@@ -279,6 +279,7 @@ test('Gemini Verify passes a private schema and retains a structured diagnostic'
 
   const argv = JSON.parse(fs.readFileSync(argvLog, 'utf8'));
   assert.deepEqual(argv.slice(argv.indexOf('--mode'), argv.indexOf('--mode') + 2), ['--mode', 'plan']);
+  assert.equal(argv.includes('--disable-slash-commands'), false, 'plan mode must not disable slash commands to preserve mode');
   assert.deepEqual(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2), ['--add-dir', dir]);
   const sentVerify = argv[argv.indexOf('-p') + 1];
   assert.ok(sentVerify.includes(`task worktree at ${dir}`) && !sentVerify.includes('write_file'), 'review stages get the workspace note only');
@@ -499,5 +500,46 @@ test('Gemini reported turns are preserved and absent metrics stay unknown', asyn
     assert.equal(unknown.envelope.is_error, false);
   } finally {
     delete process.env.TODOMD_GEMINI_BIN; delete process.env.FAKE_GEMINI_REAL_STREAM; delete process.env.FAKE_GEMINI_DENIED;
+  }
+});
+
+test('Claude with teamwork enables slash commands, agent teams env, and injects multi-agent protocol', async () => {
+  process.env.TODOMD_CLAUDE_BIN = FAKE;
+  process.env.FAKE_MODE = 'parsing';
+  const log = path.join(tmp('claude-teamwork'), 'argv.jsonl');
+  const envLog = path.join(tmp('claude-teamwork'), 'env.json');
+  process.env.FAKE_ARGV_LOG = log;
+  process.env.FAKE_ENV_LOG = envLog;
+  try {
+    const res = await runStage({ cwd: process.cwd(), prompt: 'build feature', vendor: 'claude', teamwork: true }).done;
+    assert.equal(res.teamwork, true);
+    const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+    assert.ok(argv.includes('--safe-mode'));
+    assert.equal(argv.includes('--disable-slash-commands'), false, 'slash commands must be enabled for teamwork');
+    const envData = JSON.parse(fs.readFileSync(envLog, 'utf8'));
+    assert.equal(envData.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, '1', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS must be set to 1');
+    const promptArg = argv[argv.indexOf('-p') + 1];
+    assert.ok(promptArg.includes('Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork)'));
+  } finally {
+    delete process.env.FAKE_MODE; delete process.env.TODOMD_CLAUDE_BIN; delete process.env.FAKE_ARGV_LOG; delete process.env.FAKE_ENV_LOG;
+  }
+});
+
+test('Codex with teamwork injects multi-agent protocol and reports teamwork in diagnostic', async () => {
+  process.env.TODOMD_CODEX_BIN = FAKE_CODEX;
+  const log = path.join(tmp('codex-teamwork'), 'argv.jsonl');
+  process.env.FAKE_CODEX_ARGV_LOG = log;
+  try {
+    const res = await runStage({ cwd: process.cwd(), prompt: 'implement epic', vendor: 'codex', teamwork: true }).done;
+    assert.equal(res.teamwork, true);
+    assert.equal(res.diagnostic?.teamwork, true);
+    if (fs.existsSync(log)) {
+      const argv = JSON.parse(fs.readFileSync(log, 'utf8'));
+      assert.ok(argv.includes('features.multi_agent=true'), 'features.multi_agent must be enabled for Codex teamwork');
+      const promptArg = argv[argv.length - 1];
+      assert.ok(promptArg.includes('Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork)'));
+    }
+  } finally {
+    delete process.env.TODOMD_CODEX_BIN; delete process.env.FAKE_CODEX_ARGV_LOG;
   }
 });
