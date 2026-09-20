@@ -385,7 +385,7 @@ export function isQueued(projectName, card) {
 export function queuedEntries(projectName) {
   return queue
     .filter((e) => e.project.name === projectName)
-    .map((e) => ({ card: e.card, column: e.column, deferredReason: e.deferredReason, critical: !!e.critical }));
+    .map((e) => ({ card: e.card, column: e.column, resourceClass: e.resourceClass, deferredReason: e.deferredReason, critical: !!e.critical }));
 }
 
 // Remove every queued (not yet admitted) entry for one card, settling its

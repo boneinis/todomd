@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, BUDGET } from './helpers.js';
-import { readCard, withRepoLock, normalizeConfig, setStageRouting, loadConfig } from '../src/board.js';
+import { makeRepo, writeCard, isolateHome, useFakeAgent, clearFakeAgent, until, tmp, git, sleep, BUDGET } from './helpers.js';
+import { readCard, withRepoLock, normalizeConfig, setStageRouting, loadConfig, patchFrontmatter } from '../src/board.js';
+import { createGovernor, resourcesConfig } from '../src/resources.js';
 import * as pipeline from '../src/pipeline.js';
+import * as scheduler from '../src/scheduler.js';
 
 const noop = () => {};
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -205,4 +207,88 @@ test('stage routing edits leave a block-form chain link alone', async () => {
   assert.equal(verify.effort, 'high');
   assert.deepEqual(verify.chain, [{ agent: 'claude', model: 'haiku' }, { agent: 'codex', model: 'gpt-test' }],
     'the link models were not mistaken for the column model');
+});
+
+// A Needs Human card with a preserved candidate, eligible for Retry Verification
+// (mirrors pipeline.test.js's seedPreservedVerification).
+function seedPreservedVerification(repo, id) {
+  const base = git(repo, ['branch', '--show-current']);
+  const branch = `todomd/${id}`;
+  const worktree = path.join(repo, '.todomd/worktrees', id);
+  writeCard(repo, id, {
+    status: 'Needs Human',
+    extra: `needs_human_reason: bad_verdict\nsession_id: fake-session\nworktree: ${branch}\nbase_branch: ${base}\n`,
+  });
+  const cardFile = path.join(repo, '.todomd/tasks', `${id}-card.md`);
+  fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8')
+    .replace('verification: { attempts: 0,', 'verification: { attempts: 1,'));
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', `seed preserved verification ${id}`]);
+  fs.mkdirSync(path.dirname(worktree), { recursive: true });
+  git(repo, ['worktree', 'add', '-q', worktree, '-b', branch]);
+  fs.writeFileSync(path.join(worktree, 'src/preserved-candidate.js'), 'export const candidate = true;\n');
+  git(worktree, ['add', 'src/preserved-candidate.js']);
+  git(worktree, ['commit', '-qm', 'seed preserved candidate']);
+  return { branch, worktree };
+}
+
+test('a link admitted light re-enters the scheduler as heavy: link 2 is queued, then runs with the stage tools', async () => {
+  isolateHome();
+  await sleep(300);
+  scheduler.resetState();
+  const argvLog = path.join(tmp('chain-light'), 'argv.jsonl');
+  useFakeAgent({ verdict: 'pass', argv_log: argvLog });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  // both links on the claude fake so one argv log shows every reviewer spawn
+  setVerifyChain(repo, [{ agent: 'claude', model: 'haiku' }, { agent: 'claude', model: 'sonnet' }]);
+  const p = project(repo);
+  const { worktree } = seedPreservedVerification(repo, 'task-0001');
+  await patchFrontmatter(repo, 'task-0001', {
+    ci_evidence: {
+      head: git(worktree, ['rev-parse', 'HEAD']), command: 'node --version',
+      passed_at: '2026-01-01T00:00:00.000Z', clean: true,
+    },
+  });
+  let sample = { cpuLoad: 0.99 }; // breach: heavy work is deferred, light (tool-less) review is admitted
+  scheduler.setGovernor(createGovernor({
+    thresholds: resourcesConfig({ resources: { cpu: { defer: 0.8, resume: 0.5, critical: 1.5 }, recovery_samples: 1 } }),
+    sample: () => sample,
+  }));
+  scheduler.tick();
+  const spawns = () => fs.existsSync(argvLog) ? fs.readFileSync(argvLog, 'utf8').trim().split('\n').map(JSON.parse) : [];
+
+  try {
+    assert.deepEqual(await pipeline.retryVerification(p, 'task-0001'), { ok: true });
+    // link 1 ran tool-less and passed; link 2 is NOT spawned inline — it waits
+    // in the Verify column as a heavy entry the governor is deferring
+    await until(() => pipeline.getRunStates(p.name)['task-0001']?.state === 'deferred', { timeout: BUDGET.stage });
+    assert.equal(spawns().length, 1, 'only the light link 1 review ran while CPU was high');
+    const link1 = spawns()[0];
+    assert.match(link1.find((arg) => arg.includes('Resource-aware tool-less review')), /CPU pressure/);
+    assert.deepEqual(link1.slice(link1.indexOf('--tools'), link1.indexOf('--tools') + 2), ['--tools', ''], 'link 1 was tool-less');
+    assert.match(readCard(repo, 'task-0001').raw, /verdict: pass — link 1\/2 \(claude\/haiku\); next: link 2\/2 \(claude\/sonnet\)/);
+    const entry = scheduler.queuedEntries(p.name).find((e) => e.card === 'task-0001');
+    assert.equal(entry?.column, 'Verify');
+    assert.equal(entry?.resourceClass, 'heavy', 'link 2 is a heavy admission');
+    assert.equal(status(repo, 'task-0001'), 'Verify');
+    assert.equal(fs.existsSync(worktree), true, 'the candidate is untouched between links');
+
+    sample = { cpuLoad: 0.05 };
+    scheduler.tick();
+    await until(() => status(repo, 'task-0001') === 'Done', { timeout: BUDGET.stage });
+    await until(() => !pipeline.hasLiveRun(p.name, 'task-0001'), { timeout: BUDGET.quick });
+    assert.equal(spawns().length, 2, 'link 2 spawned once, after admission');
+    const link2 = spawns()[1];
+    assert.equal(link2.some((arg) => arg.includes('Resource-aware tool-less review')), false, 'link 2 was a full review');
+    assert.notDeepEqual(link2.slice(link2.indexOf('--tools'), link2.indexOf('--tools') + 2), ['--tools', ''], 'link 2 ran with the stage tools');
+    assert.deepEqual(link2.slice(link2.indexOf('--model'), link2.indexOf('--model') + 2), ['--model', 'sonnet']);
+    assert.deepEqual(readCard(repo, 'task-0001').data.verification.chain.map((c) => [c.link, c.model, c.verdict]),
+      [[1, 'haiku', 'pass'], [2, 'sonnet', 'pass']]);
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+    scheduler.resetState();
+  }
 });

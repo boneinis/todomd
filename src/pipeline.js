@@ -4124,9 +4124,13 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     }
     await appendRunLog(project.path, id,
       `  - ${linkLabel} passed; handing the same candidate to link ${linkIndex + 2}/${chain.length} (${nextLink.agent}/${nextLink.model || 'default'})`);
-    return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
-      false, priorFindings, triggerClaim, pendingOwner,
-      { ...options, chainLink: linkIndex + 1, reviewOnly: false, reviewContext: undefined });
+    // The next link re-enters the scheduler as its own heavy Verify admission
+    // rather than recursing here: this call may hold a LIGHT (tool-less) slot
+    // admitted under CPU pressure, and a full-tool reviewer must never run in
+    // it while the governor is deferring heavy work. The worktree, candidate
+    // and attempt are unchanged; only the admission is fresh.
+    return scheduleVerify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+      false, priorFindings, { ...options, chainLink: linkIndex + 1, forceHeavy: true, reviewContext: undefined });
   }
 
   if (verdict.verdict === 'pass') {
