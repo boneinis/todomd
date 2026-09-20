@@ -457,8 +457,12 @@ function queueCardBlocker(card, cards) {
   return dependencyBlocker(card.data || card, cards);
 }
 
-function stageConfig(config, stageName, card) {
-  const stage = (config.stages || {})[stageName] || {};
+function stageConfig(config, stageName, card, link = null) {
+  const column = (config.stages || {})[stageName] || {};
+  // A Verify chain link resolves exactly like the stage, one tier deeper:
+  // link key → stage key → default. `agent` is required on a link, so a link
+  // is always an independent (explicitly routed) stage.
+  const stage = link ? { ...column, ...pruneUndefined(link) } : column;
   const independentStage = ['Plan', 'Verify', 'Recovery'].includes(stageName) && !!stage.agent;
   const workflow = card?.data?.workflow || card?.workflow || stage.workflow || '';
   let effort = independentStage
@@ -496,7 +500,37 @@ function stageConfig(config, stageName, card) {
     // (`terminalSandbox`, not `sandbox`: codex's `sandbox` option is a MODE
     // string — 'read-only' / 'workspace-write' — and must not be shadowed.)
     terminalSandbox: stage.sandbox !== false,
+    // Explicit routing for the stage (or this link); the caller resolves the
+    // vendor through cardVendor / normalizeVendor.
+    agent: stage.agent ? normalizeVendor(stage.agent) : '',
+    // Verify only: the resolved reviewer chain, in order (null = single reviewer).
+    chain: !link && stageName === 'Verify' && Array.isArray(column.chain) && column.chain.length
+      ? column.chain.map((entry) => stageConfig(config, stageName, card, entry && typeof entry === 'object' ? entry : {}))
+      : null,
   };
+}
+
+function pruneUndefined(obj) {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+}
+
+// `stages.Verify.chain` validation (fail closed, like a bad single route):
+// a list of links, each with a supported agent and a model of that provider.
+// Returns an error string, or null when absent/valid.
+export function verifyChainError(config) {
+  const chain = (config?.stages || {}).Verify?.chain;
+  if (chain === undefined || chain === null) return null;
+  if (!Array.isArray(chain)) return 'stages.Verify.chain must be a list of reviewer links';
+  if (!chain.length) return 'stages.Verify.chain is empty — list at least one reviewer link';
+  for (const [i, entry] of chain.entries()) {
+    const n = i + 1;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return `stages.Verify.chain[${n}] must be a map with an agent`;
+    if (!String(entry.agent || '').trim()) return `stages.Verify.chain[${n}] has no agent`;
+    const link = stageConfig(config, 'Verify', null, entry);
+    const route = validateModelRoute(link.agent, link.model, config);
+    if (!route.ok) return `stages.Verify.chain[${n}]: ${route.error}`;
+  }
+  return null;
 }
 
 // A provider's max-turn result is a checkpoint, not automatically a human
@@ -3437,7 +3471,10 @@ async function buildChain(project, id, retry = null, recovery = null, pendingOwn
       budget_minutes: continuation.budgetMinutes,
     },
     ...(forkedFrom ? { base_branch: forkedFrom } : {}),
-    verification: { attempts: attempt, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '' },
+    verification: {
+      attempts: attempt, max_attempts: maxAttempts, last_verdict: ver.last_verdict || '',
+      ...(Array.isArray(ver.chain) && ver.chain.length ? { chain: ver.chain } : {}),
+    },
   });
   if (pendingOwner) pendingOwner.attemptOpened = true;
   await orchMove(project, id, 'Build', `attempt ${attempt}`);
@@ -3799,8 +3836,19 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (!withinAttemptBudget(attempt, maxAttempts)) return toNeedsHuman(project, id, 'Verify', 'attempts_exhausted',
     'Verification admission refused because the recorded attempt exceeds its approved budget.', pendingOwner);
   const config = await execConfig(project.path, card?.data?.base_branch);
-  const stage = stageConfig(config, 'Verify', card);
-  const vendor = cardVendor(config, card, 'Verify');
+  const column = stageConfig(config, 'Verify', card);
+  // Reviewer chain (see README § Verify chain): links run in order on this
+  // same candidate; `options.chainLink` is the 0-based link this call runs.
+  // A fresh attempt always starts at link 0, so any fail restarts the chain.
+  const chainError = verifyChainError(config);
+  if (chainError) return toNeedsHuman(project, id, 'Verify', 'routing_error', chainError, pendingOwner);
+  const chain = column.chain;
+  const linkIndex = chain ? Math.min(Number(options.chainLink) || 0, chain.length - 1) : 0;
+  const stage = chain ? chain[linkIndex] : column;
+  const linkLabel = chain ? `link ${linkIndex + 1}/${chain.length}` : '';
+  // Per-link vendor: the link's own (required) agent, resolved like an
+  // explicitly routed stage. Single reviewer: unchanged column routing.
+  const vendor = chain ? stage.agent : cardVendor(config, card, 'Verify');
   const route = validateModelRoute(vendor, stage.model, config);
   if (!route.ok) return toNeedsHuman(project, id, 'Verify', 'routing_error', route.error, pendingOwner);
   const ciCommand = ciBoardColumn(config) ? ciCommandForProfile(config) : String(config.verify_command || '').trim();
@@ -4023,10 +4071,25 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
     }
     return toNeedsHuman(project, id, 'Verify', 'bad_verdict', detail);
   }
-  const note = `verdict: ${verdict.verdict}${unmet.length ? ` (unmet: ${unmet.length})` : ''}`;
+  const nextLink = chain && verdict.verdict === 'pass' && linkIndex + 1 < chain.length ? chain[linkIndex + 1] : null;
+  const note = `verdict: ${verdict.verdict}${unmet.length ? ` (unmet: ${unmet.length})` : ''}` +
+    (chain ? ` — ${linkLabel} (${vendor}/${stage.model || 'default'})` : '') +
+    (nextLink ? `; next: link ${linkIndex + 2}/${chain.length} (${nextLink.agent}/${nextLink.model || 'default'})` : '');
   await recordRun(project, id, 'Verify', attempt, result, note);
+  // verification.chain: one entry per link verdict of THIS attempt's Verify.
+  // Link 1 starts the record over (a fail anywhere restarts the chain).
+  const chainRecord = chain
+    ? [...(linkIndex > 0 ? (card.data.verification?.chain || []) : []),
+      { link: linkIndex + 1, agent: vendor, model: stage.model || '', verdict: verdict.verdict, at: new Date().toISOString() }]
+    : undefined;
   await patchFrontmatter(project.path, id, {
-    verification: { attempts: attempt, max_attempts: maxAttempts, last_verdict: verdict.verdict },
+    verification: {
+      attempts: attempt, max_attempts: maxAttempts,
+      // An intermediate pass must not read as an approved candidate: only the
+      // last link's verdict (or a fail) reaches last_verdict.
+      last_verdict: nextLink ? (card.data.verification?.last_verdict || '') : verdict.verdict,
+      ...(chainRecord ? { chain: chainRecord } : {}),
+    },
   });
 
   const substantiveFindings = `${verdict.findings || ''}\n${unmet.map((c) => `- unmet: ${c}`).join('\n')}`.trim();
@@ -4048,6 +4111,22 @@ async function verify(project, id, attempt, maxAttempts, buildSession, worktreeA
   if (verdict.verdict === 'fail' && !substantiveFindings && !verdict.question) {
     return toNeedsHuman(project, id, 'Verify', 'bad_verdict',
       'Verify returned fail without identifying a defect or unmet criterion. Candidate preserved; retry verification after correcting the reviewer setup.');
+  }
+
+  if (verdict.verdict === 'pass' && nextLink) {
+    // more reviewers to go: same worktree, same candidate, same attempt — no
+    // rebuild, no re-CI. A cancel flagged in this between-links window reverts
+    // exactly like one flagged before the first link spawned.
+    const pcLink = pendingCancelled(project, id);
+    if (pcLink) {
+      return revertPendingCancel(project, id, pcLink,
+        { worktreeAbs, branch, config, attempt, maxAttempts, lastVerdict: card?.data?.verification?.last_verdict });
+    }
+    await appendRunLog(project.path, id,
+      `  - ${linkLabel} passed; handing the same candidate to link ${linkIndex + 2}/${chain.length} (${nextLink.agent}/${nextLink.model || 'default'})`);
+    return verify(project, id, attempt, maxAttempts, buildSession, worktreeAbs, branch,
+      false, priorFindings, triggerClaim, pendingOwner,
+      { ...options, chainLink: linkIndex + 1, reviewOnly: false, reviewContext: undefined });
   }
 
   if (verdict.verdict === 'pass') {

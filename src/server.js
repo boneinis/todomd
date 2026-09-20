@@ -889,7 +889,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       // stage columns carry per-column agent/model routing (the "column" tier);
       // triage/dispatch don't, so they're flagged stage:false to hide selectors
       for (const [col, s] of Object.entries(cfg.stages || {})) {
-        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', effort: s.effort || '', workflow: s.workflow || '', route_by_complexity: s.route_by_complexity || {}, agent: s.agent || '', stage: true });
+        list.push({ column: col, command: s.command || `todomd-${col.toLowerCase()}`, model: s.model || '', effort: s.effort || '', workflow: s.workflow || '', route_by_complexity: s.route_by_complexity || {}, agent: s.agent || '', chain: Array.isArray(s.chain) ? s.chain : [], stage: true });
       }
       if (cfg.triage) list.push({ column: 'Triage (auto)', command: cfg.triage.command || 'todomd-triage', model: cfg.triage.model || '', stage: false });
       list.push({ column: 'Dispatch (budget mode)', command: 'todomd-dispatch', model: '', stage: false });

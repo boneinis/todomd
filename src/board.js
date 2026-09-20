@@ -267,7 +267,10 @@ export function setStageRouting(repoPath, col, updates) {
       const keyRe = new RegExp(`^\\s+${k}:`);
       let found = -1;
       for (let i = ci + 1; i < ce; i++) {
-        if (keyRe.test(lines[i]) && lines[i].search(/\S/) > colIndent) { found = i; break; }
+        // only the column's DIRECT children: a block-form `chain:` link carries
+        // its own `model:` / `effort:` lines one level deeper, and those are
+        // the link's, not the column's
+        if (keyRe.test(lines[i]) && lines[i].search(/\S/) === propIndent.length) { found = i; break; }
       }
       if (v) {
         const newLine = `${propIndent}${k}: ${v}`;
