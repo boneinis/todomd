@@ -16,7 +16,7 @@ on:
 
 jobs:
   linux:
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false          # one Node version failing shouldn't hide the other
