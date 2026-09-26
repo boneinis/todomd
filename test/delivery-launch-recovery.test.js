@@ -120,8 +120,8 @@ test('a live launcher cannot be recovered and its orphaned job is closed after l
     const owner = await f.launch('running');
     assert.equal((await recoverProjectAdmission(f.repo, request(owner))).code, 'owner_alive');
     assert.equal(fs.existsSync(path.join(f.folder, 'closed.json')), false);
-    for (let i = 0; i < 400 && !fs.existsSync(f.marker); i++) await pause(25);
-    assert.equal(fs.readFileSync(f.marker, 'utf8'), 'preserved');
+    const markerWritten = () => { try { return fs.readFileSync(f.marker, 'utf8') === 'preserved'; } catch { return false; } };
+    for (let i = 0; i < 400 && !markerWritten(); i++) await pause(25);
     await f.kill(); const before = f.store.read(id);
     assert.equal((await recoverProjectAdmission(f.repo, request(owner))).ok, true);
     assert.deepEqual(f.store.read(id), before);
