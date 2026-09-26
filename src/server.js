@@ -1290,6 +1290,13 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       }
       if ('skill' in fields) updates.skill = String(fields.skill || '').replace(/[^\w:-]/g, '');
       if ('assignee' in fields) updates.assignee = sanitizeAssignee(fields.assignee);
+      // dev-flow view fields: sprint is a short iteration tag ('' clears);
+      // labels accepts an array or comma string, sanitized per element.
+      if ('sprint' in fields) updates.sprint = sanitizeAssignee(fields.sprint).slice(0, 60);
+      if ('labels' in fields) {
+        const raw = Array.isArray(fields.labels) ? fields.labels : String(fields.labels || '').split(',');
+        updates.labels = raw.map((l) => sanitizeAssignee(l).slice(0, 40)).filter(Boolean).slice(0, 20);
+      }
       if (!Object.keys(updates).length) return json(res, 400, { error: 'nothing to set' });
       const effectiveAgent = updates.agent || current?.data?.agent || loadConfig(project.path).default_agent || 'claude';
       const effectiveModel = 'model' in updates ? updates.model : current?.data?.model || '';

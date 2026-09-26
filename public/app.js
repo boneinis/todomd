@@ -61,7 +61,7 @@ let drawerCard = null;
 let drawerDelivery = null;
 let myName = localStorage.getItem('todomd-me') || '';
 let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'mine' : 'all';
-let layout = localStorage.getItem('todomd-layout') === 'list' ? 'list' : 'board';
+let layout = ['list', 'dev'].includes(localStorage.getItem('todomd-layout')) ? localStorage.getItem('todomd-layout') : 'board';
 let deliveryView = localStorage.getItem('todomd-view-type') === 'delivery';
 let selectedOwner = '';
 const expandedListEpics = new Set();
@@ -472,9 +472,12 @@ function renderBoard() {
     })
   );
   document.body.classList.toggle('list-layout', layout === 'list');
-  $('#layout-toggle').textContent = layout === 'list' ? 'board view' : 'list view';
-  $('#layout-toggle').setAttribute('aria-pressed', String(layout === 'list'));
+  document.body.classList.toggle('dev-layout', layout === 'dev');
+  const LAYOUT_NEXT = { board: 'list view', list: 'dev flow', dev: 'board view' };
+  $('#layout-toggle').textContent = LAYOUT_NEXT[layout] || 'list view';
+  $('#layout-toggle').setAttribute('aria-pressed', String(layout !== 'board'));
   if (layout === 'list') return renderList(boardData.cards.filter(passesView));
+  if (layout === 'dev' && window.TodomdDevflow?.render) return renderDevflow();
   boardEl.innerHTML = '';
   if (deliveryView) {
     const getDelState = (c) => c.delivery?.state || (
@@ -546,10 +549,22 @@ function renderBoard() {
 }
 
 $('#layout-toggle').addEventListener('click', () => {
-  layout = layout === 'list' ? 'board' : 'list';
+  // cycle the layouts; 'dev' is only offered while its module is loaded
+  const order = window.TodomdDevflow?.render ? ['board', 'list', 'dev'] : ['board', 'list'];
+  layout = order[(order.indexOf(layout) + 1) % order.length] || 'board';
   localStorage.setItem('todomd-layout', layout);
   renderBoard();
 });
+
+// dev flow renders into a .devflow host inside #board (same slot as the
+// columns and the list view); the module applies its own card filtering.
+function renderDevflow() {
+  boardEl.replaceChildren();
+  const host = document.createElement('div');
+  host.className = 'devflow';
+  boardEl.appendChild(host);
+  window.TodomdDevflow.render(host);
+}
 
 function renderList(visibleCards) {
   boardEl.replaceChildren();
@@ -1227,6 +1242,8 @@ async function openDrawer(id) {
     : `${buildProfile} profile: up to ${buildLimits.max_slices || (buildProfile === 'long' ? 6 : 3)} checkpoints / ${buildLimits.budget_minutes || (buildProfile === 'long' ? 120 : 60)} minutes per admission.`;
   $('#route-skill').value = card.data.skill || '';
   $('#route-assignee').value = card.data.assignee || '';
+  $('#route-sprint').value = card.data.sprint || '';
+  $('#route-labels').value = asList(card.data.labels).join(', ');
   const cols = boardData?.config?.columns || [];
   const optionsHtml = cols
     .filter((c) => c !== card.data.status)
@@ -1383,6 +1400,12 @@ $('#delivery-assign-btn')?.addEventListener('click', () => mutateDelivery('assig
 $('#delivery-view-toggle')?.addEventListener('click', () => {
   deliveryView = !deliveryView;
   localStorage.setItem('todomd-view-type', deliveryView ? 'delivery' : 'pipeline');
+  // delivery view renders inside the board layout — jumping there keeps the
+  // toggle meaningful when clicked from the list or dev layouts
+  if (layout !== 'board') {
+    layout = 'board';
+    localStorage.setItem('todomd-layout', layout);
+  }
   const btn = $('#delivery-view-toggle');
   if (btn) {
     btn.textContent = deliveryView ? 'pipeline view' : 'delivery view';
@@ -1580,6 +1603,8 @@ $('#route-save').addEventListener('click', async () => {
       build_profile: $('#route-build-profile').value,
       skill: $('#route-skill').value.trim(),
       assignee: $('#route-assignee').value.trim(),
+      sprint: $('#route-sprint').value.trim(),
+      labels: $('#route-labels').value.split(',').map((s) => s.trim()).filter(Boolean),
     };
     if (!$('#route-epic-mode-wrap')?.hidden && $('#route-epic-mode')?.value) {
       payload.epic_build_mode = $('#route-epic-mode').value;

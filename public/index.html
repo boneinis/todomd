@@ -43,7 +43,7 @@
     </select>
     <div class="view-actions" role="group" aria-label="Board views">
       <button id="delivery-view-toggle" class="view-toggle" type="button" title="switch between pipeline and delivery views" aria-pressed="false">delivery view</button>
-      <button id="layout-toggle" class="view-toggle" type="button" title="switch between board and list" aria-pressed="false">list view</button>
+      <button id="layout-toggle" class="view-toggle" type="button" title="switch between board, list and dev flow views" aria-pressed="false">list view</button>
       <button id="view-toggle" class="view-toggle" aria-pressed="false" title="click: team / my work · ⌥-click: change your name">team</button>
       <button id="archived-toggle" class="view-toggle" aria-pressed="false" title="show / hide archived cards">archived</button>
     </div>
@@ -253,6 +253,8 @@
       <p id="build-profile-hint" class="route-hint"></p>
       <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
       <label class="rail-field">assignee <input id="route-assignee" class="rail-input" placeholder="developer" autocomplete="off" /></label>
+      <label class="rail-field">sprint <input id="route-sprint" class="rail-input" placeholder="e.g. sprint-3" autocomplete="off" /></label>
+      <label class="rail-field">labels <input id="route-labels" class="rail-input" placeholder="a, b" autocomplete="off" /></label>
       <button id="route-save" class="rail-btn rail-primary">save</button>
       <p class="route-hint">agent / model / skill set here override the column for <b>every</b> stage this card runs (leave blank to use each column's default). skill swaps the command run in trigger columns.</p>
     </div>
@@ -560,6 +562,7 @@ todomd init             # scaffolds the board + registers it</code></pre>
 
 <script src="/hierarchy.js"></script>
 <script src="/listview.js"></script>
+<script src="/devflow.js"></script>
 <script src="/card-prompt.js"></script>
 <script src="/app.js"></script>
 <script src="/board-agent.js"></script>
