@@ -540,7 +540,7 @@ test('API /api/open: opens a referenced repo file via the OS opener, with contai
     // an existing repo file → 200, and the opener was invoked on the resolved path
     let r = await fetch(`${base}/api/open${q}`, { method: 'POST', headers: h, body: JSON.stringify({ path: 'src/calc.js' }) });
     assert.equal(r.status, 200);
-    for (let i = 0; i < 25 && !fs.existsSync(marker); i++) await new Promise((res) => setTimeout(res, 40));
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
     assert.match(fs.readFileSync(marker, 'utf8'), /src\/calc\.js\s*$/m);
 
     // path traversal is refused (stays inside the repo)
