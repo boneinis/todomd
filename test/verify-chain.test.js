@@ -140,18 +140,23 @@ test('chain of two, link 1 pass then link 2 fails: two spawns, back to Build, ch
 });
 
 test('a cancel between link 1 pass and link 2 spawn reverts like a pre-spawn cancel', async () => {
+  const dir = tmp('chain-cancel-mid');
+  const release = path.join(dir, 'release-verify');
   const { repo, p, argvLog } = setup([
     { agent: 'claude', model: 'haiku' },
     { agent: 'codex', model: 'gpt-test' },
-  ]);
+  ], { verify_release: release });
   try {
     await pipeline.humanMove(p, 'task-0001', 'Queue');
-    // link 1 is live: its child has been spawned
+    // link 1 is live: its child has been spawned and is parked on the release
+    // marker, so the flow cannot advance past it no matter how fast it runs
     await until(() => claudeVerifyRuns(argvLog) === 1, { timeout: BUDGET.chain });
-    // Hold the repo lock: link 1's verdict is recorded to the usage store BEFORE
-    // its card write needs the lock, so `model_runs` reaching 2 (Build + link 1)
-    // proves link 1's child has exited and the chain is parked between links.
+    // Hold the repo lock, THEN release link 1: its verdict is recorded to the
+    // usage store BEFORE its card write needs the lock, so `model_runs`
+    // reaching 2 (Build + link 1) proves link 1's child has exited and the
+    // chain is parked between links, queued behind this lock.
     await withRepoLock(repo, async () => {
+      fs.writeFileSync(release, '1');
       await until(() => pipeline.usage(p).model_runs >= 2, { timeout: BUDGET.stage });
       const r = await pipeline.cancel(p, 'task-0001');
       assert.equal(r.ok, true, r.error);

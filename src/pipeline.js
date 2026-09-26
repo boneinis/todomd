@@ -1578,6 +1578,19 @@ function spawnTracked(project, id, stage, prevStatus, attempt, opts) {
   finalizationWaiters.set(run, { finalized, resolve: resolveFinalized });
   runs.set(key, run);
   children.set(key, child);
+  // A cancel can land after the chain's pending entry exists but before this
+  // child registers — cancel() then flags the pending entry and finds nothing
+  // to kill. The flag must be picked up here or a hung/just-spawned child
+  // would run unchecked past every pendingCancelled() checkpoint.
+  const lateCancel = pending.get(key);
+  if (lateCancel?.cancelled && !run.cancelled) {
+    run.cancelled = true;
+    run.revertTo = lateCancel.revertTo || prevStatus;
+    run.noRequeue = !!lateCancel.noRequeue;
+    run.preserveWorktree = !!lateCancel.preserveWorktree;
+    run.humanCancelled = !!lateCancel.humanCancelled;
+    killWithEscalation(child);
+  }
   persistRuns();
   sendState(project, id, 'running', stage);
   // wall-clock cap: a hung agent must not hold a concurrency slot forever. On
