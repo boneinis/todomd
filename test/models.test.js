@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { tmp } from './helpers.js';
-import { modelsFromHelp, modelsFromAgy, modelsFromCodexDebug, listModels, validateModelRoute } from '../src/models.js';
+import { modelsFromHelp, modelsFromAgy, modelsFromCodexDebug, modelsFromDevin, listModels, validateModelRoute } from '../src/models.js';
 
 const CLAUDE_HELP = `Usage: claude [options]
   --fallback-model <model>              ignore this one (e.g. 'nope')
@@ -85,4 +85,20 @@ test('listModels probes the CLI once, then backs off (no re-spawn per request)',
   assert.deepEqual(second, first);
   assert.ok(first.includes('gpt-5.6-sol'), 'current curated Codex fallback');
   assert.equal(fs.readFileSync(counter, 'utf8'), 'x', 'the CLI is probed once, not once per call');
+});
+
+test('modelsFromDevin keeps model ids and drops family headings, display names and pricing', () => {
+  const text = 'Available models (2 families)\n\nSWE-2 (swe-2)\n  aliases: swe\n  swe-2-high        SWE-2 High  [262K context, Free]\n' +
+    '  swe-2-medium      SWE-2 Medium  [262K context, Free]\n\nClaude Fable 5.1 (claude-fable-5.1)\n' +
+    '  claude-fable-5-1-high     Claude Fable 5.1 High  [1M context, $10 / 1M Input]\n';
+  assert.deepEqual(modelsFromDevin(text), ['swe-2-high', 'swe-2-medium', 'claude-fable-5-1-high']);
+});
+
+test('validateModelRoute treats Devin as a host for every family but keeps its own families to itself', () => {
+  assert.equal(validateModelRoute('devin', 'swe-2-high').ok, true);
+  assert.equal(validateModelRoute('devin', 'claude-fable-5-1-high').ok, true, 'Devin runs other vendors\' models');
+  assert.equal(validateModelRoute('devin', 'fusion-claude-opus-5-high-sidekick-swe-2-medium').ok, true);
+  assert.match(validateModelRoute('claude', 'swe-2-high').error, /belongs to devin/);
+  assert.match(validateModelRoute('codex', 'adaptive').error, /belongs to devin/);
+  assert.ok(listModels('devin', { models: { devin: ['swe-2-max'] } }).includes('swe-2-max'));
 });

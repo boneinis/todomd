@@ -43,7 +43,7 @@
     </select>
     <div class="view-actions" role="group" aria-label="Board views">
       <button id="delivery-view-toggle" class="view-toggle" type="button" title="switch between pipeline and delivery views" aria-pressed="false">delivery view</button>
-      <button id="layout-toggle" class="view-toggle" type="button" title="switch between board and list" aria-pressed="false">list view</button>
+      <button id="layout-toggle" class="view-toggle" type="button" title="switch between board, list and dev flow views" aria-pressed="false">list view</button>
       <button id="view-toggle" class="view-toggle" aria-pressed="false" title="click: team / my work · ⌥-click: change your name">team</button>
       <button id="archived-toggle" class="view-toggle" aria-pressed="false" title="show / hide archived cards">archived</button>
     </div>
@@ -247,11 +247,14 @@
       </label>
       <label class="rail-field">model <input id="route-model" class="rail-input" list="model-options" placeholder="stage default" autocomplete="off" /></label>
       <label class="rail-field">effort <select id="route-effort" class="rail-input"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-      <label class="rail-field">workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select></label>
+      <label class="rail-field">workflow <select id="route-workflow" class="rail-input"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Multi-Agent Swarm)</option></select></label>
+      <label id="route-epic-mode-wrap" class="rail-field" hidden>epic build mode <select id="route-epic-mode" class="rail-input"><option value="teamwork">Teamwork Swarm (Unified)</option><option value="chunks">Sequential Chunks (Split)</option></select></label>
       <label class="rail-field">build length <select id="route-build-profile" class="rail-input"><option value="standard">Standard</option><option value="long">Long</option><option value="split_required">Split required</option></select></label>
       <p id="build-profile-hint" class="route-hint"></p>
       <label class="rail-field">skill <input id="route-skill" class="rail-input" list="skill-options" placeholder="stage command" autocomplete="off" /></label>
       <label class="rail-field">assignee <input id="route-assignee" class="rail-input" placeholder="developer" autocomplete="off" /></label>
+      <label class="rail-field">sprint <input id="route-sprint" class="rail-input" placeholder="e.g. sprint-3" autocomplete="off" /></label>
+      <label class="rail-field">labels <input id="route-labels" class="rail-input" placeholder="a, b" autocomplete="off" /></label>
       <button id="route-save" class="rail-btn rail-primary">save</button>
       <p class="route-hint">agent / model / skill set here override the column for <b>every</b> stage this card runs (leave blank to use each column's default). skill swaps the command run in trigger columns.</p>
     </div>
@@ -327,7 +330,7 @@
           </label>
           <label>model override <input name="model" list="model-options" placeholder="(stage default)" autocomplete="off" /></label>
           <label>effort override <select name="effort"><option value="">stage default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label>
-          <label>workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select></label>
+          <label>workflow <select name="workflow"><option value="">stage default</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Multi-Agent Swarm)</option></select></label>
           <label>skill override <input name="skill" list="skill-options" placeholder="(stage command)" autocomplete="off" /></label>
         </div>
         <label>additional context <textarea name="description" rows="3"></textarea></label>
@@ -356,6 +359,7 @@
           <option value="claude">claude</option>
           <option value="codex">codex</option>
           <option value="gemini">gemini</option>
+          <option value="devin">devin</option>
         </select>
       </label>
       <label>model
@@ -367,29 +371,29 @@
         <select id="stage-effort"><option value="">board default</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
       </label>
       <label id="stage-workflow-row">workflow
-        <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Gemini)</option></select>
+        <select id="stage-workflow"><option value="">standard</option><option value="ultra_code">Ultra Code</option><option value="teamwork">Teamwork (Multi-Agent Swarm)</option></select>
       </label>
       <span id="stage-routing-note" class="qr-note"></span>
       <div id="stage-route-map" class="prompt-routing" hidden>
         <span class="prompt-routing-title">route by difficulty</span>
         <label>trivial
-          <select class="route-map-agent" data-level="trivial"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <select class="route-map-agent" data-level="trivial"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option><option value="devin">devin</option></select>
           <input class="route-map-model" data-level="trivial" list="model-options" placeholder="provider default" autocomplete="off" />
         </label>
         <label>low
-          <select class="route-map-agent" data-level="low"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <select class="route-map-agent" data-level="low"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option><option value="devin">devin</option></select>
           <input class="route-map-model" data-level="low" list="model-options" placeholder="provider default" autocomplete="off" />
         </label>
         <label>medium
-          <select class="route-map-agent" data-level="medium"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <select class="route-map-agent" data-level="medium"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option><option value="devin">devin</option></select>
           <input class="route-map-model" data-level="medium" list="model-options" placeholder="provider default" autocomplete="off" />
         </label>
         <label>high
-          <select class="route-map-agent" data-level="high"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <select class="route-map-agent" data-level="high"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option><option value="devin">devin</option></select>
           <input class="route-map-model" data-level="high" list="model-options" placeholder="provider default" autocomplete="off" />
         </label>
         <label>very-high
-          <select class="route-map-agent" data-level="very-high"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option></select>
+          <select class="route-map-agent" data-level="very-high"><option value="">column default</option><option value="claude">claude</option><option value="codex">codex</option><option value="gemini">gemini</option><option value="devin">devin</option></select>
           <input class="route-map-model" data-level="very-high" list="model-options" placeholder="provider default" autocomplete="off" />
         </label>
         <button type="button" id="route-map-save" class="rail-btn">save routing</button>
@@ -558,6 +562,7 @@ todomd init             # scaffolds the board + registers it</code></pre>
 
 <script src="/hierarchy.js"></script>
 <script src="/listview.js"></script>
+<script src="/devflow.js"></script>
 <script src="/card-prompt.js"></script>
 <script src="/app.js"></script>
 <script src="/board-agent.js"></script>

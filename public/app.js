@@ -61,7 +61,7 @@ let drawerCard = null;
 let drawerDelivery = null;
 let myName = localStorage.getItem('todomd-me') || '';
 let viewMode = (localStorage.getItem('todomd-view') === 'mine' && myName) ? 'mine' : 'all';
-let layout = localStorage.getItem('todomd-layout') === 'list' ? 'list' : 'board';
+let layout = ['list', 'dev'].includes(localStorage.getItem('todomd-layout')) ? localStorage.getItem('todomd-layout') : 'board';
 let deliveryView = localStorage.getItem('todomd-view-type') === 'delivery';
 let selectedOwner = '';
 const expandedListEpics = new Set();
@@ -472,9 +472,12 @@ function renderBoard() {
     })
   );
   document.body.classList.toggle('list-layout', layout === 'list');
-  $('#layout-toggle').textContent = layout === 'list' ? 'board view' : 'list view';
-  $('#layout-toggle').setAttribute('aria-pressed', String(layout === 'list'));
+  document.body.classList.toggle('dev-layout', layout === 'dev');
+  const LAYOUT_NEXT = { board: 'list view', list: 'dev flow', dev: 'board view' };
+  $('#layout-toggle').textContent = LAYOUT_NEXT[layout] || 'list view';
+  $('#layout-toggle').setAttribute('aria-pressed', String(layout !== 'board'));
   if (layout === 'list') return renderList(boardData.cards.filter(passesView));
+  if (layout === 'dev' && window.TodomdDevflow?.render) return renderDevflow();
   boardEl.innerHTML = '';
   if (deliveryView) {
     const getDelState = (c) => c.delivery?.state || (
@@ -546,10 +549,22 @@ function renderBoard() {
 }
 
 $('#layout-toggle').addEventListener('click', () => {
-  layout = layout === 'list' ? 'board' : 'list';
+  // cycle the layouts; 'dev' is only offered while its module is loaded
+  const order = window.TodomdDevflow?.render ? ['board', 'list', 'dev'] : ['board', 'list'];
+  layout = order[(order.indexOf(layout) + 1) % order.length] || 'board';
   localStorage.setItem('todomd-layout', layout);
   renderBoard();
 });
+
+// dev flow renders into a .devflow host inside #board (same slot as the
+// columns and the list view); the module applies its own card filtering.
+function renderDevflow() {
+  boardEl.replaceChildren();
+  const host = document.createElement('div');
+  host.className = 'devflow';
+  boardEl.appendChild(host);
+  window.TodomdDevflow.render(host);
+}
 
 function renderList(visibleCards) {
   boardEl.replaceChildren();
@@ -755,8 +770,9 @@ function renderCard(card, color, i, nestedIds) {
   // epic/chunk relationship badge (sequential chunking)
   const rel = el.querySelector('.card-rel');
   if (card.epic) {
+    const isTeamwork = Boolean(card.epic_build_mode === 'teamwork' || card.teamwork || card.workflow === 'teamwork');
     const { done, total } = TodomdHierarchy.epicProgress(boardData.cards, card.id);
-    rel.textContent = `⊞ epic ${done}/${total}`;
+    rel.textContent = isTeamwork && total === 0 ? '⊞ epic · teamwork' : `⊞ epic ${done}/${total}`;
     const epicBox = el.querySelector('.card-epic');
     const subtasksEl = el.querySelector('.card-subtasks');
     const kids = TodomdHierarchy.childrenOf(boardData.cards, card.id)
@@ -1145,7 +1161,7 @@ async function openDrawer(id) {
   // Subtasks view (epics only) replaces the raw "## Chunks" planner YAML in the
   // main details flow — the fenced block is still reachable in a collapsed,
   // closed-by-default Planner record for auditability.
-  const isEpic = !!card.data.epic;
+  const isEpic = Boolean(card.data.epic || card.data.type === 'epic');
   $('#drawer-tabs').hidden = !isEpic;
   setDrawerTab('details'); // reset so a click-through from a subtask row never lands on a tab the child doesn't have
   const { body: bodyForDisplay, planner } = isEpic ? splitChunksSection(card.body) : { body: card.body, planner: '' };
@@ -1207,6 +1223,17 @@ async function openDrawer(id) {
   $('#route-model').value = card.data.model || '';
   $('#route-effort').value = card.data.effort || '';
   $('#route-workflow').value = card.data.workflow || '';
+  const epicModeWrap = $('#route-epic-mode-wrap');
+  if (epicModeWrap) {
+    epicModeWrap.hidden = !isEpic;
+    if (isEpic) {
+      $('#route-epic-mode').value = card.data.epic_build_mode || (typeof card.data.epic_split === 'boolean'
+        ? (card.data.epic_split ? 'chunks' : 'teamwork')
+        : (card.data.teamwork === true || card.data.workflow === 'teamwork' ? 'teamwork' : 'chunks'));
+    } else {
+      $('#route-epic-mode').value = '';
+    }
+  }
   const buildProfile = card.data.build_profile || card.recovery?.build_profile || 'standard';
   $('#route-build-profile').value = buildProfile;
   const buildLimits = card.recovery?.build_limits || card.data.build_limits || {};
@@ -1215,6 +1242,8 @@ async function openDrawer(id) {
     : `${buildProfile} profile: up to ${buildLimits.max_slices || (buildProfile === 'long' ? 6 : 3)} checkpoints / ${buildLimits.budget_minutes || (buildProfile === 'long' ? 120 : 60)} minutes per admission.`;
   $('#route-skill').value = card.data.skill || '';
   $('#route-assignee').value = card.data.assignee || '';
+  $('#route-sprint').value = card.data.sprint || '';
+  $('#route-labels').value = asList(card.data.labels).join(', ');
   const cols = boardData?.config?.columns || [];
   const optionsHtml = cols
     .filter((c) => c !== card.data.status)
@@ -1371,6 +1400,12 @@ $('#delivery-assign-btn')?.addEventListener('click', () => mutateDelivery('assig
 $('#delivery-view-toggle')?.addEventListener('click', () => {
   deliveryView = !deliveryView;
   localStorage.setItem('todomd-view-type', deliveryView ? 'delivery' : 'pipeline');
+  // delivery view renders inside the board layout — jumping there keeps the
+  // toggle meaningful when clicked from the list or dev layouts
+  if (layout !== 'board') {
+    layout = 'board';
+    localStorage.setItem('todomd-layout', layout);
+  }
   const btn = $('#delivery-view-toggle');
   if (btn) {
     btn.textContent = deliveryView ? 'pipeline view' : 'delivery view';
@@ -1558,25 +1593,32 @@ $('#move-apply').addEventListener('click', async () => {
 
 $('#route-save').addEventListener('click', async () => {
   if (!drawerCard) return;
+  const savedCard = drawerCard, savedProject = currentProject, savedSeq = drawerOpenSeq;
   try {
-    const res = await fetch(`/api/cards/${drawerCard}/set?project=${encodeURIComponent(currentProject)}`, {
+    const payload = {
+      agent: $('#route-agent').value,
+      model: $('#route-model').value.trim(),
+      effort: $('#route-effort').value,
+      workflow: $('#route-workflow').value,
+      build_profile: $('#route-build-profile').value,
+      skill: $('#route-skill').value.trim(),
+      assignee: $('#route-assignee').value.trim(),
+      sprint: $('#route-sprint').value.trim(),
+      labels: $('#route-labels').value.split(',').map((s) => s.trim()).filter(Boolean),
+    };
+    if (!$('#route-epic-mode-wrap')?.hidden && $('#route-epic-mode')?.value) {
+      payload.epic_build_mode = $('#route-epic-mode').value;
+    }
+    const res = await fetch(`/api/cards/${savedCard}/set?project=${encodeURIComponent(savedProject)}`, {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        agent: $('#route-agent').value,
-        model: $('#route-model').value.trim(),
-        effort: $('#route-effort').value,
-        workflow: $('#route-workflow').value,
-        build_profile: $('#route-build-profile').value,
-        skill: $('#route-skill').value.trim(),
-        assignee: $('#route-assignee').value.trim(),
-      }),
+      body: JSON.stringify(payload),
     });
     const out = await res.json();
     toast(res.ok ? 'routing saved' : out.error || 'save failed');
-    if (res.ok) {
+    if (res.ok && currentProject === savedProject) {
       await loadBoard();
-      if (drawerCard) await openDrawer(drawerCard);
+      if (drawerCard === savedCard && drawerOpenSeq === savedSeq) await openDrawer(savedCard);
     }
   } catch {
     toast('server unreachable');

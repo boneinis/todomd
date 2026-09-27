@@ -265,7 +265,7 @@ test('governor pressure defers admission with a reason and spawns nothing; a lat
   assert.equal(started, false, 'no child is spawned while the governor reports pressure');
   assert.ok(reasons.length && reasons[reasons.length - 1], 'a deferredReason is recorded');
   assert.deepEqual(scheduler.queuedEntries(p.name),
-    [{ card: 'card-1', column: 'Build', deferredReason: reasons.at(-1), critical: false }]);
+    [{ card: 'card-1', column: 'Build', resourceClass: 'heavy', deferredReason: reasons.at(-1), critical: false }]);
 
   sample = { cpuLoad: 0.1 }; // a later sample recovers
   scheduler.tick();

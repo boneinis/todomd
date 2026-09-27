@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { loadBoard } from './board.js';
+import { deliveryStoreDirectory } from './delivery-paths.js';
+import { createDeliveryStore } from './delivery-store.js';
+import { isOwnerId } from './delivery.js';
+import { withAdmissionSync } from './delivery-admission.js';
 
 const nonempty = v => typeof v === 'string' && v.trim().length > 0;
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -191,6 +195,49 @@ export function updateCycleScope(repoPath, cycleId, options = {}) {
   return saveCycle(repoPath, updatedCycle);
 }
 
+function updateTaskDeliveryCycleId(directory, id, cycleId) {
+  if (cycleId && (!nonempty(cycleId) || !cycleIdRegex.test(cycleId))) return false;
+  const file = path.join(directory, `${id}.json`);
+  if (!fs.existsSync(file)) return false;
+  try {
+    const res = withAdmissionSync(path.join(directory, 'admission'), 'metadata', id, () => {
+      let raw;
+      try {
+        const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+        raw = fs.readFileSync(fd, 'utf8');
+        fs.closeSync(fd);
+      } catch {
+        return false;
+      }
+      const record = JSON.parse(raw);
+      if (!record || !record.task?.delivery) return false;
+
+      if (cycleId) {
+        if (record.task.delivery.cycle_id === cycleId) return true;
+        record.task.delivery.cycle_id = cycleId;
+      } else {
+        if (!Object.hasOwn(record.task.delivery, 'cycle_id')) return true;
+        delete record.task.delivery.cycle_id;
+      }
+
+      delete record.checksum;
+      const canonical = v => JSON.stringify(v, (k, val) => (val !== null && typeof val === 'object' && !Array.isArray(val) ? Object.fromEntries(Object.keys(val).sort().map(x => [x, val[x]])) : val));
+      record.checksum = createHash('sha256').update(canonical(record)).digest('hex');
+
+      const temp = `${file}.${randomUUID()}.tmp`;
+      const fd = fs.openSync(temp, 'wx', 0o600);
+      fs.writeFileSync(fd, JSON.stringify(record) + '\n');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fs.renameSync(temp, file);
+      return true;
+    });
+    return res.ok ? res.value : false;
+  } catch {
+    return false;
+  }
+}
+
 export function closeCycle(repoPath, cycleId, options = {}) {
   const cycle = readCycle(repoPath, cycleId);
   if (!cycle) throw new Error(`Cycle not found: ${cycleId}`);
@@ -198,41 +245,226 @@ export function closeCycle(repoPath, cycleId, options = {}) {
 
   const now = new Date().toISOString();
   const history = [...cycle.scope_history];
-  const { carry_forward = [], return_to_backlog = [], cancel = [], reason, actor, incomplete_action, carry_forward_cycle_id, audit_reason } = options;
-  const auditMsg = audit_reason || reason;
+  const {
+    carry_forward = [],
+    return_to_backlog = [],
+    cancel = [],
+    reason,
+    actor,
+    incomplete_action,
+    carry_forward_cycle_id,
+    destCycleId,
+    dest_cycle_id,
+    audit_reason,
+  } = options;
+  const auditMsg = audit_reason || reason || 'Cycle closed';
+  const targetCycleId = carry_forward_cycle_id || destCycleId || dest_cycle_id || null;
+  if (targetCycleId && (!nonempty(targetCycleId) || !cycleIdRegex.test(targetCycleId))) {
+    throw new Error(`Invalid destination cycle identifier: "${targetCycleId}"`);
+  }
 
-  if (incomplete_action === 'carry_forward' && carry_forward_cycle_id) {
-    const destCycle = readCycle(repoPath, carry_forward_cycle_id);
-    if (destCycle) {
+  let storeDir = null;
+  try {
+    const resolvedRepo = fs.realpathSync(repoPath);
+    storeDir = deliveryStoreDirectory(resolvedRepo);
+  } catch {}
+
+  let boardCards = [];
+  try {
+    const board = loadBoard(repoPath, { includeArchived: true });
+    boardCards = board.cards || [];
+  } catch {}
+
+  const terminalStates = ['released', 'completed', 'cancelled', 'Done', 'Cancelled'];
+  const incomplete = (cycle.tasks || []).filter(tid => {
+    const c = boardCards.find(x => x.id === tid);
+    let s = c ? (c.delivery?.state || c.status) : null;
+    if (!s && storeDir && fs.existsSync(storeDir)) {
       try {
-        const board = loadBoard(repoPath, { includeArchived: true });
-        const incomplete = cycle.tasks.filter(tid => {
-          const c = board.cards.find(x => x.id === tid);
-          if (!c) return false;
-          const s = c.delivery?.state || c.status;
-          return !['released', 'completed', 'Done'].includes(s);
-        });
-        for (const tid of incomplete) {
-          if (!destCycle.tasks.includes(tid)) {
-            destCycle.tasks.push(tid);
-            destCycle.scope_history.push({ action: 'carried_forward', task_id: tid, from_cycle: cycleId, at: now, reason: auditMsg, actor: actor || null });
-          }
-          history.push({ action: 'carried_forward', task_id: tid, to_cycle: carry_forward_cycle_id, at: now, reason: auditMsg, actor: actor || null });
-        }
-        destCycle.scope = destCycle.tasks;
-        saveCycle(repoPath, destCycle);
+        const rec = createDeliveryStore(storeDir).read(tid);
+        s = rec?.task?.delivery?.state;
       } catch {}
+    }
+    if (!s) return false;
+    return !terminalStates.includes(s);
+  });
+
+  const toCarryForward = new Set(Array.isArray(carry_forward) ? carry_forward : []);
+  const toReturnToBacklog = new Set(Array.isArray(return_to_backlog) ? return_to_backlog : []);
+  const toCancel = new Set(Array.isArray(cancel) ? cancel : []);
+
+  if (incomplete_action === 'carry_forward') {
+    for (const tid of incomplete) {
+      if (!toReturnToBacklog.has(tid) && !toCancel.has(tid)) {
+        toCarryForward.add(tid);
+      }
+    }
+  } else if (incomplete_action === 'return_to_backlog') {
+    for (const tid of incomplete) {
+      if (!toCarryForward.has(tid) && !toCancel.has(tid)) {
+        toReturnToBacklog.add(tid);
+      }
+    }
+  } else if (incomplete_action === 'cancel') {
+    for (const tid of incomplete) {
+      if (!toCarryForward.has(tid) && !toReturnToBacklog.has(tid)) {
+        toCancel.add(tid);
+      }
     }
   }
 
-  for (const taskId of carry_forward) {
-    history.push({ action: 'carried_forward', task_id: taskId, at: now, reason: auditMsg || 'Carried forward to next cycle', actor: actor || null });
+  // Handle destination cycle scope and audit history for carry_forward
+  if (targetCycleId) {
+    const destCycle = readCycle(repoPath, targetCycleId);
+    if (destCycle) {
+      let destChanged = false;
+      for (const tid of toCarryForward) {
+        if (!destCycle.tasks.includes(tid)) {
+          destCycle.tasks.push(tid);
+          destCycle.scope_history.push({
+            action: 'carried_forward',
+            task_id: tid,
+            from_cycle: cycleId,
+            at: now,
+            reason: auditMsg || 'Carried forward to next cycle',
+            actor: actor || null,
+          });
+          destChanged = true;
+        }
+        history.push({
+          action: 'carried_forward',
+          task_id: tid,
+          to_cycle: targetCycleId,
+          at: now,
+          reason: auditMsg || 'Carried forward to next cycle',
+          actor: actor || null,
+        });
+      }
+      if (destChanged) {
+        destCycle.scope = destCycle.tasks;
+        saveCycle(repoPath, destCycle);
+      }
+    } else {
+      for (const tid of toCarryForward) {
+        history.push({
+          action: 'carried_forward',
+          task_id: tid,
+          at: now,
+          reason: auditMsg || 'Carried forward to next cycle',
+          actor: actor || null,
+        });
+      }
+    }
+  } else {
+    for (const tid of toCarryForward) {
+      history.push({
+        action: 'carried_forward',
+        task_id: tid,
+        at: now,
+        reason: auditMsg || 'Carried forward to next cycle',
+        actor: actor || null,
+      });
+    }
   }
-  for (const taskId of return_to_backlog) {
-    history.push({ action: 'returned_to_backlog', task_id: taskId, at: now, reason: auditMsg || 'Returned to backlog at cycle close', actor: actor || null });
+
+  for (const taskId of toReturnToBacklog) {
+    history.push({
+      action: 'returned_to_backlog',
+      task_id: taskId,
+      at: now,
+      reason: auditMsg || 'Returned to backlog at cycle close',
+      actor: actor || null,
+    });
   }
-  for (const taskId of cancel) {
-    history.push({ action: 'cancelled', task_id: taskId, at: now, reason: auditMsg || 'Cancelled at cycle close', actor: actor || null });
+
+  for (const taskId of toCancel) {
+    history.push({
+      action: 'cancelled',
+      task_id: taskId,
+      at: now,
+      reason: auditMsg || 'Cancelled at cycle close',
+      actor: actor || null,
+    });
+  }
+
+  // Canonical delivery store state reconciliation
+  if (storeDir && fs.existsSync(storeDir)) {
+    const actorId = isOwnerId(actor) ? actor : 'human:project-owner';
+    const store = createDeliveryStore(storeDir, {
+      enabled: true,
+      resolveContext: () => ({
+        actor_id: actorId,
+        grants: ['delivery:backlog', 'delivery:cancelled'],
+        busy: false,
+      }),
+    });
+
+    for (const tid of toReturnToBacklog) {
+      try {
+        const record = store.read(tid);
+        if (!record) continue;
+        if (record.lease || (record.execution && record.execution.phase !== 'stopped')) {
+          continue;
+        }
+        if (record.task?.delivery?.state !== 'backlog') {
+          const rawKey = `cycle-close-${cycleId}-${tid}-backlog`;
+          const key = rawKey.length <= 120 ? rawKey : `cycle-${createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
+          const cmd = {
+            action: 'transition',
+            to: 'backlog',
+            reason: auditMsg || 'Returned to backlog at cycle close',
+            expected_revision: record.revision,
+            idempotency_key: key,
+          };
+          const res = store.execute(tid, cmd);
+          if (res.ok) {
+            updateTaskDeliveryCycleId(storeDir, tid, null);
+          }
+        } else {
+          updateTaskDeliveryCycleId(storeDir, tid, null);
+        }
+      } catch {}
+    }
+
+    for (const tid of toCancel) {
+      try {
+        const record = store.read(tid);
+        if (!record) continue;
+        if (record.lease || (record.execution && record.execution.phase !== 'stopped')) {
+          continue;
+        }
+        if (record.task?.delivery?.state !== 'cancelled') {
+          const rawKey = `cycle-close-${cycleId}-${tid}-cancelled`;
+          const key = rawKey.length <= 120 ? rawKey : `cycle-${createHash('sha256').update(rawKey).digest('hex').slice(0, 32)}`;
+          const cmd = {
+            action: 'transition',
+            to: 'cancelled',
+            reason: auditMsg || 'Cancelled at cycle close',
+            expected_revision: record.revision,
+            idempotency_key: key,
+          };
+          const res = store.execute(tid, cmd);
+          if (res.ok) {
+            updateTaskDeliveryCycleId(storeDir, tid, null);
+          }
+        } else {
+          updateTaskDeliveryCycleId(storeDir, tid, null);
+        }
+      } catch {}
+    }
+
+    if (targetCycleId) {
+      for (const tid of toCarryForward) {
+        try {
+          const record = store.read(tid);
+          if (!record) continue;
+          if (record.lease || (record.execution && record.execution.phase !== 'stopped')) {
+            continue;
+          }
+          updateTaskDeliveryCycleId(storeDir, tid, targetCycleId);
+        } catch {}
+      }
+    }
   }
 
   const closed = {

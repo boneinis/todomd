@@ -33,7 +33,12 @@ jobs:
       # The full gate: suite + headless-Chrome smoke + audit + the
       # pack/install/serve stage. ubuntu-latest ships Chrome; if a future image
       # drops it the browser stage skips itself rather than failing.
+      # Shared 2-core runners starve the spawn-heavy chain tests — pin the
+      # suite's own timeout scale (helpers.js timeoutScale) above the default
+      # loadavg heuristic, which under-reads bursty I/O-bound load.
       - run: npm run ci
+        env:
+          TODOMD_TEST_TIMEOUT_SCALE: '4'
       - name: chrome present? (informational — the stage skips without it)
         if: always()
         run: which google-chrome chromium chromium-browser 2>/dev/null || echo "no chrome on this image — UI stage skipped"

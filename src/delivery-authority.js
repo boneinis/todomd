@@ -95,7 +95,7 @@ export function createDeliveryAuthority(repoPath, { enabled = false, authenticat
       const card = readCard(repo, record.task.id);
       if (!card || card.parseError || card.data.id !== record.task.id || card.data.archived === true || hash(card.raw) !== record.source_revision) return result;
       const facts = resolveAdmission?.(record.task.id, Object.freeze({ backend, source_revision: record.source_revision }));
-      if (!object(facts) || typeof facts.then === 'function' || facts.job_approved !== true || facts.writers_fenced !== true || facts.busy !== false || facts.dependencies_satisfied !== true) return result;
+      if (!object(facts) || typeof facts.then === 'function' || facts.admitted === false || facts.job_approved !== true || facts.writers_fenced !== true || facts.busy !== false || facts.dependencies_satisfied !== true) return result;
       if (deliveryWriterPreflight(repo).blocked) return result;
       return { ...result, busy: false,
         execution_admission: { backend, source_revision: record.source_revision, fenced: true },

@@ -33,7 +33,7 @@ export function git(repo, args) {
 // A temp git repo with a minimal Node test project + a todomd board.
 export function makeRepo({ triage = false, automaticMaintenance = true } = {}) {
   const repo = tmp('repo');
-  git(repo, ['init', '-q']);
+  git(repo, ['init', '-q', '-b', 'main']);
   git(repo, ['config', 'user.email', 'test@todomd.local']);
   git(repo, ['config', 'user.name', 'todomd-test']);
   if (!automaticMaintenance) {
