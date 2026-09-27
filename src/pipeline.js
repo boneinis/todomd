@@ -2447,7 +2447,8 @@ function scheduleTriggerStage(project, id, stage, claim) {
   sendState(project, id, 'queued', stage);
   return scheduler.schedule(project, id, stage,
     () => runTriggerStage(project, id, stage, claim),
-    { onDefer: onDeferState(project, id, stage) })
+    { onDefer: onDeferState(project, id, stage),
+      blocked: () => quotaPaused.has(project.name) || isQueuePaused(project) })
     .then(async () => {
       // Dequeue settles without running the callback. Finish cancellation
       // immediately, even when resource pressure never clears.
