@@ -36,6 +36,21 @@ test('worktree add/remove lifecycle', async () => {
   assert.doesNotMatch(git(repo, ['branch']), /todomd\/task-0001/);
 });
 
+test('addWorktree respects explicit startPoint instead of defaulting to HEAD', async () => {
+  const repo = makeRepo();
+  git(repo, ['commit', '--allow-empty', '-m', 'initial on main']);
+  git(repo, ['checkout', '-b', 'peer-branch']);
+  fs.writeFileSync(path.join(repo, 'peer.txt'), 'peer content');
+  git(repo, ['add', 'peer.txt']);
+  git(repo, ['commit', '-m', 'peer commit']);
+
+  const wt = path.join(repo, '.todomd/worktrees/task-0001');
+  const add = await addWorktree(repo, wt, 'todomd/task-0001', 'main');
+  assert.equal(add.ok, true);
+  assert.equal(fs.existsSync(path.join(wt, 'peer.txt')), false, 'worktree must fork from main, not peer-branch');
+  await removeWorktree(repo, wt, 'todomd/task-0001');
+});
+
 test('branchTouchesBoard uses merge-base (three-dot): main\'s own board commits do NOT false-positive', async () => {
   const repo = makeRepo();
   const wt = path.join(repo, '.todomd/worktrees/task-0001');

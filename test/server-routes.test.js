@@ -308,6 +308,55 @@ test('API card lifecycle: create → set → move → read → cancel', async ()
   } finally { srv.close(); }
 });
 
+test('API /set dev-flow fields: sprint + labels persist, sanitize, and clear', async () => {
+  isolateHome();
+  const { repo, base, srv, q } = await boot();
+  const h = { 'x-todomd-token': srv.token, 'content-type': 'application/json', origin: base };
+  try {
+    let r = await fetch(`${base}/api/cards${q}`, { method: 'POST', headers: h, body: '{"title":"Dev flow"}' });
+    const { id } = await r.json();
+    const set = (body) => fetch(`${base}/api/cards/${id}/set${q}`, { method: 'POST', headers: h, body: JSON.stringify(body) });
+
+    // the sprint tag persists as a plain frontmatter scalar
+    r = await set({ sprint: 'sprint-3' });
+    assert.equal(r.status, 200);
+    let card = readCard(repo, id);
+    assert.equal(card.data.sprint, 'sprint-3');
+    assert.match(card.raw, /^sprint: sprint-3$/m);
+
+    // labels persist as a list; a comma-separated string is equivalent input
+    r = await set({ labels: ['sprint-3', 'ui'] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(readCard(repo, id).data.labels, ['sprint-3', 'ui']);
+    r = await set({ labels: 'a, b' });
+    assert.equal(r.status, 200);
+    assert.deepEqual(readCard(repo, id).data.labels, ['a', 'b']);
+
+    // empties are real updates — '' clears the tag, [] clears the list
+    r = await set({ sprint: '' });
+    assert.equal(r.status, 200);
+    assert.equal(readCard(repo, id).data.sprint, null);
+    r = await set({ labels: [] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(readCard(repo, id).data.labels, []);
+
+    // hostile input is stripped at the whitelist, so the card still parses
+    // and no key can be injected through a newline or ':'
+    r = await set({ sprint: 'ok\nevil: 1', labels: ['x: {bad', 'fine'] });
+    assert.equal(r.status, 200);
+    card = readCard(repo, id);
+    assert.equal(card.parseError, undefined, 'sanitized values leave a parseable card');
+    assert.equal(card.data.evil, undefined);
+    assert.equal(card.data.bad, undefined);
+    assert.deepEqual(card.data.labels, ['x bad', 'fine']);
+
+    // overlong input is capped at 60 chars, not rejected
+    r = await set({ sprint: 'x'.repeat(200) });
+    assert.equal(r.status, 200);
+    assert.equal(readCard(repo, id).data.sprint, 'x'.repeat(60));
+  } finally { srv.close(); }
+});
+
 test('API reorder persists same-column priority and rejects cross-column targets', async () => {
   isolateHome();
   const { repo, base, srv, q } = await boot();
@@ -491,7 +540,7 @@ test('API /api/open: opens a referenced repo file via the OS opener, with contai
     // an existing repo file → 200, and the opener was invoked on the resolved path
     let r = await fetch(`${base}/api/open${q}`, { method: 'POST', headers: h, body: JSON.stringify({ path: 'src/calc.js' }) });
     assert.equal(r.status, 200);
-    for (let i = 0; i < 25 && !fs.existsSync(marker); i++) await new Promise((res) => setTimeout(res, 40));
+    await until(() => fs.existsSync(marker), { timeout: BUDGET.chain });
     assert.match(fs.readFileSync(marker, 'utf8'), /src\/calc\.js\s*$/m);
 
     // path traversal is refused (stays inside the repo)

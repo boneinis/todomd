@@ -1,0 +1,61 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import net from 'node:net';
+import { isolateHome, makeRepo, writeCard, until, BUDGET } from '../helpers.js';
+import { readCard } from '../../src/board.js';
+import { addProject } from '../../src/registry.js';
+import { startServer } from '../../src/server.js';
+import { openPage } from '../browser.js';
+
+test('routing drawer keeps decomposition independent and omits ordinary epic mode; conversion API is guarded', async t => {
+  isolateHome(); const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.writeFileSync(cfg, fs.readFileSync(cfg, 'utf8').replace('mode: launcher', 'mode: budget'));
+  writeCard(repo, 'task-0001', { extra: 'epic: true\nepic_build_mode: chunks\n' });
+  writeCard(repo, 'task-0002');
+  addProject(repo); const name = path.basename(repo);
+  const page = await openPage(); if (!page) return t.skip('Chrome unavailable'); t.after(() => page.close());
+  const port = await new Promise(resolve => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
+  const server = await startServer({ port }); t.after(() => server.close());
+  const base = `http://127.0.0.1:${port}`;
+  await page.goto(`${base}/?token=${server.token}&project=${encodeURIComponent(name)}`);
+  await until(async () => page.eval(`document.querySelectorAll('.card').length === 2`), { timeout: BUDGET.stage });
+  async function open(id) {
+    await page.eval(`openDrawer('${id}')`);
+    await until(async () => page.eval(`drawerCard === '${id}'`), { timeout: BUDGET.quick });
+  }
+  await open('task-0001');
+  await page.eval(`document.getElementById('route-workflow').value = 'teamwork'; document.getElementById('route-workflow').dispatchEvent(new Event('change'))`);
+  assert.equal(await page.eval(`document.getElementById('route-epic-mode').value`), 'chunks');
+  await page.eval(`document.getElementById('route-save').click()`);
+  await until(() => readCard(repo, 'task-0001').data.workflow === 'teamwork', { timeout: BUDGET.quick });
+  assert.equal(readCard(repo, 'task-0001').data.epic_build_mode, 'chunks');
+  await open('task-0002');
+  assert.equal(await page.eval(`document.getElementById('route-epic-mode-wrap').hidden`), true);
+  assert.equal(await page.eval(`document.getElementById('route-epic-mode').value`), '');
+  await page.eval(`window.__routingPayload = null; const originalRoutingFetch = window.fetch; window.fetch = (url, opts) => { if (String(url).includes('/set?')) window.__routingPayload = JSON.parse(opts.body); return originalRoutingFetch(url, opts); }; document.getElementById('route-workflow').value = 'teamwork'; document.getElementById('route-save').click()`);
+  await until(() => readCard(repo, 'task-0002').data.workflow === 'teamwork', { timeout: BUDGET.quick });
+  assert.equal(await page.eval(`'epic_build_mode' in window.__routingPayload`), false);
+  await open('task-0002');
+  assert.equal(await page.eval(`document.getElementById('route-workflow').value`), 'teamwork');
+  const api = async (id, route, body) => {
+    const res = await fetch(`${base}/api/cards/${id}${route}?project=${name}`, { method: body ? 'POST' : 'GET', headers: { 'x-todomd-token': server.token }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    return { status: res.status, body: await res.json() };
+  };
+  assert.equal((await api('task-0002', '/set', { epic_build_mode: 'chunks', workflow: 'teamwork' })).status, 200);
+  assert.equal(readCard(repo, 'task-0002').data.epic_build_mode, undefined);
+  const file = path.join(repo, '.todomd/tasks/task-0002-card.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('type: module', 'type: module\nepic_build_mode: chunks'));
+  assert.equal((await api('task-0002', '')).body.repair_candidate.code, 'non_epic_has_build_mode');
+  assert.equal((await api('task-0001', '/convert-epic-mode', { target_mode: 'teamwork', archive_children: 'false' })).status, 400);
+  assert.equal((await api('task-0001', '/convert-epic-mode', { target_mode: 'teamwork' })).status, 200);
+  await open('task-0001');
+  assert.equal(await page.eval(`document.getElementById('route-epic-mode').value`), 'teamwork');
+  const epicFile = path.join(repo, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(epicFile, fs.readFileSync(epicFile, 'utf8').replace(/^epic_build_mode:.*\n/m, '').replace(/^workflow:.*\n/m, ''));
+  await open('task-0001');
+  assert.equal(await page.eval(`document.getElementById('route-epic-mode').value`), 'teamwork', 'legacy epic_split: false remains unified in the drawer');
+  assert.deepEqual(page.errors, []);
+});

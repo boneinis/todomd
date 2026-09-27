@@ -809,6 +809,9 @@ test('UI voice: Retry Verification reruns only Verify in the preserved worktree 
       extra: `needs_human_reason: bad_verdict\nworktree: ${branch}\nbase_branch: ${base}\nsession_id: fake-session-0014\n`,
     });
     git(repo, ['worktree', 'add', '-q', '-b', branch, wt]);
+    fs.writeFileSync(path.join(wt, 'src/extra.js'), 'export const extra = true;\n');
+    git(wt, ['add', 'src/extra.js']);
+    git(wt, ['commit', '-qm', 'candidate build output']);
 
     await page.presetScript(`(${installVoiceFakes.toString()})();`);
     await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);

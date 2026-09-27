@@ -98,11 +98,13 @@ export function runStage(opts) {
   const run = vendor === 'codex' ? runCodex(wrapped)
     : vendor === 'gemini' ? runGemini(wrapped)
     : vendor === 'kimi' ? runKimi(wrapped)
+    : vendor === 'devin' ? runDevin(wrapped)
     : runClaude(wrapped);
   const executionType = vendor === 'gemini' ? 'gateway' : 'subscription_cli';
   const executable = vendor === 'codex' ? (process.env.TODOMD_CODEX_BIN || 'codex')
     : vendor === 'gemini' ? (process.env.TODOMD_GEMINI_BIN || 'agy')
     : vendor === 'kimi' ? (process.env.TODOMD_KIMI_BIN || 'kimi')
+    : vendor === 'devin' ? (process.env.TODOMD_DEVIN_BIN || 'devin')
     : (process.env.TODOMD_CLAUDE_BIN || 'claude');
   return {
     child: run.child,
@@ -132,9 +134,56 @@ export function runStage(opts) {
         executable: result?.diagnostic?.executable || executable,
         executionType,
         usage,
+        teamwork: Boolean(teamwork),
       };
     }),
   };
+}
+
+export function claudeTeamworkInstructions({ stage, reviewOnly } = {}) {
+  if (stage === 'Plan') {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork - Plan Stage)
+You are leading an autonomous multi-agent planning team for this task. This stage is strictly read-only; do not edit project source files.
+1. **Lead Architect**: Analyze the task requirements and architecture. Formulate a cohesive, milestone-driven implementation plan for the upcoming build swarm.
+2. **Read-Only Inspector**: Perform targeted inspection of relevant modules, interfaces, and dependencies to validate assumptions.
+3. **Synthesis & Review**: Ensure the plan covers all acceptance criteria, milestones, invariants, and edge cases before outputting the final plan.\n`;
+  }
+  if (stage === 'Verify' || reviewOnly) {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork - Review Stage)
+You are leading an autonomous multi-agent review team for this task. This stage is strictly read-only; do not edit files or execute destructive commands.
+1. **Diff Inspector**: Independently inspect candidate diffs and git history against the acceptance criteria.
+2. **Adversarial Auditor**: Hunt for boundary regressions, missing awaits, unhandled edge cases, and concurrency hazards.
+3. **Verdict Synthesizer**: Deliver an objective, evidence-based verification review.\n`;
+  }
+  return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Claude Teamwork)
+You are leading an autonomous multi-agent engineering team for this task. Execute using the following phases:
+1. **Lead Architect**: Decompose this objective into concrete milestones, identify cross-file dependencies, invariants to protect, and edge cases.
+2. **Implementation Specialist**: Implement the solution surgically across all required modules and components. Follow clean code and repository standards.
+3. **Adversarial Reviewer**: Adversarially review your diff against existing tests and invariants. Hunt for boundary conditions, null/undefined bugs, missing awaits, and race conditions.
+4. **Integration & Verification**: Run the project's verification and test suites. Do not declare completion until all criteria are satisfied and tests pass cleanly.\n`;
+}
+
+export function codexTeamworkInstructions({ stage, reviewOnly } = {}) {
+  if (stage === 'Plan') {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork - Plan Stage)
+You are acting as an autonomous multi-agent planning swarm. This stage is read-only; do not edit project files.
+1. **Architect & Decomposer**: Analyze requirements and outline cohesive implementation milestones for the future build swarm.
+2. **Inspector**: Inspect relevant files and signatures to ensure technical feasibility.
+3. **Planner**: Return the comprehensive implementation plan.\n`;
+  }
+  if (stage === 'Verify' || reviewOnly) {
+    return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork - Review Stage)
+You are acting as an autonomous multi-agent review swarm. This review is read-only; do not modify files.
+1. **Diff Auditor**: Inspect the candidate diff against the requirements and acceptance criteria.
+2. **Critic & Adversary**: Check for subtle regression bugs, boundary edge cases, and integration defects.
+3. **Verification Evaluator**: Formulate the independent verification assessment.\n`;
+  }
+  return `\n\n## Multi-Agent Teamwork Orchestration Protocol (Codex Teamwork)
+You are acting as an autonomous multi-agent teamwork swarm. Execute using the following phases:
+1. **Architect & Decomposer**: Outline milestones, affected files, and edge-case risks.
+2. **Implementation Specialist**: Make precise edits across the codebase to fulfill all acceptance criteria.
+3. **Critic & Adversary**: Stress-test your changes for regressions, boundary errors, and integration failures.
+4. **Verification & Audit**: Run the project test suite and ensure all checks pass before finishing.\n`;
 }
 
 // Spawn one headless claude run for a pipeline stage.
@@ -150,6 +199,7 @@ function runClaude({
   prompt,
   model,
   effort,
+  stage,
   maxTurns,
   allowedTools = [],
   permissionMode = 'acceptEdits',
@@ -159,14 +209,20 @@ function runClaude({
   logFile,             // jsonl tee target (streaming mode)
   onEvent = () => {},
   reviewOnly = false,
+  teamwork = false,
 }) {
   const streaming = !jsonSchema;
   // Board automation must not inherit user/project plugins, MCP servers,
   // hooks, skills, memory, or CLAUDE.md. The pipeline supplies the complete
   // prompt and tool boundary explicitly.
-  const args = ['--safe-mode', '--disable-slash-commands', '-p'];
+  const args = ['--safe-mode'];
+  if (!teamwork) args.push('--disable-slash-commands');
+  args.push('-p');
   if (resume) args.push('--resume', resume);
-  args.push(prompt);
+  const effectivePrompt = teamwork && !prompt.includes('## Multi-Agent Teamwork Orchestration Protocol')
+    ? prompt + claudeTeamworkInstructions({ stage, reviewOnly })
+    : prompt;
+  args.push(effectivePrompt);
   args.push('--output-format', streaming ? 'stream-json' : 'json');
   if (streaming) args.push('--verbose');
   if (jsonSchema) args.push('--json-schema', JSON.stringify(jsonSchema));
@@ -189,9 +245,14 @@ function runClaude({
     args.push('--settings', settingsFile);
   }
 
-  const child = spawn(process.env.TODOMD_CLAUDE_BIN || 'claude', args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const env = teamwork
+    ? { ...process.env, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }
+    : process.env;
+  const executable = process.env.TODOMD_CLAUDE_BIN || 'claude';
+  const child = spawn(executable, args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env });
 
-  const log = streaming && logFile ? openLog(logFile) : null;
+  const log = logFile ? openLog(logFile) : null;
+  log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd }) + '\n');
 
   child.stdout.setEncoding('utf8'); // decode multibyte chars across chunk boundaries
   const done = new Promise((resolve) => {
@@ -228,8 +289,21 @@ function runClaude({
     child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
 
     child.on('error', (err) => {
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode: -1,
+        spawnError: err.code || String(err),
+        stderr,
+        finalMessage: '',
+        structuredOutput: null,
+        teamwork: Boolean(teamwork),
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+      }
       cleanup();
-      resolve({ envelope: null, sessionId, exitCode: -1, spawnError: err.code || String(err), stderr });
+      resolve({ envelope: null, sessionId, exitCode: -1, spawnError: err.code || String(err), stderr, diagnostic });
     });
     child.on('close', (code) => {
       if (streaming) {
@@ -237,12 +311,28 @@ function runClaude({
       } else {
         try { envelope = JSON.parse(stdoutBuf); } catch { /* leave null */ }
       }
+      const finalMessage = envelope?.result || (typeof envelope?.content === 'string' ? envelope.content : '') || '';
+      const structuredOutput = envelope?.structured_output ?? null;
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode: code,
+        spawnError: null,
+        stderr,
+        finalMessage,
+        structuredOutput,
+        teamwork: Boolean(teamwork),
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+      }
       cleanup();
       resolve({
         envelope,
         sessionId: envelope?.session_id || sessionId,
         exitCode: code,
         stderr: stderr.slice(0, 2000),
+        diagnostic,
       });
     });
 
@@ -276,6 +366,7 @@ function runCodex({
   logFile,
   onEvent = () => {},
   reviewOnly = false,
+  teamwork = false,
 }) {
   const tmp = (name) =>
     path.join(os.tmpdir(), `todomd-codex-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -298,6 +389,7 @@ function runCodex({
   args.push('--skip-git-repo-check');
   if (model && !CLAUDE_MODEL_NAMES.test(model)) args.push('-m', model);
   if (['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) args.push('-c', `model_reasoning_effort="${effort}"`);
+  if (teamwork) args.push('-c', 'features.multi_agent=true');
   let schemaFile, outFile;
   if (jsonSchema) {
     schemaFile = tmp('schema.json');
@@ -305,7 +397,10 @@ function runCodex({
     fs.writeFileSync(schemaFile, JSON.stringify(jsonSchema));
     args.push('--output-schema', schemaFile, '--output-last-message', outFile);
   }
-  args.push(prompt);
+  const effectivePrompt = teamwork && !prompt.includes('## Multi-Agent Teamwork Orchestration Protocol')
+    ? prompt + codexTeamworkInstructions({ stage, reviewOnly })
+    : prompt;
+  args.push(effectivePrompt);
 
   const log = logFile ? openLog(logFile) : null;
   // Keep the invocation even when spawn itself fails. This deliberately omits
@@ -335,6 +430,7 @@ function runCodex({
         stderr,
         finalMessage: lastMessage,
         structuredOutput: structuredOutput ?? null,
+        teamwork: Boolean(teamwork),
       };
       const ok = exitCode === 0 && !signal && !spawnError && !failed;
       const result = {
@@ -464,7 +560,9 @@ function runGemini({
     : prompt;
   const args = ['-p', effectivePrompt + notes, '--output-format', streaming ? 'stream-json' : 'json',
     '--mode', mode];
-  if (!teamwork) args.push('--disable-slash-commands');
+  // In agy, --mode plan has no effect while slash command expansion is disabled:
+  // passing both emits a warning and causes agy to silently fall back to default mode.
+  if (!teamwork && mode !== 'plan') args.push('--disable-slash-commands');
   // The task worktree IS the agent's workspace. Headless, the CLI opens no
   // workspace on its own: its file-writing tool then only accepts paths under
   // its private artifact directory ("not a valid artifact path" for anything
@@ -752,6 +850,169 @@ function runKimi({
       }
       finish({ exitCode: code, signal, lastMessage, structuredOutput: structured });
     });
+  });
+
+  return { child, done };
+}
+
+// ---------------------------------------------------------------------------
+// Devin (the `devin` CLI). `-p` runs one headless turn and prints the final
+// answer as plain text; `--export <file>` writes an ATIF transcript (session
+// id, every step with its tool calls, token totals) after each turn, which is
+// where the run's metrics come from. There is no output-schema flag, so a
+// structured stage asks for a JSON-only reply and parses stdout.
+//
+// Permission mode is the CLI's own vocabulary: `auto` approves read-only tools
+// only, `dangerous` approves everything. Build is the one stage that must
+// edit, run the repo's checks and commit its candidate from a git worktree,
+// so it runs `dangerous`; every other stage runs `auto`, where a write is
+// auto-denied because print mode cannot prompt. A CPU-pressure review
+// (reviewOnly) is never `dangerous`. `--sandbox` is the CLI's research-preview
+// terminal sandbox; like agy's it cannot reach a worktree's `.git` file, so it
+// follows the same per-stage `terminalSandbox` opt-out and is never added to a
+// `dangerous` run.
+export const DEVIN_EFFORT_SUFFIX = /-(?:none|low|medium|high|xhigh|max)(?:-fast|-priority)?$/i;
+
+function devinModel(model, effort) {
+  const id = String(model || '').trim();
+  if (!id) return '';
+  // Devin encodes effort in the model id (`swe-2-high`). A bare family id plus
+  // a configured effort becomes the suffixed id; an explicit suffix wins.
+  if (DEVIN_EFFORT_SUFFIX.test(id) || !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) return id;
+  return `${id}-${effort}`;
+}
+
+function runDevin({
+  cwd,
+  prompt,
+  model,
+  effort,
+  stage,
+  terminalSandbox = true,
+  jsonSchema,
+  resume,
+  logFile,
+  onEvent = () => {},
+  reviewOnly = false,
+}) {
+  const tmp = (name) =>
+    path.join(os.tmpdir(), `todomd-devin-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const executable = process.env.TODOMD_DEVIN_BIN || 'devin';
+  const exportFile = tmp('export.json');
+  const mode = stage === 'Build' && !reviewOnly ? 'dangerous' : 'auto';
+  const sandboxed = terminalSandbox !== false && mode !== 'dangerous';
+  const notes = [
+    `\n\n## Provider notes\n`,
+    `- Your workspace is the task worktree at ${cwd}; it is also your shell working directory. `
+      + `Every path, shell command and git command resolves there. Do not search, list or read outside it.`,
+    mode === 'dangerous'
+      ? `- Tool calls are pre-approved for this run: edit files with your own file tools, run the repository's `
+        + `checks, and stage and commit your candidate with git from the worktree. Nothing prompts; there is no one to answer.`
+      : `- This stage is read-only: writes and non-read-only commands are auto-denied, and a denied call ends the run.`,
+    jsonSchema
+      ? `- Final answer format: reply with ONLY one JSON object, no prose and no code fence, that validates against `
+        + `this JSON Schema:\n${JSON.stringify(jsonSchema)}`
+      : '',
+  ].filter(Boolean).join('\n');
+  const args = ['-p', prompt + notes, '--permission-mode', mode, '--respect-workspace-trust', 'false',
+    '--export', exportFile];
+  if (sandboxed) args.push('--sandbox');
+  if (resume) args.push('-r', resume);
+  const resolvedModel = devinModel(model, effort);
+  if (resolvedModel) args.push('--model', resolvedModel);
+
+  const log = logFile ? openLog(logFile) : null;
+  log?.write(JSON.stringify({ type: 'runner-invocation', executable, cwd, permissionMode: mode, sandboxed }) + '\n');
+
+  const child = spawn(executable, args, { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+
+  const done = new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const finish = ({ exitCode, signal = null, spawnError = null }) => {
+      if (settled) return;
+      settled = true;
+      const text = stdout.trim();
+      // The transcript is the only machine-readable account of the run.
+      let transcript = null;
+      try { transcript = JSON.parse(fs.readFileSync(exportFile, 'utf8')); } catch {}
+      const steps = Array.isArray(transcript?.steps) ? transcript.steps : [];
+      const sessionId = transcript?.session_id || null;
+      const turns = steps.filter((s) => s?.source === 'agent').length;
+      const metrics = transcript?.final_metrics || {};
+      const usage = {
+        input_tokens: metrics.total_prompt_tokens,
+        cached_input_tokens: metrics.total_cached_tokens,
+        output_tokens: metrics.total_completion_tokens,
+      };
+      const reportedModel = resolvedModel || transcript?.agent?.model_name || '';
+      for (const step of steps) {
+        if (step?.source === 'system') continue; // prompts and rules, not the run
+        log?.write(JSON.stringify({ type: 'devin.step', ...step }) + '\n');
+      }
+      onEvent({ vendor: 'devin', type: 'system', subtype: 'init', session_id: sessionId, model: reportedModel });
+      onEvent({ vendor: 'devin', type: 'turn.completed', session_id: sessionId, usage, num_turns: turns });
+
+      let structured;
+      if (jsonSchema && text) {
+        const body = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+        try { structured = JSON.parse(body); } catch {}
+      }
+      const ok = exitCode === 0 && !signal && !spawnError;
+      const diagnostic = {
+        executable,
+        cwd,
+        exitCode,
+        signal,
+        spawnError,
+        stderr,
+        finalMessage: text,
+        structuredOutput: structured ?? null,
+        permissionMode: mode,
+        sandboxed,
+        transcriptSteps: steps.length,
+      };
+      const result = {
+        envelope: spawnError ? null : {
+          subtype: ok ? 'success' : 'error',
+          is_error: !ok,
+          total_cost_usd: 0,
+          num_turns: turns,
+          result: text,
+          structured_output: structured,
+          usage,
+          model: reportedModel,
+        },
+        sessionId,
+        exitCode,
+        ...(spawnError ? { spawnError } : {}),
+        stderr: stderr.slice(0, 2000),
+        diagnostic,
+      };
+      const complete = () => {
+        try { fs.rmSync(exportFile, { force: true }); } catch {}
+        resolve(result);
+      };
+      if (log) {
+        log.write(JSON.stringify({ type: 'runner-diagnostic', ...diagnostic }) + '\n');
+        log.end(complete);
+      } else {
+        complete();
+      }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      if (stdout.length < MAX_BUF) stdout += chunk;
+      log?.write(JSON.stringify({ type: 'devin.stdout', text: chunk }) + '\n');
+    });
+    child.stderr.on('data', (c) => { if (stderr.length < MAX_BUF) stderr += c; });
+    child.on('error', (err) => {
+      finish({ exitCode: -1, spawnError: err.code || String(err) });
+    });
+    child.on('close', (code, signal) => finish({ exitCode: code, signal }));
   });
 
   return { child, done };

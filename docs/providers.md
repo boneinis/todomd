@@ -162,6 +162,50 @@ lose nothing by keeping the sandbox, because they never commit.
 
 ---
 
+## Devin (the `devin` CLI)
+
+`agent: devin` runs a stage through `devin -p` (print mode: one headless
+turn, final answer on stdout). Point `TODOMD_DEVIN_BIN` at the binary if it
+is not on the server's `PATH`. Three things about the adapter are worth
+knowing before you route a column to it:
+
+1. **Permission mode is per stage, and Build is `dangerous`.** The CLI's
+   modes are `auto` (read-only tools approved), `accept-edits`, `smart` and
+   `dangerous` (everything approved). Print mode cannot prompt, so a call the
+   mode does not cover is auto-denied. Build has to edit, run the repo's checks
+   and commit its candidate from a git worktree, so it runs `dangerous`; every
+   other stage runs `auto`. A CPU-pressure review is never `dangerous`. There
+   is no config knob for this — the stage decides.
+2. **`--sandbox` follows the same `sandbox:` opt-out as agy** and is never
+   added to a `dangerous` run. It is the CLI's research-preview terminal
+   sandbox and, like agy's, cannot reach a worktree's `.git` file.
+3. **Metrics come from the transcript, not the stream.** The adapter passes
+   `--export <tmp>`; the CLI writes an ATIF transcript (session id, every step
+   with its tool calls, token totals) after each turn. Turns are counted as
+   agent steps, usage is the transcript's totals, and the session id is what
+   `-r` resumes. Non-system steps are copied into the run's jsonl log. The
+   transcript is deleted when the run settles.
+
+Devin has no output-schema flag. A structured stage (Verify, recovery review)
+appends the schema to the prompt and asks for a JSON-only reply; a fenced
+reply is unwrapped before parsing. If the reply is not valid JSON the stage
+sees no structured output and fails the way it would for any provider.
+
+Model ids carry their effort (`swe-2-high`, `claude-opus-5-max`). A bare
+family id plus a configured `effort:` becomes the suffixed id; an explicit
+suffix wins. `devin models list` is the inventory the picker reads. Devin
+also hosts other vendors' models, so route validation accepts any family for
+`agent: devin`; its own families (`swe-*`, `fusion-*`, `adaptive`) are
+refused on every other provider.
+
+```yaml
+stages:
+  Build:
+    agent: devin
+    model: swe-2-high
+    sandbox: false     # Build commits from a worktree; see agy note above
+```
+
 ## Blocked runs
 
 A stage that answered nothing and changed nothing did not do the work, however
