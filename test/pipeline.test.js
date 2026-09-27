@@ -144,6 +144,33 @@ test('manual queue resume never launches dispatcher-managed budget work', async 
   }
 });
 
+test('moving a card into a stage column while the queue is paused defers the stage run', async () => {
+  isolateHome();
+  useFakeAgent({ verdict: 'pass', build: 'good' });
+  pipeline.init({ broadcast: noop });
+  const repo = makeRepo();
+  const p = project(repo);
+  writeCard(repo, 'task-0001');
+
+  try {
+    pipeline.pauseQueue(p);
+    assert.equal((await pipeline.humanMove(p, 'task-0001', 'Plan')).ok, true);
+    assert.equal(scheduler.isQueued(p.name, 'task-0001'), true,
+      'the Plan run is held by the scheduler, not skipped');
+    await sleep(300);
+    assert.equal(status(repo, 'task-0001'), 'Plan', 'paused queue never spawns the Plan stage');
+    assert.equal(fs.existsSync(path.join(repo, '.todomd/runs/task-0001')), false,
+      'no run directory while paused');
+
+    pipeline.resumeQueue(p);
+    await until(() => status(repo, 'task-0001') === 'Planned', { timeout: BUDGET.stage });
+  } finally {
+    pipeline.forgetProject(p.name);
+    await pipeline.killAllChildren({ graceMs: 1000 });
+    clearFakeAgent();
+  }
+});
+
 test('Run Queue is project-scoped and idempotent', async () => {
   isolateHome();
   const marker = path.join(tmp('queue-kick'), 'started');
