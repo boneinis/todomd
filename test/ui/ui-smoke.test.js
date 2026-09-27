@@ -149,7 +149,7 @@ test('list view keeps hostile cards accessible, expands epics, filters children 
   await page.goto(`http://127.0.0.1:${srv.port}/?project=${encodeURIComponent(name)}`);
   await until(async () => await page.eval(`document.body.classList.contains('list-layout')`));
   assert.equal(await page.eval(`document.querySelectorAll('.list-row').length`), 7);
-  await page.eval(`document.getElementById('layout-toggle').click()`);
+  await page.eval(`while (layout !== 'board') document.getElementById('layout-toggle').click()`);
   assert.equal(await page.eval(`document.querySelectorAll('.card').length`), 8);
   assert.deepEqual(page.errors, []);
 });
@@ -838,7 +838,7 @@ test('UI: workspace controls fit narrow screens and list groups never clip their
         `list groups show all their rows at ${width}px instead of shrinking and clipping`);
     }
   } finally {
-    await page.eval(`document.body.classList.remove('light'); if (layout === 'list') document.getElementById('layout-toggle').click()`);
+    await page.eval(`document.body.classList.remove('light'); while (layout !== 'board') document.getElementById('layout-toggle').click()`);
     await page.setViewport(1280, 900);
   }
 });
@@ -866,7 +866,7 @@ test('UI: cards open from the keyboard and long epic content cannot widen a lane
   await until(async () => await page.eval(`!document.getElementById('drawer').hidden`), { timeout: BUDGET.quick });
   await page.eval(`renderBoard(); closeDrawer()`);
   assert.equal(await page.eval(`document.activeElement.matches('.list-card') && document.activeElement.closest('.list-row').dataset.id`), 'task-0001');
-  await page.eval(`document.getElementById('layout-toggle').click()`);
+  await page.eval(`while (layout !== 'board') document.getElementById('layout-toggle').click()`);
   const widths = await page.eval(`(() => {
     const card = document.querySelector('.card[data-id="task-0001"]');
     const list = document.createElement('ul'); list.className = 'card-subtasks';
