@@ -1,7 +1,7 @@
 ---
 id: task-0048
 title: CI adapter passes an empty diff through the docs-only fast path
-status: Queue
+status: Build
 type: bug
 priority: high
 labels: [ci]
@@ -12,6 +12,12 @@ source: agent
 assignee:
 agent: claude
 base_branch: main
+worktree: todomd/task-0048
+ci_evidence: {  }
+ci_remote: {  }
+build_profile: standard
+build_limits: { max_slices: 3, budget_minutes: 60 }
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 ---
 
 ## Description
