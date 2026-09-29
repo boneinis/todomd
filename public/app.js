@@ -383,9 +383,14 @@ function renderBanners(list) {
 // websocket reconnect, and every 10 minutes while a synced project is open.
 async function runSync({ silent = false } = {}) {
   if (!currentProject || boardData?.access !== 'full' || !boardData?.config?.github_sync?.enabled) return;
+  const requestedProject = currentProject;
   try {
-    const res = await fetch(`/api/sync?project=${encodeURIComponent(currentProject)}`, { method: 'POST', headers });
+    const res = await fetch(`/api/sync?project=${encodeURIComponent(requestedProject)}`, { method: 'POST', headers });
     const out = await res.json().catch(() => ({}));
+    // A project switch during the fetch must not let the old project's result
+    // paint its banner (or trigger a board reload) onto the new one — same
+    // stale-response guard loadBoard() uses.
+    if (requestedProject !== currentProject) return;
     if (!res.ok || !out.ok) {
       syncBanner = { level: 'warn', text: `board sync failed: ${out.error || res.statusText}` };
     } else if ((out.conflicts || []).length) {
@@ -398,7 +403,7 @@ async function runSync({ silent = false } = {}) {
     if (out.applied?.length) await loadBoard();
     else renderBanners(boardData?.banners || []);
   } catch {
-    if (!silent) toast('sync failed — server unreachable');
+    if (!silent && requestedProject === currentProject) toast('sync failed — server unreachable');
   }
 }
 $('#sync-now').addEventListener('click', () => runSync());
