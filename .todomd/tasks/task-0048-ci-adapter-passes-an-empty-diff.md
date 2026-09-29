@@ -1,7 +1,7 @@
 ---
 id: task-0048
 title: CI adapter passes an empty diff through the docs-only fast path
-status: Queue
+status: Build
 type: bug
 priority: high
 labels: [ci]
@@ -17,7 +17,7 @@ ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict:  }
 session_id: 7db97318-9cd6-43c2-836a-117f21622da6
 cost_usd: 1.0453
 needs_human_reason:
