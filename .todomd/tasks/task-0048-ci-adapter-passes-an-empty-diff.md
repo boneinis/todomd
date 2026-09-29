@@ -1,7 +1,7 @@
 ---
 id: task-0048
 title: CI adapter passes an empty diff through the docs-only fast path
-status: Planned
+status: Queue
 type: bug
 priority: high
 labels: [ci]
