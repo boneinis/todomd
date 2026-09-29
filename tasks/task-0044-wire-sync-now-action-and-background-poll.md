@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -112,3 +112,7 @@ ning A's banner. Capture the requested project/generation at invocation and disc
 …
 on wedged and the board changed despite the failed response. Make application transactional and restore both worktree and index on commit failure, or preflight all refusal conditions and preserve accurate result/state semantics. Add regression coverage for a rejected commit.
 - 2026-09-29 04:46Z · CI attempt 3 · 181.0s · `npm test` passed
+- 2026-09-29 04:49Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 455.3K input, 322.9K cached, 6.8K output · $0.000 est · verdict: fail
+  - attempts_exhausted: `src/github-sync.js:202-205` and `:228-233` can silently overwrite a genuine local edit. `historicalBaseMatches()` treat
+…
+ormal three-way conflict when `lastRef` exists, and for first sync require evidence from local history that the path has not diverged; otherwise defer it as a conflict. Trusted CI reports `npm test` passed at the exact clean candidate HEAD; it was not rerun per instructions.
