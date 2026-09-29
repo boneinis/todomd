@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -16,9 +16,9 @@ model: claude-sonnet-5
 triaged: n/a (chunk 2/2 of task-0033)
 session_id: 7f8b6e58-b9e0-4438-bda2-60ce7d2416a2
 worktree: todomd/task-0044
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 56890cccb3a3b90f47df1d169cce2ee82ed94bac, command: npm test, execution: local, passed_at: '2026-09-29T03:41:22.794Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -86,3 +86,5 @@ M public/app.js
 - 2026-09-29 03:26Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0044
 - 2026-09-29 03:36Z · Build attempt 1 · 17 turns · claude/claude-sonnet-5 · subscription CLI · 34 input, 3.92M cached, 5.8K output · $6.934 est · ok
 - 2026-09-29 03:41Z · CI attempt 1 · 295.9s · `npm test` passed
+- 2026-09-29 03:42Z · Verify attempt 1 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 32.4K input, 0 cached, 2.9K output · $0.000 est · verdict: fail (unmet: 1)
+  - retrying with findings (attempt 2/3)
