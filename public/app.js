@@ -121,6 +121,7 @@ function setCurrentProject(nextProject) {
   // fetch the replacement board, and that request is allowed to fail without
   // leaving voice bound to the project we just left.
   publishVoiceContext({ project: '', access: 'none', primary: false });
+  syncBanner = null; // a conflict banner from the project we're leaving must not bleed into the next one
   currentProject = next;
   projectSel.value = next || '';
   if (next) localStorage.setItem('todomd-project', next);
@@ -240,6 +241,7 @@ async function loadBoard() {
   $('#usage').title = ['Current-month normalized model usage. Dollar value is provider-reported legacy estimate, not a bill.', ...providers].join('\n');
   document.body.classList.toggle('viewer', viewer);
   applyQueuePause(usage.queue_paused === true);
+  $('#sync-now').hidden = !boardData.config?.github_sync?.enabled || viewer;
   if (boardData.mode === 'delivery' && localStorage.getItem('todomd-view-type') === null) {
     deliveryView = true;
   }
@@ -340,9 +342,16 @@ $('#queue-run').addEventListener('click', async () => {
   }
 });
 
+// Set after a sync reports something the user should see (a conflict, a
+// deferred file, or a failure) — cleared once a later sync comes back clean.
+// Surfaced inline via renderBanners rather than a toast, since a conflict can
+// arrive from a silent background poll with nobody watching the toast.
+let syncBanner = null;
+
 function renderBanners(list) {
   const el = $('#banners');
   const items = [...list];
+  if (syncBanner) items.unshift(syncBanner);
   if (boardData?.active_cycle) {
     const ac = boardData.active_cycle;
     items.unshift({
@@ -368,6 +377,32 @@ function renderBanners(list) {
       fetch('/api/resume-queues?project=' + encodeURIComponent(currentProject), { method: 'POST', headers }))
   );
 }
+
+// Fetch + merge the remote board-metadata branch. Runs on demand (the "sync
+// now" button), and — silently, without a toast — once on load, once per
+// websocket reconnect, and every 10 minutes while a synced project is open.
+async function runSync({ silent = false } = {}) {
+  if (!currentProject || boardData?.access !== 'full' || !boardData?.config?.github_sync?.enabled) return;
+  try {
+    const res = await fetch(`/api/sync?project=${encodeURIComponent(currentProject)}`, { method: 'POST', headers });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.ok) {
+      syncBanner = { level: 'warn', text: `board sync failed: ${out.error || res.statusText}` };
+    } else if ((out.conflicts || []).length) {
+      syncBanner = { level: 'warn',
+        text: `board sync: ${out.conflicts.length} card${out.conflicts.length === 1 ? '' : 's'} changed on both sides and kept your local version — ${out.conflicts.join(', ')}` };
+    } else {
+      syncBanner = null;
+      if (!silent && out.applied?.length) toast(`synced ${out.applied.length} board change${out.applied.length === 1 ? '' : 's'}`);
+    }
+    if (out.applied?.length) await loadBoard();
+    else renderBanners(boardData?.banners || []);
+  } catch {
+    if (!silent) toast('sync failed — server unreachable');
+  }
+}
+$('#sync-now').addEventListener('click', () => runSync());
+setInterval(() => runSync({ silent: true }), 10 * 60 * 1000);
 
 /* ── team / my-work view ── */
 function applyViewToggle() {
@@ -2113,7 +2148,9 @@ function connectWs() {
   ws.onopen = () => {
     $('#conn').classList.remove('down');
     $('#conn-label').textContent = 'SYNC';
-    loadProjects().then(loadBoard).catch(() => {}); // refetch anything missed while disconnected
+    // refetch anything missed while disconnected, then check for remote board
+    // metadata (covers both the initial connect and every later reconnect)
+    loadProjects().then(loadBoard).then(() => runSync({ silent: true })).catch(() => {});
   };
   ws.onmessage = (e) => {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }

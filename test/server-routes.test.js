@@ -5,10 +5,11 @@ import path from 'node:path';
 import net from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { WebSocket } from 'ws';
-import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
+import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET, git } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
 import { readCard, readRunLog } from '../src/board.js';
+import { pushMetadata } from '../src/github-sync.js';
 import * as pipeline from '../src/pipeline.js';
 import * as scheduler from '../src/scheduler.js';
 import { recordUsage } from '../src/runstore.js';
@@ -1115,4 +1116,78 @@ test('API difficulty routing: /api/stages validates and saves the Build map; /ap
     r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
     assert.deepEqual((await r.json()).commands.find((c) => c.column === 'Build').route_by_complexity, {});
   } finally { await srv.close(); }
+});
+
+function enableGithubSync(repo, remote, branch = 'todomd-state') {
+  const file = path.join(repo, '.todomd/config.yml');
+  fs.appendFileSync(file, `\ngithub_sync:\n  enabled: true\n  remote: ${remote}\n  branch: ${branch}\n`);
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-qm', 'enable github_sync']);
+}
+function cloneRepo(from, into) {
+  git(path.dirname(into), ['clone', '-q', from, into]);
+  git(into, ['config', 'user.email', 'test@todomd.local']);
+  git(into, ['config', 'user.name', 'todomd-test']);
+  // makeRepo's tasks dir is empty, so plain git clone doesn't recreate it —
+  // listProjects() requires it to exist on disk
+  fs.mkdirSync(path.join(into, '.todomd/tasks'), { recursive: true });
+  return into;
+}
+
+test('POST /api/sync requires full access, merges remote board metadata, and broadcasts board-changed only when something applied', async () => {
+  isolateHome();
+  const origin = makeRepo();
+  const dir = tmp('sync-route');
+  const worker = cloneRepo(origin, path.join(dir, 'worker'));
+  const viewer = cloneRepo(origin, path.join(dir, 'viewer'));
+  enableGithubSync(worker, 'origin');
+  enableGithubSync(viewer, 'origin');
+
+  const card = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(card), { recursive: true });
+  fs.writeFileSync(card, '---\nid: task-0001\ntitle: Test card\nstatus: Queue\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  addProject(viewer);
+  const name = path.basename(viewer);
+  const srv = await startServer({ port: await freePort() });
+  const base = `http://127.0.0.1:${srv.port}`;
+  const viewerTok = deviceToken('token-viewer');
+
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/?token=${srv.token}`);
+  await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+  const messages = [];
+  ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString())); } catch { /* ignore */ } });
+
+  try {
+    // no token
+    assert.equal((await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers: { origin: base } })).status, 401);
+    // viewer/monitor token cannot trigger a mutating sync
+    assert.equal((await fetch(`${base}/api/sync?project=${name}`,
+      { method: 'POST', headers: { 'x-todomd-token': viewerTok, origin: base } })).status, 403);
+
+    const r = await fetch(`${base}/api/sync?project=${name}`,
+      { method: 'POST', headers: { 'x-todomd-token': srv.token, origin: base } });
+    assert.equal(r.status, 200);
+    const out = await r.json();
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.conflicts, []);
+    assert.ok(out.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(out));
+
+    await until(() => messages.some((m) => m.type === 'board-changed' && m.project === name), { timeout: BUDGET.quick });
+    assert.equal(readCard(viewer, 'task-0001').data.assignee, 'alice');
+
+    // nothing new published — a second sync applies nothing and does not broadcast again
+    messages.length = 0;
+    const again = await fetch(`${base}/api/sync?project=${name}`,
+      { method: 'POST', headers: { 'x-todomd-token': srv.token, origin: base } });
+    assert.deepEqual(await again.json(), { ok: true, applied: [], deferred: [], conflicts: [] });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(!messages.some((m) => m.type === 'board-changed'), 'a no-op sync must not broadcast');
+  } finally {
+    ws.close();
+    await srv.close();
+  }
 });
