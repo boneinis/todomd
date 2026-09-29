@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -16,13 +16,13 @@ model: claude-sonnet-5
 triaged: n/a (chunk 2/2 of task-0033)
 session_id: 7f8b6e58-b9e0-4438-bda2-60ce7d2416a2
 worktree: todomd/task-0044
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: a7e8da0ae310eaae689c6f6842e38317abfb6057, command: npm test, execution: local, passed_at: '2026-09-29T04:04:02.006Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 31.9477
+cost_usd: 33.137
 needs_human_reason:
 recovery_stage:
 ---
@@ -90,3 +90,6 @@ M public/app.js
   - retrying with findings (attempt 2/3)
 - 2026-09-29 04:00Z · Build attempt 2 · 42 turns · claude/claude-sonnet-5 · subscription CLI · 84 input, 11.68M cached, 30.8K output · $9.805 est · ok
 - 2026-09-29 04:04Z · CI attempt 2 · 232.5s · `npm test` passed
+- 2026-09-29 04:05Z · Verify attempt 2 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 34.3K input, 0 cached, 3.8K output · $0.000 est · verdict: fail
+  - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
+- 2026-09-29 04:08Z · Escalate attempt 2 · 12 turns · claude/claude-fable-5 · subscription CLI · 18 input, 184.5K cached, 6.9K output · $1.189 est · diagnosis complete
