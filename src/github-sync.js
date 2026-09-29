@@ -25,8 +25,8 @@ function runRaw(repoPath, args) {
   });
 }
 
-async function treePaths(repoPath, ref) {
-  const res = await run(repoPath, ['ls-tree', '-r', '-z', '--name-only', ref]);
+async function treePaths(repoPath, ref, pathspec = []) {
+  const res = await run(repoPath, ['ls-tree', '-r', '-z', '--name-only', ref, ...pathspec]);
   return res.ok ? res.stdout.split('\0').filter(Boolean) : [];
 }
 
@@ -42,36 +42,57 @@ async function blobSha(repoPath, ref, relPath) {
 // gives independently-cloned repos no common commit ancestry for the
 // published branch, walking that branch's own history for one path can still
 // find a real common ancestor: if `localSha` matches what the path held at
-// some earlier point in the remote branch's history (including "didn't exist
-// yet", before the path's first recorded change there), nothing has touched
+// some earlier point in the remote branch's history, nothing has touched
 // the file locally since remote had that value — remote's current version is
-// a safe fast-forward, not a conflict. This is what makes the very first
+// a safe fast-forward, not a conflict. (Local ABSENCE is deliberately not
+// treated as such a match: a missing local file may be an intentional,
+// committed local deletion, which mergeMetadata distinguishes by consulting
+// local history instead.) This is what makes the very first
 // sync of an already-existing, remotely-edited file work correctly: with no
 // prior local sync-state, the naive last-synced-ref base is null even though
 // a real common ancestor exists in the remote branch's own commits.
-async function historicalBaseMatches(repoPath, ref, relPath, localSha) {
+async function pathHistory(repoPath, ref, relPath) {
   const log = await run(repoPath, ['log', '--format=%H', ref, '--', relPath]);
-  const commits = log.ok ? log.stdout.split('\n').filter(Boolean) : [];
-  if (localSha === null && commits.length) return true; // predates the path's oldest recorded change
-  for (const commit of commits) {
+  return log.ok ? log.stdout.split('\n').filter(Boolean) : [];
+}
+
+// Any commit touching the path (add, edit or delete) proves it existed at
+// some point in that ref's history.
+async function pathEverExisted(repoPath, ref, relPath) {
+  return (await pathHistory(repoPath, ref, relPath)).length > 0;
+}
+
+async function historicalBaseMatches(repoPath, ref, relPath, localSha) {
+  for (const commit of await pathHistory(repoPath, ref, relPath)) {
     if ((await blobSha(repoPath, commit, relPath)) === localSha) return true;
   }
   return false;
 }
 
-// Local, per-clone bookkeeping of the last remote ref successfully merged —
-// lives inside .git (never tracked, never part of the pushed .todomd subtree)
-// so a fresh 3-way comparison is possible without needing shared commit
-// ancestry between independently-cloned repos (which pushMetadata's
-// `subtree split` deliberately does not preserve).
-function stateFile(repoPath) {
-  return path.join(repoPath, '.git', 'todomd-metadata-sync.json');
+// Local, per-checkout bookkeeping of the last remote ref successfully merged —
+// lives inside the git dir (never tracked, never part of the pushed .todomd
+// subtree) so a fresh 3-way comparison is possible without needing shared
+// commit ancestry between independently-cloned repos (which pushMetadata's
+// `subtree split` deliberately does not preserve). The directory is resolved
+// through git rather than assuming `<repo>/.git`: in a linked worktree `.git`
+// is a FILE pointing at `.git/worktrees/<name>/`, so a hardcoded join fails.
+// `--absolute-git-dir` (the per-worktree dir) is the right choice over the
+// shared common dir because merges commit to this checkout's own HEAD, making
+// "last remote ref merged" per-checkout state.
+const SYNC_STATE_FILE = 'todomd-metadata-sync.json';
+async function syncStateDir(repoPath) {
+  const res = await run(repoPath, ['rev-parse', '--absolute-git-dir']);
+  return res.ok && res.stdout ? res.stdout : null;
 }
-function readSyncState(repoPath) {
-  try { return JSON.parse(fs.readFileSync(stateFile(repoPath), 'utf8')); } catch { return {}; }
+function readSyncState(stateDir) {
+  try { return JSON.parse(fs.readFileSync(path.join(stateDir, SYNC_STATE_FILE), 'utf8')); } catch { return {}; }
 }
-function writeSyncState(repoPath, state) {
-  try { fs.writeFileSync(stateFile(repoPath), JSON.stringify(state)); } catch {}
+// Returns null on success, an error message on failure. A state file that
+// silently fails to persist downgrades every future sync to first-sync
+// heuristics — exactly the failure callers need to hear about.
+function writeSyncState(stateDir, state) {
+  try { fs.writeFileSync(path.join(stateDir, SYNC_STATE_FILE), JSON.stringify(state)); return null; }
+  catch (err) { return err?.message || String(err); }
 }
 
 // Publish only the tracked .todomd tree to a dedicated remote branch. This
@@ -125,7 +146,8 @@ export async function mergeMetadata(project) {
   if (!fetched.ok || !fetched.ref) return { ok: fetched.ok, applied: [], deferred: [], conflicts: [],
     ...(fetched.skipped ? { skipped: fetched.skipped } : {}), ...(fetched.ok ? {} : { error: fetched.error }) };
 
-  const syncState = readSyncState(project.path);
+  const stateDir = await syncStateDir(project.path);
+  const syncState = stateDir ? readSyncState(stateDir) : {};
   const stateKey = `${fetched.remote}#${fetched.branch}`;
   const lastRef = syncState[stateKey] || null;
   if (lastRef === fetched.ref) return { ok: true, applied: [], deferred: [], conflicts: [] };
@@ -137,6 +159,11 @@ export async function mergeMetadata(project) {
 
   const remotePaths = await treePaths(project.path, fetched.ref);
   const basePaths = lastRef ? await treePaths(project.path, lastRef) : [];
+  // Local paths matter too: a file deleted remotely but still present locally
+  // appears in NEITHER remotePaths nor (on a first sync) basePaths — without
+  // this it would never be examined and remote deletions would never apply.
+  const localPaths = (await treePaths(project.path, 'HEAD', ['--', '.todomd']))
+    .map((p) => p.slice('.todomd/'.length));
   const applied = [], conflicts = [];
 
   const applyRemote = async (rel, localRel, remoteSha) => {
@@ -144,15 +171,17 @@ export async function mergeMetadata(project) {
     if (remoteSha === null) fs.rmSync(abs, { force: true });
     else {
       const blob = await runRaw(project.path, ['show', `${fetched.ref}:${rel}`]);
-      if (!blob.ok) return false;
+      // a failed blob read must not vanish from the result: report it, and —
+      // because unresolved entries keep the sync state from advancing — the
+      // next poll retries it
+      if (!blob.ok) { conflicts.push(localRel); return; }
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, blob.stdout);
     }
     applied.push(localRel);
-    return true;
   };
 
-  for (const rel of new Set([...remotePaths, ...basePaths])) {
+  for (const rel of new Set([...remotePaths, ...basePaths, ...localPaths])) {
     const localRel = path.posix.join('.todomd', rel);
     const [remoteSha, baseSha, localSha] = await Promise.all([
       blobSha(project.path, fetched.ref, rel),
@@ -161,22 +190,50 @@ export async function mergeMetadata(project) {
     ]);
     if (remoteSha === localSha) continue; // nothing to reconcile
 
-    if (localSha === baseSha) {
-      // local hasn't touched this file since the last sync — safe to take
-      // whatever the remote side has now (an update, a new file, or a delete)
-      await applyRemote(rel, localRel, remoteSha);
-    } else if (remoteSha === baseSha) {
-      // remote hasn't changed since the last sync — the local edit stands
-      continue;
+    if (lastRef) {
+      // a real per-checkout base exists — classic path-level 3-way merge
+      if (localSha === baseSha) {
+        // local hasn't touched this file since the last sync — safe to take
+        // whatever the remote side has now (an update, a new file, or a delete)
+        await applyRemote(rel, localRel, remoteSha);
+      } else if (remoteSha === baseSha) {
+        // remote hasn't changed since the last sync — the local edit stands
+        continue;
+      } else if (localSha !== null && await historicalBaseMatches(project.path, fetched.ref, rel, localSha)) {
+        // local's current content is a real earlier point in the remote
+        // branch's own history — remote's value is a safe fast-forward
+        await applyRemote(rel, localRel, remoteSha);
+      } else {
+        // both sides changed — never silently discard local intent
+        conflicts.push(localRel);
+      }
+    } else if (localSha === null) {
+      // first sync; remote has the file, local doesn't. Only safe to take if
+      // local history NEVER contained the path (a genuinely new remote file).
+      // If local once had it and deleted it, that deletion was deliberate —
+      // resurrecting the file would silently discard local intent.
+      if (await pathEverExisted(project.path, 'HEAD', localRel)) conflicts.push(localRel);
+      else await applyRemote(rel, localRel, remoteSha);
+    } else if (remoteSha === null) {
+      // first sync; local has the file, remote doesn't.
+      if (await historicalBaseMatches(project.path, fetched.ref, rel, localSha)) {
+        // remote once held exactly local's current content and later deleted
+        // it — local hasn't diverged since, so the deletion fast-forwards
+        await applyRemote(rel, localRel, null);
+      } else if (await pathEverExisted(project.path, fetched.ref, rel)) {
+        // both sides moved around a deletion — keep local, report it
+        conflicts.push(localRel);
+      }
+      // else: a local-only file the remote never knew about — keep, silently
     } else if (await historicalBaseMatches(project.path, fetched.ref, rel, localSha)) {
-      // no last-synced-ref base (e.g. this clone's very first sync), but
-      // local's current content is itself a real earlier point in the
-      // remote branch's own history — local hasn't diverged, so remote's
-      // current value is still a safe fast-forward rather than a conflict
+      // no last-synced-ref base (this clone's very first sync), but local's
+      // current content is itself a real earlier point in the remote
+      // branch's own history — local hasn't diverged, so remote's current
+      // value is still a safe fast-forward rather than a conflict
       await applyRemote(rel, localRel, remoteSha);
     } else {
-      // both sides changed (or were independently created with no shared
-      // base) — never silently discard local intent; keep it and report it
+      // independently created or independently edited with no shared base —
+      // never silently discard local intent; keep it and report it
       conflicts.push(localRel);
     }
   }
@@ -186,8 +243,20 @@ export async function mergeMetadata(project) {
     if (!commit.committed) return { ok: false, error: commit.reason || 'could not commit merged board metadata', applied: [], deferred: conflicts, conflicts };
   }
 
-  writeSyncState(project.path, { ...syncState, [stateKey]: fetched.ref });
-  return { ok: true, applied, deferred: conflicts, conflicts };
+  // Advance the stored ref ONLY when reconciliation completed. With
+  // unresolved conflicts left in place, the next poll must re-derive and
+  // re-report them — recording fetched.ref here would make that poll a clean
+  // no-op, and the client would clear its conflict banner with nothing
+  // actually resolved. Re-running against the same ref is idempotent:
+  // already-applied files short-circuit on remoteSha === localSha.
+  let warning = null;
+  if (!conflicts.length) {
+    warning = stateDir
+      ? writeSyncState(stateDir, { ...syncState, [stateKey]: fetched.ref })
+      : 'could not resolve the repository git directory';
+    if (warning) warning = `merged, but sync state was not saved (${warning}); the next sync re-checks from scratch`;
+  }
+  return { ok: true, applied, deferred: conflicts, conflicts, ...(warning ? { warning } : {}) };
 }
 
 export function createMetadataScheduler({ onResult = () => {} } = {}) {

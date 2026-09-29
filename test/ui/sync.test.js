@@ -78,8 +78,22 @@ before(async () => {
     '## Acceptance Criteria\n\n- [ ] done\n\n## Implementation Plan\n\n## Run Log\n');
   git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
   git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  // a second card BOTH sides create independently before the first sync —
+  // a genuine conflict, published in the same metadata push as task-0001
+  const cardBody = (assignee) =>
+    '---\nid: task-0002\ntitle: Contested card\nstatus: Review\ntype: module\npriority: low\n' +
+    `labels: []\ndependencies: []\ncreated_date: 2026-01-01\nsource: ui\nagent: claude\nassignee: ${assignee}\n` +
+    'verification: { attempts: 0, max_attempts: 3, last_verdict: }\n---\n\n## Description\n\nbody\n\n' +
+    '## Acceptance Criteria\n\n- [ ] done\n\n## Implementation Plan\n\n## Run Log\n';
+  fs.writeFileSync(path.join(worker, '.todomd/tasks/task-0002-card.md'), cardBody('alice'));
+  git(worker, ['add', '.todomd/tasks/task-0002-card.md']);
+  git(worker, ['commit', '-qm', 'worker creates task-0002']);
   const push = await pushMetadata({ path: worker, name: 'worker' });
   assert.equal(push.ok, true, push.error);
+
+  fs.writeFileSync(path.join(viewer, '.todomd/tasks/task-0002-card.md'), cardBody('bob'));
+  git(viewer, ['add', '.todomd/tasks/task-0002-card.md']);
+  git(viewer, ['commit', '-qm', 'viewer independently creates task-0002']);
 
   addProject(viewer);
   name = path.basename(viewer);
@@ -111,4 +125,22 @@ test('clicking "sync now" merges a remote assignee change and the open Mine view
   await page.eval(`document.getElementById('sync-now').click()`);
   await until(async () => await page.eval(`!!document.querySelector('[data-id="task-0001"]')`));
   assert.match(await page.eval(`document.querySelector('[data-id="task-0001"]').textContent`), /Assigned elsewhere/);
+});
+
+test('a sync conflict raises a warning banner that survives a later no-op sync', async (t) => {
+  if (!page) return t.skip(SKIP);
+  // task-0002 was created independently on both sides, so the sync the
+  // previous test triggered reported it as a conflict and kept the local copy
+  const bannerText = () => page.eval(`document.getElementById('banners').textContent`);
+  await until(async () => /changed on both sides/.test(await bannerText()));
+  assert.match(await bannerText(), /task-0002/);
+
+  // a follow-up sync with an unchanged remote applies nothing — but it must
+  // RE-report the still-unresolved conflict, so the banner stays up instead
+  // of being cleared by a poll that only looked clean because the stored
+  // sync ref had been advanced past the conflict
+  await page.eval(`window.__t44sync = null; runSync().then(() => { window.__t44sync = 'done'; })`);
+  await until(async () => (await page.eval(`window.__t44sync`)) === 'done');
+  assert.match(await bannerText(), /changed on both sides/);
+  assert.match(await bannerText(), /task-0002/);
 });

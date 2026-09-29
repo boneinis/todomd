@@ -145,6 +145,153 @@ test('mergeMetadata defers a real conflict and keeps the local version', async (
   assert.match(fs.readFileSync(viewerCard, 'utf8'), /assignee: bob/);
 });
 
+test('mergeMetadata re-reports an unresolved conflict on every poll and only advances after real resolution', async () => {
+  // Regression: the last-synced ref used to be recorded even when conflicts
+  // remained, so the NEXT poll short-circuited as a clean no-op and the
+  // client cleared its conflict banner with nothing actually resolved.
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  const alice = '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee: alice\n---\n\nbody\n';
+  const workerCard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(workerCard), { recursive: true });
+  fs.writeFileSync(workerCard, alice);
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  const viewerCard = path.join(viewer, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(viewerCard), { recursive: true });
+  fs.writeFileSync(viewerCard, '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee: bob\n---\n\nbody\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'assign task-0001 to bob']);
+
+  const first = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(first.ok, true, first.error);
+  assert.ok(first.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(first));
+
+  // same remote ref, nothing resolved — the conflict must be re-derived and
+  // re-reported, not swallowed by prematurely advanced sync state
+  const second = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(second.ok, true, second.error);
+  assert.ok(second.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(second));
+
+  // resolve locally by taking the remote version — only now does a poll come
+  // back clean (which is what lets the client clear its banner)
+  fs.writeFileSync(viewerCard, alice);
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'take remote assignment']);
+  const third = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.deepEqual(third, { ok: true, applied: [], deferred: [], conflicts: [] });
+  // and the state advanced: the next poll is a clean short-circuit too
+  const fourth = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.deepEqual(fourth, { ok: true, applied: [], deferred: [], conflicts: [] });
+});
+
+test('mergeMetadata applies a remote deletion on a clone\'s first sync', async () => {
+  // Regression: the first-sync reconciliation set covered only remote and
+  // base paths — a card still present locally but deleted remotely was never
+  // even examined, so the deletion never applied.
+  const origin = makeRepo();
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add task-0001']);
+
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  git(worker, ['rm', '-q', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'drop task-0001']);
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  // viewer's copy is untouched since the clone — remote's deletion is a safe
+  // fast-forward (viewer's content is a real point in the remote history)
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.conflicts, [], JSON.stringify(result));
+  assert.ok(result.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
+  assert.equal(fs.existsSync(path.join(viewer, '.todomd/tasks/task-0001-card.md')), false);
+});
+
+test('mergeMetadata never resurrects a deliberately committed local deletion', async () => {
+  // Regression: local absence used to be treated as "predates the remote
+  // file" and the remote copy was re-applied — silently undoing a local
+  // deletion. Local history shows the path existed, so this is a conflict.
+  const origin = makeRepo();
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add task-0001']);
+
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  git(viewer, ['rm', '-q', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'deliberately drop task-0001']);
+
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(result.ok, true, result.error);
+  assert.ok(result.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
+  assert.equal(fs.existsSync(path.join(viewer, '.todomd/tasks/task-0001-card.md')), false,
+    'a committed local deletion must never be silently resurrected');
+});
+
+test('mergeMetadata persists sync state inside a linked git worktree', async () => {
+  // Regression: state was written to <repo>/.git/todomd-metadata-sync.json,
+  // but in a linked worktree `.git` is a file — the write failed silently,
+  // every sync ran as a "first sync", and any local board edit afterwards
+  // was misreported as a conflict.
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+  const wt = path.join(dir, 'viewer-wt');
+  git(viewer, ['worktree', 'add', '-q', wt]);
+
+  const workerCard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(workerCard), { recursive: true });
+  fs.writeFileSync(workerCard, '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  const result = await mergeMetadata({ path: wt, name: 'viewer-wt' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.warning, undefined, result.warning);
+  assert.ok(result.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
+
+  // the state file lands under the worktree's OWN git dir, not <repo>/.git
+  const gitDir = git(wt, ['rev-parse', '--absolute-git-dir']);
+  assert.ok(gitDir.includes(`${path.sep}worktrees${path.sep}`), gitDir);
+  assert.equal(fs.existsSync(path.join(gitDir, 'todomd-metadata-sync.json')), true);
+
+  // a local board edit after a successful sync must NOT read as a conflict:
+  // with the last-synced ref persisted, an unchanged remote is a clean no-op
+  // regardless of local-only commits
+  const card = path.join(wt, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(card, '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee: bob\n---\n\nbody\n');
+  git(wt, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(wt, ['commit', '-qm', 'reassign locally']);
+  const after = await mergeMetadata({ path: wt, name: 'viewer-wt' });
+  assert.deepEqual(after, { ok: true, applied: [], deferred: [], conflicts: [] });
+});
+
 test('mergeMetadata refuses to run over uncommitted local board changes', async () => {
   const origin = makeRepo();
   const dir = tmp('sync');

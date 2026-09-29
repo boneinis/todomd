@@ -1203,3 +1203,70 @@ test('POST /api/sync requires full access, merges remote board metadata, and bro
     await srv.close();
   }
 });
+
+test('POST /api/sync returns 200 with the conflict list and keeps reporting it until the conflict is really resolved', async () => {
+  isolateHome();
+  const origin = makeRepo();
+  // Review, not Queue, for the same reason as the test above: this project is
+  // managed by a real pipeline and a Queue card would race the sync.
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add unassigned task-0001']);
+
+  const dir = tmp('sync-route');
+  const worker = cloneRepo(origin, path.join(dir, 'worker'));
+  const viewer = cloneRepo(origin, path.join(dir, 'viewer'));
+  enableGithubSync(worker, 'origin');
+  enableGithubSync(viewer, 'origin');
+
+  fs.writeFileSync(path.join(worker, '.todomd/tasks/task-0001-card.md'),
+    '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  // the viewer independently assigned the same card before syncing — conflict
+  fs.writeFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'),
+    '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: bob\n---\n\nbody\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'assign task-0001 to bob']);
+
+  addProject(viewer);
+  const name = path.basename(viewer);
+  const srv = await startServer({ port: await freePort() });
+  const base = `http://127.0.0.1:${srv.port}`;
+  const headers = { 'x-todomd-token': srv.token, origin: base };
+
+  try {
+    // a conflicts-only merge is still a successful call: 200, ok:true, and
+    // the conflict list is what the client renders as its warning banner
+    const r = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+    assert.equal(r.status, 200);
+    const out = await r.json();
+    assert.equal(out.ok, true);
+    assert.deepEqual(out.applied, []);
+    assert.ok(out.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(out));
+
+    // a later poll with an unchanged remote must RE-report the conflict, not
+    // come back as a clean no-op — the client clears its banner on any clean
+    // result, so a premature no-op here would hide a still-unresolved conflict
+    const r2 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+    assert.equal(r2.status, 200);
+    const out2 = await r2.json();
+    assert.ok(out2.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(out2));
+    // local intent survives throughout
+    assert.equal(readCard(viewer, 'task-0001').data.assignee, 'bob');
+
+    // resolve by taking the remote version — only now does the poll go clean
+    fs.writeFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'),
+      '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: alice\n---\n\nbody\n');
+    git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+    git(viewer, ['commit', '-qm', 'take remote assignment']);
+    const r3 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+    assert.deepEqual(await r3.json(), { ok: true, applied: [], deferred: [], conflicts: [] });
+  } finally {
+    await srv.close();
+  }
+});
