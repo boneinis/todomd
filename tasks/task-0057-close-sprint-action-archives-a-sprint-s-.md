@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Plan
+status: Planned
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -18,6 +18,8 @@ triaged: 2026-09-29
 sprint: sprint-2
 cost_usd: 0
 needs_human_reason:
+build_limits: {  }
+complexity: medium
 ---
 
 ## Description
@@ -43,5 +45,16 @@ This must be an explicit, human-triggered action rather than automatic on last-c
 
 ## Implementation Plan
 
+1. Add `closeSprint(project, sprint)` in `src/pipeline.js`: inspect active cards with the matching normalized sprint, report non-Done cards as skipped, call the existing `archiveCard(project, id, true)` for each Done card, and return per-card archived/skipped results plus a `nothing_to_archive` outcome when applicable. Keep processing after individual guard failures so the operation remains best-effort and idempotent.
+2. Add `POST /api/sprints/<sprint>/close` handling in `src/server.js`, including safe sprint decoding/validation and a successful structured response even when no cards are archived or some cards are skipped.
+3. Extend `test/server-routes.test.js` and the relevant pipeline test coverage to verify matching Done cards are archived, other sprints and non-Done cards remain active and are reported, live-run refusals are reported without blocking other cards, archived cards appear only in the archived board response, and repeated/empty closes return `nothing_to_archive`.
+4. Update `public/devflow.js` to show a close control only for named sprint groups containing at least one Done card and only for users with write access. Require browser confirmation, call the close endpoint, summarize archived/skipped results through the existing toast path, and reload board data so archived cards disappear from Board/Dev Flow immediately.
+5. Add focused Dev Flow helper tests in `test/devflow.test.js`, browser interaction coverage in `test/ui/ui-smoke.test.js`, and any small control styling needed in `public/style.css`. Verify hidden controls for viewers and zero-Done/unscheduled groups, cancellation without a request, URL-safe sprint names, confirmation, result messaging, and refreshed rendering.
+6. No filename-specific sprint or Dev Flow document exists under `docs/`; therefore no documentation file is currently required by the conditional acceptance criterion. If an existing relevant section is identified while implementing the named files, update that section rather than creating unrelated documentation.
+Risks: Sprint names must be encoded and compared consistently with existing `sprintOf` coercion, and the response contract must distinguish ordinary non-Done skips from `archiveCard` guard failures without weakening archive-side resource cleanup or epic cascade behavior.
+
+Summary: wrote a single cohesive implementation plan.
+
 ## Run Log
 - 2026-09-29 17:19Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-09-29 17:22Z · Plan · 1 turns · codex/gpt-5.6-sol · subscription CLI · 146.3K input, 114.0K cached, 3.5K output · $0.000 est · ok
