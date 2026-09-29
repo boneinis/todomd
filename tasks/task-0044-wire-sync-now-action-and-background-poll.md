@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -124,3 +124,8 @@ edits remain unable to publish. Preserve/reconcile the fetched metadata ancestry
 
 Trusted CI for exact HEAD 964348a passed `npm test`; it was not rerun as instructed.
 - 2026-09-29 05:12Z · CI attempt 3 · 174.8s · `npm test` passed
+- 2026-09-29 05:16Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 1.13M input, 1.03M cached, 8.1K output · $0.000 est · verdict: fail (unmet: 1)
+  - attempts_exhausted: 1. Partial merges can destroy unresolved remote changes. When mergeMetadata applies some paths while reporting other pat
+…
+estructive source-deleting push a fast-forward. That can update the code branch and trigger normal CI. Reject the remote default/protected/current code branches before creating or pushing the metadata commit.
+- unmet: Board-only metadata updates do not trigger normal code CI
