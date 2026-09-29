@@ -14,8 +14,9 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
-triaged: failed (permission_denied)
+triaged: 2026-09-29
 sprint: sprint-2
+cost_usd: 0
 ---
 
 ## Description
@@ -32,6 +33,14 @@ This must be an explicit, human-triggered action rather than automatic on last-c
 - [ ] Closing a sprint with zero Done cards reports nothing-to-archive instead of erroring; the action is idempotent
 - [ ] Document the behavior in docs/ if a sprint/devflow doc exists
 
+## Triage
+
+- **Decision:** Actionable
+- **Rationale:** The scope is well-defined to add a bulk-archive sprint endpoint and a Dev Flow UI control with confirmation. It reuses existing card archiving mechanics and error handling.
+- **Risks or questions:** none
+- **Next step:** Plan
+
 ## Implementation Plan
 
 ## Run Log
+- 2026-09-29 17:19Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
