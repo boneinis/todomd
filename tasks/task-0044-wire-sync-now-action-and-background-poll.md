@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 964348a30bd9b5129e336625a0368d723cf76da8, command: npm test, execution: local, passed_at: '2026-09-29T04:58:43.200Z', clean: true }
+ci_evidence: { head: 39e66504555a22a8eba4589fdd99cb90042ff18d, command: npm test, execution: local, passed_at: '2026-09-29T05:12:47.725Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -123,3 +123,4 @@ ormal three-way conflict when `lastRef` exists, and for first sync require evide
 edits remain unable to publish. Preserve/reconcile the fetched metadata ancestry or use a lease-protected publication strategy, and add a two-clone pull → local edit → push regression test.
 
 Trusted CI for exact HEAD 964348a passed `npm test`; it was not rerun as instructed.
+- 2026-09-29 05:12Z · CI attempt 3 · 174.8s · `npm test` passed
