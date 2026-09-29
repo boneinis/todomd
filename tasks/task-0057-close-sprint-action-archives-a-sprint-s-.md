@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -16,13 +16,14 @@ worktree: todomd/task-0057
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 triaged: 2026-09-29
 sprint: sprint-2
-cost_usd: 2.5303
-needs_human_reason:
+cost_usd: 5.0606
+needs_human_reason: agent_error
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
+recovery_stage: Build
 ---
 
 ## Description
@@ -66,3 +67,5 @@ Summary: wrote a single cohesive implementation plan.
 - 2026-09-29 18:02Z · CI attempt 1 · 220.0s · `npm test` passed
 - 2026-09-29 18:03Z · Verify attempt 1 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 25.1K input, 0 cached, 2.9K output · $0.000 est · verdict: fail (unmet: 1)
   - retrying with findings (attempt 2/3)
+- 2026-09-29 18:11Z · Build attempt 2 · 1 turns · claude/claude-sonnet-5 · subscription CLI · usage unavailable · $2.530 est · failed: agent
+  - agent_error: You've hit your weekly limit · resets Sep 30 at 6pm (America/New_York)
