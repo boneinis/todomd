@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Build
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -14,7 +14,7 @@ assignee:
 agent: claude
 model: claude-sonnet-5
 triaged: n/a (chunk 2/2 of task-0033)
-session_id:
+session_id: 7f8b6e58-b9e0-4438-bda2-60ce7d2416a2
 worktree: todomd/task-0044
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
@@ -22,6 +22,9 @@ ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
+cost_usd: 9.1845
+needs_human_reason: uncommitted_build
+recovery_stage: Build
 ---
 
 ## Description
@@ -60,3 +63,13 @@ Wire Sync now action and background polling into the board UI
    clicking Sync now updates the Mine view after a simulated remote assignee change.
 
 ## Run Log
+- 2026-09-29 03:14Z · Build attempt 1 · 101 turns · claude/claude-sonnet-5 · subscription CLI · 200 input, 10.54M cached, 66.8K output · $3.356 est · checkpoint 1/3 (standard): worktree progress detected; continuing
+- 2026-09-29 03:21Z · Build attempt 1 · 54 turns · claude/claude-sonnet-5 · subscription CLI · 108 input, 10.48M cached, 19.6K output · $5.829 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M public/app.js
+ M public/index.html
+ M src/github-sync.js
+ M src/server.js
+ M test/github-sync.test.js
+ M test/server-routes.test.js
+?? test/ui/sync.test.js
