@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 8283ad8f615ba070ad8f7497b63f03bed80beecc, command: npm test, execution: local, passed_at: '2026-09-29T05:23:21.917Z', clean: true }
+ci_evidence: { head: f5554f7ca1bf91d0591efd6c30d99164bbb4b264, command: npm test, execution: local, passed_at: '2026-09-29T05:33:55.102Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -135,3 +135,4 @@ estructive source-deleting push a fast-forward. That can update the code branch 
 …
 ge for a non-default code branch, including a remote without a configured `<remote>/HEAD`. Trusted CI for exact HEAD 8283ad8f615ba070ad8f7497b63f03bed80beecc passed `npm test`; it was not rerun as instructed.
 - unmet: Board-only metadata updates do not trigger normal code CI
+- 2026-09-29 05:33Z · CI attempt 3 · 181.9s · `npm test` passed
