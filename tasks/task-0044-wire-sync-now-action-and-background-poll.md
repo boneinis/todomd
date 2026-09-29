@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -22,7 +22,7 @@ ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 39.2688
+cost_usd: 45.9258
 needs_human_reason:
 recovery_stage:
 ---
@@ -100,3 +100,4 @@ M src/github-sync.js
  M test/server-routes.test.js
  M test/ui/sync.test.js
 - 2026-09-29 04:19Z · Resume Build · continuing attempt 3 after uncommitted_build in preserved worktree todomd/task-0044
+- 2026-09-29 04:20Z · Build attempt 3 · 10 turns · claude/claude-sonnet-5 · subscription CLI · 20 input, 729.0K cached, 3.1K output · $6.657 est · ok
