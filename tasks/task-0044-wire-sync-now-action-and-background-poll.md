@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -186,3 +186,7 @@ ok 1060 - invalidateProject drops every pending proposal for a removed repositor
 …
 ng the desired deletion still leaves the SHA null, so every sync re-reports the conflict and every push remains blocked indefinitely. Track an explicit resolution/commit transition rather than relying only on blob-SHA changes, and test local-delete/remote-present resolution.
 - 2026-09-29 06:42Z · CI attempt 3 · 175.3s · `npm test` passed
+- 2026-09-29 06:45Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 1.08M input, 970.1K cached, 7.2K output · $0.000 est · verdict: fail
+  - attempts_exhausted: Concrete compatibility bug in src/github-sync.js:75-81 and 393-401. A first sync from a legacy subtree-split metadata br
+…
+ing the subtree history's original path blob and a regression test where a legacy branch changes an existing card before the receiving clone's first sync. Trusted CI confirms npm test passed at the exact candidate HEAD; no commands were executed during this read-only review.
