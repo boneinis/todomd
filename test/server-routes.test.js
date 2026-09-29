@@ -5,10 +5,11 @@ import path from 'node:path';
 import net from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { WebSocket } from 'ws';
-import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET } from './helpers.js';
+import { isolateHome, makeRepo, writeCard, useFakeAgent, clearFakeAgent, until, tmp, BUDGET, git } from './helpers.js';
 import { addProject } from '../src/registry.js';
 import { startServer } from '../src/server.js';
 import { readCard, readRunLog } from '../src/board.js';
+import { pushMetadata } from '../src/github-sync.js';
 import * as pipeline from '../src/pipeline.js';
 import * as scheduler from '../src/scheduler.js';
 import { recordUsage } from '../src/runstore.js';
@@ -1115,4 +1116,177 @@ test('API difficulty routing: /api/stages validates and saves the Build map; /ap
     r = await fetch(`${base}/api/commands${q}`, { headers: { 'x-todomd-token': tok } });
     assert.deepEqual((await r.json()).commands.find((c) => c.column === 'Build').route_by_complexity, {});
   } finally { await srv.close(); }
+});
+
+function enableGithubSync(repo, remote, branch = 'todomd-state') {
+  const file = path.join(repo, '.todomd/config.yml');
+  fs.appendFileSync(file, `\ngithub_sync:\n  enabled: true\n  remote: ${remote}\n  branch: ${branch}\n`);
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-qm', 'enable github_sync']);
+}
+function cloneRepo(from, into) {
+  git(path.dirname(into), ['clone', '-q', from, into]);
+  git(into, ['config', 'user.email', 'test@todomd.local']);
+  git(into, ['config', 'user.name', 'todomd-test']);
+  // makeRepo's tasks dir is empty, so plain git clone doesn't recreate it —
+  // listProjects() requires it to exist on disk
+  fs.mkdirSync(path.join(into, '.todomd/tasks'), { recursive: true });
+  return into;
+}
+
+test('POST /api/sync requires full access, merges remote board metadata, and broadcasts board-changed only when something applied', async () => {
+  isolateHome();
+  const origin = makeRepo();
+  // The card exists, unassigned, before either clone is made — this is the
+  // case that matters most: on a clone's very first sync there's no stored
+  // last-synced ref, so the merge has to recognize an unchanged EXISTING
+  // card's content as a real earlier point in the remote branch's own
+  // history rather than mistake it for a conflicting independent creation.
+  // Review, not Queue: this project is managed by a real (unmocked) pipeline
+  // below — a Queue card would get admitted for a real build and race the sync.
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add unassigned task-0001']);
+
+  const dir = tmp('sync-route');
+  const worker = cloneRepo(origin, path.join(dir, 'worker'));
+  const viewer = cloneRepo(origin, path.join(dir, 'viewer'));
+  enableGithubSync(worker, 'origin');
+  enableGithubSync(viewer, 'origin');
+
+  const card = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(card, '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  addProject(viewer);
+  const name = path.basename(viewer);
+  const srv = await startServer({ port: await freePort() });
+  const base = `http://127.0.0.1:${srv.port}`;
+  const viewerTok = deviceToken('token-viewer');
+
+  const ws = new WebSocket(`ws://127.0.0.1:${srv.port}/?token=${srv.token}`);
+  await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+  const messages = [];
+  ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString())); } catch { /* ignore */ } });
+
+  try {
+    // a live triage (or any run) on the card makes /api/sync defer its file —
+    // wait for the real pipeline to settle so the merge applies cleanly
+    await until(() => !pipeline.hasLiveRun(name, 'task-0001'), { timeout: BUDGET.slow });
+    // no token
+    assert.equal((await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers: { origin: base } })).status, 401);
+    // viewer/monitor token cannot trigger a mutating sync
+    assert.equal((await fetch(`${base}/api/sync?project=${name}`,
+      { method: 'POST', headers: { 'x-todomd-token': viewerTok, origin: base } })).status, 403);
+
+    // a transient triage claim can still defer the card — retry until the
+    // merge window is clear and the remote change actually applies
+    let out;
+    await until(async () => {
+      const r = await fetch(`${base}/api/sync?project=${name}`,
+        { method: 'POST', headers: { 'x-todomd-token': srv.token, origin: base } });
+      assert.equal(r.status, 200);
+      out = await r.json();
+      return out.ok && out.applied.some((f) => f.endsWith('tasks/task-0001-card.md'));
+    }, { timeout: BUDGET.slow });
+    assert.deepEqual(out.conflicts, []);
+
+    await until(() => messages.some((m) => m.type === 'board-changed' && m.project === name), { timeout: BUDGET.quick });
+    assert.equal(readCard(viewer, 'task-0001').data.assignee, 'alice');
+
+    // nothing new published — a second sync applies nothing and does not broadcast again
+    messages.length = 0;
+    const again = await fetch(`${base}/api/sync?project=${name}`,
+      { method: 'POST', headers: { 'x-todomd-token': srv.token, origin: base } });
+    assert.deepEqual(await again.json(), { ok: true, applied: [], deferred: [], conflicts: [] });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(!messages.some((m) => m.type === 'board-changed'), 'a no-op sync must not broadcast');
+  } finally {
+    ws.close();
+    await srv.close();
+  }
+});
+
+test('POST /api/sync returns 200 with the conflict list and keeps reporting it until the conflict is really resolved', async () => {
+  isolateHome();
+  const origin = makeRepo();
+  // Review, not Queue, for the same reason as the test above: this project is
+  // managed by a real pipeline and a Queue card would race the sync.
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add unassigned task-0001']);
+
+  const dir = tmp('sync-route');
+  const worker = cloneRepo(origin, path.join(dir, 'worker'));
+  const viewer = cloneRepo(origin, path.join(dir, 'viewer'));
+  enableGithubSync(worker, 'origin');
+  enableGithubSync(viewer, 'origin');
+
+  fs.writeFileSync(path.join(worker, '.todomd/tasks/task-0001-card.md'),
+    '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  // the viewer independently assigned the same card before syncing — conflict
+  fs.writeFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'),
+    '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: bob\n---\n\nbody\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'assign task-0001 to bob']);
+
+  addProject(viewer);
+  const name = path.basename(viewer);
+  const srv = await startServer({ port: await freePort() });
+  const base = `http://127.0.0.1:${srv.port}`;
+  const headers = { 'x-todomd-token': srv.token, origin: base };
+
+  try {
+    // same settle wait as above: a live triage would defer the card's file
+    await until(() => !pipeline.hasLiveRun(name, 'task-0001'), { timeout: BUDGET.slow });
+    // a conflicts-only merge is still a successful call: 200, ok:true, and
+    // the conflict list is what the client renders as its warning banner.
+    // transient triage claims can defer instead — retry until it reports.
+    let out;
+    await until(async () => {
+      const r = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+      assert.equal(r.status, 200);
+      out = await r.json();
+      return out.ok && out.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md'));
+    }, { timeout: BUDGET.slow });
+    assert.deepEqual(out.applied, []);
+
+    // a later poll with an unchanged remote must RE-report the conflict, not
+    // come back as a clean no-op — the client clears its banner on any clean
+    // result, so a premature no-op here would hide a still-unresolved conflict
+    let out2;
+    await until(async () => {
+      const r2 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+      assert.equal(r2.status, 200);
+      out2 = await r2.json();
+      return out2.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md'));
+    }, { timeout: BUDGET.slow });
+
+    // local intent survives throughout
+    assert.equal(readCard(viewer, 'task-0001').data.assignee, 'bob');
+
+    // resolve by taking the remote version — only now does the poll go clean
+    fs.writeFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'),
+      '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: alice\n---\n\nbody\n');
+    git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+    git(viewer, ['commit', '-qm', 'take remote assignment']);
+    let out3;
+    await until(async () => {
+      const r3 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+      out3 = await r3.json();
+      return out3.ok && !out3.deferred.length && !out3.conflicts.length;
+    }, { timeout: BUDGET.slow });
+  } finally {
+    await srv.close();
+  }
 });

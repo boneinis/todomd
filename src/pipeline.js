@@ -1875,7 +1875,8 @@ export async function reorder(project, id, beforeId = null) {
 // A verifier that could not return a verdict may be retried without throwing
 // away a completed build. This is deliberately narrower than Needs Human →
 // Planned: that route starts a fresh worktree and build attempt.
-async function preservedWorktree(project, card) {
+// Exported so /api/sync can also defer cards whose recovery worktree exists.
+export async function preservedWorktree(project, card) {
   if (!card?.data?.worktree) return null;
   const config = await execConfig(project.path, card?.data?.base_branch);
   const worktreeAbs = path.join(project.path, config.worktree_dir || '.todomd/worktrees', card.data.id);

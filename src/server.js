@@ -22,11 +22,11 @@ import chokidar from 'chokidar';
 import { WebSocketServer } from 'ws';
 import QRCode from 'qrcode';
 import { listProjects, addProject, removeProject } from './registry.js';
-import { loadBoard, readCard, cardParseFailure, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt } from './board.js';
+import { loadBoard, readCard, cardParseFailure, createCard, patchFrontmatter, attachCard, readCommandParts, writeCommandCustom, loadConfig, deleteCard, listSkills, readRunLog, setStageRouting, readLocalPrompt, writeLocalPrompt, withRepoLock } from './board.js';
 import { listModels, SUPPORTED_VENDORS, validateModelRoute } from './models.js';
 import { initProject } from './templates.js';
 import { isGitRepo } from './git.js';
-import { createMetadataScheduler } from './github-sync.js';
+import { createMetadataScheduler, mergeMetadata } from './github-sync.js';
 import { buildVoiceSummary, buildCardStatus, prepareVoiceAction, confirmVoiceAction, rejectVoiceAction, invalidateProject as invalidateVoiceProject } from './voice.js';
 import { createRealtimeSession } from './realtime.js';
 import { sanitizeAssignee, resolveAttachmentFile } from './api-shared.js';
@@ -634,6 +634,38 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
       const held = legacyMutationGuard(project.path, deliveryCardWrite[1]);
       if (held) return json(res, 409, held);
     }
+    // "Sync now": fetch + merge the remote board-metadata branch (the reverse
+    // of the metadataSync auto-push below) so board changes made elsewhere
+    // (another machine, another developer) land here without waiting for the
+    // next 10-minute poll. Merges are restricted to the .todomd prefix, same
+    // as the push side, so this never touches source files or code CI.
+    if (url.pathname === '/api/sync' && req.method === 'POST') {
+      if (!fullAccess) return json(res, 403, { error: 'full access required' });
+      const result = await withRepoLock(project.path, async () => {
+        // Cards mid-Plan/Build/CI/Verify are being mutated by their agents —
+        // a remote write would corrupt state under the runner, so defer them.
+        // Status alone isn't enough: a live triage leaves its card in Review,
+        // and a preserved worktree leaves it in Needs Human — both hold work
+        // a remote write could erase. The set is read INSIDE the lock: a
+        // status sampled before the wait could be stale by the merge starts.
+        const deferCardIds = new Set();
+        for (const c of loadBoard(project.path).cards) {
+          if (!c.id) continue;
+          if (['Plan', 'Build', 'CI', 'Verify', 'Escalate'].includes(c.status)
+            || pipeline.hasLiveRun(project.name, c.id)
+            // loadBoard flattens frontmatter to top level; preservedWorktree
+            // expects the readCard { data } shape — wrap the flat card
+            || await pipeline.preservedWorktree(project, { data: c })) deferCardIds.add(c.id);
+        }
+        return mergeMetadata(project, { deferCardIds });
+      });
+      if (result.ok && result.applied?.length) {
+        broadcast({ type: 'board-changed', project: project.name });
+        boardAgent.changed(project.name);
+      }
+      return json(res, result.ok ? 200 : 409, result);
+    }
+
     if (url.pathname === '/api/delivery/runtime') {
       if (req.method !== 'GET') return json(res, 405, { error: 'delivery runtime status is read-only' });
       const cards = loadBoard(project.path, { includeArchived: true }).cards;
@@ -1502,7 +1534,15 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
   // so removed projects release their watchers (chokidar v4: plain paths only)
   const watchers = new Map();
   const metadataSync = createMetadataScheduler({
-    onResult: (project, result) => console.log(`metadata sync ${project.name}: ${result.ok ? (result.skipped || 'pushed') : result.error}`),
+    // /api/sync merges under withRepoLock — scheduled publishes must take the
+    // same lock or a push can interleave a merge's unresolved-marker write.
+    exclusive: (project, fn) => withRepoLock(project.path, fn),
+    onResult: (project, result) => {
+      console.log(`metadata sync ${project.name}: ${result.ok ? (result.skipped || 'pushed') : result.error}`);
+      // a successful push doesn't change local files, but the open board
+      // should still reflect that the board is now current with the remote
+      if (result.ok && !result.skipped) broadcast({ type: 'board-changed', project: project.name });
+    },
   });
   let closed = false;
   const watchProjects = () => {
