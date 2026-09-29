@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Planned
+status: Queue
 type: feature
 priority: medium
 labels: []
