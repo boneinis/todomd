@@ -504,7 +504,7 @@ test('pushMetadata refuses a non-default code branch as the sync target', async 
   git(worker, ['commit', '-qm', 'sync misconfigured to develop']);
   const result = await pushMetadata({ path: worker, name: 'worker' });
   assert.equal(result.ok, false);
-  assert.match(result.error, /dedicated metadata branch|code branch/);
+  assert.match(result.error, /metadata branch/);
   // and the remote branch must be untouched
   const tip = git(origin, ['rev-parse', 'develop']);
   assert.match(git(origin, ['ls-tree', '--name-only', tip]), /package\.json/);
@@ -523,4 +523,29 @@ test('mergeMetadata refuses to merge a branch that is not metadata-shaped', asyn
   const out = await mergeMetadata({ path: viewer, name: 'viewer' });
   assert.equal(out.ok, false);
   assert.match(out.error, /dedicated metadata branch|metadata branch/);
+});
+
+test('pushMetadata refuses a foreign branch even with a metadata-looking root', async () => {
+  const origin = makeRepo();
+  // a hand-made branch whose root carries config.yml + source files but no
+  // .todomd/ — passes a shape check, must still fail provenance
+  git(origin, ['checkout', '-qb', 'docs-site']);
+  fs.writeFileSync(path.join(origin, 'config.yml'), 'columns: [Queue, Done]\n');
+  fs.mkdirSync(path.join(origin, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(origin, 'src/app.js'), 'console.log(1)\n');
+  git(origin, ['rm', '-rq', '.todomd']);
+  git(origin, ['add', 'config.yml', 'src/app.js']);
+  git(origin, ['commit', '-qm', 'docs branch']);
+  git(origin, ['checkout', '-q', 'main']);
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const cfg = path.join(worker, '.todomd/config.yml');
+  fs.writeFileSync(cfg, 'columns: [Queue, Done]\ngithub_sync:\n  enabled: true\n  remote: origin\n  branch: docs-site\n');
+  git(worker, ['add', '.todomd/config.yml']);
+  git(worker, ['commit', '-qm', 'sync misconfigured to docs-site']);
+  const result = await pushMetadata({ path: worker, name: 'worker' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /metadata branch/);
+  const tip = git(origin, ['rev-parse', 'docs-site']);
+  assert.match(git(origin, ['ls-tree', '--name-only', tip]), /src/);
 });

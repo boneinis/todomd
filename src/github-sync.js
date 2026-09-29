@@ -130,20 +130,24 @@ async function dedicatedBranchError(project, remote, branch) {
     : null;
 }
 
+const PUBLISH_MESSAGE = 'chore(todomd): publish board metadata';
+
 // A name check alone cannot protect a non-default code branch (`develop`,
-// `release`, ...) — commit-tree publishing would happily fast-forward a
-// metadata-only tree over it. Verify the fetched tip's *shape* instead: a
-// metadata commit's root tree IS the .todomd contents (config.yml, tasks/,
-// ...), while any branch carrying real source necessarily nests .todomd/ one
-// level down — and a foreign non-code branch lacks the required config.yml.
+// `release`, ...), and a shape check cannot either — a code branch can
+// carry a root config.yml and no nested .todomd. Require provenance
+// instead: every legitimate metadata tip descends from the rootless
+// commit-tree this publisher creates, so the branch must have exactly one
+// root commit and that root must carry the publish message. Anything else
+// (code branches, foreign branches, hand-made lookalikes) is refused before
+// a metadata-only tree can fast-forward over it.
 async function remoteTipBranchError(repoPath, branch, tip) {
-  const nested = await run(repoPath, ['rev-parse', '--verify', '-q', `${tip}:.todomd`]);
-  if (nested.ok) return `github_sync.branch '${branch}' points at a code branch — board sync requires a dedicated metadata branch`;
-  // .todomd/config.yml is required to be tracked before any publish, so it
-  // is present at the root of every legitimately published metadata tree.
-  const marker = await run(repoPath, ['rev-parse', '--verify', '-q', `${tip}:config.yml`]);
-  if (!marker.ok) return `github_sync.branch '${branch}' does not look like a board metadata branch (no root config.yml) — refusing to sync over it`;
-  return null;
+  const roots = await run(repoPath, ['rev-list', '--max-parents=0', tip]);
+  const list = roots.ok ? roots.stdout.split('\n').filter(Boolean) : [];
+  if (list.length === 1) {
+    const subject = await run(repoPath, ['log', '-1', '--format=%s', list[0]]);
+    if (subject.ok && subject.stdout === PUBLISH_MESSAGE) return null;
+  }
+  return `github_sync.branch '${branch}' is not a board metadata branch — refusing to sync over it`;
 }
 
 export async function pushMetadata(project) {
@@ -183,7 +187,7 @@ export async function pushMetadata(project) {
     const remoteTree = await run(project.path, ['rev-parse', '--verify', '-q', `${remoteTip}^{tree}`]);
     if (remoteTree.ok && remoteTree.stdout === tree.stdout) return { ok: true, branch, skipped: 'up-to-date' };
   }
-  const commitArgs = ['commit-tree', tree.stdout, '-m', 'chore(todomd): publish board metadata'];
+  const commitArgs = ['commit-tree', tree.stdout, '-m', PUBLISH_MESSAGE];
   if (remoteTip) commitArgs.push('-p', remoteTip);
   const commit = await run(project.path, commitArgs);
   if (!commit.ok || !/^[0-9a-f]{40}$/i.test(commit.stdout)) return { ok: false, error: commit.stderr || 'could not build metadata commit' };
