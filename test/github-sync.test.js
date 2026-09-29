@@ -749,3 +749,40 @@ test('a kept-deletion conflict resolves on commit and releases the publish guard
   const after = await mergeMetadata({ path: viewer, name: 'viewer' });
   assert.deepEqual(after.conflicts, [], JSON.stringify(after));
 });
+
+test('first sync from a legacy subtree branch fast-forwards an untouched card', async () => {
+  const origin = makeRepo();
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add task-0001']);
+
+  const dir = tmp('sync');
+  // sync config committed to the code repo before cloning — all clones share
+  // the same .todomd/config.yml, matching a real synced deployment
+  enableSync(origin, 'origin');
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+
+  // seed a legacy branch: two granular commits with ordinary messages —
+  // first the original card, then the remote assignee change (exactly what
+  // `git subtree split` history looked like)
+  const seed = clone(origin, path.join(dir, 'seed'));
+  const tree1 = git(seed, ['rev-parse', 'HEAD:.todomd']);
+  const c1 = git(seed, ['commit-tree', tree1, '-m', 'add task-0001']);
+  fs.writeFileSync(path.join(seed, '.todomd/tasks/task-0001-card.md'),
+    '---\nid: task-0001\nassignee: alice\n---\n\nbody\n');
+  git(seed, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(seed, ['commit', '-qm', 'assign alice']);
+  const tree2 = git(seed, ['rev-parse', 'HEAD:.todomd']);
+  const c2 = git(seed, ['commit-tree', tree2, '-p', c1, '-m', 'assign alice']);
+  git(seed, ['push', '-q', 'origin', `${c2}:refs/heads/todomd-state`]);
+
+  // viewer's card is untouched (clone-time blob) — the change must apply,
+  // not conflict, even without the new publish trailer
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.conflicts, [], JSON.stringify(result));
+  assert.ok(result.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
+  assert.match(fs.readFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'), 'utf8'), /assignee: alice/);
+});

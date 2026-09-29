@@ -72,13 +72,25 @@ async function pathEverExisted(repoPath, ref, relPath) {
 // a local edit pushed to the code branch is reachable from <remote>/HEAD yet
 // is still unseen by the metadata branch. Indeterminate provenance (missing
 // trailer, unrelated histories) reports diverged — conflict is the safe side.
-async function localPathDiverged(repoPath, remoteTip, localRel, localSha) {
+async function localPathDiverged(repoPath, remoteTip, rel, localRel, localSha) {
   const body = await run(repoPath, ['log', '-1', '--format=%B', remoteTip]);
   const base = body.ok ? body.stdout.match(/X-Todomd-Base:\s*([0-9a-f]{40})/i)?.[1] : null;
-  if (!base) return true;
-  const shared = await run(repoPath, ['merge-base', base, 'HEAD']);
-  if (!shared.ok || !shared.stdout) return true;
-  return (await blobSha(repoPath, shared.stdout, localRel)) !== localSha;
+  if (base) {
+    const shared = await run(repoPath, ['merge-base', base, 'HEAD']);
+    if (!shared.ok || !shared.stdout) return true;
+    return (await blobSha(repoPath, shared.stdout, localRel)) !== localSha;
+  }
+  // Legacy subtree-split branches have no base trailer, but their history is
+  // granular — every commit that ever touched the path. If this checkout's
+  // blob appears anywhere in that history, the local file is just at an
+  // earlier remote point and can fast-forward; otherwise it diverged.
+  const commits = await run(repoPath, ['rev-list', '--max-count=200', remoteTip, '--', rel]);
+  if (!commits.ok) return true;
+  for (const c of commits.stdout.split('\n').filter(Boolean)) {
+    const blob = await run(repoPath, ['rev-parse', '--verify', '-q', `${c}:${rel}`]);
+    if (blob.ok && blob.stdout === localSha) return false;
+  }
+  return true;
 }
 
 // Local, per-checkout bookkeeping of the last remote ref successfully merged —
@@ -381,7 +393,7 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
       else await applyRemote(rel, localRel, remoteSha);
     } else if (remoteSha === null) {
       // first sync; local has the file, remote doesn't.
-      if (!(await localPathDiverged(project.path, fetched.ref, localRel, localSha))) {
+      if (!(await localPathDiverged(project.path, fetched.ref, rel, localRel, localSha))) {
         // local never touched it — remote's absence is authoritative and the
         // deletion fast-forwards
         await applyRemote(rel, localRel, null);
@@ -390,7 +402,7 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
         conflicts.push(localRel); conflictRemote.set(localRel, remoteSha);
       }
       // else: a local-only file the remote never knew about — keep, silently
-    } else if (!(await localPathDiverged(project.path, fetched.ref, localRel, localSha))) {
+    } else if (!(await localPathDiverged(project.path, fetched.ref, rel, localRel, localSha))) {
       // no last-synced-ref base (this clone's very first sync), but local
       // never committed a change to the path — untouched inheritance, so
       // remote's value is a safe fast-forward
