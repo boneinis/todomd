@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Needs Human
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
