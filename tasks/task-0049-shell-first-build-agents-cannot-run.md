@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: CI
+status: Needs Human
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -13,15 +13,15 @@ assignee:
 agent: claude
 base_branch: main
 worktree: todomd/task-0049
-ci_evidence: { head: 9abb73f113854f98402384459cee5ab103d24a90, command: npm test, execution: local, passed_at: '2026-09-29T08:05:27.955Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
 cost_usd: 48.6665
-needs_human_reason:
-recovery_stage:
+needs_human_reason: ci_failed
+recovery_stage: CI
 ---
 
 ## Description
@@ -95,3 +95,26 @@ c/runner.js
 t rerun during this read-only review.
 - unmet: A permission model permits ordinary read-only shell work without permitting test suites or database resets, with a mechanism whose safety holds.
 - unmet: Both mechanisms are proven by a real end-to-end Build on a throwaway card.
+- 2026-09-29 11:35Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-09-29 11:53Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-09-29 12:03Z · CI attempt 3 · 209.4s · `npm test` failed
+  - ci_failed: `npm test` exited 1
+d user-controlled card text
+ok 1070 - voice summaries and card status sanitize and bound user-contro
+…
+or a removed repository
+ok 1077 - invalidateProject drops every pending proposal for a removed repository
+  ---
+  duration_ms: 130.85925
+  type: 'test'
+  ...
+1..1077
+# tests 1120
+# suites 10
+# pass 1119
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 209022.979709
+
