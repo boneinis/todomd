@@ -130,6 +130,22 @@ async function dedicatedBranchError(project, remote, branch) {
     : null;
 }
 
+// A name check alone cannot protect a non-default code branch (`develop`,
+// `release`, ...) — commit-tree publishing would happily fast-forward a
+// metadata-only tree over it. Verify the fetched tip's *shape* instead: a
+// metadata commit's root tree IS the .todomd contents (config.yml, tasks/,
+// ...), while any branch carrying real source necessarily nests .todomd/ one
+// level down — and a foreign non-code branch lacks the required config.yml.
+async function remoteTipBranchError(repoPath, branch, tip) {
+  const nested = await run(repoPath, ['rev-parse', '--verify', '-q', `${tip}:.todomd`]);
+  if (nested.ok) return `github_sync.branch '${branch}' points at a code branch — board sync requires a dedicated metadata branch`;
+  // .todomd/config.yml is required to be tracked before any publish, so it
+  // is present at the root of every legitimately published metadata tree.
+  const marker = await run(repoPath, ['rev-parse', '--verify', '-q', `${tip}:config.yml`]);
+  if (!marker.ok) return `github_sync.branch '${branch}' does not look like a board metadata branch (no root config.yml) — refusing to sync over it`;
+  return null;
+}
+
 export async function pushMetadata(project) {
   const cfg = loadConfig(project.path).github_sync || {};
   if (cfg.enabled !== true) return { ok: true, skipped: 'disabled' };
@@ -162,6 +178,8 @@ export async function pushMetadata(project) {
   const fetched = await run(project.path, ['fetch', '--quiet', remote, branch]);
   const remoteTip = fetched.ok ? (await run(project.path, ['rev-parse', '--verify', '-q', 'FETCH_HEAD'])).stdout || null : null;
   if (remoteTip) {
+    const tipError = await remoteTipBranchError(project.path, branch, remoteTip);
+    if (tipError) return { ok: false, error: tipError };
     const remoteTree = await run(project.path, ['rev-parse', '--verify', '-q', `${remoteTip}^{tree}`]);
     if (remoteTree.ok && remoteTree.stdout === tree.stdout) return { ok: true, branch, skipped: 'up-to-date' };
   }
@@ -194,7 +212,10 @@ export async function fetchMetadata(project) {
     return { ok: false, error: fetched.stderr || 'fetch failed', remote, branch };
   }
   const rev = await run(project.path, ['rev-parse', `${remote}/${branch}`]);
-  return rev.ok ? { ok: true, remote, branch, ref: rev.stdout } : { ok: true, remote, branch, ref: null };
+  if (!rev.ok) return { ok: true, remote, branch, ref: null };
+  const tipError = await remoteTipBranchError(project.path, branch, rev.stdout);
+  if (tipError) return { ok: false, error: tipError, remote, branch };
+  return { ok: true, remote, branch, ref: rev.stdout };
 }
 
 // Merge the fetched remote metadata branch (built by pushMetadata's

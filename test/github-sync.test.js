@@ -490,3 +490,37 @@ test('pushMetadata refuses to publish onto a code branch', async () => {
   assert.equal(result.ok, false);
   assert.match(result.error, /dedicated metadata branch/);
 });
+
+test('pushMetadata refuses a non-default code branch as the sync target', async () => {
+  const origin = makeRepo();
+  // a second code branch exists on the remote alongside main
+  git(origin, ['branch', 'develop']);
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const cfg = path.join(worker, '.todomd/config.yml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  fs.writeFileSync(cfg, 'columns: [Queue, Done]\ngithub_sync:\n  enabled: true\n  remote: origin\n  branch: develop\n');
+  git(worker, ['add', '.todomd/config.yml']);
+  git(worker, ['commit', '-qm', 'sync misconfigured to develop']);
+  const result = await pushMetadata({ path: worker, name: 'worker' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /dedicated metadata branch|code branch/);
+  // and the remote branch must be untouched
+  const tip = git(origin, ['rev-parse', 'develop']);
+  assert.match(git(origin, ['ls-tree', '--name-only', tip]), /package\.json/);
+});
+
+test('mergeMetadata refuses to merge a branch that is not metadata-shaped', async () => {
+  const origin = makeRepo();
+  git(origin, ['branch', 'develop']);
+  const dir = tmp('sync');
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  const cfg = path.join(viewer, '.todomd/config.yml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  fs.writeFileSync(cfg, 'columns: [Queue, Done]\ngithub_sync:\n  enabled: true\n  remote: origin\n  branch: develop\n');
+  git(viewer, ['add', '.todomd/config.yml']);
+  git(viewer, ['commit', '-qm', 'sync misconfigured']);
+  const out = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /dedicated metadata branch|metadata branch/);
+});
