@@ -1,7 +1,7 @@
 ---
 id: task-0046
 title: priority list view
-status: CI
+status: Needs Human
 type: improvement
 priority: medium
 labels: []
@@ -16,12 +16,13 @@ worktree: todomd/task-0046
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-08-02
 cost_usd: 1.2828
-needs_human_reason:
+needs_human_reason: nothing_to_test
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
+recovery_stage: CI
 ---
 
 ## Description
@@ -123,3 +124,5 @@ Risks:
 - 2026-08-02 13:46Z · Triage · 4 turns · $0.172 · ok
 - 2026-08-02 13:58Z · Plan · 12 turns · $0.878 · ok
 - 2026-09-29 00:21Z · Build attempt 1 · 18 turns · claude/claude-sonnet-5 · subscription CLI · 34 input, 675.4K cached, 2.5K output · $0.233 est · ok
+- 2026-09-29 00:39Z · CI attempt 1 · nothing to test (empty candidate)
+  - nothing_to_test: No candidate file changes relative to the base branch. CI did not pass or run; candidate preserved for inspection.
