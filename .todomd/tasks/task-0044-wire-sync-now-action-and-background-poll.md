@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -18,13 +18,13 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 2f4da1ada10f8cdc6b35c845d1664a92f84d62ea, command: npm test, execution: local, passed_at: '2026-09-29T06:13:04.845Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
-recovery_stage:
+needs_human_reason: ci_failed
+recovery_stage: CI
 ---
 
 ## Description
@@ -160,3 +160,24 @@ se action is not false. Conflict, deferred, and failure banners therefore show a
 addition to statuses, with focused route tests for Review+live-triage and Needs Human+preserved-worktree cases.
 
 The supplied exact-HEAD `npm test` result was trusted and not rerun as instructed. The worktree remained unchanged at `2f4da1ada10f8cdc6b35c845d1664a92f84d62ea`.
+- 2026-09-29 06:23Z · CI attempt 3 · 127.1s · `npm test` failed
+  - ci_failed: `npm test` exited 1
+d bound user-controlled card text
+ok 1053 - voice summaries and card status sanitize and bound user-
+…
+l for a removed repository
+ok 1060 - invalidateProject drops every pending proposal for a removed repository
+  ---
+  duration_ms: 86.572
+  type: 'test'
+  ...
+1..1060
+# tests 1103
+# suites 10
+# pass 1101
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 126942.830833
+
