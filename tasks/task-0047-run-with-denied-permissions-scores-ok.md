@@ -1,7 +1,7 @@
 ---
 id: task-0047
 title: A build run with denied permissions and an empty response is scored ok
-status: Planned
+status: Done
 type: bug
 priority: high
 labels: [runner, ci]
@@ -38,3 +38,5 @@ reviewing an empty diff.
 
 Simulate a run whose agent is denied its permissions and returns nothing; assert the
 recorded outcome is a failure with a reason naming the denial.
+
+- 2026-09-29 · Closed: already shipped in 3dd9c28 — denied-permission runs produce the "blocked: headless mode" reason (runner.js:72-79), zero-turn/empty-response runs get subtype empty_run and can never score ok (runner.js:119, runner.test.js:476, recommended-fixes.test.js:72-78). Stale card, verified statically.
