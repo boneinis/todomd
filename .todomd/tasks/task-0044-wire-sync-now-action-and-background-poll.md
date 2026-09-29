@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -147,3 +147,9 @@ lus source files. Trusted CI confirms npm test passed at the exact clean candida
 …
 eferred remote change. Preserve deferred markers until mergeMetadata reconciles them after the run ends; do not infer resolution merely from a changed local blob. Add a regression covering remote assignee change → active-card deferral → local run completion → scheduled push.
 - 2026-09-29 05:54Z · CI attempt 3 · 195.8s · `npm test` passed
+- 2026-09-29 05:56Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 43.7K input, 0 cached, 5.6K output · $0.000 est · preliminary review complete; 1 focused check queued
+- 2026-09-29 06:01Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 741.2K input, 659.3K cached, 7.2K output · $0.000 est · verdict: fail (unmet: 1)
+  - attempts_exhausted: 1. `localPathDiverged()` only looks for commits unreachable from `<remote>/HEAD`. On first sync, a local card edit that
+…
+se action is not false. Conflict, deferred, and failure banners therefore show an unrelated control that can resume paused queues. Mark sync banners non-actionable or render actions explicitly by banner type.
+- unmet: Board-only metadata updates do not trigger normal code CI
