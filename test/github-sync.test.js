@@ -673,3 +673,33 @@ test('the metadata scheduler runs pushes through the exclusive hook', async () =
   scheduler.close();
   assert.deepEqual(calls, ['spy']);
 });
+
+test('a legacy subtree-split metadata branch is adopted, not refused', async () => {
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  // seed the remote branch the way the old subtree-split publisher did:
+  // commits whose root tree IS the .todomd contents, with ordinary messages
+  const seed = clone(origin, path.join(dir, 'seed'));
+  const tree = git(seed, ['rev-parse', 'HEAD:.todomd']);
+  const legacy = git(seed, ['commit-tree', tree, '-m', 'fix: ordinary project commit']);
+  git(seed, ['push', '-q', 'origin', `${legacy}:refs/heads/todomd-state`]);
+
+  // the viewer must still merge from it
+  const merged = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(merged.ok, true, merged.error);
+
+  // and the worker must still publish — the new commit parents onto the
+  // legacy tip, adopting the branch into the linear publish chain
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(wcard), { recursive: true });
+  fs.writeFileSync(wcard, '---\nid: task-0001\nassignee: alice\n---\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign alice']);
+  const pushed = await pushMetadata({ path: worker, name: 'worker' });
+  assert.equal(pushed.ok, true, pushed.error);
+});

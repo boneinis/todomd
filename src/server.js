@@ -641,14 +641,20 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     // as the push side, so this never touches source files or code CI.
     if (url.pathname === '/api/sync' && req.method === 'POST') {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
-      const result = await withRepoLock(project.path, () => {
+      const result = await withRepoLock(project.path, async () => {
         // Cards mid-Plan/Build/CI/Verify are being mutated by their agents —
         // a remote write would corrupt state under the runner, so defer them.
-        // The set is read INSIDE the lock: a status sampled before the wait
-        // could be stale by the time the merge starts writing.
-        const deferCardIds = new Set(loadBoard(project.path).cards
-          .filter((c) => ['Plan', 'Build', 'CI', 'Verify', 'Escalate'].includes(c.status))
-          .map((c) => c.id));
+        // Status alone isn't enough: a live triage leaves its card in Review,
+        // and a preserved worktree leaves it in Needs Human — both hold work
+        // a remote write could erase. The set is read INSIDE the lock: a
+        // status sampled before the wait could be stale by the merge starts.
+        const deferCardIds = new Set();
+        for (const c of loadBoard(project.path).cards) {
+          if (!c.id) continue;
+          if (['Plan', 'Build', 'CI', 'Verify', 'Escalate', 'Queue'].includes(c.status)
+            || pipeline.hasLiveRun(project.name, c.id)
+            || await pipeline.preservedWorktree(project, c)) deferCardIds.add(c.id);
+        }
         return mergeMetadata(project, { deferCardIds });
       });
       if (result.ok && result.applied?.length) {

@@ -144,12 +144,33 @@ const PUBLISH_MESSAGE = 'chore(todomd): publish board metadata';
 // snapshots, so every commit on the branch must carry the publish message —
 // a valid metadata root with a source-bearing commit on top is refused too.
 // Belt and suspenders: the tip's tree must not nest .todomd/ (code layout).
+// Branches published by the legacy `subtree split` scheme carry normal commit
+// subjects, so for those require every commit's root tree to be a subset of
+// the board's own tracked .todomd surface (by contract only config.yml +
+// tasks/ are ever tracked) — a foreign branch containing source entries can
+// never satisfy that, while a real subtree history always can.
 async function remoteTipBranchError(repoPath, branch, tip) {
   const subjects = await run(repoPath, ['log', '--format=%s', tip]);
   const lines = subjects.ok ? subjects.stdout.split('\n').filter(Boolean) : [];
   const nested = await run(repoPath, ['rev-parse', '--verify', '-q', `${tip}:.todomd`]);
-  if (lines.length && lines.every((s) => s === PUBLISH_MESSAGE) && !nested.ok) return null;
-  return `github_sync.branch '${branch}' is not a board metadata branch — refusing to sync over it`;
+  if (lines.length && lines.every((s) => s === PUBLISH_MESSAGE)) return nested.ok
+    ? `github_sync.branch '${branch}' is not a board metadata branch — refusing to sync over it`
+    : null;
+  // legacy subtree-split provenance: every commit's root tree ⊆ tracked .todomd
+  const allowed = new Set(
+    ((await run(repoPath, ['ls-tree', '--name-only', 'HEAD:.todomd'])).stdout || '').split('\n').filter(Boolean)
+  );
+  const revs = await run(repoPath, ['rev-list', '--max-count=500', tip]);
+  const commits = revs.ok ? revs.stdout.split('\n').filter(Boolean) : [];
+  if (!allowed.size || !commits.length) return `github_sync.branch '${branch}' is not a board metadata branch — refusing to sync over it`;
+  for (const c of commits) {
+    const tree = await run(repoPath, ['ls-tree', '--name-only', c]);
+    const entries = tree.ok ? tree.stdout.split('\n').filter(Boolean) : [];
+    if (!entries.includes('config.yml') || !entries.every((e) => allowed.has(e))) {
+      return `github_sync.branch '${branch}' is not a board metadata branch — refusing to sync over it`;
+    }
+  }
+  return null;
 }
 
 export async function pushMetadata(project) {
