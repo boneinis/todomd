@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -130,3 +130,8 @@ Trusted CI for exact HEAD 964348a passed `npm test`; it was not rerun as instruc
 estructive source-deleting push a fast-forward. That can update the code branch and trigger normal CI. Reject the remote default/protected/current code branches before creating or pushing the metadata commit.
 - unmet: Board-only metadata updates do not trigger normal code CI
 - 2026-09-29 05:23Z · CI attempt 3 · 170.8s · `npm test` passed
+- 2026-09-29 05:25Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 569.2K input, 482.7K cached, 5.6K output · $0.000 est · verdict: fail (unmet: 1)
+  - attempts_exhausted: `pushMetadata` can destroy and push to a non-default code branch. The guard at src/github-sync.js:122-130 rejects only m
+…
+ge for a non-default code branch, including a remote without a configured `<remote>/HEAD`. Trusted CI for exact HEAD 8283ad8f615ba070ad8f7497b63f03bed80beecc passed `npm test`; it was not rerun as instructed.
+- unmet: Board-only metadata updates do not trigger normal code CI
