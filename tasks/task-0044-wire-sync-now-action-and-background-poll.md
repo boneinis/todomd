@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -136,3 +136,8 @@ estructive source-deleting push a fast-forward. That can update the code branch 
 ge for a non-default code branch, including a remote without a configured `<remote>/HEAD`. Trusted CI for exact HEAD 8283ad8f615ba070ad8f7497b63f03bed80beecc passed `npm test`; it was not rerun as instructed.
 - unmet: Board-only metadata updates do not trigger normal code CI
 - 2026-09-29 05:33Z · CI attempt 3 · 181.9s · `npm test` passed
+- 2026-09-29 05:37Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 933.9K input, 867.2K cached, 8.8K output · $0.000 est · verdict: fail (unmet: 1)
+  - attempts_exhausted: Concrete destructive branch-safety defect in src/github-sync.js:139-146. remoteTipBranchError accepts any non-default br
+…
+lus source files. Trusted CI confirms npm test passed at the exact clean candidate HEAD, but its existing non-default-branch test only covers branches containing nested .todomd and misses this reachable case.
+- unmet: Board-only metadata updates do not trigger normal code CI
