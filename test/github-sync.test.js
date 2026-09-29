@@ -703,3 +703,49 @@ test('a legacy subtree-split metadata branch is adopted, not refused', async () 
   const pushed = await pushMetadata({ path: worker, name: 'worker' });
   assert.equal(pushed.ok, true, pushed.error);
 });
+
+test('a kept-deletion conflict resolves on commit and releases the publish guard', async () => {
+  const origin = makeRepo();
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add task-0001']);
+
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  // remote edits the card; viewer deleted it deliberately — conflict, sha null
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(wcard, '---\nid: task-0001\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign alice']);
+  await pushMetadata({ path: worker, name: 'worker' });
+
+  git(viewer, ['rm', '-q', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'deliberately drop task-0001']);
+  const merged = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.ok(merged.conflicts.includes('.todomd/tasks/task-0001-card.md'), JSON.stringify(merged));
+
+  // guard holds while nothing has changed
+  const still = await pushMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(still.skipped, 'unresolved-sync');
+
+  // the human keeps the deletion — a commit boundary after the surfaced
+  // conflict acknowledges the choice (no blob change is possible for an
+  // absent file)
+  fs.writeFileSync(path.join(viewer, 'notes.txt'), 'ack\n');
+  git(viewer, ['add', 'notes.txt']);
+  git(viewer, ['commit', '-qm', 'acknowledged: keep the deletion']);
+
+  const released = await pushMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(released.ok, true, released.error);
+  assert.notEqual(released.skipped, 'unresolved-sync');
+
+  // and the next merge no longer re-reports the released conflict
+  const after = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.deepEqual(after.conflicts, [], JSON.stringify(after));
+});

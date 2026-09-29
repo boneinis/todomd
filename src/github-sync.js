@@ -137,6 +137,21 @@ async function dedicatedBranchError(project, remote, branch) {
 
 const PUBLISH_MESSAGE = 'chore(todomd): publish board metadata';
 
+// Has the human resolved a recorded conflict in favor of the local side?
+// Blob-SHA change alone can't express "keep my deletion" — a recommitted
+// removal produces no blob transition — so release on any observable commit
+// transition: a commit touching the path, or (for locally-absent files) any
+// commit at all after the conflict marker's HEAD, which acknowledges the
+// surfaced conflict while keeping the file deleted.
+async function conflictReleased(repoPath, localRel, entry, headSha) {
+  const localSha = await blobSha(repoPath, 'HEAD', localRel);
+  if (entry.sha !== localSha) return true;
+  if (!entry.head) return false;
+  const touched = await run(repoPath, ['rev-list', '--max-count=1', `${entry.head}..${headSha}`, '--', localRel]);
+  if (touched.ok && touched.stdout.trim()) return true;
+  return entry.sha === null && entry.head !== headSha;
+}
+
 // A name check alone cannot protect a non-default code branch (`develop`,
 // `release`, ...), and a shape check cannot either — a code branch can
 // carry a root config.yml and no nested .todomd. Require provenance
@@ -191,14 +206,15 @@ export async function pushMetadata(project) {
   const unresolved = pushStateDir ? readSyncState(pushStateDir)[`${pushStateKey}:unresolved`] : null;
   if (unresolved?.paths) {
     let cleared = true;
+    const headSha = (await run(project.path, ['rev-parse', 'HEAD'])).stdout;
     for (const [localRel, entry] of Object.entries(unresolved.paths)) {
-      const sha = typeof entry === 'string' ? entry : entry.sha;
       const kind = typeof entry === 'string' ? 'conflict' : entry.kind;
       // deferred paths stay blocked until mergeMetadata reconciles them —
       // a changed blob here is the in-flight run committing, not a
       // resolution, and publishing it would discard the remote update
       if (kind === 'deferred') { cleared = false; break; }
-      if ((await blobSha(project.path, 'HEAD', localRel)) === sha) { cleared = false; break; }
+      const normalized = typeof entry === 'string' ? { sha: entry } : entry;
+      if (!(await conflictReleased(project.path, localRel, normalized, headSha))) { cleared = false; break; }
     }
     if (!cleared) return { ok: true, skipped: 'unresolved-sync', unresolved: Object.keys(unresolved.paths) };
     writeSyncState(pushStateDir, (({ [`${pushStateKey}:unresolved`]: _drop, ...rest }) => rest)(readSyncState(pushStateDir)));
@@ -294,6 +310,9 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
   const dirty = await run(project.path, ['status', '--porcelain', '--', '.todomd']);
   if (dirty.stdout) return { ok: false, error: 'local board has uncommitted changes', applied: [], deferred: [], conflicts: [] };
 
+  const headSha = (await run(project.path, ['rev-parse', 'HEAD'])).stdout;
+  const priorMarker = syncState[`${stateKey}:unresolved`];
+
   const remotePaths = await treePaths(project.path, fetched.ref);
   const basePaths = lastRef ? await treePaths(project.path, lastRef) : [];
   // Local paths matter too: a file deleted remotely but still present locally
@@ -302,6 +321,9 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
   const localPaths = (await treePaths(project.path, 'HEAD', ['--', '.todomd']))
     .map((p) => p.slice('.todomd/'.length));
   const applied = [], conflicts = [];
+  // remote sha per unresolved path, for the marker — release decisions must
+  // distinguish "still the same remote version" from a fresh remote change
+  const conflictRemote = new Map(), deferredRemote = new Map();
 
   const applyRemote = async (rel, localRel, remoteSha) => {
     const abs = path.join(project.path, localRel);
@@ -311,7 +333,7 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
       // a failed blob read must not vanish from the result: report it, and —
       // because unresolved entries keep the sync state from advancing — the
       // next poll retries it
-      if (!blob.ok) { conflicts.push(localRel); return; }
+      if (!blob.ok) { conflicts.push(localRel); conflictRemote.set(localRel, remoteSha); return; }
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, blob.stdout);
     }
@@ -326,7 +348,16 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
       blobSha(project.path, 'HEAD', localRel),
     ]);
     if (remoteSha === localSha) continue; // nothing to reconcile
-    if (isDeferred(localRel)) { deferred.push(localRel); continue; } // in-flight run — never write mid-run
+    if (isDeferred(localRel)) { deferred.push(localRel); deferredRemote.set(localRel, remoteSha); continue; } // in-flight run — never write mid-run
+
+    // A conflict the human already resolved in favor of the local side must
+    // not apply the remote version nor re-report: the remote sha is unchanged
+    // from when it was surfaced, and a commit transition released it.
+    const prior = priorMarker?.paths?.[localRel];
+    if (prior && prior.remoteSha === remoteSha
+      && (typeof prior === 'object' ? prior.kind : 'conflict') === 'conflict'
+      && await conflictReleased(project.path, localRel,
+          typeof prior === 'string' ? { sha: prior } : prior, headSha)) continue;
 
     if (lastRef) {
       // a real per-checkout base exists — classic path-level 3-way merge
@@ -339,14 +370,14 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
         continue;
       } else {
         // both sides changed — never silently discard local intent
-        conflicts.push(localRel);
+        conflicts.push(localRel); conflictRemote.set(localRel, remoteSha);
       }
     } else if (localSha === null) {
       // first sync; remote has the file, local doesn't. Only safe to take if
       // local history NEVER contained the path (a genuinely new remote file).
       // If local once had it and deleted it, that deletion was deliberate —
       // resurrecting the file would silently discard local intent.
-      if (await pathEverExisted(project.path, 'HEAD', localRel)) conflicts.push(localRel);
+      if (await pathEverExisted(project.path, 'HEAD', localRel)) { conflicts.push(localRel); conflictRemote.set(localRel, remoteSha); }
       else await applyRemote(rel, localRel, remoteSha);
     } else if (remoteSha === null) {
       // first sync; local has the file, remote doesn't.
@@ -356,7 +387,7 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
         await applyRemote(rel, localRel, null);
       } else if (await pathEverExisted(project.path, fetched.ref, rel)) {
         // both sides moved around a deletion — keep local, report it
-        conflicts.push(localRel);
+        conflicts.push(localRel); conflictRemote.set(localRel, remoteSha);
       }
       // else: a local-only file the remote never knew about — keep, silently
     } else if (!(await localPathDiverged(project.path, fetched.ref, localRel, localSha))) {
@@ -367,7 +398,7 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
     } else {
       // independently created or independently edited with no shared base —
       // never silently discard local intent; keep it and report it
-      conflicts.push(localRel);
+      conflicts.push(localRel); conflictRemote.set(localRel, remoteSha);
     }
   }
 
@@ -400,14 +431,23 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
       : 'could not resolve the repository git directory';
     if (warning) warning = `merged, but sync state was not saved (${warning}); the next sync re-checks from scratch`;
   } else if (stateDir) {
-    // Unresolved paths suppress publish — see pushMetadata's guard. Conflicts
-    // release when the local blob changes (a human edit IS the resolution);
-    // deferred paths can only be reconciled by a later merge once the card's
-    // run ends — a blob change there is just the in-flight run committing,
-    // and publishing it would overwrite the unseen remote update.
+    // Unresolved paths suppress publish — see pushMetadata's guard. Entries
+    // record the local blob AND the commit boundary at merge time plus the
+    // remote sha they conflicted with: conflictReleased() recognizes a human
+    // resolution (edit, path-touching commit, or kept-deletion acknowledge),
+    // while deferred paths can only be reconciled by a later merge once the
+    // card's run ends — a blob change there is just the run committing.
     const paths = {};
-    for (const localRel of conflicts) paths[localRel] = { sha: await blobSha(project.path, 'HEAD', localRel), kind: 'conflict' };
-    for (const localRel of deferred) paths[localRel] = { sha: await blobSha(project.path, 'HEAD', localRel), kind: 'deferred' };
+    // the commit boundary is HEAD NOW — after this merge's own applied-path
+    // commits — so only commits following the surfaced conflict count as a
+    // resolution signal on the next poll
+    const markerHead = (await run(project.path, ['rev-parse', 'HEAD'])).stdout;
+    for (const [localRel, remoteSha] of conflictRemote) {
+      paths[localRel] = { sha: await blobSha(project.path, 'HEAD', localRel), kind: 'conflict', remoteSha, head: markerHead };
+    }
+    for (const [localRel, remoteSha] of deferredRemote) {
+      paths[localRel] = { sha: await blobSha(project.path, 'HEAD', localRel), kind: 'deferred', remoteSha, head: markerHead };
+    }
     writeSyncState(stateDir, { ...syncState, [`${stateKey}:unresolved`]: { ref: fetched.ref, paths } });
   }
   return { ok: true, applied, deferred, conflicts, ...(warning ? { warning } : {}) };

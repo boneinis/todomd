@@ -653,7 +653,9 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
           if (!c.id) continue;
           if (['Plan', 'Build', 'CI', 'Verify', 'Escalate'].includes(c.status)
             || pipeline.hasLiveRun(project.name, c.id)
-            || await pipeline.preservedWorktree(project, c)) deferCardIds.add(c.id);
+            // loadBoard flattens frontmatter to top level; preservedWorktree
+            // expects the readCard { data } shape — wrap the flat card
+            || await pipeline.preservedWorktree(project, { data: c })) deferCardIds.add(c.id);
         }
         return mergeMetadata(project, { deferCardIds });
       });
