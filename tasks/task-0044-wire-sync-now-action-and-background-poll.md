@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 2fbb34336656b6ec7bcf62be578582153836c5ba, command: npm test, execution: local, passed_at: '2026-09-29T05:54:49.126Z', clean: true }
+ci_evidence: { head: 2f4da1ada10f8cdc6b35c845d1664a92f84d62ea, command: npm test, execution: local, passed_at: '2026-09-29T06:13:04.845Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -153,3 +153,4 @@ eferred remote change. Preserve deferred markers until mergeMetadata reconciles 
 …
 se action is not false. Conflict, deferred, and failure banners therefore show an unrelated control that can resume paused queues. Mark sync banners non-actionable or render actions explicitly by banner type.
 - unmet: Board-only metadata updates do not trigger normal code CI
+- 2026-09-29 06:13Z · CI attempt 3 · 174.0s · `npm test` passed
