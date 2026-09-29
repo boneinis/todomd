@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Build
+status: CI
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -19,7 +19,7 @@ build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 session_id: 73d4ff5e-f123-483b-ba6c-b885b671a939
-cost_usd: 1.1558
+cost_usd: 3.6256
 ---
 
 ## Description
@@ -66,3 +66,4 @@ plus evidence that a disallowed command (running a test suite) is still refused.
 - 2026-09-29 07:14Z · CI attempt 1 · 209.2s · `npm test` passed
 - 2026-09-29 07:15Z · Verify attempt 1 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 17.7K input, 0 cached, 1.4K output · $0.000 est · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
+- 2026-09-29 07:27Z · Build attempt 2 · 28 turns · claude/claude-sonnet-5 · subscription CLI · 46 input, 3.20M cached, 44.6K output · $2.470 est · ok
