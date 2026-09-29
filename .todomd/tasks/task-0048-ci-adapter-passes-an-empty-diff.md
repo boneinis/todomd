@@ -1,7 +1,7 @@
 ---
 id: task-0048
 title: CI adapter passes an empty diff through the docs-only fast path
-status: Needs Human
+status: Queue
 type: bug
 priority: high
 labels: [ci]
@@ -20,8 +20,8 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 session_id: 7db97318-9cd6-43c2-836a-117f21622da6
 cost_usd: 1.0453
-needs_human_reason: nothing_to_test
-recovery_stage: CI
+needs_human_reason:
+recovery_stage:
 ---
 
 ## Description
@@ -50,3 +50,4 @@ Unit test the adapter's classification directly with each of the three diff shap
 - 2026-09-29 02:09Z · Build attempt 1 · 49 turns · claude/claude-sonnet-5 · subscription CLI · 92 input, 3.00M cached, 15.3K output · $1.045 est · ok
 - 2026-09-29 02:51Z · CI attempt 1 · nothing to test (empty candidate)
   - nothing_to_test: No candidate file changes relative to the base branch. CI did not pass or run; candidate preserved for inspection.
+- 2026-09-29 02:53Z · Return to Build · human approved repair attempt 2/3 with instruction: Retry: the previous Build session ended while waiting on a background test run and produced zero committed changes. Implement the CI-adapter fix (empty diff must not take the docs-only fast path; docs-only and code diffs keep their current 
