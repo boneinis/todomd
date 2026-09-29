@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Queue
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -15,8 +15,13 @@ agent: claude
 model: claude-sonnet-5
 triaged: n/a (chunk 2/2 of task-0033)
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0044
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+base_branch: main
+ci_evidence: {  }
+ci_remote: {  }
+build_profile: standard
+build_limits: { max_slices: 3, budget_minutes: 60 }
 ---
 
 ## Description
