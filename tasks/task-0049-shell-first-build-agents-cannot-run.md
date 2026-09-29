@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: CI
+status: Verify
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -13,7 +13,7 @@ assignee:
 agent: claude
 base_branch: main
 worktree: todomd/task-0049
-ci_evidence: {  }
+ci_evidence: { head: efe9d1d630d571d69ac195fd8b20d038cfc62f65, command: npm test, execution: local, passed_at: '2026-09-29T07:14:58.806Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -63,3 +63,4 @@ plus evidence that a disallowed command (running a test suite) is still refused.
 ## Run Log
 
 - 2026-09-29 07:11Z · Build attempt 1 · 46 turns · claude/claude-sonnet-5 · subscription CLI · 70 input, 2.57M cached, 31.2K output · $1.156 est · ok
+- 2026-09-29 07:14Z · CI attempt 1 · 209.2s · `npm test` passed
