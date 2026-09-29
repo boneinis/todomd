@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -20,7 +20,7 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
 cost_usd: 48.6665
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -151,3 +151,9 @@ the claimed rail against the reachable bypass.
 - 2026-09-29 14:00Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-09-29 14:14Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-09-29 14:46Z · CI attempt 3 · 240.1s · `npm test` passed
+- 2026-09-29 14:47Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 44.3K input, 0 cached, 3.4K output · $0.000 est · preliminary review complete; 1 focused check queued
+- 2026-09-29 14:58Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 367.0K input, 289.4K cached, 5.6K output · $0.000 est · verdict: fail (unmet: 1)
+  - attempts_exhausted: Criterion 3 is unmet. The end-to-end test substitutes `test/fixtures/fake-shell-first-agent.js`, which directly writes t
+…
+re refused. Trusted CI confirms `npm test` passed at candidate HEAD `947bb4bc7f52a762f0ab26c10eb7a53794f1c109`; no additional concrete defect surfaced during diff and cross-file inspection.
+- unmet: Both mechanisms are proven with a real end-to-end Build on a throwaway card.
