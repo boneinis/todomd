@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: fd6a366f9c2e7bd1d040110b136272e7203fa72a, command: npm test, execution: local, passed_at: '2026-09-29T06:42:51.333Z', clean: true }
+ci_evidence: { head: 5bfb4e833b7f51044d75e6c18cf1ae40cf91b71a, command: npm test, execution: local, passed_at: '2026-09-29T06:55:41.444Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -190,3 +190,4 @@ ng the desired deletion still leaves the SHA null, so every sync re-reports the 
   - attempts_exhausted: Concrete compatibility bug in src/github-sync.js:75-81 and 393-401. A first sync from a legacy subtree-split metadata br
 …
 ing the subtree history's original path blob and a regression test where a legacy branch changes an existing card before the receiving clone's first sync. Trusted CI confirms npm test passed at the exact candidate HEAD; no commands were executed during this read-only review.
+- 2026-09-29 06:55Z · CI attempt 3 · 174.5s · `npm test` passed
