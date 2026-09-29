@@ -240,7 +240,18 @@ export async function mergeMetadata(project) {
 
   if (applied.length) {
     const commit = await commitPaths(project.path, applied, 'chore(todomd): merge remote board metadata');
-    if (!commit.committed) return { ok: false, error: commit.reason || 'could not commit merged board metadata', applied: [], deferred: conflicts, conflicts };
+    if (!commit.committed) {
+      // commitPaths can legitimately refuse AFTER applyRemote already wrote
+      // files (review_required policy, mid merge/rebase, add/commit failure).
+      // Leaving those writes in place would trip the dirty-tree guard on every
+      // later poll and wedge sync permanently — roll the worktree and index
+      // back to HEAD. The pre-apply guard guarantees .todomd was clean, so this
+      // restore + clean reproduces that state exactly (ignored paths such as
+      // .todomd/runs are left alone).
+      await run(project.path, ['restore', '--staged', '--worktree', '--source=HEAD', '--', '.todomd']);
+      await run(project.path, ['clean', '-fd', '--', '.todomd']);
+      return { ok: false, error: commit.reason || 'could not commit merged board metadata', applied: [], deferred: conflicts, conflicts };
+    }
   }
 
   // Advance the stored ref ONLY when reconciliation completed. With

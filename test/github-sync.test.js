@@ -312,3 +312,36 @@ test('mergeMetadata refuses to run over uncommitted local board changes', async 
   assert.equal(result.ok, false);
   assert.match(result.error, /uncommitted/);
 });
+
+test('mergeMetadata restores the worktree when the merge commit is refused', async () => {
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  fs.mkdirSync(path.join(worker, '.todomd/tasks'), { recursive: true });
+  fs.writeFileSync(path.join(worker, '.todomd/tasks/task-0001-card.md'), '---\nid: task-0001\nassignee: alice\n---\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign to alice']);
+  await pushMetadata({ path: worker, name: 'worker' });
+
+  // a mid-merge viewer makes commitPaths refuse AFTER applyRemote has already
+  // written the remote files — the writes must be rolled back, not left dirty
+  const gitDir = git(viewer, ['rev-parse', '--absolute-git-dir']);
+  fs.writeFileSync(path.join(gitDir, 'MERGE_HEAD'), 'f'.repeat(40) + '\n');
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /mid merge\/rebase/i);
+  assert.equal(git(viewer, ['status', '--porcelain', '--', '.todomd']), '',
+    'a refused merge commit must leave no applied writes behind');
+  fs.rmSync(path.join(gitDir, 'MERGE_HEAD'));
+
+  // and once the merge state clears, the same remote change still applies —
+  // the refusal did not advance the stored ref or wedge the board
+  const retry = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(retry.ok, true, retry.error);
+  assert.ok(retry.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(retry));
+  assert.match(fs.readFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'), 'utf8'), /assignee: alice/);
+});
