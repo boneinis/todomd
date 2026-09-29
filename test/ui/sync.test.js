@@ -42,19 +42,37 @@ const SKIP = 'no Chrome/Chromium found (set TODOMD_CHROME_BIN to run this)';
 before(async () => {
   isolateHome();
   const origin = makeRepo();
+  // The card exists, unassigned, before either clone is made — this is the
+  // case the merge logic has to get right: on a clone's very first sync
+  // there's no stored last-synced ref, so the code must still recognize that
+  // an unchanged EXISTING card's local content is a real earlier point in the
+  // remote branch's own history, not treat it as a conflicting independent
+  // creation (see the regression test in test/github-sync.test.js).
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard,
+    // Review, not Queue: this clone gets registered with a real pipeline
+    // (launcher mode, no fake agent) — a Queue card would get admitted for a
+    // real build and its own status-move commit would race the sync under test.
+    '---\nid: task-0001\ntitle: Assigned elsewhere\nstatus: Review\ntype: module\npriority: low\n' +
+    'labels: []\ndependencies: []\ncreated_date: 2026-01-01\nsource: ui\nagent: claude\nassignee:\n' +
+    'verification: { attempts: 0, max_attempts: 3, last_verdict: }\n---\n\n## Description\n\nbody\n\n' +
+    '## Acceptance Criteria\n\n- [ ] done\n\n## Implementation Plan\n\n## Run Log\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add unassigned task-0001']);
+
   const dir = tmp('sync-ui');
   const worker = cloneRepo(origin, path.join(dir, 'worker'));
   const viewer = cloneRepo(origin, path.join(dir, 'viewer'));
   enableGithubSync(worker, 'origin');
   enableGithubSync(viewer, 'origin');
 
-  // worker assigns a card to alice and publishes just the board metadata —
-  // the viewer clone (below, the one the server/browser actually open) has
-  // never seen this card until it clicks "sync now".
-  const card = path.join(worker, '.todomd/tasks/task-0001-card.md');
-  fs.mkdirSync(path.dirname(card), { recursive: true });
-  fs.writeFileSync(card,
-    '---\nid: task-0001\ntitle: Assigned elsewhere\nstatus: Queue\ntype: module\npriority: low\n' +
+  // worker assigns the card to alice and publishes just the board metadata —
+  // the viewer clone (below, the one the server/browser actually open) still
+  // has its original unassigned copy until it clicks "sync now".
+  const workerCard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(workerCard,
+    '---\nid: task-0001\ntitle: Assigned elsewhere\nstatus: Review\ntype: module\npriority: low\n' +
     'labels: []\ndependencies: []\ncreated_date: 2026-01-01\nsource: ui\nagent: claude\nassignee: alice\n' +
     'verification: { attempts: 0, max_attempts: 3, last_verdict: }\n---\n\n## Description\n\nbody\n\n' +
     '## Acceptance Criteria\n\n- [ ] done\n\n## Implementation Plan\n\n## Run Log\n');
@@ -86,7 +104,7 @@ test('clicking "sync now" merges a remote assignee change and the open Mine view
   await page.goto(`http://127.0.0.1:${srv.port}/?token=${srv.token}&project=${encodeURIComponent(name)}`);
   await until(async () => await page.eval(`Array.isArray(boardData?.cards)`));
 
-  // the card doesn't exist in this clone yet — Mine view has nothing to show
+  // the card exists but is still unassigned in this clone — Mine view (alice) hides it
   assert.equal(await page.eval(`!!document.querySelector('[data-id="task-0001"]')`), false);
   assert.equal(await page.eval(`document.getElementById('sync-now').hidden`), false);
 

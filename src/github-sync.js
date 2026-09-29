@@ -36,6 +36,29 @@ async function blobSha(repoPath, ref, relPath) {
   return res.ok ? res.stdout : null;
 }
 
+// Git blob shas are content hashes, not history pointers — identical content
+// hashes the same whether it was written by this repo or one that has never
+// shared a commit with it. So even though pushMetadata's `subtree split`
+// gives independently-cloned repos no common commit ancestry for the
+// published branch, walking that branch's own history for one path can still
+// find a real common ancestor: if `localSha` matches what the path held at
+// some earlier point in the remote branch's history (including "didn't exist
+// yet", before the path's first recorded change there), nothing has touched
+// the file locally since remote had that value — remote's current version is
+// a safe fast-forward, not a conflict. This is what makes the very first
+// sync of an already-existing, remotely-edited file work correctly: with no
+// prior local sync-state, the naive last-synced-ref base is null even though
+// a real common ancestor exists in the remote branch's own commits.
+async function historicalBaseMatches(repoPath, ref, relPath, localSha) {
+  const log = await run(repoPath, ['log', '--format=%H', ref, '--', relPath]);
+  const commits = log.ok ? log.stdout.split('\n').filter(Boolean) : [];
+  if (localSha === null && commits.length) return true; // predates the path's oldest recorded change
+  for (const commit of commits) {
+    if ((await blobSha(repoPath, commit, relPath)) === localSha) return true;
+  }
+  return false;
+}
+
 // Local, per-clone bookkeeping of the last remote ref successfully merged —
 // lives inside .git (never tracked, never part of the pushed .todomd subtree)
 // so a fresh 3-way comparison is possible without needing shared commit
@@ -116,6 +139,19 @@ export async function mergeMetadata(project) {
   const basePaths = lastRef ? await treePaths(project.path, lastRef) : [];
   const applied = [], conflicts = [];
 
+  const applyRemote = async (rel, localRel, remoteSha) => {
+    const abs = path.join(project.path, localRel);
+    if (remoteSha === null) fs.rmSync(abs, { force: true });
+    else {
+      const blob = await runRaw(project.path, ['show', `${fetched.ref}:${rel}`]);
+      if (!blob.ok) return false;
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, blob.stdout);
+    }
+    applied.push(localRel);
+    return true;
+  };
+
   for (const rel of new Set([...remotePaths, ...basePaths])) {
     const localRel = path.posix.join('.todomd', rel);
     const [remoteSha, baseSha, localSha] = await Promise.all([
@@ -128,18 +164,16 @@ export async function mergeMetadata(project) {
     if (localSha === baseSha) {
       // local hasn't touched this file since the last sync — safe to take
       // whatever the remote side has now (an update, a new file, or a delete)
-      const abs = path.join(project.path, localRel);
-      if (remoteSha === null) fs.rmSync(abs, { force: true });
-      else {
-        const blob = await runRaw(project.path, ['show', `${fetched.ref}:${rel}`]);
-        if (!blob.ok) continue;
-        fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, blob.stdout);
-      }
-      applied.push(localRel);
+      await applyRemote(rel, localRel, remoteSha);
     } else if (remoteSha === baseSha) {
       // remote hasn't changed since the last sync — the local edit stands
       continue;
+    } else if (await historicalBaseMatches(project.path, fetched.ref, rel, localSha)) {
+      // no last-synced-ref base (e.g. this clone's very first sync), but
+      // local's current content is itself a real earlier point in the
+      // remote branch's own history — local hasn't diverged, so remote's
+      // current value is still a safe fast-forward rather than a conflict
+      await applyRemote(rel, localRel, remoteSha);
     } else {
       // both sides changed (or were independently created with no shared
       // base) — never silently discard local intent; keep it and report it

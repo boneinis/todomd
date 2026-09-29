@@ -1137,6 +1137,19 @@ function cloneRepo(from, into) {
 test('POST /api/sync requires full access, merges remote board metadata, and broadcasts board-changed only when something applied', async () => {
   isolateHome();
   const origin = makeRepo();
+  // The card exists, unassigned, before either clone is made — this is the
+  // case that matters most: on a clone's very first sync there's no stored
+  // last-synced ref, so the merge has to recognize an unchanged EXISTING
+  // card's content as a real earlier point in the remote branch's own
+  // history rather than mistake it for a conflicting independent creation.
+  // Review, not Queue: this project is managed by a real (unmocked) pipeline
+  // below — a Queue card would get admitted for a real build and race the sync.
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add unassigned task-0001']);
+
   const dir = tmp('sync-route');
   const worker = cloneRepo(origin, path.join(dir, 'worker'));
   const viewer = cloneRepo(origin, path.join(dir, 'viewer'));
@@ -1144,8 +1157,7 @@ test('POST /api/sync requires full access, merges remote board metadata, and bro
   enableGithubSync(viewer, 'origin');
 
   const card = path.join(worker, '.todomd/tasks/task-0001-card.md');
-  fs.mkdirSync(path.dirname(card), { recursive: true });
-  fs.writeFileSync(card, '---\nid: task-0001\ntitle: Test card\nstatus: Queue\nassignee: alice\n---\n\nbody\n');
+  fs.writeFileSync(card, '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: alice\n---\n\nbody\n');
   git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
   git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
   assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);

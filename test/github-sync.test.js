@@ -77,6 +77,43 @@ test('mergeMetadata pulls a remote assignee change into a clean local clone', as
   assert.deepEqual(again, { ok: true, applied: [], deferred: [], conflicts: [] });
 });
 
+test('mergeMetadata pulls a remote assignee change on a card that predates either clone\'s first sync', async () => {
+  // Regression: with no stored last-synced ref (this clone's very first
+  // sync), the naive base for a path is null — which used to make an
+  // UNCHANGED existing card look identical to an independently-created one,
+  // and any remote edit to it was wrongly treated as a same-path conflict
+  // instead of a clean fast-forward. The fix walks the remote branch's own
+  // history for the path: the card's original (unassigned) content is a real
+  // point in that history, since worker's local history — which subtree
+  // split walked — includes the very commit both clones were made from.
+  const origin = makeRepo();
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add unassigned task-0001']);
+
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  const workerCard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(workerCard, '---\nid: task-0001\ntitle: Test\nstatus: Queue\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign task-0001 to alice']);
+  const push = await pushMetadata({ path: worker, name: 'worker' });
+  assert.equal(push.ok, true, push.error);
+
+  // viewer's copy is untouched since the clone — this is its first-ever sync
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.conflicts, [], JSON.stringify(result));
+  assert.ok(result.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
+  assert.match(fs.readFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'), 'utf8'), /assignee: alice/);
+});
+
 test('mergeMetadata defers a real conflict and keeps the local version', async () => {
   const origin = makeRepo();
   const dir = tmp('sync');
