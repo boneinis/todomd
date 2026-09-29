@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 4cbc5e6a1b2975266961105a37a3a79b04d9d88e, command: npm test, execution: local, passed_at: '2026-09-29T04:46:06.589Z', clean: true }
+ci_evidence: { head: 964348a30bd9b5129e336625a0368d723cf76da8, command: npm test, execution: local, passed_at: '2026-09-29T04:58:43.200Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -116,3 +116,4 @@ on wedged and the board changed despite the failed response. Make application tr
   - attempts_exhausted: `src/github-sync.js:202-205` and `:228-233` can silently overwrite a genuine local edit. `historicalBaseMatches()` treat
 …
 ormal three-way conflict when `lastRef` exists, and for first sync require evidence from local history that the path has not diverged; otherwise defer it as a conflict. Trusted CI reports `npm test` passed at the exact clean candidate HEAD; it was not rerun per instructions.
+- 2026-09-29 04:58Z · CI attempt 3 · 173.8s · `npm test` passed
