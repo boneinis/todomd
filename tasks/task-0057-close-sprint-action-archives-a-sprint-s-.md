@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Build
+status: CI
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -11,12 +11,12 @@ source: ui
 assignee:
 agent:
 build_profile: standard
-session_id:
+session_id: 5d4be3d6-6fb3-444f-8010-b8900a017469
 worktree: todomd/task-0057
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-09-29
 sprint: sprint-2
-cost_usd: 0
+cost_usd: 2.5303
 needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
@@ -61,3 +61,4 @@ Summary: wrote a single cohesive implementation plan.
 ## Run Log
 - 2026-09-29 17:19Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-09-29 17:22Z · Plan · 1 turns · codex/gpt-5.6-sol · subscription CLI · 146.3K input, 114.0K cached, 3.5K output · $0.000 est · ok
+- 2026-09-29 17:48Z · Build attempt 1 · 8 turns · claude/claude-sonnet-5 · subscription CLI · 14 input, 1.04M cached, 1.9K output · $2.530 est · ok
