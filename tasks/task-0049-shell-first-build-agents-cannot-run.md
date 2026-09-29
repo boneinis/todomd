@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: CI
+status: Needs Human
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -20,8 +20,8 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
 cost_usd: 48.6665
-needs_human_reason:
-recovery_stage:
+needs_human_reason: ci_failed
+recovery_stage: CI
 ---
 
 ## Description
@@ -117,4 +117,25 @@ ok 1077 - invalidateProject drops every pending proposal for a removed repositor
 # skipped 0
 # todo 0
 # duration_ms 209022.979709
+- 2026-09-29 12:13Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-09-29 12:27Z · CI attempt 3 · 210.5s · `npm test` failed
+  - ci_failed: `npm test` exited 1
+ser-controlled card text
+ok 1070 - voice summaries and card status sanitize and bound user-controlle
+…
+r a removed repository
+ok 1077 - invalidateProject drops every pending proposal for a removed repository
+  ---
+  duration_ms: 127.064333
+  type: 'test'
+  ...
+1..1077
+# tests 1120
+# suites 10
+# pass 1119
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 209916.066834
 
