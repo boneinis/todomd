@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: CI
+status: Verify
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -21,7 +21,7 @@ needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: b53954568c6b3eeeca4a9f66ab0ec97d75eb7b1d, command: npm test, execution: local, passed_at: '2026-09-29T18:02:21.326Z', clean: true }
 ci_remote: {  }
 ---
 
@@ -62,3 +62,5 @@ Summary: wrote a single cohesive implementation plan.
 - 2026-09-29 17:19Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-09-29 17:22Z · Plan · 1 turns · codex/gpt-5.6-sol · subscription CLI · 146.3K input, 114.0K cached, 3.5K output · $0.000 est · ok
 - 2026-09-29 17:48Z · Build attempt 1 · 8 turns · claude/claude-sonnet-5 · subscription CLI · 14 input, 1.04M cached, 1.9K output · $2.530 est · ok
+- 2026-09-29 17:49Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-09-29 18:02Z · CI attempt 1 · 220.0s · `npm test` passed
