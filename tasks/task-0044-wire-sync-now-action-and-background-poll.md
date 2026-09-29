@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -102,3 +102,7 @@ M src/github-sync.js
 - 2026-09-29 04:19Z · Resume Build · continuing attempt 3 after uncommitted_build in preserved worktree todomd/task-0044
 - 2026-09-29 04:20Z · Build attempt 3 · 10 turns · claude/claude-sonnet-5 · subscription CLI · 20 input, 729.0K cached, 3.1K output · $6.657 est · ok
 - 2026-09-29 04:25Z · CI attempt 3 · 296.7s · `npm test` passed
+- 2026-09-29 04:26Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 39.8K input, 0 cached, 2.4K output · $0.000 est · verdict: fail
+  - attempts_exhausted: Adversarial review found a reachable cross-project race in public/app.js. runSync() does not capture the project or veri
+…
+ning A's banner. Capture the requested project/generation at invocation and discard UI effects when it no longer matches currentProject; optionally abort the obsolete request. Trusted CI passed npm test for exact clean candidate HEAD f929fdbb7f1a2a6e19700f4daab2a2da153eea56.
