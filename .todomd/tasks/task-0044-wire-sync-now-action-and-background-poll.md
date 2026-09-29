@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: f5554f7ca1bf91d0591efd6c30d99164bbb4b264, command: npm test, execution: local, passed_at: '2026-09-29T05:33:55.102Z', clean: true }
+ci_evidence: { head: 18ade345064a3eb1b5ce9f46b38859df75dbb7f6, command: npm test, execution: local, passed_at: '2026-09-29T05:44:06.141Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -141,3 +141,4 @@ ge for a non-default code branch, including a remote without a configured `<remo
 …
 lus source files. Trusted CI confirms npm test passed at the exact clean candidate HEAD, but its existing non-default-branch test only covers branches containing nested .todomd and misses this reachable case.
 - unmet: Board-only metadata updates do not trigger normal code CI
+- 2026-09-29 05:44Z · CI attempt 3 · 202.2s · `npm test` passed
