@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -107,3 +107,7 @@ M src/github-sync.js
 …
 ning A's banner. Capture the requested project/generation at invocation and discard UI effects when it no longer matches currentProject; optionally abort the obsolete request. Trusted CI passed npm test for exact clean candidate HEAD f929fdbb7f1a2a6e19700f4daab2a2da153eea56.
 - 2026-09-29 04:36Z · CI attempt 3 · 148.5s · `npm test` passed
+- 2026-09-29 04:39Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 856.9K input, 762.5K cached, 8.8K output · $0.000 est · verdict: fail
+  - attempts_exhausted: Concrete transactional bug in src/github-sync.js:169-243. mergeMetadata writes or deletes remote files before commitPath
+…
+on wedged and the board changed despite the failed response. Make application transactional and restore both worktree and index on commit failure, or preflight all refusal conditions and preserve accurate result/state semantics. Add regression coverage for a rejected commit.
