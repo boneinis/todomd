@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -20,7 +20,7 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
 cost_usd: 48.6665
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -89,3 +89,9 @@ c/runner.js
 - 2026-09-29 07:56Z · Resume Build · continuing attempt 3 after uncommitted_build in preserved worktree todomd/task-0049
 - 2026-09-29 07:58Z · Build attempt 3 · 26 turns · claude/claude-sonnet-5 · subscription CLI · 50 input, 4.11M cached, 9.3K output · $22.303 est · ok
 - 2026-09-29 08:05Z · CI attempt 3 · 151.9s · `npm test` passed
+- 2026-09-29 08:08Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 362.0K input, 253.4K cached, 7.8K output · $0.000 est · verdict: fail (unmet: 2)
+  - attempts_exhausted: 1. The command rail can execute forbidden programs transitively through allowed Git operations. The gate retains reposit
+…
+t rerun during this read-only review.
+- unmet: A permission model permits ordinary read-only shell work without permitting test suites or database resets, with a mechanism whose safety holds.
+- unmet: Both mechanisms are proven by a real end-to-end Build on a throwaway card.
