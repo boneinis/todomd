@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -18,8 +18,10 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-session_id: 73d4ff5e-f123-483b-ba6c-b885b671a939
-cost_usd: 5.7294
+session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
+cost_usd: 26.3634
+needs_human_reason: uncommitted_build
+recovery_stage: Build
 ---
 
 ## Description
@@ -71,3 +73,16 @@ plus evidence that a disallowed command (running a test suite) is still refused.
 - 2026-09-29 07:32Z · Verify attempt 2 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 199.5K input, 163.3K cached, 5.3K output · $0.000 est · verdict: fail (unmet: 2)
   - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
 - 2026-09-29 07:34Z · Escalate attempt 2 · 17 turns · claude/claude-fable-5 · subscription CLI · 30 input, 515.1K cached, 10.5K output · $2.104 est · diagnosis complete
+- 2026-09-29 07:54Z · Build attempt 3 · 102 turns · claude/claude-fable-5 · subscription CLI · 174 input, 11.97M cached, 92.5K output · $20.634 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M bin/todo
+…
+c/runner.js
+ M src/shell-safe-commands.js
+ M test/models.test.js
+ M test/server-routes.test.js
+ M test/shell-safe-commands-e2e.test.js
+ M test/shell-safe-commands.test.js
+?? bin/safe-shell-path/
+?? test/fixtures/fake-shell-first-agent.js
+?? test/shell-first-build-e2e.test.js
