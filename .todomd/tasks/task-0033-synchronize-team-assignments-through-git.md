@@ -1,7 +1,7 @@
 ---
 id: task-0033
 title: Synchronize team assignments through GitHub
-status: Planned
+status: Done
 type: improvement
 priority: high
 labels: [sync, github, team]
