@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -117,3 +117,9 @@ on wedged and the board changed despite the failed response. Make application tr
 …
 ormal three-way conflict when `lastRef` exists, and for first sync require evidence from local history that the path has not diverged; otherwise defer it as a conflict. Trusted CI reports `npm test` passed at the exact clean candidate HEAD; it was not rerun per instructions.
 - 2026-09-29 04:58Z · CI attempt 3 · 173.8s · `npm test` passed
+- 2026-09-29 05:03Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 842.0K input, 754.7K cached, 9.9K output · $0.000 est · verdict: fail
+  - attempts_exhausted: 1. `mergeMetadata()` can overwrite an actively running card. The path-level merge in `src/github-sync.js:200` applies th
+…
+edits remain unable to publish. Preserve/reconcile the fetched metadata ancestry or use a lease-protected publication strategy, and add a two-clone pull → local edit → push regression test.
+
+Trusted CI for exact HEAD 964348a passed `npm test`; it was not rerun as instructed.
