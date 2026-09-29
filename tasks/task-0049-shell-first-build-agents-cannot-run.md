@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: CI
+status: Verify
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -13,7 +13,7 @@ assignee:
 agent: claude
 base_branch: main
 worktree: todomd/task-0049
-ci_evidence: {  }
+ci_evidence: { head: efef78f6ca39629afad526adb516bf70ed38ad0b, command: npm test, execution: local, passed_at: '2026-09-29T13:22:19.492Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -138,4 +138,5 @@ ok 1077 - invalidateProject drops every pending proposal for a removed repositor
 # skipped 0
 # todo 0
 # duration_ms 209916.066834
-
+- 2026-09-29 13:12Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-09-29 13:22Z · CI attempt 3 · 217.1s · `npm test` passed
