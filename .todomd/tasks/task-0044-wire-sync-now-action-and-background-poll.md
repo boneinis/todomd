@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Build
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -22,9 +22,9 @@ ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 9.1845
-needs_human_reason:
-recovery_stage:
+cost_usd: 15.2084
+needs_human_reason: uncommitted_build
+recovery_stage: Build
 ---
 
 ## Description
@@ -74,3 +74,12 @@ M public/app.js
  M test/server-routes.test.js
 ?? test/ui/sync.test.js
 - 2026-09-29 03:22Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0044
+- 2026-09-29 03:23Z · Build attempt 1 · 4 turns · claude/claude-sonnet-5 · subscription CLI · 8 input, 876.5K cached, 743 output · $6.024 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M public/app.js
+ M public/index.html
+ M src/github-sync.js
+ M src/server.js
+ M test/github-sync.test.js
+ M test/server-routes.test.js
+?? test/ui/sync.test.js
