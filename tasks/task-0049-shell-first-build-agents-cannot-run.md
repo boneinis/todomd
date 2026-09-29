@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Build
+status: CI
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -18,6 +18,8 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+session_id: 73d4ff5e-f123-483b-ba6c-b885b671a939
+cost_usd: 1.1558
 ---
 
 ## Description
@@ -57,3 +59,7 @@ even once permissions are sorted.
 
 An end-to-end Build by a shell-first agent that produces a real diff and commits it,
 plus evidence that a disallowed command (running a test suite) is still refused.
+
+## Run Log
+
+- 2026-09-29 07:11Z · Build attempt 1 · 46 turns · claude/claude-sonnet-5 · subscription CLI · 70 input, 2.57M cached, 31.2K output · $1.156 est · ok
