@@ -1,7 +1,7 @@
 ---
 id: task-0046
 title: priority list view
-status: Queue
+status: Build
 type: improvement
 priority: medium
 labels: []
@@ -12,11 +12,16 @@ source: ui
 assignee: 
 agent: claude
 session_id: d3a6498b-55d5-42b8-ab1c-1b8928dd013a
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0046
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-08-02
 cost_usd: 1.0497
 needs_human_reason:
+base_branch: main
+ci_evidence: {  }
+ci_remote: {  }
+build_profile: standard
+build_limits: { max_slices: 3, budget_minutes: 60 }
 ---
 
 ## Description
