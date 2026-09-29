@@ -594,3 +594,82 @@ test('a completed in-flight commit does not release a deferred-path publish guar
   assert.equal(merged2.ok, true, merged2.error);
   assert.ok(merged2.conflicts.includes('.todomd/tasks/task-0001-card.md'), JSON.stringify(merged2));
 });
+
+test('first sync conflicts when a local card edit was pushed to the code branch', async () => {
+  const origin = makeRepo();
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add task-0001']);
+
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  // viewer edits the card AND pushes it to the code branch — reachable from
+  // origin/HEAD, but the metadata publisher never saw it
+  const vcard = path.join(viewer, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(vcard, '---\nid: task-0001\nassignee: bob\n---\n\nbody\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'viewer assigns bob']);
+  // "push" the edit to the code branch — the test origin has main checked
+  // out, so move the ref directly (reachable from origin/HEAD either way)
+  git(origin, ['fetch', '-q', viewer, 'HEAD']);
+  git(origin, ['update-ref', 'refs/heads/main', 'FETCH_HEAD']);
+
+  // worker (never saw bob) publishes its own change
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(wcard, '---\nid: task-0001\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'worker assigns alice']);
+  await pushMetadata({ path: worker, name: 'worker' });
+
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(result.ok, true, result.error);
+  assert.ok(result.conflicts.includes('.todomd/tasks/task-0001-card.md'),
+    `pushed-but-unseen local edit must conflict, got ${JSON.stringify(result)}`);
+  assert.match(fs.readFileSync(vcard, 'utf8'), /assignee: bob/, 'local version must be kept');
+});
+
+test('pushMetadata refuses a metadata branch that gained a source-bearing commit', async () => {
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  enableSync(worker, 'origin');
+  assert.equal((await pushMetadata({ path: worker, name: 'worker' })).ok, true);
+
+  // someone lands a normal commit on the metadata branch (valid publish root,
+  // then a source file on top with a foreign message)
+  const abuse = clone(origin, path.join(dir, 'abuse'));
+  git(abuse, ['checkout', '-q', 'todomd-state']);
+  fs.mkdirSync(path.join(abuse, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(abuse, 'src/app.js'), 'console.log(1)\n');
+  git(abuse, ['add', 'src/app.js']);
+  git(abuse, ['commit', '-qm', 'add source to metadata branch']);
+  git(abuse, ['push', '-q', 'origin', 'todomd-state']);
+
+  const result = await pushMetadata({ path: worker, name: 'worker' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /metadata branch/);
+});
+
+test('the metadata scheduler runs pushes through the exclusive hook', async () => {
+  const calls = [];
+  const scheduler = createMetadataScheduler({
+    exclusive: async (project, fn) => { calls.push(project.name); return fn(); },
+  });
+  const repo = makeRepo();
+  // remote 'origin' does not exist — the publish fails, but the exclusive
+  // wrapper must still have been invoked around it
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.appendFileSync(cfg, '\ngithub_sync:\n  enabled: true\n  remote: origin\n  debounce_seconds: 1\n  done_delay_seconds: 1\n  max_delay_seconds: 1\n');
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-qm', 'enable github_sync']);
+  scheduler.schedule({ path: repo, name: 'spy' }, { done: true });
+  await new Promise((r) => setTimeout(r, 1600));
+  scheduler.close();
+  assert.deepEqual(calls, ['spy']);
+});

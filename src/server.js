@@ -1526,6 +1526,9 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
   // so removed projects release their watchers (chokidar v4: plain paths only)
   const watchers = new Map();
   const metadataSync = createMetadataScheduler({
+    // /api/sync merges under withRepoLock — scheduled publishes must take the
+    // same lock or a push can interleave a merge's unresolved-marker write.
+    exclusive: (project, fn) => withRepoLock(project.path, fn),
     onResult: (project, result) => {
       console.log(`metadata sync ${project.name}: ${result.ok ? (result.skipped || 'pushed') : result.error}`);
       // a successful push doesn't change local files, but the open board

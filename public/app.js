@@ -392,12 +392,12 @@ async function runSync({ silent = false } = {}) {
     // stale-response guard loadBoard() uses.
     if (requestedProject !== currentProject) return;
     if (!res.ok || !out.ok) {
-      syncBanner = { level: 'warn', text: `board sync failed: ${out.error || res.statusText}` };
+      syncBanner = { level: 'warn', action: false, text: `board sync failed: ${out.error || res.statusText}` };
     } else if ((out.conflicts || []).length || (out.deferred || []).length) {
       const parts = [];
       if (out.conflicts?.length) parts.push(`${out.conflicts.length} card${out.conflicts.length === 1 ? '' : 's'} changed on both sides and kept your local version — ${out.conflicts.join(', ')}`);
       if (out.deferred?.length) parts.push(`${out.deferred.length} update${out.deferred.length === 1 ? '' : 's'} deferred while cards have runs in flight — ${out.deferred.join(', ')}`);
-      syncBanner = { level: 'warn', text: `board sync: ${parts.join(' · ')}` };
+      syncBanner = { level: 'warn', action: false, text: `board sync: ${parts.join(' · ')}` };
     } else {
       syncBanner = null;
       if (!silent && out.applied?.length) toast(`synced ${out.applied.length} board change${out.applied.length === 1 ? '' : 's'}`);

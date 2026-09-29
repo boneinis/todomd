@@ -62,18 +62,23 @@ async function pathEverExisted(repoPath, ref, relPath) {
   return (await pathHistory(repoPath, ref, relPath)).length > 0;
 }
 
-// Did THIS clone ever commit a change to the path? `rev-list HEAD --not
-// <remote>/HEAD -- <path>` counts only commits unreachable from the code
-// remote's default branch — inherited (cloned) commits are reachable, so an
-// untouched file reports not-diverged and may fast-forward to whatever the
-// remote holds now, while a locally-edited one is a genuine divergence and
-// must conflict. Blob equality can't prove this: remote history A→B→C still
-// contains B, but a local commit that independently made A→B diverged, and
-// the published branch's squashed snapshot history can't distinguish the two.
-// An unresolvable remote ref reports diverged — a conflict is the safe side.
-async function localPathDiverged(repoPath, remote, localRel) {
-  const res = await run(repoPath, ['rev-list', '--max-count=1', 'HEAD', '--not', `${remote}/HEAD`, '--', localRel]);
-  return !res.ok || res.stdout.trim() !== '';
+// Has this checkout's copy of the path diverged from the base the remote
+// publisher actually shared? The publish commit records the publisher's code
+// HEAD in an `X-Todomd-Base` trailer; merge-base(that, HEAD) is the latest
+// code commit BOTH clones descend from. If this checkout's blob still equals
+// the blob at that shared base, the local file is untouched and whatever the
+// remote holds now is a safe fast-forward; anything else is real divergence
+// and must conflict. Reachability against the code remote can't answer this:
+// a local edit pushed to the code branch is reachable from <remote>/HEAD yet
+// is still unseen by the metadata branch. Indeterminate provenance (missing
+// trailer, unrelated histories) reports diverged — conflict is the safe side.
+async function localPathDiverged(repoPath, remoteTip, localRel, localSha) {
+  const body = await run(repoPath, ['log', '-1', '--format=%B', remoteTip]);
+  const base = body.ok ? body.stdout.match(/X-Todomd-Base:\s*([0-9a-f]{40})/i)?.[1] : null;
+  if (!base) return true;
+  const shared = await run(repoPath, ['merge-base', base, 'HEAD']);
+  if (!shared.ok || !shared.stdout) return true;
+  return (await blobSha(repoPath, shared.stdout, localRel)) !== localSha;
 }
 
 // Local, per-checkout bookkeeping of the last remote ref successfully merged —
@@ -135,18 +140,15 @@ const PUBLISH_MESSAGE = 'chore(todomd): publish board metadata';
 // A name check alone cannot protect a non-default code branch (`develop`,
 // `release`, ...), and a shape check cannot either — a code branch can
 // carry a root config.yml and no nested .todomd. Require provenance
-// instead: every legitimate metadata tip descends from the rootless
-// commit-tree this publisher creates, so the branch must have exactly one
-// root commit and that root must carry the publish message. Anything else
-// (code branches, foreign branches, hand-made lookalikes) is refused before
-// a metadata-only tree can fast-forward over it.
+// instead: this publisher creates a linear chain of rootless commit-tree
+// snapshots, so every commit on the branch must carry the publish message —
+// a valid metadata root with a source-bearing commit on top is refused too.
+// Belt and suspenders: the tip's tree must not nest .todomd/ (code layout).
 async function remoteTipBranchError(repoPath, branch, tip) {
-  const roots = await run(repoPath, ['rev-list', '--max-parents=0', tip]);
-  const list = roots.ok ? roots.stdout.split('\n').filter(Boolean) : [];
-  if (list.length === 1) {
-    const subject = await run(repoPath, ['log', '-1', '--format=%s', list[0]]);
-    if (subject.ok && subject.stdout === PUBLISH_MESSAGE) return null;
-  }
+  const subjects = await run(repoPath, ['log', '--format=%s', tip]);
+  const lines = subjects.ok ? subjects.stdout.split('\n').filter(Boolean) : [];
+  const nested = await run(repoPath, ['rev-parse', '--verify', '-q', `${tip}:.todomd`]);
+  if (lines.length && lines.every((s) => s === PUBLISH_MESSAGE) && !nested.ok) return null;
   return `github_sync.branch '${branch}' is not a board metadata branch — refusing to sync over it`;
 }
 
@@ -193,7 +195,14 @@ export async function pushMetadata(project) {
     const remoteTree = await run(project.path, ['rev-parse', '--verify', '-q', `${remoteTip}^{tree}`]);
     if (remoteTree.ok && remoteTree.stdout === tree.stdout) return { ok: true, branch, skipped: 'up-to-date' };
   }
+  // Record the code commit both clones provably share: the publisher's
+  // merge-base with the code remote is an ancestor of <remote>/HEAD, so it
+  // exists in every clone's object store. mergeMetadata diffs each path
+  // against the blob at that base to decide "untouched" vs "diverged" —
+  // see localPathDiverged.
+  const codeBase = await run(project.path, ['merge-base', 'HEAD', `${remote}/HEAD`]);
   const commitArgs = ['commit-tree', tree.stdout, '-m', PUBLISH_MESSAGE];
+  if (codeBase.ok && codeBase.stdout) commitArgs.push('-m', `X-Todomd-Base: ${codeBase.stdout}`);
   if (remoteTip) commitArgs.push('-p', remoteTip);
   const commit = await run(project.path, commitArgs);
   if (!commit.ok || !/^[0-9a-f]{40}$/i.test(commit.stdout)) return { ok: false, error: commit.stderr || 'could not build metadata commit' };
@@ -320,7 +329,7 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
       else await applyRemote(rel, localRel, remoteSha);
     } else if (remoteSha === null) {
       // first sync; local has the file, remote doesn't.
-      if (!(await localPathDiverged(project.path, fetched.remote, localRel))) {
+      if (!(await localPathDiverged(project.path, fetched.ref, localRel, localSha))) {
         // local never touched it — remote's absence is authoritative and the
         // deletion fast-forwards
         await applyRemote(rel, localRel, null);
@@ -329,7 +338,7 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
         conflicts.push(localRel);
       }
       // else: a local-only file the remote never knew about — keep, silently
-    } else if (!(await localPathDiverged(project.path, fetched.remote, localRel))) {
+    } else if (!(await localPathDiverged(project.path, fetched.ref, localRel, localSha))) {
       // no last-synced-ref base (this clone's very first sync), but local
       // never committed a change to the path — untouched inheritance, so
       // remote's value is a safe fast-forward
@@ -383,7 +392,11 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
   return { ok: true, applied, deferred, conflicts, ...(warning ? { warning } : {}) };
 }
 
-export function createMetadataScheduler({ onResult = () => {} } = {}) {
+// `exclusive` serializes the publish against in-flight merges: a scheduled
+// push racing a mergeMetadata could read an empty unresolved marker while the
+// merge is mid-flight and publish a conflicting snapshot over remote values.
+// The server passes withRepoLock so pull and push share the same mutex.
+export function createMetadataScheduler({ onResult = () => {}, exclusive = (_project, fn) => fn() } = {}) {
   const pending = new Map();
   const state = new Map();
   const schedule = (project, { done = false } = {}) => {
@@ -400,7 +413,7 @@ export function createMetadataScheduler({ onResult = () => {} } = {}) {
     clearTimeout(pending.get(key));
     const timer = setTimeout(async () => {
       pending.delete(key); state.delete(key);
-      const result = await pushMetadata(project);
+      const result = await exclusive(project, () => pushMetadata(project));
       onResult(project, result);
     }, Math.max(0, s.due - now));
     timer.unref?.();
