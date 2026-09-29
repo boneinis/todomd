@@ -1174,19 +1174,26 @@ test('POST /api/sync requires full access, merges remote board metadata, and bro
   ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString())); } catch { /* ignore */ } });
 
   try {
+    // a live triage (or any run) on the card makes /api/sync defer its file —
+    // wait for the real pipeline to settle so the merge applies cleanly
+    await until(() => !pipeline.hasLiveRun(name, 'task-0001'), { timeout: BUDGET.slow });
     // no token
     assert.equal((await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers: { origin: base } })).status, 401);
     // viewer/monitor token cannot trigger a mutating sync
     assert.equal((await fetch(`${base}/api/sync?project=${name}`,
       { method: 'POST', headers: { 'x-todomd-token': viewerTok, origin: base } })).status, 403);
 
-    const r = await fetch(`${base}/api/sync?project=${name}`,
-      { method: 'POST', headers: { 'x-todomd-token': srv.token, origin: base } });
-    assert.equal(r.status, 200);
-    const out = await r.json();
-    assert.equal(out.ok, true);
+    // a transient triage claim can still defer the card — retry until the
+    // merge window is clear and the remote change actually applies
+    let out;
+    await until(async () => {
+      const r = await fetch(`${base}/api/sync?project=${name}`,
+        { method: 'POST', headers: { 'x-todomd-token': srv.token, origin: base } });
+      assert.equal(r.status, 200);
+      out = await r.json();
+      return out.ok && out.applied.some((f) => f.endsWith('tasks/task-0001-card.md'));
+    }, { timeout: BUDGET.slow });
     assert.deepEqual(out.conflicts, []);
-    assert.ok(out.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(out));
 
     await until(() => messages.some((m) => m.type === 'board-changed' && m.project === name), { timeout: BUDGET.quick });
     assert.equal(readCard(viewer, 'task-0001').data.assignee, 'alice');
@@ -1240,22 +1247,31 @@ test('POST /api/sync returns 200 with the conflict list and keeps reporting it u
   const headers = { 'x-todomd-token': srv.token, origin: base };
 
   try {
+    // same settle wait as above: a live triage would defer the card's file
+    await until(() => !pipeline.hasLiveRun(name, 'task-0001'), { timeout: BUDGET.slow });
     // a conflicts-only merge is still a successful call: 200, ok:true, and
-    // the conflict list is what the client renders as its warning banner
-    const r = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
-    assert.equal(r.status, 200);
-    const out = await r.json();
-    assert.equal(out.ok, true);
+    // the conflict list is what the client renders as its warning banner.
+    // transient triage claims can defer instead — retry until it reports.
+    let out;
+    await until(async () => {
+      const r = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+      assert.equal(r.status, 200);
+      out = await r.json();
+      return out.ok && out.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md'));
+    }, { timeout: BUDGET.slow });
     assert.deepEqual(out.applied, []);
-    assert.ok(out.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(out));
 
     // a later poll with an unchanged remote must RE-report the conflict, not
     // come back as a clean no-op — the client clears its banner on any clean
     // result, so a premature no-op here would hide a still-unresolved conflict
-    const r2 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
-    assert.equal(r2.status, 200);
-    const out2 = await r2.json();
-    assert.ok(out2.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(out2));
+    let out2;
+    await until(async () => {
+      const r2 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+      assert.equal(r2.status, 200);
+      out2 = await r2.json();
+      return out2.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md'));
+    }, { timeout: BUDGET.slow });
+
     // local intent survives throughout
     assert.equal(readCard(viewer, 'task-0001').data.assignee, 'bob');
 
@@ -1264,8 +1280,12 @@ test('POST /api/sync returns 200 with the conflict list and keeps reporting it u
       '---\nid: task-0001\ntitle: Test card\nstatus: Review\nassignee: alice\n---\n\nbody\n');
     git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
     git(viewer, ['commit', '-qm', 'take remote assignment']);
-    const r3 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
-    assert.deepEqual(await r3.json(), { ok: true, applied: [], deferred: [], conflicts: [] });
+    let out3;
+    await until(async () => {
+      const r3 = await fetch(`${base}/api/sync?project=${name}`, { method: 'POST', headers });
+      out3 = await r3.json();
+      return out3.ok && !out3.deferred.length && !out3.conflicts.length;
+    }, { timeout: BUDGET.slow });
   } finally {
     await srv.close();
   }

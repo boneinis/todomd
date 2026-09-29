@@ -651,7 +651,7 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
         const deferCardIds = new Set();
         for (const c of loadBoard(project.path).cards) {
           if (!c.id) continue;
-          if (['Plan', 'Build', 'CI', 'Verify', 'Escalate', 'Queue'].includes(c.status)
+          if (['Plan', 'Build', 'CI', 'Verify', 'Escalate'].includes(c.status)
             || pipeline.hasLiveRun(project.name, c.id)
             || await pipeline.preservedWorktree(project, c)) deferCardIds.add(c.id);
         }
