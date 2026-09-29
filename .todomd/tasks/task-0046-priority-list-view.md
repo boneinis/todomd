@@ -1,7 +1,7 @@
 ---
 id: task-0046
 title: priority list view
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: []
