@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Queue
+status: Build
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -12,6 +12,12 @@ source: agent
 assignee:
 agent: claude
 base_branch: main
+worktree: todomd/task-0049
+ci_evidence: {  }
+ci_remote: {  }
+build_profile: standard
+build_limits: { max_slices: 3, budget_minutes: 60 }
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 ---
 
 ## Description
