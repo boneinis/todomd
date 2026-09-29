@@ -1,7 +1,7 @@
 ---
 id: task-0046
 title: priority list view
-status: Build
+status: CI
 type: improvement
 priority: medium
 labels: []
@@ -11,11 +11,11 @@ created_date: 2026-08-02
 source: ui
 assignee: 
 agent: claude
-session_id: d3a6498b-55d5-42b8-ab1c-1b8928dd013a
+session_id: c26776c0-2ff3-4d3c-8177-50f0580dd3b5
 worktree: todomd/task-0046
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-08-02
-cost_usd: 1.0497
+cost_usd: 1.2828
 needs_human_reason:
 base_branch: main
 ci_evidence: {  }
@@ -122,3 +122,4 @@ Risks:
 ## Run Log
 - 2026-08-02 13:46Z · Triage · 4 turns · $0.172 · ok
 - 2026-08-02 13:58Z · Plan · 12 turns · $0.878 · ok
+- 2026-09-29 00:21Z · Build attempt 1 · 18 turns · claude/claude-sonnet-5 · subscription CLI · 34 input, 675.4K cached, 2.5K output · $0.233 est · ok
