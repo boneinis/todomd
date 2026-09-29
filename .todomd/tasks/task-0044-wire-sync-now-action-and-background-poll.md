@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 18ade345064a3eb1b5ce9f46b38859df75dbb7f6, command: npm test, execution: local, passed_at: '2026-09-29T05:44:06.141Z', clean: true }
+ci_evidence: { head: 2fbb34336656b6ec7bcf62be578582153836c5ba, command: npm test, execution: local, passed_at: '2026-09-29T05:54:49.126Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -146,3 +146,4 @@ lus source files. Trusted CI confirms npm test passed at the exact clean candida
   - attempts_exhausted: Reachable remote-update data loss in src/github-sync.js:160-175. When synchronization defers a remote change for an in-f
 …
 eferred remote change. Preserve deferred markers until mergeMetadata reconciles them after the run ends; do not infer resolution merely from a changed local blob. Add a regression covering remote assignee change → active-card deferral → local run completion → scheduled push.
+- 2026-09-29 05:54Z · CI attempt 3 · 195.8s · `npm test` passed
