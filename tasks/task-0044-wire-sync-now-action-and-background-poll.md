@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Done
 type: feature
 priority: medium
 labels: []
@@ -15,9 +15,9 @@ agent: claude
 model: claude-sonnet-5
 triaged: n/a (chunk 2/2 of task-0033)
 session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
-worktree: todomd/task-0044
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-base_branch: main
+worktree:
+verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
+base_branch:
 ci_evidence: { head: 5bfb4e833b7f51044d75e6c18cf1ae40cf91b71a, command: npm test, execution: local, passed_at: '2026-09-29T06:55:41.444Z', clean: true }
 ci_remote: {  }
 build_profile: standard
@@ -191,3 +191,4 @@ ng the desired deletion still leaves the SHA null, so every sync re-reports the 
 …
 ing the subtree history's original path blob and a regression test where a legacy branch changes an existing card before the receiving clone's first sync. Trusted CI confirms npm test passed at the exact candidate HEAD; no commands were executed during this read-only review.
 - 2026-09-29 06:55Z · CI attempt 3 · 174.5s · `npm test` passed
+- 2026-09-29 06:58Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 426.0K input, 351.7K cached, 7.2K output · $0.000 est · verdict: pass
