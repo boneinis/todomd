@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: e8137bdd829a8d1fff3b5b166f8eda50c36cc87e, command: npm test, execution: local, passed_at: '2026-09-29T06:30:25.534Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -180,4 +180,4 @@ ok 1060 - invalidateProject drops every pending proposal for a removed repositor
 # skipped 0
 # todo 0
 # duration_ms 126942.830833
-
+- 2026-09-29 06:30Z · CI attempt 3 · 221.9s · `npm test` passed
