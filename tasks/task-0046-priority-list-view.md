@@ -1,7 +1,7 @@
 ---
 id: task-0046
 title: priority list view
-status: Needs Human
+status: Done
 type: improvement
 priority: medium
 labels: []
@@ -126,3 +126,5 @@ Risks:
 - 2026-09-29 00:21Z · Build attempt 1 · 18 turns · claude/claude-sonnet-5 · subscription CLI · 34 input, 675.4K cached, 2.5K output · $0.233 est · ok
 - 2026-09-29 00:39Z · CI attempt 1 · nothing to test (empty candidate)
   - nothing_to_test: No candidate file changes relative to the base branch. CI did not pass or run; candidate preserved for inspection.
+
+- 2026-09-29 · Closed: feature already shipped upstream in 3dd9c28 (prioritized expandable list view). Build found zero diff — card was stale, not failed.
