@@ -5,6 +5,7 @@ status: Planned
 type: feature
 priority: medium
 labels: []
+sprint: sprint-1
 dependencies: [task-0043]
 parent: task-0033
 created_date: 2026-08-02

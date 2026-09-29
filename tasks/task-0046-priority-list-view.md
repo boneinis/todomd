@@ -5,6 +5,7 @@ status: Planned
 type: improvement
 priority: medium
 labels: []
+sprint: sprint-1
 dependencies: []
 created_date: 2026-08-02
 source: ui

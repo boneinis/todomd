@@ -6,6 +6,7 @@ type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
 dependencies: [task-0047, task-0048]
+sprint: sprint-1
 created_date: 2026-09-07
 source: agent
 assignee:
