@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Review
+status: Plan
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -17,6 +17,7 @@ verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-09-29
 sprint: sprint-2
 cost_usd: 0
+needs_human_reason:
 ---
 
 ## Description
