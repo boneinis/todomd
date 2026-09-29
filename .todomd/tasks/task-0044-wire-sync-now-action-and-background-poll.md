@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -154,3 +154,9 @@ eferred remote change. Preserve deferred markers until mergeMetadata reconciles 
 se action is not false. Conflict, deferred, and failure banners therefore show an unrelated control that can resume paused queues. Mark sync banners non-actionable or render actions explicitly by banner type.
 - unmet: Board-only metadata updates do not trigger normal code CI
 - 2026-09-29 06:13Z · CI attempt 3 · 174.0s · `npm test` passed
+- 2026-09-29 06:16Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 1.13M input, 1.01M cached, 9.1K output · $0.000 est · verdict: fail
+  - attempts_exhausted: 1. `src/github-sync.js:147-152` rejects every metadata branch created by the previous `pushMetadata` implementation. Tho
+…
+addition to statuses, with focused route tests for Review+live-triage and Needs Human+preserved-worktree cases.
+
+The supplied exact-HEAD `npm test` result was trusted and not rerun as instructed. The worktree remained unchanged at `2f4da1ada10f8cdc6b35c845d1664a92f84d62ea`.
