@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Needs Human
+status: Verify
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -20,8 +20,8 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
 cost_usd: 48.6665
-needs_human_reason: ci_failed
-recovery_stage: CI
+needs_human_reason:
+recovery_stage:
 ---
 
 ## Description
