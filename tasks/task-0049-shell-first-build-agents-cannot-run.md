@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Build
+status: CI
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -19,7 +19,7 @@ build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
-cost_usd: 26.3634
+cost_usd: 48.6665
 needs_human_reason:
 recovery_stage:
 ---
@@ -87,3 +87,4 @@ c/runner.js
 ?? test/fixtures/fake-shell-first-agent.js
 ?? test/shell-first-build-e2e.test.js
 - 2026-09-29 07:56Z · Resume Build · continuing attempt 3 after uncommitted_build in preserved worktree todomd/task-0049
+- 2026-09-29 07:58Z · Build attempt 3 · 26 turns · claude/claude-sonnet-5 · subscription CLI · 50 input, 4.11M cached, 9.3K output · $22.303 est · ok
