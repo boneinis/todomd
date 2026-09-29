@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Build
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -14,7 +14,7 @@ assignee:
 agent: claude
 model: claude-sonnet-5
 triaged: n/a (chunk 2/2 of task-0033)
-session_id: 7f8b6e58-b9e0-4438-bda2-60ce7d2416a2
+session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
@@ -22,9 +22,9 @@ ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 33.137
-needs_human_reason:
-recovery_stage:
+cost_usd: 39.2688
+needs_human_reason: uncommitted_build
+recovery_stage: Build
 ---
 
 ## Description
@@ -93,3 +93,9 @@ M public/app.js
 - 2026-09-29 04:05Z · Verify attempt 2 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 34.3K input, 0 cached, 3.8K output · $0.000 est · verdict: fail
   - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
 - 2026-09-29 04:08Z · Escalate attempt 2 · 12 turns · claude/claude-fable-5 · subscription CLI · 18 input, 184.5K cached, 6.9K output · $1.189 est · diagnosis complete
+- 2026-09-29 04:18Z · Build attempt 3 · 34 turns · claude/claude-fable-5 · subscription CLI · 58 input, 2.02M cached, 43.3K output · $6.132 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M src/github-sync.js
+ M test/github-sync.test.js
+ M test/server-routes.test.js
+ M test/ui/sync.test.js
