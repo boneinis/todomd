@@ -140,7 +140,7 @@ test('mergeMetadata defers a real conflict and keeps the local version', async (
   const result = await mergeMetadata({ path: viewer, name: 'viewer' });
   assert.equal(result.ok, true, result.error);
   assert.ok(result.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
-  assert.deepEqual(result.deferred, result.conflicts);
+  assert.deepEqual(result.deferred, []);
   // the local (bob) assignment survives — a conflict never silently loses local intent
   assert.match(fs.readFileSync(viewerCard, 'utf8'), /assignee: bob/);
 });
@@ -375,4 +375,66 @@ test('mergeMetadata conflicts when local diverged from the remote base on first 
   assert.equal(result.ok, true, result.error);
   assert.ok(result.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
   assert.match(fs.readFileSync(vcard, 'utf8'), /assignee: carol/, 'local edit must be preserved');
+});
+
+test('mergeMetadata defers paths for cards with in-flight runs', async () => {
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(wcard), { recursive: true });
+  fs.writeFileSync(wcard, '---\nid: task-0001\nassignee: alice\n---\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign to alice']);
+  await pushMetadata({ path: worker, name: 'worker' });
+
+  // task-0001 has a live run on this clone — its file must not be written
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' }, { deferCardIds: new Set(['task-0001']) });
+  assert.equal(result.ok, true, result.error);
+  assert.ok(result.deferred.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
+  assert.equal(fs.existsSync(path.join(viewer, '.todomd/tasks/task-0001-card.md')), false, 'deferred card file must not be written');
+
+  // once the run finishes the same remote change applies normally
+  const after = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(after.ok, true, after.error);
+  assert.match(fs.readFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'), 'utf8'), /assignee: alice/);
+});
+
+test('a clone that pulled remote metadata can still publish its own edits', async () => {
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  // worker publishes; viewer merges it in
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(wcard), { recursive: true });
+  fs.writeFileSync(wcard, '---\nid: task-0001\nassignee: alice\n---\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign to alice']);
+  await pushMetadata({ path: worker, name: 'worker' });
+  const merged = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(merged.ok, true, merged.error);
+
+  // viewer now makes its own board edit and publishes — a subtree-split
+  // publish would be a non-fast-forward sibling of the ref it just merged;
+  // parenting the publish on the remote tip keeps the branch linear
+  const vcard = path.join(viewer, '.todomd/tasks/task-0002-card.md');
+  fs.writeFileSync(vcard, '---\nid: task-0002\nassignee: bob\n---\n');
+  git(viewer, ['add', '.todomd/tasks/task-0002-card.md']);
+  git(viewer, ['commit', '-qm', 'assign task-0002 to bob']);
+  const pushed = await pushMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(pushed.ok, true, pushed.error);
+
+  // and the worker sees the viewer's edit on its next merge
+  const back = await mergeMetadata({ path: worker, name: 'worker' });
+  assert.equal(back.ok, true, back.error);
+  assert.ok(back.applied.some((f) => f.endsWith('tasks/task-0002-card.md')), JSON.stringify(back));
+  assert.match(fs.readFileSync(path.join(worker, '.todomd/tasks/task-0002-card.md'), 'utf8'), /assignee: bob/);
 });

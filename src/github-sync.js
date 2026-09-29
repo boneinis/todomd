@@ -62,27 +62,18 @@ async function pathEverExisted(repoPath, ref, relPath) {
   return (await pathHistory(repoPath, ref, relPath)).length > 0;
 }
 
-// The blob the remote's own history started from for this path. On a first
-// sync (no lastRef base) this is the only defensible "shared ancestor": a
-// local file holding exactly the remote's earliest published state is an
-// untouched inheritance and may fast-forward, while anything else — including
-// a local edit that coincidentally equals a LATER remote blob — counts as
-// divergence and must conflict. (Ancestry checks can't substitute: the remote
-// metadata branch is a subtree split and shares no commit history with the
-// clone.) pathHistory is newest-first, so the base is its last entry.
-async function remoteBaseBlob(repoPath, ref, relPath) {
-  const commits = await pathHistory(repoPath, ref, relPath);
-  return commits.length ? blobSha(repoPath, commits[commits.length - 1], relPath) : null;
-}
-
-// The blob at the newest remote commit in which the path still existed — the
-// remote's base state before a deletion.
-async function remoteLastBlob(repoPath, ref, relPath) {
-  for (const commit of await pathHistory(repoPath, ref, relPath)) {
-    const sha = await blobSha(repoPath, commit, relPath);
-    if (sha !== null) return sha;
-  }
-  return null;
+// Did THIS clone ever commit a change to the path? `rev-list HEAD --not
+// <remote>/HEAD -- <path>` counts only commits unreachable from the code
+// remote's default branch — inherited (cloned) commits are reachable, so an
+// untouched file reports not-diverged and may fast-forward to whatever the
+// remote holds now, while a locally-edited one is a genuine divergence and
+// must conflict. Blob equality can't prove this: remote history A→B→C still
+// contains B, but a local commit that independently made A→B diverged, and
+// the published branch's squashed snapshot history can't distinguish the two.
+// An unresolvable remote ref reports diverged — a conflict is the safe side.
+async function localPathDiverged(repoPath, remote, localRel) {
+  const res = await run(repoPath, ['rev-list', '--max-count=1', 'HEAD', '--not', `${remote}/HEAD`, '--', localRel]);
+  return !res.ok || res.stdout.trim() !== '';
 }
 
 // Local, per-checkout bookkeeping of the last remote ref successfully merged —
@@ -114,6 +105,15 @@ function writeSyncState(stateDir, state) {
 // Publish only the tracked .todomd tree to a dedicated remote branch. This
 // deliberately never pushes main, so a board update cannot publish unrelated
 // local source commits or start the project's normal CI.
+//
+// The publish commit is parented on the fetched remote tip, NOT synthesized
+// by `subtree split`: a split's history shares no ancestry with the remote
+// branch, so once another clone has published (or this clone has merged a
+// remote update via mergeMetadata) a plain push of a fresh split is a
+// non-fast-forward rejection forever — the clone can never publish again.
+// commit-tree with the remote tip as parent keeps the metadata branch linear;
+// a remote that moved since our fetch rejects the push, and the next
+// mergeMetadata + republish converges on the new tip.
 export async function pushMetadata(project) {
   const cfg = loadConfig(project.path).github_sync || {};
   if (cfg.enabled !== true) return { ok: true, skipped: 'disabled' };
@@ -121,9 +121,20 @@ export async function pushMetadata(project) {
   const branch = clean(cfg.branch, 'todomd-state');
   const tracked = await run(project.path, ['ls-files', '--error-unmatch', '.todomd/config.yml']);
   if (!tracked.ok) return { ok: false, error: 'shared board files are not tracked yet' };
-  const split = await run(project.path, ['subtree', 'split', '--prefix=.todomd']);
-  if (!split.ok || !/^[0-9a-f]{40}$/i.test(split.stdout)) return { ok: false, error: split.stderr || 'could not build metadata branch' };
-  const local = await run(project.path, ['branch', '-f', branch, split.stdout]);
+  const tree = await run(project.path, ['rev-parse', '--verify', '-q', 'HEAD:.todomd']);
+  if (!tree.ok) return { ok: false, error: tree.stderr || 'could not resolve the .todomd tree' };
+  // Best-effort fetch: an absent remote branch just means this is the first publish.
+  const fetched = await run(project.path, ['fetch', '--quiet', remote, branch]);
+  const remoteTip = fetched.ok ? (await run(project.path, ['rev-parse', '--verify', '-q', 'FETCH_HEAD'])).stdout || null : null;
+  if (remoteTip) {
+    const remoteTree = await run(project.path, ['rev-parse', '--verify', '-q', `${remoteTip}^{tree}`]);
+    if (remoteTree.ok && remoteTree.stdout === tree.stdout) return { ok: true, branch, skipped: 'up-to-date' };
+  }
+  const commitArgs = ['commit-tree', tree.stdout, '-m', 'chore(todomd): publish board metadata'];
+  if (remoteTip) commitArgs.push('-p', remoteTip);
+  const commit = await run(project.path, commitArgs);
+  if (!commit.ok || !/^[0-9a-f]{40}$/i.test(commit.stdout)) return { ok: false, error: commit.stderr || 'could not build metadata commit' };
+  const local = await run(project.path, ['branch', '-f', branch, commit.stdout]);
   if (!local.ok) return { ok: false, error: local.stderr || 'could not update metadata branch' };
   const pushed = await run(project.path, ['push', remote, `${branch}:${branch}`]);
   return pushed.ok ? { ok: true, branch } : { ok: false, error: pushed.stderr || 'push failed' };
@@ -157,7 +168,19 @@ export async function fetchMetadata(project) {
 // successfully applied — rather than a git-history merge. Restricted to the
 // .todomd prefix, so this can never touch source files or trigger normal
 // code CI (see .github/workflows/ci.yml paths-ignore).
-export async function mergeMetadata(project) {
+// opts.deferCardIds — Set of card ids whose task files must not be written.
+// A card with a live Plan/Build/CI/Verify run is being mutated by its agent;
+// replacing its file mid-run would corrupt state under the runner's feet.
+// Deferred paths are reported in `deferred` and, like conflicts, hold back
+// the stored ref advance so the next poll re-derives them.
+export async function mergeMetadata(project, { deferCardIds } = {}) {
+  const deferred = [];
+  const isDeferred = (localRel) => {
+    if (!deferCardIds?.size) return false;
+    const base = path.posix.basename(localRel, '.md');
+    for (const id of deferCardIds) if (base === id || base.startsWith(id + '-')) return true;
+    return false;
+  };
   const fetched = await fetchMetadata(project);
   if (!fetched.ok || !fetched.ref) return { ok: fetched.ok, applied: [], deferred: [], conflicts: [],
     ...(fetched.skipped ? { skipped: fetched.skipped } : {}), ...(fetched.ok ? {} : { error: fetched.error }) };
@@ -205,6 +228,7 @@ export async function mergeMetadata(project) {
       blobSha(project.path, 'HEAD', localRel),
     ]);
     if (remoteSha === localSha) continue; // nothing to reconcile
+    if (isDeferred(localRel)) { deferred.push(localRel); continue; } // in-flight run — never write mid-run
 
     if (lastRef) {
       // a real per-checkout base exists — classic path-level 3-way merge
@@ -228,19 +252,19 @@ export async function mergeMetadata(project) {
       else await applyRemote(rel, localRel, remoteSha);
     } else if (remoteSha === null) {
       // first sync; local has the file, remote doesn't.
-      if ((await remoteLastBlob(project.path, fetched.ref, rel)) === localSha) {
-        // local still holds exactly the content the remote deleted — untouched
-        // inheritance, so the deletion fast-forwards
+      if (!(await localPathDiverged(project.path, fetched.remote, localRel))) {
+        // local never touched it — remote's absence is authoritative and the
+        // deletion fast-forwards
         await applyRemote(rel, localRel, null);
       } else if (await pathEverExisted(project.path, fetched.ref, rel)) {
         // both sides moved around a deletion — keep local, report it
         conflicts.push(localRel);
       }
       // else: a local-only file the remote never knew about — keep, silently
-    } else if ((await remoteBaseBlob(project.path, fetched.ref, rel)) === localSha) {
+    } else if (!(await localPathDiverged(project.path, fetched.remote, localRel))) {
       // no last-synced-ref base (this clone's very first sync), but local
-      // still holds exactly the remote's earliest published state — untouched
-      // inheritance, so remote's value is a safe fast-forward
+      // never committed a change to the path — untouched inheritance, so
+      // remote's value is a safe fast-forward
       await applyRemote(rel, localRel, remoteSha);
     } else {
       // independently created or independently edited with no shared base —
@@ -261,7 +285,7 @@ export async function mergeMetadata(project) {
       // .todomd/runs are left alone).
       await run(project.path, ['restore', '--staged', '--worktree', '--source=HEAD', '--', '.todomd']);
       await run(project.path, ['clean', '-fd', '--', '.todomd']);
-      return { ok: false, error: commit.reason || 'could not commit merged board metadata', applied: [], deferred: conflicts, conflicts };
+      return { ok: false, error: commit.reason || 'could not commit merged board metadata', applied: [], deferred, conflicts };
     }
   }
 
@@ -272,13 +296,13 @@ export async function mergeMetadata(project) {
   // actually resolved. Re-running against the same ref is idempotent:
   // already-applied files short-circuit on remoteSha === localSha.
   let warning = null;
-  if (!conflicts.length) {
+  if (!conflicts.length && !deferred.length) {
     warning = stateDir
       ? writeSyncState(stateDir, { ...syncState, [stateKey]: fetched.ref })
       : 'could not resolve the repository git directory';
     if (warning) warning = `merged, but sync state was not saved (${warning}); the next sync re-checks from scratch`;
   }
-  return { ok: true, applied, deferred: conflicts, conflicts, ...(warning ? { warning } : {}) };
+  return { ok: true, applied, deferred, conflicts, ...(warning ? { warning } : {}) };
 }
 
 export function createMetadataScheduler({ onResult = () => {} } = {}) {

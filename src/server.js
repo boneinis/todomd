@@ -641,7 +641,12 @@ export function startServer({ port = 7337, lan = false, deliveryRemoteCredential
     // as the push side, so this never touches source files or code CI.
     if (url.pathname === '/api/sync' && req.method === 'POST') {
       if (!fullAccess) return json(res, 403, { error: 'full access required' });
-      const result = await withRepoLock(project.path, () => mergeMetadata(project));
+      // Cards mid-Plan/Build/CI/Verify are being mutated by their agents — a
+      // remote write would corrupt state under the runner, so defer them.
+      const inFlight = new Set(loadBoard(project.path).cards
+        .filter((c) => ['Plan', 'Build', 'CI', 'Verify', 'Escalate'].includes(c.status))
+        .map((c) => c.id));
+      const result = await withRepoLock(project.path, () => mergeMetadata(project, { deferCardIds: inFlight }));
       if (result.ok && result.applied?.length) {
         broadcast({ type: 'board-changed', project: project.name });
         boardAgent.changed(project.name);
