@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -23,7 +23,7 @@ ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 45.9258
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -142,3 +142,7 @@ ge for a non-default code branch, including a remote without a configured `<remo
 lus source files. Trusted CI confirms npm test passed at the exact clean candidate HEAD, but its existing non-default-branch test only covers branches containing nested .todomd and misses this reachable case.
 - unmet: Board-only metadata updates do not trigger normal code CI
 - 2026-09-29 05:44Z · CI attempt 3 · 202.2s · `npm test` passed
+- 2026-09-29 05:47Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 745.4K input, 638.6K cached, 8.8K output · $0.000 est · verdict: fail
+  - attempts_exhausted: Reachable remote-update data loss in src/github-sync.js:160-175. When synchronization defers a remote change for an in-f
+…
+eferred remote change. Preserve deferred markers until mergeMetadata reconciles them after the run ends; do not infer resolution merely from a changed local blob. Add a regression covering remote assignee change → active-card deferral → local run completion → scheduled push.
