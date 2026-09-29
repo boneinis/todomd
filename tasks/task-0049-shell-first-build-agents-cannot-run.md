@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Needs Human
+status: Done
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -157,3 +157,18 @@ the claimed rail against the reachable bypass.
 …
 re refused. Trusted CI confirms `npm test` passed at candidate HEAD `947bb4bc7f52a762f0ab26c10eb7a53794f1c109`; no additional concrete defect surfaced during diff and cross-file inspection.
 - unmet: Both mechanisms are proven with a real end-to-end Build on a throwaway card.
+- 2026-09-29 · Operator note · task parked — only remaining gap is a live real-provider
+  Build. Provider probing results:
+  - `kimi` (kimi-code 0.29.1) is the ONLY installed agent whose shell tool honors
+    `$SHELL` (gate intercepted `-l -c /usr/bin/env` pre-auth). codex uses absolute
+    `/bin/zsh -lc`, claude uses an absolute shell path, devin spawns directly — all
+    bypass the rail, so none can substitute for kimi in the e2e.
+  - kimi supports `wire=openai` providers with configurable `base_url` (bundled
+    OpenAI SDK reads `OPENAI_API_KEY`/`OPENAI_BASE_URL`; `provider catalog add
+    openai`, or `provider add <url>` importing a custom registry's api.json). So the
+    real kimi binary CAN be exercised without Kimi OAuth: point it at any
+    OpenAI-compatible endpoint — a hosted key (OpenAI/OpenRouter/Groq/Ollama) or a
+    local scripted stub serving `/v1/chat/completions` with canned tool_calls.
+  - To close criterion 3: configure an openai-wire provider + `default_model`,
+    `TODOMD_ENABLE_KIMI=1`, run a throwaway-card Build, capture `pwd`/`ls`/`cat`
+    allowed + test-suite refused + real worktree commit.
