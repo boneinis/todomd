@@ -438,3 +438,55 @@ test('a clone that pulled remote metadata can still publish its own edits', asyn
   assert.ok(back.applied.some((f) => f.endsWith('tasks/task-0002-card.md')), JSON.stringify(back));
   assert.match(fs.readFileSync(path.join(worker, '.todomd/tasks/task-0002-card.md'), 'utf8'), /assignee: bob/);
 });
+
+test('pushMetadata is suppressed while a merge has unresolved paths', async () => {
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  // worker publishes a card change
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(wcard), { recursive: true });
+  fs.writeFileSync(wcard, '---\nid: task-0001\nassignee: alice\n---\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign alice']);
+  await pushMetadata({ path: worker, name: 'worker' });
+
+  // viewer has a conflicting local edit — merge leaves it unresolved
+  const vcard = path.join(viewer, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(vcard), { recursive: true });
+  fs.writeFileSync(vcard, '---\nid: task-0001\nassignee: bob\n---\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'local assign bob']);
+  const merged = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.ok(merged.conflicts.length > 0, JSON.stringify(merged));
+
+  // publishing now would overwrite the remote version with the unresolved
+  // local copy — the guard must refuse
+  const suppressed = await pushMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(suppressed.ok, true);
+  assert.equal(suppressed.skipped, 'unresolved-sync');
+
+  // the human resolves by editing the card — the guard releases
+  fs.writeFileSync(vcard, '---\nid: task-0001\nassignee: alice\n---\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'resolve: accept alice']);
+  const released = await pushMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(released.ok, true, released.error);
+  assert.notEqual(released.skipped, 'unresolved-sync');
+});
+
+test('pushMetadata refuses to publish onto a code branch', async () => {
+  const repo = makeRepo();
+  const cfg = path.join(repo, '.todomd/config.yml');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true });
+  fs.writeFileSync(cfg, 'columns: [Queue, Done]\ngithub_sync:\n  enabled: true\n  remote: origin\n  branch: main\n');
+  git(repo, ['add', '.todomd/config.yml']);
+  git(repo, ['commit', '-qm', 'sync misconfigured to main']);
+  const result = await pushMetadata({ path: repo, name: 'repo' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /dedicated metadata branch/);
+});

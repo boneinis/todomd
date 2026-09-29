@@ -114,11 +114,46 @@ function writeSyncState(stateDir, state) {
 // commit-tree with the remote tip as parent keeps the metadata branch linear;
 // a remote that moved since our fetch rejects the push, and the next
 // mergeMetadata + republish converges on the new tip.
+// The metadata branch must be dedicated — never the code branch. With
+// commit-tree publishing, `branch: main` would parent a metadata-only tree
+// onto the remote's main tip as a legitimate fast-forward, deleting every
+// source file and firing normal CI. Refuse the remote's default branch, the
+// currently checked-out branch, and the obvious names outright.
+async function dedicatedBranchError(project, remote, branch) {
+  const forbidden = new Set(['main', 'master', 'HEAD']);
+  const headSym = await run(project.path, ['symbolic-ref', '-q', `refs/remotes/${remote}/HEAD`]);
+  if (headSym.ok && headSym.stdout) forbidden.add(headSym.stdout.replace(`refs/remotes/${remote}/`, ''));
+  const current = await run(project.path, ['branch', '--show-current']);
+  if (current.ok && current.stdout) forbidden.add(current.stdout);
+  return forbidden.has(branch)
+    ? `github_sync.branch '${branch}' is a code branch — board sync requires a dedicated metadata branch`
+    : null;
+}
+
 export async function pushMetadata(project) {
   const cfg = loadConfig(project.path).github_sync || {};
   if (cfg.enabled !== true) return { ok: true, skipped: 'disabled' };
   const remote = clean(cfg.remote, 'origin');
   const branch = clean(cfg.branch, 'todomd-state');
+  const branchError = await dedicatedBranchError(project, remote, branch);
+  if (branchError) return { ok: false, error: branchError };
+  // An unresolved merge must not publish: the applied half of a partial merge
+  // commits locally, and pushing the whole .todomd tree would overwrite the
+  // remote versions of still-conflicted/deferred paths with local copies.
+  // The marker records each unresolved path's local blob at merge time — a
+  // later edit (human resolution, or an in-flight run committing its result)
+  // changes the blob and releases the guard.
+  const pushStateDir = await syncStateDir(project.path);
+  const pushStateKey = `${remote}#${branch}`;
+  const unresolved = pushStateDir ? readSyncState(pushStateDir)[`${pushStateKey}:unresolved`] : null;
+  if (unresolved?.paths) {
+    let cleared = true;
+    for (const [localRel, sha] of Object.entries(unresolved.paths)) {
+      if ((await blobSha(project.path, 'HEAD', localRel)) === sha) { cleared = false; break; }
+    }
+    if (!cleared) return { ok: true, skipped: 'unresolved-sync', unresolved: Object.keys(unresolved.paths) };
+    writeSyncState(pushStateDir, (({ [`${pushStateKey}:unresolved`]: _drop, ...rest }) => rest)(readSyncState(pushStateDir)));
+  }
   const tracked = await run(project.path, ['ls-files', '--error-unmatch', '.todomd/config.yml']);
   if (!tracked.ok) return { ok: false, error: 'shared board files are not tracked yet' };
   const tree = await run(project.path, ['rev-parse', '--verify', '-q', 'HEAD:.todomd']);
@@ -147,6 +182,8 @@ export async function fetchMetadata(project) {
   if (cfg.enabled !== true) return { ok: true, skipped: 'disabled' };
   const remote = clean(cfg.remote, 'origin');
   const branch = clean(cfg.branch, 'todomd-state');
+  const branchError = await dedicatedBranchError(project, remote, branch);
+  if (branchError) return { ok: false, error: branchError, remote, branch };
   const fetched = await run(project.path, ['fetch', '--quiet', remote, branch]);
   if (!fetched.ok) {
     // Nothing has been published yet (a brand-new project, or the first
@@ -298,9 +335,17 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
   let warning = null;
   if (!conflicts.length && !deferred.length) {
     warning = stateDir
-      ? writeSyncState(stateDir, { ...syncState, [stateKey]: fetched.ref })
+      ? writeSyncState(stateDir, { ...syncState, [stateKey]: fetched.ref, [`${stateKey}:unresolved`]: undefined })
       : 'could not resolve the repository git directory';
     if (warning) warning = `merged, but sync state was not saved (${warning}); the next sync re-checks from scratch`;
+  } else if (stateDir) {
+    // Unresolved paths suppress publish until their local content changes —
+    // see pushMetadata's unresolved-sync guard.
+    const paths = {};
+    for (const localRel of [...conflicts, ...deferred]) {
+      paths[localRel] = await blobSha(project.path, 'HEAD', localRel);
+    }
+    writeSyncState(stateDir, { ...syncState, [`${stateKey}:unresolved`]: { ref: fetched.ref, paths } });
   }
   return { ok: true, applied, deferred, conflicts, ...(warning ? { warning } : {}) };
 }
