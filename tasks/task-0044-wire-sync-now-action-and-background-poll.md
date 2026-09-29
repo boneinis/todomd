@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 294d695182637612aa9921f929244b0e1ec90858, command: npm test, execution: local, passed_at: '2026-09-29T04:36:23.105Z', clean: true }
+ci_evidence: { head: 4cbc5e6a1b2975266961105a37a3a79b04d9d88e, command: npm test, execution: local, passed_at: '2026-09-29T04:46:06.589Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -111,3 +111,4 @@ ning A's banner. Capture the requested project/generation at invocation and disc
   - attempts_exhausted: Concrete transactional bug in src/github-sync.js:169-243. mergeMetadata writes or deletes remote files before commitPath
 …
 on wedged and the board changed despite the failed response. Make application transactional and restore both worktree and index on commit failure, or preflight all refusal conditions and preserve accurate result/state semantics. Add regression coverage for a rejected commit.
+- 2026-09-29 04:46Z · CI attempt 3 · 181.0s · `npm test` passed
