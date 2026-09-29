@@ -62,11 +62,27 @@ async function pathEverExisted(repoPath, ref, relPath) {
   return (await pathHistory(repoPath, ref, relPath)).length > 0;
 }
 
-async function historicalBaseMatches(repoPath, ref, relPath, localSha) {
+// The blob the remote's own history started from for this path. On a first
+// sync (no lastRef base) this is the only defensible "shared ancestor": a
+// local file holding exactly the remote's earliest published state is an
+// untouched inheritance and may fast-forward, while anything else — including
+// a local edit that coincidentally equals a LATER remote blob — counts as
+// divergence and must conflict. (Ancestry checks can't substitute: the remote
+// metadata branch is a subtree split and shares no commit history with the
+// clone.) pathHistory is newest-first, so the base is its last entry.
+async function remoteBaseBlob(repoPath, ref, relPath) {
+  const commits = await pathHistory(repoPath, ref, relPath);
+  return commits.length ? blobSha(repoPath, commits[commits.length - 1], relPath) : null;
+}
+
+// The blob at the newest remote commit in which the path still existed — the
+// remote's base state before a deletion.
+async function remoteLastBlob(repoPath, ref, relPath) {
   for (const commit of await pathHistory(repoPath, ref, relPath)) {
-    if ((await blobSha(repoPath, commit, relPath)) === localSha) return true;
+    const sha = await blobSha(repoPath, commit, relPath);
+    if (sha !== null) return sha;
   }
-  return false;
+  return null;
 }
 
 // Local, per-checkout bookkeeping of the last remote ref successfully merged —
@@ -199,10 +215,6 @@ export async function mergeMetadata(project) {
       } else if (remoteSha === baseSha) {
         // remote hasn't changed since the last sync — the local edit stands
         continue;
-      } else if (localSha !== null && await historicalBaseMatches(project.path, fetched.ref, rel, localSha)) {
-        // local's current content is a real earlier point in the remote
-        // branch's own history — remote's value is a safe fast-forward
-        await applyRemote(rel, localRel, remoteSha);
       } else {
         // both sides changed — never silently discard local intent
         conflicts.push(localRel);
@@ -216,20 +228,19 @@ export async function mergeMetadata(project) {
       else await applyRemote(rel, localRel, remoteSha);
     } else if (remoteSha === null) {
       // first sync; local has the file, remote doesn't.
-      if (await historicalBaseMatches(project.path, fetched.ref, rel, localSha)) {
-        // remote once held exactly local's current content and later deleted
-        // it — local hasn't diverged since, so the deletion fast-forwards
+      if ((await remoteLastBlob(project.path, fetched.ref, rel)) === localSha) {
+        // local still holds exactly the content the remote deleted — untouched
+        // inheritance, so the deletion fast-forwards
         await applyRemote(rel, localRel, null);
       } else if (await pathEverExisted(project.path, fetched.ref, rel)) {
         // both sides moved around a deletion — keep local, report it
         conflicts.push(localRel);
       }
       // else: a local-only file the remote never knew about — keep, silently
-    } else if (await historicalBaseMatches(project.path, fetched.ref, rel, localSha)) {
-      // no last-synced-ref base (this clone's very first sync), but local's
-      // current content is itself a real earlier point in the remote
-      // branch's own history — local hasn't diverged, so remote's current
-      // value is still a safe fast-forward rather than a conflict
+    } else if ((await remoteBaseBlob(project.path, fetched.ref, rel)) === localSha) {
+      // no last-synced-ref base (this clone's very first sync), but local
+      // still holds exactly the remote's earliest published state — untouched
+      // inheritance, so remote's value is a safe fast-forward
       await applyRemote(rel, localRel, remoteSha);
     } else {
       // independently created or independently edited with no shared base —

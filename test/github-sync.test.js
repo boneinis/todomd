@@ -345,3 +345,34 @@ test('mergeMetadata restores the worktree when the merge commit is refused', asy
   assert.ok(retry.applied.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(retry));
   assert.match(fs.readFileSync(path.join(viewer, '.todomd/tasks/task-0001-card.md'), 'utf8'), /assignee: alice/);
 });
+
+test('mergeMetadata conflicts when local diverged from the remote base on first sync', async () => {
+  const origin = makeRepo();
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  // worker creates the card, then edits it — remote history is A -> B
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(wcard), { recursive: true });
+  fs.writeFileSync(wcard, '---\nid: task-0001\nassignee: alice\n---\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign to alice']);
+
+  // viewer independently creates the same card with different content — it
+  // never held the remote's base state, so the remote edit must NOT
+  // fast-forward over the local version
+  const vcard = path.join(viewer, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(vcard), { recursive: true });
+  fs.writeFileSync(vcard, '---\nid: task-0001\nassignee: carol\n---\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'independently assign to carol']);
+
+  await pushMetadata({ path: worker, name: 'worker' });
+  const result = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(result.ok, true, result.error);
+  assert.ok(result.conflicts.some((f) => f.endsWith('tasks/task-0001-card.md')), JSON.stringify(result));
+  assert.match(fs.readFileSync(vcard, 'utf8'), /assignee: carol/, 'local edit must be preserved');
+});
