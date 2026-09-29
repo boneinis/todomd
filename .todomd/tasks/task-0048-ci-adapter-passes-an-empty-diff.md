@@ -6,6 +6,7 @@ type: bug
 priority: high
 labels: [ci]
 dependencies: []
+sprint: sprint-1
 created_date: 2026-09-07
 source: agent
 assignee:

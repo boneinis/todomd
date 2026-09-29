@@ -6,6 +6,7 @@ type: improvement
 priority: high
 labels: [sync, github, team]
 dependencies: []
+sprint: sprint-1
 created_date: 2026-07-31
 source: ui
 assignee:
