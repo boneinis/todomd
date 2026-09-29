@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
