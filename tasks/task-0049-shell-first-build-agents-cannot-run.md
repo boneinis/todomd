@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Verify
+status: Needs Human
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -20,7 +20,7 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 19056056-63c9-4a75-897f-aac21f8a66f0
 cost_usd: 48.6665
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -140,3 +140,10 @@ ok 1077 - invalidateProject drops every pending proposal for a removed repositor
 # duration_ms 209916.066834
 - 2026-09-29 13:12Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-09-29 13:22Z · CI attempt 3 · 217.1s · `npm test` passed
+- 2026-09-29 13:23Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 43.9K input, 0 cached, 4.1K output · $0.000 est · preliminary review complete; 1 focused check queued
+- 2026-09-29 13:34Z · Verify attempt 3 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 557.5K input, 476.3K cached, 8.2K output · $0.000 est · verdict: fail (unmet: 2)
+  - attempts_exhausted: 1. Security boundary bypass: `safeShellEnv()` retains inherited PATH, while the gate uses `#!/usr/bin/env node` and laun
+…
+the claimed rail against the reachable bypass.
+- unmet: A permission model permits ordinary read-only shell work without allowing test suites or database resets, and the named mechanism holds.
+- unmet: Both mechanisms are proven with an end-to-end Build on a throwaway card.
