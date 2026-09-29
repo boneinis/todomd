@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -22,7 +22,7 @@ ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 22.1423
+cost_usd: 31.9477
 needs_human_reason:
 recovery_stage:
 ---
@@ -88,3 +88,4 @@ M public/app.js
 - 2026-09-29 03:41Z · CI attempt 1 · 295.9s · `npm test` passed
 - 2026-09-29 03:42Z · Verify attempt 1 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 32.4K input, 0 cached, 2.9K output · $0.000 est · verdict: fail (unmet: 1)
   - retrying with findings (attempt 2/3)
+- 2026-09-29 04:00Z · Build attempt 2 · 42 turns · claude/claude-sonnet-5 · subscription CLI · 84 input, 11.68M cached, 30.8K output · $9.805 est · ok
