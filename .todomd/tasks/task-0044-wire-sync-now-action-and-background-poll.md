@@ -1,7 +1,7 @@
 ---
 id: task-0044
 title: Wire Sync now action and background polling into the board UI
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 2d7bc16d-a18b-4bde-94a5-ade06de0a851
 worktree: todomd/task-0044
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: e8137bdd829a8d1fff3b5b166f8eda50c36cc87e, command: npm test, execution: local, passed_at: '2026-09-29T06:30:25.534Z', clean: true }
+ci_evidence: { head: fd6a366f9c2e7bd1d040110b136272e7203fa72a, command: npm test, execution: local, passed_at: '2026-09-29T06:42:51.333Z', clean: true }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -185,3 +185,4 @@ ok 1060 - invalidateProject drops every pending proposal for a removed repositor
   - attempts_exhausted: 1. `src/server.js:652-656` passes flattened `loadBoard()` cards to `pipeline.preservedWorktree()`, but `src/pipeline.js:
 …
 ng the desired deletion still leaves the SHA null, so every sync re-reports the conflict and every push remains blocked indefinitely. Track an explicit resolution/commit transition rather than relying only on blob-SHA changes, and test local-delete/remote-present resolution.
+- 2026-09-29 06:42Z · CI attempt 3 · 175.3s · `npm test` passed
