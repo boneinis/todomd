@@ -1,7 +1,7 @@
 ---
 id: task-0049
 title: Shell-first Build agents cannot run under the current permission model
-status: Verify
+status: Build
 type: improvement
 priority: medium
 labels: [runner, permissions, sandbox]
@@ -13,13 +13,13 @@ assignee:
 agent: claude
 base_branch: main
 worktree: todomd/task-0049
-ci_evidence: { head: 1abf3fa2a29db51ef14a59d210d93fc18200de1d, command: npm test, execution: local, passed_at: '2026-09-29T07:30:23.923Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 73d4ff5e-f123-483b-ba6c-b885b671a939
-cost_usd: 3.6256
+cost_usd: 5.7294
 ---
 
 ## Description
@@ -68,3 +68,6 @@ plus evidence that a disallowed command (running a test suite) is still refused.
   - retrying with findings (attempt 2/3)
 - 2026-09-29 07:27Z · Build attempt 2 · 28 turns · claude/claude-sonnet-5 · subscription CLI · 46 input, 3.20M cached, 44.6K output · $2.470 est · ok
 - 2026-09-29 07:30Z · CI attempt 2 · 171.7s · `npm test` passed
+- 2026-09-29 07:32Z · Verify attempt 2 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 199.5K input, 163.3K cached, 5.3K output · $0.000 est · verdict: fail (unmet: 2)
+  - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
+- 2026-09-29 07:34Z · Escalate attempt 2 · 17 turns · claude/claude-fable-5 · subscription CLI · 30 input, 515.1K cached, 10.5K output · $2.104 est · diagnosis complete
