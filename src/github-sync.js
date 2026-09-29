@@ -168,7 +168,13 @@ export async function pushMetadata(project) {
   const unresolved = pushStateDir ? readSyncState(pushStateDir)[`${pushStateKey}:unresolved`] : null;
   if (unresolved?.paths) {
     let cleared = true;
-    for (const [localRel, sha] of Object.entries(unresolved.paths)) {
+    for (const [localRel, entry] of Object.entries(unresolved.paths)) {
+      const sha = typeof entry === 'string' ? entry : entry.sha;
+      const kind = typeof entry === 'string' ? 'conflict' : entry.kind;
+      // deferred paths stay blocked until mergeMetadata reconciles them —
+      // a changed blob here is the in-flight run committing, not a
+      // resolution, and publishing it would discard the remote update
+      if (kind === 'deferred') { cleared = false; break; }
       if ((await blobSha(project.path, 'HEAD', localRel)) === sha) { cleared = false; break; }
     }
     if (!cleared) return { ok: true, skipped: 'unresolved-sync', unresolved: Object.keys(unresolved.paths) };
@@ -364,12 +370,14 @@ export async function mergeMetadata(project, { deferCardIds } = {}) {
       : 'could not resolve the repository git directory';
     if (warning) warning = `merged, but sync state was not saved (${warning}); the next sync re-checks from scratch`;
   } else if (stateDir) {
-    // Unresolved paths suppress publish until their local content changes —
-    // see pushMetadata's unresolved-sync guard.
+    // Unresolved paths suppress publish — see pushMetadata's guard. Conflicts
+    // release when the local blob changes (a human edit IS the resolution);
+    // deferred paths can only be reconciled by a later merge once the card's
+    // run ends — a blob change there is just the in-flight run committing,
+    // and publishing it would overwrite the unseen remote update.
     const paths = {};
-    for (const localRel of [...conflicts, ...deferred]) {
-      paths[localRel] = await blobSha(project.path, 'HEAD', localRel);
-    }
+    for (const localRel of conflicts) paths[localRel] = { sha: await blobSha(project.path, 'HEAD', localRel), kind: 'conflict' };
+    for (const localRel of deferred) paths[localRel] = { sha: await blobSha(project.path, 'HEAD', localRel), kind: 'deferred' };
     writeSyncState(stateDir, { ...syncState, [`${stateKey}:unresolved`]: { ref: fetched.ref, paths } });
   }
   return { ok: true, applied, deferred, conflicts, ...(warning ? { warning } : {}) };

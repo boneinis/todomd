@@ -549,3 +549,48 @@ test('pushMetadata refuses a foreign branch even with a metadata-looking root', 
   const tip = git(origin, ['rev-parse', 'docs-site']);
   assert.match(git(origin, ['ls-tree', '--name-only', tip]), /src/);
 });
+
+test('a completed in-flight commit does not release a deferred-path publish guard', async () => {
+  const origin = makeRepo();
+  // card pre-exists on both sides
+  const originCard = path.join(origin, '.todomd/tasks/task-0001-card.md');
+  fs.mkdirSync(path.dirname(originCard), { recursive: true });
+  fs.writeFileSync(originCard, '---\nid: task-0001\nstatus: Build\nassignee:\n---\n\nbody\n');
+  git(origin, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(origin, ['commit', '-qm', 'add task-0001']);
+
+  const dir = tmp('sync');
+  const worker = clone(origin, path.join(dir, 'worker'));
+  const viewer = clone(origin, path.join(dir, 'viewer'));
+  enableSync(worker, 'origin');
+  enableSync(viewer, 'origin');
+
+  // remote side changes the assignee and publishes
+  const wcard = path.join(worker, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(wcard, '---\nid: task-0001\nstatus: Build\nassignee: alice\n---\n\nbody\n');
+  git(worker, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(worker, ['commit', '-qm', 'assign alice']);
+  await pushMetadata({ path: worker, name: 'worker' });
+
+  // viewer merges while task-0001 is in flight — the remote change defers
+  const merged = await mergeMetadata({ path: viewer, name: 'viewer' }, { deferCardIds: new Set(['task-0001']) });
+  assert.equal(merged.ok, true, merged.error);
+  assert.deepEqual(merged.deferred, ['.todomd/tasks/task-0001-card.md'], JSON.stringify(merged));
+
+  // the run completes and commits its own change — the blob differs now, but
+  // this is NOT a resolution: the remote assignee update was never seen
+  const vcard = path.join(viewer, '.todomd/tasks/task-0001-card.md');
+  fs.writeFileSync(vcard, '---\nid: task-0001\nstatus: Done\nassignee:\n---\n\nbody\n');
+  git(viewer, ['add', '.todomd/tasks/task-0001-card.md']);
+  git(viewer, ['commit', '-qm', 'run completes']);
+
+  const suppressed = await pushMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(suppressed.skipped, 'unresolved-sync',
+    'a completed run committing to the card must not publish over the unseen remote update');
+
+  // the next merge (card no longer in flight) reconciles — both sides moved,
+  // so it surfaces as a conflict a human can resolve
+  const merged2 = await mergeMetadata({ path: viewer, name: 'viewer' });
+  assert.equal(merged2.ok, true, merged2.error);
+  assert.ok(merged2.conflicts.includes('.todomd/tasks/task-0001-card.md'), JSON.stringify(merged2));
+});
