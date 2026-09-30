@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Needs Human
+status: Build
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -17,13 +17,13 @@ verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 triaged: 2026-09-29
 sprint: sprint-2
 cost_usd: 5.0606
-needs_human_reason: uncommitted_build
+needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
-recovery_stage: Build
+recovery_stage:
 model: gpt-5.6-sol
 ---
 
@@ -79,3 +79,4 @@ M public/devflow.js
  M test/pipeline.test.js
  M test/server-routes.test.js
  M test/ui/ui-smoke.test.js
+- 2026-09-30 15:02Z · Resume Build · continuing attempt 2 after uncommitted_build in preserved worktree todomd/task-0057
