@@ -14,6 +14,8 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
+triaged: 2026-09-30
+cost_usd: 0
 ---
 
 ## Description
@@ -30,6 +32,14 @@ The codex stream emits agent_message items as {"type":"item.completed","item":{"
 - [ ] Regression test covers: codex Build turn ending with an agent_message and no schema produces a non-empty result
 - [ ] Documented behavior change if docs cover the runner contract
 
+## Triage
+
+- **Decision:** Actionable
+- **Rationale:** The root cause in `src/runner.js` is clearly identified and the acceptance criteria provide a well-defined fix with regression testing.
+- **Risks or questions:** none
+- **Next step:** Plan
+
 ## Implementation Plan
 
 ## Run Log
+- 2026-09-30 15:40Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
