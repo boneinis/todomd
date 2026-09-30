@@ -9,9 +9,9 @@ dependencies: []
 created_date: 2026-09-29
 source: ui
 assignee:
-agent:
+agent: codex
 build_profile: standard
-session_id: 5d4be3d6-6fb3-444f-8010-b8900a017469
+session_id:
 worktree: todomd/task-0057
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 triaged: 2026-09-29
@@ -24,6 +24,7 @@ base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 recovery_stage: Build
+model: gpt-5.6-sol
 ---
 
 ## Description
