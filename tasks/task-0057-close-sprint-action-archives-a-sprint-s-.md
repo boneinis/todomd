@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Needs Human
+status: Build
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -17,13 +17,13 @@ verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 triaged: 2026-09-29
 sprint: sprint-2
 cost_usd: 5.0606
-needs_human_reason: blocked_build
+needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
-recovery_stage: Build
+recovery_stage:
 model: gpt-5.6-sol
 ---
 
@@ -85,3 +85,4 @@ M public/devflow.js
 - 2026-09-30 15:26Z · Resume Build · continuing attempt 2 after blocked_build in preserved worktree todomd/task-0057
 - 2026-09-30 15:26Z · Build attempt 2 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 6.04M input, 5.85M cached, 22.9K output · $0.000 est · blocked: no response and no worktree change
   - blocked_build: Build reported success but produced no response and left the worktree unchanged — nothing was built. Check the stage run log for a refused tool permission, then Resume Build.
+- 2026-09-30 15:31Z · Resume Build · continuing attempt 2 after blocked_build in preserved worktree todomd/task-0057
