@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Needs Human
+status: Planned
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -12,18 +12,18 @@ assignee:
 agent: codex
 build_profile: standard
 session_id: 01a0f289-1ba2-7fb1-bfcf-2c046205ab03
-worktree: todomd/task-0057
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+worktree:
+verification: { attempts: 0, max_attempts: 3, last_verdict:  }
 triaged: 2026-09-29
 sprint: sprint-2
 cost_usd: 5.0606
-needs_human_reason: blocked_build
+needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
-base_branch: main
+base_branch:
 ci_evidence: {  }
 ci_remote: {  }
-recovery_stage: Build
+recovery_stage:
 model: gpt-6.1-sol
 ---
 
