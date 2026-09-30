@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Planned
+status: Queue
 type: improvement
 priority: medium
 labels: [devflow, archive]
