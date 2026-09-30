@@ -24,7 +24,7 @@ base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 recovery_stage:
-model: gpt-5.6-sol
+model: gpt-6.1-sol
 ---
 
 ## Description
