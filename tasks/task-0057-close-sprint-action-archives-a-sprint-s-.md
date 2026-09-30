@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Build
+status: Needs Human
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -11,19 +11,19 @@ source: ui
 assignee:
 agent: codex
 build_profile: standard
-session_id:
+session_id: 01a0f289-1ba2-7fb1-bfcf-2c046205ab03
 worktree: todomd/task-0057
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 triaged: 2026-09-29
 sprint: sprint-2
 cost_usd: 5.0606
-needs_human_reason:
+needs_human_reason: uncommitted_build
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
-recovery_stage:
+recovery_stage: Build
 model: gpt-5.6-sol
 ---
 
@@ -71,3 +71,11 @@ Summary: wrote a single cohesive implementation plan.
 - 2026-09-29 18:11Z · Build attempt 2 · 1 turns · claude/claude-sonnet-5 · subscription CLI · usage unavailable · $2.530 est · failed: agent
   - agent_error: You've hit your weekly limit · resets Sep 30 at 6pm (America/New_York)
 - 2026-09-30 13:37Z · Resume Build · continuing attempt 2 after agent_error in preserved worktree todomd/task-0057
+- 2026-09-30 13:57Z · Build attempt 2 · 1 turns · codex/gpt-5.6-sol · subscription CLI · 4.48M input, 4.34M cached, 20.6K output · $0.000 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M public/devflow.js
+ M src/pipeline.js
+ M test/devflow.test.js
+ M test/pipeline.test.js
+ M test/server-routes.test.js
+ M test/ui/ui-smoke.test.js
