@@ -1,7 +1,7 @@
 ---
 id: task-0057
 title: Close sprint action archives a sprint s Done cards from Dev Flow
-status: Build
+status: CI
 type: improvement
 priority: medium
 labels: [devflow, archive]
@@ -11,7 +11,7 @@ source: ui
 assignee:
 agent: codex
 build_profile: standard
-session_id: 01a0f289-1ba2-7fb1-bfcf-2c046205ab03
+session_id: 01a0f315-d041-7e50-8a93-4ac7043b8530
 worktree: todomd/task-0057
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-09-29
@@ -88,3 +88,4 @@ M public/devflow.js
 - 2026-09-30 15:31Z · Resume Build · continuing attempt 2 after blocked_build in preserved worktree todomd/task-0057
 - 2026-09-30 15:40Z · Build attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 6.64M input, 6.25M cached, 23.5K output · $0.000 est · blocked: no response and no worktree change
   - blocked_build: Build reported success but produced no response and left the worktree unchanged — nothing was built. Check the stage run log for a refused tool permission, then Resume Build.
+- 2026-09-30 16:16Z · Build attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 743.4K input, 690.0K cached, 3.9K output · $0.000 est · ok
