@@ -53,7 +53,7 @@ build_continuation:
 # supplements CLI discovery, which only exposes generic aliases for some models.
 models:
   claude: [fable, claude-fable-5, opus, claude-opus-5, sonnet, haiku]
-  codex: [gpt-5.6-sol, gpt-5-codex, gpt-5, o3]
+  codex: [gpt-6.1-sol, gpt-5-codex, gpt-5, o3]
   gemini: [gemini-3.7-flash-high, gemini-3.1-pro-high]
 
 # Multi-developer coordination: maintain a committed .todomd/ACTIVE.md listing
@@ -85,7 +85,7 @@ stages:
   Plan:
     command: todomd-plan
     agent: codex
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     effort: high
     max_turns: 20
     allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
@@ -111,7 +111,7 @@ stages:
   Verify:
     command: todomd-verify
     agent: codex
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     effort: high
     max_turns: 40
     allowed_tools: [Read, Glob, Grep, "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(node --test:*)", "Bash(git diff:*)", "Bash(git log:*)"]
