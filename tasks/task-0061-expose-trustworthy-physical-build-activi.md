@@ -1,7 +1,7 @@
 ---
 id: task-0061
 title: Expose trustworthy physical build activity
-status: CI
+status: Verify
 type: bug
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ session_id: 2b477399-5385-43f9-a3b7-7296342d2e23
 worktree: todomd/task-0061
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 6ed47391760d48e9ea681e307c2ffc27c26736b0, command: npm test, execution: local, passed_at: '2026-10-01T05:43:15.220Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 26.1872
@@ -53,3 +53,5 @@ Expose trustworthy physical build activity
 - 2026-10-01 04:57Z · CI attempt 2 · 278.0s · `npm test` failed
   - retrying after a failed CI gate (attempt 3/3)
 - 2026-10-01 05:22Z · Build attempt 3 · 69 turns · claude/claude-sonnet-5 · subscription CLI · 138 input, 19.65M cached, 42.4K output · $11.455 est · ok
+- 2026-10-01 05:24Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 05:43Z · CI attempt 3 · 223.1s · `npm test` passed
