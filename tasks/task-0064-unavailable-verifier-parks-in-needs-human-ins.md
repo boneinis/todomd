@@ -1,7 +1,7 @@
 ---
 id: task-0064
 title: Unavailable verifier parks cards in Needs Human — should auto-retry with backoff
-status: Build
+status: CI
 type: bug
 priority: high
 labels: [pipeline, verify]
@@ -53,3 +53,4 @@ When the Verify provider CLI is unavailable or errors transiently, cards park in
 - 2026-10-01 17:45Z · CI attempt 1 · 221.5s · `npm test` passed
 - 2026-10-01 17:51Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 27.0K input, 0 cached, 1.3K output · $0.000 est · verdict: fail (unmet: 1)
   - retrying with findings (attempt 2/3)
+- 2026-10-01 18:36Z · Build attempt 2 · 70 turns · devin/swe-2-high · subscription CLI · 5.36M input, 5.13M cached, 35.1K output · $0.000 est · ok
