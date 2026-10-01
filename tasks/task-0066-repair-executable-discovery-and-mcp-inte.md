@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -59,3 +59,4 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 - 2026-10-01 22:27Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 154.2K input, 101.1K cached, 1.7K output · $0.000 est · verdict: fail (unmet: 3)
   - retrying with findings (attempt 2/3)
 - Base refreshed before Build admission.
+- 2026-10-01 22:52Z · Build attempt 2 · 90 turns · devin/swe-2-high · subscription CLI · 9.11M input, 8.63M cached, 52.6K output · $0.000 est · ok
