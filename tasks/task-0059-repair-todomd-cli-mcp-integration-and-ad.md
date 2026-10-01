@@ -1,7 +1,7 @@
 ---
 id: task-0059
 title: Repair todomd CLI/MCP integration and add browser-verification gates for 4Upfit BOM-PO-nesting
-status: Needs Human
+status: Plan
 type: feature
 priority: high
 labels: [mcp, verification, providers, 4upfit]
@@ -17,9 +17,9 @@ worktree: todomd/task-0059
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-10-01
 cost_usd: 0.5905
-needs_human_reason: nothing_to_test
+needs_human_reason:
 build_limits: { max_slices: 6, budget_minutes: 120 }
-epic_build_mode: teamwork
+epic_build_mode:
 complexity: high
 base_branch: main
 ci_evidence: {  }
