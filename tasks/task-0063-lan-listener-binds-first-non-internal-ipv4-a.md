@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: Planned
+status: Queue
 type: bug
 priority: medium
 labels: [server, lan]
