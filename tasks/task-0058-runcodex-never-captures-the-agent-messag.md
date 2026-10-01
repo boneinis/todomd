@@ -1,7 +1,7 @@
 ---
 id: task-0058
 title: runCodex never captures the agent message unless a jsonSchema is set — codex Builds report empty finalMessage
-status: Planned
+status: Queue
 type: bug
 priority: high
 labels: [runner, codex]
