@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ session_id: shared-spandex
 worktree: todomd/task-0066
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 5cc1b60100554eca5c4b36497b8f4bb653414966, command: npm test, execution: local, passed_at: '2026-10-01T23:26:48.993Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0
@@ -60,3 +60,6 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
   - retrying with findings (attempt 2/3)
 - Base refreshed before Build admission.
 - 2026-10-01 22:52Z · Build attempt 2 · 90 turns · devin/swe-2-high · subscription CLI · 9.11M input, 8.63M cached, 52.6K output · $0.000 est · ok
+- 2026-10-01 23:04Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 23:15Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 23:26Z · CI attempt 2 · 192.9s · `npm test` passed
