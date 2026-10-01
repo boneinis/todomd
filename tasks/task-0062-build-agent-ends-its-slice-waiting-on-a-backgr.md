@@ -1,7 +1,7 @@
 ---
 id: task-0062
 title: Build agent ends its slice waiting on its own background npm test — every build parks uncommitted_build
-status: Needs Human
+status: Build
 type: bug
 priority: high
 labels: [runner, pipeline]
@@ -12,7 +12,7 @@ assignee:
 agent:
 triaged: 2026-10-01
 cost_usd: 0
-needs_human_reason: agent_error
+needs_human_reason:
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
@@ -21,8 +21,8 @@ worktree: todomd/task-0062
 ci_evidence: {  }
 ci_remote: {  }
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
-session_id: 94f7064a-10e0-40d5-b1c4-e28dfef66216
-recovery_stage: Build
+session_id:
+recovery_stage:
 ---
 
 ## Description
@@ -54,3 +54,4 @@ Three consecutive Builds (task-0058, task-0055, task-0060 — claude/sonnet) eac
 - 2026-10-01 15:19Z · Resume Build · continuing attempt 1 after agent_error in preserved worktree todomd/task-0062
 - 2026-10-01 15:53Z · Build attempt 1 · 0 turns · devin/swe-2-high · subscription CLI · usage unavailable · $0.000 est · failed: agent
   - agent_error: error
+- 2026-10-01 16:34Z · Resume Build · continuing attempt 1 after agent_error in preserved worktree todomd/task-0062
