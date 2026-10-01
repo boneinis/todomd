@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: Plan
+status: Planned
 type: bug
 priority: medium
 labels: []
@@ -17,6 +17,8 @@ verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_limits: {  }
+complexity: medium
 ---
 
 ## Description
@@ -64,3 +66,4 @@ board-level check that a completed run's recorded metrics are non-zero.
 
 - 2026-10-01 00:59Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 01:05Z · Review note (devin) · Partially stale: num_turns is recorded now (today's triage shows '1 turns'), but usage is still dropped — the agy result event carries a full usage object yet runGemini's finish() never reads body.usage, so the run line still reports 'usage unavailable'. Remaining work is the usage half only.
+- 2026-10-01 01:18Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 252.4K input, 206.7K cached, 3.1K output · $0.000 est · ok
