@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: Build
+status: Needs Human
 type: bug
 priority: medium
 labels: []
@@ -11,17 +11,18 @@ source: ui
 assignee:
 agent:
 build_profile: standard
-session_id:
+session_id: a025e950-c01a-4e1f-b7e3-27e2e7749a73
 worktree: todomd/task-0055
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-10-01
-cost_usd: 0
-needs_human_reason:
+cost_usd: 1.3394
+needs_human_reason: uncommitted_build
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
+recovery_stage: Build
 ---
 
 ## Description
@@ -70,3 +71,9 @@ board-level check that a completed run's recorded metrics are non-zero.
 - 2026-10-01 00:59Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 01:05Z · Review note (devin) · Partially stale: num_turns is recorded now (today's triage shows '1 turns'), but usage is still dropped — the agy result event carries a full usage object yet runGemini's finish() never reads body.usage, so the run line still reports 'usage unavailable'. Remaining work is the usage half only.
 - 2026-10-01 01:18Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 252.4K input, 206.7K cached, 3.1K output · $0.000 est · ok
+- 2026-10-01 02:09Z · Build attempt 1 · 55 turns · claude/claude-sonnet-5 · subscription CLI · 104 input, 3.95M cached, 24.8K output · $1.339 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M src/runner.js
+ M test/fixtures/fake-gemini.js
+ M test/pipeline.test.js
+ M test/runner.test.js
