@@ -36,3 +36,4 @@ Three consecutive Builds (task-0058, task-0055, task-0060 — claude/sonnet) eac
 
 ## Run Log
 - 2026-10-01 03:02Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 23:20Z · Root cause (devin) · The resume path at src/pipeline.js:3596 builds `buildOpts.prompt` as a bare "Continue the approved task…" template — it never calls stagePrompt(), so .todomd/local/<command>.md conventions and the command body never reach resumed builds. Reproduced 5×: task-0058 ×3, task-0055 ×2, task-0060 ×2. Orphan `node --test` children outlive dead sessions and inflate load.
