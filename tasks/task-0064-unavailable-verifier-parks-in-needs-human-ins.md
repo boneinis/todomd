@@ -1,7 +1,7 @@
 ---
 id: task-0064
 title: Unavailable verifier parks cards in Needs Human — should auto-retry with backoff
-status: CI
+status: Verify
 type: bug
 priority: high
 labels: [pipeline, verify]
@@ -18,7 +18,7 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: high
 base_branch: main
 worktree: todomd/task-0064
-ci_evidence: {  }
+ci_evidence: { head: efbefa0663c114ad3e9ba68c0d4f1ef97c35067d, command: npm test, execution: local, passed_at: '2026-10-01T22:00:32.625Z', clean: true }
 ci_remote: {  }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: 85190555-31d8-4bb6-a498-ab1ef5643abe
@@ -61,3 +61,6 @@ When the Verify provider CLI is unavailable or errors transiently, cards park in
 - 2026-10-01 19:46Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 14 input, 168.3K cached, 3.5K output · $0.389 est · diagnosis complete
 - Base refreshed before Build admission.
 - 2026-10-01 20:31Z · Build attempt 3 · 41 turns · claude/claude-opus-5-5 · subscription CLI · 64 input, 1.66M cached, 18.8K output · $1.144 est · ok (escalation repair)
+- 2026-10-01 20:58Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 21:27Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 22:00Z · CI attempt 3 · 176.8s · `npm test` passed
