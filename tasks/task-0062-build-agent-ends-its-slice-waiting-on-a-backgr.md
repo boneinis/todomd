@@ -1,7 +1,7 @@
 ---
 id: task-0062
 title: Build agent ends its slice waiting on its own background npm test — every build parks uncommitted_build
-status: Planned
+status: Queue
 type: bug
 priority: high
 labels: [runner, pipeline]
