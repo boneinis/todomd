@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Verify
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -15,9 +15,9 @@ triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
 session_id: shared-spandex
 worktree: todomd/task-0066
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 55a74d4e3c992032f99dcdccc3e5f52778506fff, command: npm test, execution: local, passed_at: '2026-10-01T22:15:20.679Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0
@@ -55,3 +55,7 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 - 2026-10-01 21:12Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 21:50Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 22:15Z · CI attempt 1 · 224.8s · `npm test` passed
+- 2026-10-01 22:16Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 25.5K input, 0 cached, 2.0K output · $0.000 est · preliminary review complete; 2 focused checks queued
+- 2026-10-01 22:27Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 154.2K input, 101.1K cached, 1.7K output · $0.000 est · verdict: fail (unmet: 3)
+  - retrying with findings (attempt 2/3)
+- Base refreshed before Build admission.
