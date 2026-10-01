@@ -15,6 +15,8 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -97,6 +99,14 @@ This task implements board integration and verification controls. Do not silentl
 - [ ] PR 1227 review incorporated, including coordinator corrections and remaining findings
 - [ ] Deliverables reported: tested source changes and a PR; clear distinction between implemented software, installed runtime, and policy actually enabled on the live 4Upfit board; any remaining user action with commands verified against the installed version
 
+## Triage
+
+- **Decision:** Split into smaller cards
+- **Rationale:** The epic bundles three distinct workstreams: fixing todomd CLI/MCP integration, implementing board-level verification gates, and defining 4Upfit acceptance scenarios.
+- **Risks or questions:** none
+- **Next step:** Split
+
 ## Implementation Plan
 
 ## Run Log
+- 2026-10-01 00:34Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
