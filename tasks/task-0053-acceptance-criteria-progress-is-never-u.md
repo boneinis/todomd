@@ -1,7 +1,7 @@
 ---
 id: task-0053
 title: Acceptance-criteria progress is never updated, so the counter always reads zero
-status: Review
+status: Plan
 type: bug
 priority: medium
 labels: []
@@ -16,6 +16,7 @@ worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-10-01
 cost_usd: 0
+needs_human_reason:
 ---
 
 ## Description
