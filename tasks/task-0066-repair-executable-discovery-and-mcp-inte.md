@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Planned
+status: Queue
 type: feature
 priority: medium
 labels: []
