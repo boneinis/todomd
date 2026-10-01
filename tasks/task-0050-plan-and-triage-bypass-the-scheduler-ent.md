@@ -14,7 +14,8 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
-triaged:
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -29,6 +30,14 @@ scheduler.schedule is called for Build, CI, Verify, Chat and Recovery, but never
 - [ ] A deferred Plan or Triage reports its reason the way other columns do
 - [ ] A test proves a burst of cards produces no more concurrent agents than the cap allows
 
+## Triage
+
+- **Decision:** Actionable
+- **Rationale:** The card clearly describes why Plan and Triage bypass concurrency caps and governor checks, and the acceptance criteria define explicit scheduling, capping, and deferral requirements.
+- **Risks or questions:** none
+- **Next step:** Plan
+
 ## Implementation Plan
 
 ## Run Log
+- 2026-10-01 00:43Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
