@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: Planned
+status: Queue
 type: bug
 priority: medium
 labels: []
