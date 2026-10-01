@@ -1,7 +1,7 @@
 ---
 id: task-0060
 title: Present acceptance criteria as a review contract
-status: Needs Human
+status: Build
 type: bug
 priority: medium
 labels: []
@@ -21,8 +21,8 @@ ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 3.7972
-needs_human_reason: uncommitted_build
-recovery_stage: Build
+needs_human_reason:
+recovery_stage:
 ---
 
 ## Description
@@ -67,3 +67,4 @@ M public/app.js
  M test/board.test.js
  M test/ui/ui-smoke.test.js
  M test/voice.test.js
+- 2026-10-01 03:04Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0060
