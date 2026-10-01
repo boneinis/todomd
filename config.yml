@@ -24,7 +24,7 @@ branch_prefix: todomd/
 # A card's own agent/model wins; else the stage column's (stages.<col>.agent|
 # model); else these. default_model is the fallback where a stage sets no model.
 default_agent: claude
-# default_model: claude-sonnet-5
+default_model: claude-opus-5-5
 default_effort: high
 
 # Publish shared board Markdown to a dedicated GitHub branch. This never
@@ -52,7 +52,8 @@ build_continuation:
 # Pin the board's model picker to the models available to this team. This
 # supplements CLI discovery, which only exposes generic aliases for some models.
 models:
-  claude: [fable, claude-fable-5, opus, claude-opus-5, sonnet, haiku]
+  claude: [fable, claude-fable-5, opus, claude-opus-5, claude-opus-5-5, haiku]
+  devin: [swe-2, swe-2-high, swe-2-medium, swe-2-max]
   codex: [gpt-6.1-sol, gpt-5-codex, gpt-5, o3]
   gemini: [gemini-3.7-flash-high, gemini-3.1-pro-high]
 
@@ -91,8 +92,8 @@ stages:
     allowed_tools: [Read, Glob, Grep, "Edit(.todomd/tasks/**)"]
   Build:
     command: todomd-build
-    agent: claude
-    model: claude-sonnet-5
+    agent: devin
+    model: swe-2-high
     effort: high
     max_turns: 100
     allowed_tools:
@@ -121,5 +122,5 @@ stages:
 escalation:
   enabled: true
   after_failed_reviews: 2
-  diagnosis: { agent: claude, model: claude-fable-5, effort: high }
-  repair: { agent: claude, model: claude-fable-5, effort: high }
+  diagnosis: { agent: claude, model: claude-opus-5-5, effort: high }
+  repair: { agent: claude, model: claude-opus-5-5, effort: high }
