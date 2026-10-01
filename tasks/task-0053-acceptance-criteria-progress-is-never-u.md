@@ -14,7 +14,7 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
-triaged: failed (permission_denied)
+triaged:
 ---
 
 ## Description
