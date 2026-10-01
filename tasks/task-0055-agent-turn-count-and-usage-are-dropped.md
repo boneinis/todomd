@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: Build
+status: Needs Human
 type: bug
 priority: medium
 labels: []
@@ -15,14 +15,14 @@ session_id: a025e950-c01a-4e1f-b7e3-27e2e7749a73
 worktree: todomd/task-0055
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-10-01
-cost_usd: 1.3394
-needs_human_reason:
+cost_usd: 2.7553
+needs_human_reason: uncommitted_build
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
-recovery_stage:
+recovery_stage: Build
 ---
 
 ## Description
@@ -78,3 +78,9 @@ M src/runner.js
  M test/pipeline.test.js
  M test/runner.test.js
 - 2026-10-01 02:20Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0055
+- 2026-10-01 02:46Z · Build attempt 1 · 3 turns · claude/claude-sonnet-5 · subscription CLI · 6 input, 312.3K cached, 392 output · $1.416 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M src/runner.js
+ M test/fixtures/fake-gemini.js
+ M test/pipeline.test.js
+ M test/runner.test.js
