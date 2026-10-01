@@ -14,7 +14,8 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
-triaged:
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -56,3 +57,14 @@ not present itself as live progress.
 
 Unit coverage of the progress computation and of whatever marks a criterion,
 plus a board-level test following one card from build to done.
+
+## Triage
+
+- **Decision:** Needs human decision
+- **Rationale:** The card requires an architectural choice between allowing a trusted actor to mark criteria during builds or treating them as a review-time contract. Implementation pathways are mutually exclusive until this model is chosen.
+- **Risks or questions:** Should acceptance criteria be mutable during execution via audited agent writes, or remain an immutable review-time contract with alternative progress metrics?
+- **Next step:** Ask the human.
+
+## Run Log
+
+- 2026-10-01 00:57Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
