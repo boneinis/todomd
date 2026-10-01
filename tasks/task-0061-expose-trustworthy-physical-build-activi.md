@@ -1,7 +1,7 @@
 ---
 id: task-0061
 title: Expose trustworthy physical build activity
-status: CI
+status: Verify
 type: bug
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ session_id: 2b477399-5385-43f9-a3b7-7296342d2e23
 worktree: todomd/task-0061
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 4b4c448469889a7729f92ffcab3246b4feeb8458, command: npm test, execution: local, passed_at: '2026-10-01T04:29:33.355Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 7.9171
@@ -46,3 +46,4 @@ Expose trustworthy physical build activity
 ## Run Log
 - 2026-10-01 04:14Z · Build attempt 1 · 101 turns · claude/claude-sonnet-5 · subscription CLI · 200 input, 11.51M cached, 64.5K output · $3.536 est · checkpoint 1/3 (standard): worktree progress detected; continuing
 - 2026-10-01 04:18Z · Build attempt 1 · 20 turns · claude/claude-sonnet-5 · subscription CLI · 40 input, 3.63M cached, 4.4K output · $4.381 est · ok
+- 2026-10-01 04:29Z · CI attempt 1 · 188.2s · `npm test` passed
