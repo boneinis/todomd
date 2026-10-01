@@ -1,7 +1,7 @@
 ---
 id: task-0064
 title: Unavailable verifier parks cards in Needs Human — should auto-retry with backoff
-status: Queue
+status: Build
 type: bug
 priority: high
 labels: [pipeline, verify]
@@ -14,8 +14,13 @@ triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
 build_profile: standard
-build_limits: {  }
+build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: high
+base_branch: main
+worktree: todomd/task-0064
+ci_evidence: {  }
+ci_remote: {  }
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 ---
 
 ## Description
