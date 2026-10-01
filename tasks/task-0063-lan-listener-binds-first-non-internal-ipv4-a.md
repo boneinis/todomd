@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: CI
+status: Verify
 type: bug
 priority: medium
 labels: [server, lan]
@@ -18,7 +18,7 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 worktree: todomd/task-0063
-ci_evidence: {  }
+ci_evidence: { head: ebec33973bd69636092286b6ae21d3b5ca7a7223, command: npm test, execution: local, passed_at: '2026-10-01T23:13:16.315Z', clean: true }
 ci_remote: {  }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: ad346c54-61d5-4ff4-9a1c-646c31f49d6f
@@ -68,3 +68,4 @@ The LAN/mobile listener calls `lanAddress()`, which returns the first non-intern
 - 2026-10-01 22:34Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 16 input, 180.3K cached, 6.5K output · $0.415 est · diagnosis complete
 - Base refreshed before Build admission.
 - 2026-10-01 23:02Z · Build attempt 3 · 14 turns · claude/claude-opus-5-5 · subscription CLI · 24 input, 379.1K cached, 6.1K output · $0.359 est · ok (escalation repair)
+- 2026-10-01 23:13Z · CI attempt 3 · 190.3s · `npm test` passed
