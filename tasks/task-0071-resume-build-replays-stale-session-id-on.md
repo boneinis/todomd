@@ -14,6 +14,8 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -31,6 +33,14 @@ Operator workaround used: clear session_id in the card frontmatter, then POST /a
 - [ ] A card that built under agent A and is resumed after routing moves to agent B re-parks zero times for session mismatch
 - [ ] Regression coverage: argv-capture or fake-runner test proving a foreign-vendor session_id is not forwarded on resume
 
+## Triage
+
+- **Decision:** Actionable
+- **Rationale:** The bug and root cause in `resumeBuildClaimed` are clearly identified with deterministic acceptance criteria. The fix is self-contained within the build resume pipeline logic.
+- **Risks or questions:** none
+- **Next step:** Plan
+
 ## Implementation Plan
 
 ## Run Log
+- 2026-10-01 17:41Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
