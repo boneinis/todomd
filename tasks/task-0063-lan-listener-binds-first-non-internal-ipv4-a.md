@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: Queue
+status: Build
 type: bug
 priority: medium
 labels: [server, lan]
@@ -14,8 +14,13 @@ triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
 build_profile: standard
-build_limits: {  }
+build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
+base_branch: main
+worktree: todomd/task-0063
+ci_evidence: {  }
+ci_remote: {  }
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 ---
 
 ## Description
