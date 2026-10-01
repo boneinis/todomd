@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: Build
+status: CI
 type: bug
 priority: medium
 labels: [server, lan]
@@ -11,7 +11,7 @@ source: agent
 assignee:
 agent:
 triaged: 2026-10-01
-cost_usd: 0.4149
+cost_usd: 0.7738
 needs_human_reason:
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -21,7 +21,7 @@ worktree: todomd/task-0063
 ci_evidence: {  }
 ci_remote: {  }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-session_id: zinc-tenor
+session_id: ad346c54-61d5-4ff4-9a1c-646c31f49d6f
 ---
 
 ## Description
@@ -67,3 +67,4 @@ The LAN/mobile listener calls `lanAddress()`, which returns the first non-intern
   - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
 - 2026-10-01 22:34Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 16 input, 180.3K cached, 6.5K output · $0.415 est · diagnosis complete
 - Base refreshed before Build admission.
+- 2026-10-01 23:02Z · Build attempt 3 · 14 turns · claude/claude-opus-5-5 · subscription CLI · 24 input, 379.1K cached, 6.1K output · $0.359 est · ok (escalation repair)
