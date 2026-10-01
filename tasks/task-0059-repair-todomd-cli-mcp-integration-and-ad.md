@@ -1,7 +1,7 @@
 ---
 id: task-0059
 title: Repair todomd CLI/MCP integration and add browser-verification gates for 4Upfit BOM-PO-nesting
-status: CI
+status: Needs Human
 type: feature
 priority: high
 labels: [mcp, verification, providers, 4upfit]
@@ -17,13 +17,14 @@ worktree: todomd/task-0059
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-10-01
 cost_usd: 0.5905
-needs_human_reason:
+needs_human_reason: nothing_to_test
 build_limits: { max_slices: 6, budget_minutes: 120 }
 epic_build_mode: teamwork
 complexity: high
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
+recovery_stage: CI
 ---
 
 ## Description
@@ -132,3 +133,5 @@ Summary: Returned one unified implementation plan; no files edited.
 - 2026-10-01 00:34Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 01:40Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 269.2K input, 212.5K cached, 5.2K output · $0.000 est · ok
 - 2026-10-01 02:37Z · Build attempt 1 · 31 turns · claude/claude-sonnet-5 · subscription CLI · 32 input, 834.1K cached, 18.4K output · $0.591 est · ok
+- 2026-10-01 03:02Z · CI attempt 1 · nothing to test (empty candidate)
+  - nothing_to_test: No candidate file changes relative to the base branch. CI did not pass or run; candidate preserved for inspection.
