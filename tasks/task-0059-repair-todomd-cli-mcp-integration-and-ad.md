@@ -1,7 +1,7 @@
 ---
 id: task-0059
 title: Repair todomd CLI/MCP integration and add browser-verification gates for 4Upfit BOM-PO-nesting
-status: Planned
+status: Queue
 type: feature
 priority: high
 labels: [mcp, verification, providers, 4upfit]
