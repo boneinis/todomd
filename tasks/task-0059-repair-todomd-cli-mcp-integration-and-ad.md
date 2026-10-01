@@ -1,7 +1,7 @@
 ---
 id: task-0059
 title: Repair todomd CLI/MCP integration and add browser-verification gates for 4Upfit BOM-PO-nesting
-status: Plan
+status: Planned
 type: feature
 priority: high
 labels: [mcp, verification, providers, 4upfit]
@@ -11,13 +11,16 @@ created_date: 2026-09-30
 source: agent
 assignee:
 agent:
-build_profile: standard
+build_profile: long
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_limits: {  }
+epic_build_mode: chunks
+complexity: high
 ---
 
 ## Description
@@ -109,5 +112,19 @@ This task implements board integration and verification controls. Do not silentl
 
 ## Implementation Plan
 
+1. Build in an isolated worktree after checking applicable AGENTS.md/CLAUDE.md. Preserve live cards, held agents, project defaults, production boundaries, and the disabled Kimi integration. Frontmatter was parsed successfully; preserve the existing title and all unauthorized keys.
+2. Establish the authoritative runtime by comparing the running server entry point, installed package, and the two named source checkouts. Repair executable packaging/registration through package.json, bin/todomd.js, bin/todomd-mcp.js, and scripts/ci.mjs as needed. Verify both executables resolve in the user's terminal and plugin launch environment. Exercise the packed installation in a temporary environment without starting a duplicate live server.
+3. Locate and correct the installed viewer/control plugin manifests and todomd-control skill source; update README.md to describe capabilities actually supported by the installed version. The inspected CLI lacks control-enable: correct that instruction unless an existing supported implementation is found. Preserve viewer-only access, desktop approval, and scoped authorization boundaries. Add regression coverage in test/mcp-server.test.js, then verify MCP initialization, tool discovery, and an actual viewer get_board call against the running server through authorized credential handling without inspecting or exposing token contents. Report any required client reload or supported write-enablement action separately.
+4. Add src/browser-verification.js and focused tests defining project-scoped policy, user-visible classification, backend-only exemptions with rationale and automated-test evidence, and persisted verification evidence. Record tested commit, relevant source fingerprint, environment revision, scenarios, results, provider/model, and screenshot or artifact references. Represent missing, failed, stale, exempt, and passed states explicitly. Invalidate evidence after relevant source, scenario, policy, environment, or required-child changes while preserving audit history.
+5. Enforce one completion evaluator through src/board.js, src/server.js, src/pipeline.js, src/chunks.js, and active completion adapters in src/delivery.js/src/delivery-session.js. Guard creation, status patches, manual moves, MCP requests, and automated completion so they cannot bypass required evidence. Revalidate under the repository mutation lock before completion. Browser failures return the card to correction; missing capability or infrastructure failure blocks verification. Preserve existing review, CI, recovery, attempt-budget, and authorization behavior.
+6. Replace src/chunks.js's unconditional all-children-Done epic completion with scheduling of a distinct integrated browser verification. Require every required card complete and integrated, applicable review and CI gates passed, and epic evidence for the integrated revision. Individual card passes never satisfy this gate. Recheck freshness after integration and before Done; relevant later integration invalidates the epic evidence. Support the same gate for unified epics without children.
+7. Extend public/app.js and src/templates.js to show verification requirements, exemptions, evidence, stale reasons, and correction actions. Keep completion decisions authoritative on the server. Extend test/pipeline.test.js, test/chunks.test.js, test/mcp-server.test.js, delivery-adapter tests, and test/ui/production-readiness.test.js to cover missing, failed, stale, passed, and exempt states; direct API bypass attempts; post-verification changes; and all children passing without an epic pass. Required browser checks must block when Chrome or the designated provider is unavailable rather than treating skipped tests as successful evidence.
+8. Update src/models.js, src/runner.js, and src/pipeline.js with project-scoped provider routing and browser capability checks. Verify installed provider inventories and supported model identifiers before configuring Gemini 3.8 Flash through Antigravity, Opus 5.5 through Claude Code, SWE-2 through Devin, and Codex coordination/final evidence review. Prefer Opus over Fable for the requested roles; permit only SWE-2 through Devin for this policy. Add routing and capability regression tests in test/models.test.js and runner/pipeline tests. Unsupported requested models or unavailable browser capability remain explicit blockers; do not silently substitute a model or count static review as browser verification.
+9. Add docs/4upfit-browser-verification.md with local/test fixtures, expected results, automated assertions, and browser evidence requirements for BOM/assembly quantity propagation; explicit derived-blank sourcing or blocking; PO failure recovery preserving historical lines; persisted initial, large-server, and rerun nesting inputs; receiving, consumption, reversal, and duplicate protection; secondary-company access; and geometry/sign-off revision changes. Incorporate the cited review's coordinator corrections first. Include regression scenarios for migration collisions, consumed-rerun status corruption, primary-company authorization checks, and server validation failures leaving processing jobs. Treat PR 1227's recorded head and CI state as historical; recheck its actual revision and five required GitHub gates before claiming integrated verification. Do not implement, merge, or deploy 4Upfit fixes under this task.
+10. Add a documented 4Upfit-only activation procedure and policy fixture after runtime support passes. Do not enable policy or alter live cards during this build without separately established authorization for that live change. Run focused tests, then npm test and npm run ci for the packaged runtime, API, and browser behavior. Coordinate any supported scoped typecheck before starting it. Submit the tested source changes as a PR and report implemented software, installed runtime revision, live policy activation state, evidence, blockers, and verified remaining user commands separately.
+Risks: Triage recommends splitting, but this epic has neither epic_build_mode: chunks nor epic_split: true, so the explicit split restriction requires an empty chunks array. src/build-mode.js currently defaults unspecified epics to chunks; execution mode must be reconciled by the board outside this plan's authorized frontmatter scope. Installed plugin/skill locations and authoritative runtime remain to be confirmed. Existing model fallbacks advertise Gemini 3.7 rather than the requested 3.8, and Devin routing currently permits other model families; capability discovery may block the requested policy. Derived-blank and geometry/sign-off product choices remain unresolved acceptance expectations. Shared completion changes can affect existing boards, so opt-in policy and compatibility tests are essential. The review establishes neither safe rollback nor rollout compatibility.
+Summary: Returned one unified implementation plan; no files edited.
+
 ## Run Log
 - 2026-10-01 00:34Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:40Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 269.2K input, 212.5K cached, 5.2K output · $0.000 est · ok
