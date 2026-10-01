@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Verify
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -15,12 +15,12 @@ triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
 session_id: shared-spandex
 worktree: todomd/task-0066
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 5cc1b60100554eca5c4b36497b8f4bb653414966, command: npm test, execution: local, passed_at: '2026-10-01T23:26:48.993Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 0
+cost_usd: 0.2058
 ---
 
 ## Description
@@ -63,3 +63,7 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 - 2026-10-01 23:04Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 23:15Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 23:26Z · CI attempt 2 · 192.9s · `npm test` passed
+- 2026-10-01 23:29Z · Verify attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 32.7K input, 0 cached, 4.8K output · $0.000 est · verdict: fail
+  - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
+- 2026-10-01 23:30Z · Escalate attempt 2 · 8 turns · claude/claude-opus-5-5 · subscription CLI · 12 input, 134.8K cached, 4.0K output · $0.206 est · diagnosis complete
+- Base refreshed before Build admission.
