@@ -1,7 +1,7 @@
 ---
 id: task-0061
 title: Expose trustworthy physical build activity
-status: Verify
+status: Done
 type: bug
 priority: medium
 labels: []
@@ -14,9 +14,9 @@ agent:
 triaged: n/a (chunk 2/2 of task-0053)
 build_profile: standard
 session_id: 2b477399-5385-43f9-a3b7-7296342d2e23
-worktree: todomd/task-0061
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-base_branch: main
+worktree:
+verification: { attempts: 3, max_attempts: 3, last_verdict: pass }
+base_branch:
 ci_evidence: { head: 6ed47391760d48e9ea681e307c2ffc27c26736b0, command: npm test, execution: local, passed_at: '2026-10-01T05:43:15.220Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -55,3 +55,4 @@ Expose trustworthy physical build activity
 - 2026-10-01 05:22Z · Build attempt 3 · 69 turns · claude/claude-sonnet-5 · subscription CLI · 138 input, 19.65M cached, 42.4K output · $11.455 est · ok
 - 2026-10-01 05:24Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 05:43Z · CI attempt 3 · 223.1s · `npm test` passed
+- 2026-10-01 05:49Z · Verify attempt 3 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 40.2K input, 0 cached, 2.2K output · $0.000 est · verdict: pass
