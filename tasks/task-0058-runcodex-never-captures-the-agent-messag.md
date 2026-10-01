@@ -1,7 +1,7 @@
 ---
 id: task-0058
 title: runCodex never captures the agent message unless a jsonSchema is set — codex Builds report empty finalMessage
-status: Queue
+status: Build
 type: bug
 priority: high
 labels: [runner, codex]
@@ -12,13 +12,16 @@ assignee:
 agent:
 build_profile: standard
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0058
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-09-30
 cost_usd: 0
 needs_human_reason:
-build_limits: {  }
+build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: low
+base_branch: main
+ci_evidence: {  }
+ci_remote: {  }
 ---
 
 ## Description
