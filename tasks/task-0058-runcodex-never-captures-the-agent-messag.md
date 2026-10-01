@@ -1,7 +1,7 @@
 ---
 id: task-0058
 title: runCodex never captures the agent message unless a jsonSchema is set — codex Builds report empty finalMessage
-status: Build
+status: Needs Human
 type: bug
 priority: high
 labels: [runner, codex]
@@ -15,14 +15,14 @@ session_id: d56adc6b-0151-4268-88cd-83fcfdf2f9df
 worktree: todomd/task-0058
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-09-30
-cost_usd: 1.4646
-needs_human_reason:
+cost_usd: 3.0321
+needs_human_reason: uncommitted_build
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: low
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
-recovery_stage:
+recovery_stage: Build
 ---
 
 ## Description
@@ -68,3 +68,10 @@ M docs/providers.md
  M test/pipeline.test.js
  M test/runner.test.js
 - 2026-10-01 02:20Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0058
+- 2026-10-01 02:46Z · Build attempt 1 · 4 turns · claude/claude-sonnet-5 · subscription CLI · 8 input, 424.3K cached, 470 output · $1.568 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M docs/providers.md
+ M src/runner.js
+ M test/fixtures/fake-codex.js
+ M test/pipeline.test.js
+ M test/runner.test.js
