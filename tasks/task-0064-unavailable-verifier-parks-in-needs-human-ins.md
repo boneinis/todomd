@@ -10,6 +10,8 @@ created_date: 2026-10-01
 source: agent
 assignee:
 agent:
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -29,4 +31,10 @@ When the Verify provider CLI is unavailable or errors transiently, cards park in
 
 ## Triage
 
+- **Decision:** Actionable
+- **Rationale:** Transient verification failures currently require manual intervention instead of retrying automatically with backoff. The recovery mechanism is well-defined and can leverage existing retry logic with a bounded limit.
+- **Risks or questions:** none
+- **Next step:** Plan
+
 ## Run Log
+- 2026-10-01 11:13Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
