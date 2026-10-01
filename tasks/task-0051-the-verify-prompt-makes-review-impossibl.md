@@ -14,7 +14,8 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
-triaged:
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -29,6 +30,14 @@ The Verify stage appends an instruction not to run tests, typecheck, builds, dat
 - [ ] A review that reports a setup error does not re-queue Build
 - [ ] Regression coverage for a shell-only provider reviewing a passing candidate
 
+## Triage
+
+- **Decision:** Actionable
+- **Rationale:** The issue and its impact on shell-only providers during Verify are clearly defined. The acceptance criteria establish concrete requirements for prompt phrasing, error handling, and test coverage.
+- **Risks or questions:** none
+- **Next step:** Plan
+
 ## Implementation Plan
 
 ## Run Log
+- 2026-10-01 00:56Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
