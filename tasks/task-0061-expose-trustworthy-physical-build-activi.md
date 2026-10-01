@@ -1,7 +1,7 @@
 ---
 id: task-0061
 title: Expose trustworthy physical build activity
-status: Planned
+status: Queue
 type: bug
 priority: medium
 labels: []
