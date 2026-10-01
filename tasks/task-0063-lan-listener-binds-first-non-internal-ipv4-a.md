@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: CI
+status: Verify
 type: bug
 priority: medium
 labels: [server, lan]
@@ -18,7 +18,7 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 worktree: todomd/task-0063
-ci_evidence: {  }
+ci_evidence: { head: b27bdd65f8454b2fe106a3e80463a847e223730c, command: npm test, execution: local, passed_at: '2026-10-01T17:18:10.264Z', clean: true }
 ci_remote: {  }
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 session_id: zinc-tenor
@@ -50,3 +50,4 @@ The LAN/mobile listener calls `lanAddress()`, which returns the first non-intern
 - 2026-10-01 08:13Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 14:30Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 190.7K input, 150.5K cached, 3.0K output · $0.000 est · ok
 - 2026-10-01 16:33Z · Build attempt 1 · 31 turns · devin/swe-2-high · subscription CLI · 1.64M input, 1.57M cached, 28.0K output · $0.000 est · ok
+- 2026-10-01 17:18Z · CI attempt 1 · 236.5s · `npm test` passed
