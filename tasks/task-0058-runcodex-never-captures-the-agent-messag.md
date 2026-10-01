@@ -1,7 +1,7 @@
 ---
 id: task-0058
 title: runCodex never captures the agent message unless a jsonSchema is set — codex Builds report empty finalMessage
-status: Plan
+status: Planned
 type: bug
 priority: high
 labels: [runner, codex]
@@ -17,6 +17,8 @@ verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-09-30
 cost_usd: 0
 needs_human_reason:
+build_limits: {  }
+complexity: low
 ---
 
 ## Description
@@ -42,6 +44,15 @@ The codex stream emits agent_message items as {"type":"item.completed","item":{"
 
 ## Implementation Plan
 
+1. In src/runner.js runCodex(), track the latest item.completed event whose item.type is agent_message and item.text is a string. Capture it before forwarding onEvent, preserving session tracking, turn counting, and trailing newline-less event handling.
+2. In the close handler, use the captured text when the output-last-message file is absent or unreadable. Keep readable file content authoritative and preserve its existing structured-output parsing. Populate diagnostic.finalMessage and successful envelope.result with the selected message so src/pipeline.js's existing blocked_build guard recognizes response-only Builds. Keep failure events authoritative in envelope.result and leave error, refusal, resume, and spawn handling intact.
+3. Extend test/fixtures/fake-codex.js with opt-in stream-message scenarios, including multiple messages, a trailing newline-less message, silent output, and a missing output file. In test/runner.test.js, cover schema-free Build and resumed-run capture, latest-message selection, file precedence, missing-file fallback, malformed/non-message events, and errors remaining failures despite captured text.
+4. Add Codex regression cases in test/pipeline.test.js using unchanged clean worktrees: a response-only Build proceeds beyond the blocked_build guard, while a silent completed turn still produces blocked_build. Preserve existing permission-denial and resume behavior tests.
+5. Update the blocked-runs contract in docs/providers.md to explain Codex stream fallback and the response-only versus silent distinction. Run node --test test/runner.test.js test/pipeline.test.js.
+Risks: Changing successful envelope.result exposes Codex responses to existing pipeline consumers; protect structured-output precedence and error classification with regression tests. The review note's inherited read-only resume sandbox issue is separate and remains outside this fix. Triage has no unresolved flags or human decisions.
+Existing card frontmatter validated successfully; no files edited. Single plan with a standard build profile.
+
 ## Run Log
 - 2026-09-30 15:40Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 01:05Z · Review note (devin) · Confirmed live today on task-0057: four consecutive codex resumes produced real agent_message replies that the runner recorded as finalMessage "" → repeated blocked_build. Also observed: the resumed codex session reported itself read-only and could not commit. Unblocks every codex Build; recommend prioritising.
+- 2026-10-01 01:36Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 288.7K input, 232.2K cached, 2.5K output · $0.000 est · ok
