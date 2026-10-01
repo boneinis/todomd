@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ session_id: shared-spandex
 worktree: todomd/task-0066
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 55a74d4e3c992032f99dcdccc3e5f52778506fff, command: npm test, execution: local, passed_at: '2026-10-01T22:15:20.679Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0
@@ -45,3 +45,13 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 
 ## Run Log
 - 2026-10-01 16:11Z · Build attempt 1 · 40 turns · devin/swe-2-high · subscription CLI · 2.54M input, 2.46M cached, 20.6K output · $0.000 est · ok
+- 2026-10-01 17:06Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 17:50Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 18:23Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 18:56Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 19:38Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 19:59Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 20:51Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 21:12Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 21:50Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 22:15Z · CI attempt 1 · 224.8s · `npm test` passed
