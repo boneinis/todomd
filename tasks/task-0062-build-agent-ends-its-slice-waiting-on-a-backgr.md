@@ -1,7 +1,7 @@
 ---
 id: task-0062
 title: Build agent ends its slice waiting on its own background npm test — every build parks uncommitted_build
-status: Verify
+status: Done
 type: bug
 priority: high
 labels: [runner, pipeline]
@@ -16,11 +16,11 @@ needs_human_reason:
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
-base_branch: main
-worktree: todomd/task-0062
+base_branch:
+worktree:
 ci_evidence: { head: 9921a485cb1e82914851282bd31e6f17cecb64e1, command: npm test, execution: local, passed_at: '2026-10-01T19:21:04.076Z', clean: true }
 ci_remote: {  }
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 1, max_attempts: 3, last_verdict: pass }
 session_id: grand-gouda
 recovery_stage:
 ---
@@ -59,3 +59,4 @@ Three consecutive Builds (task-0058, task-0055, task-0060 — claude/sonnet) eac
 - 2026-10-01 18:16Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 18:48Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 19:21Z · CI attempt 1 · 230.0s · `npm test` passed
+- 2026-10-01 19:22Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 26.5K input, 0 cached, 2.5K output · $0.000 est · verdict: pass
