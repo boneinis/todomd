@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: Build
+status: CI
 type: bug
 priority: medium
 labels: [server, lan]
@@ -53,3 +53,4 @@ The LAN/mobile listener calls `lanAddress()`, which returns the first non-intern
 - 2026-10-01 17:18Z · CI attempt 1 · 236.5s · `npm test` passed
 - 2026-10-01 17:20Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 24.6K input, 0 cached, 1.9K output · $0.000 est · verdict: fail (unmet: 1)
   - retrying with findings (attempt 2/3)
+- 2026-10-01 18:09Z · Build attempt 2 · 44 turns · devin/swe-2-high · subscription CLI · 2.86M input, 2.69M cached, 38.9K output · $0.000 est · ok
