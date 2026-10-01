@@ -68,3 +68,4 @@ plus a board-level test following one card from build to done.
 ## Run Log
 
 - 2026-10-01 00:57Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Decision (human, via devin review) · Review-time contract — criteria stay immutable for the verifier; implement the card as: stop presenting the counter as live progress and replace it with an honest physical signal (commits/files touched). Keeps the build agent's read-only board rule intact.
