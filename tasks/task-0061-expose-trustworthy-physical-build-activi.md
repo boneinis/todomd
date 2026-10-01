@@ -1,7 +1,7 @@
 ---
 id: task-0061
 title: Expose trustworthy physical build activity
-status: CI
+status: Build
 type: bug
 priority: medium
 labels: []
@@ -15,7 +15,7 @@ triaged: n/a (chunk 2/2 of task-0053)
 build_profile: standard
 session_id: 2b477399-5385-43f9-a3b7-7296342d2e23
 worktree: todomd/task-0061
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
@@ -50,3 +50,5 @@ Expose trustworthy physical build activity
 - 2026-10-01 04:31Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 36.9K input, 0 cached, 2.2K output · $0.000 est · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
 - 2026-10-01 04:49Z · Build attempt 2 · 43 turns · claude/claude-sonnet-5 · subscription CLI · 86 input, 9.61M cached, 30.6K output · $6.815 est · ok
+- 2026-10-01 04:57Z · CI attempt 2 · 278.0s · `npm test` failed
+  - retrying after a failed CI gate (attempt 3/3)
