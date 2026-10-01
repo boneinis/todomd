@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: Verify
+status: Build
 type: bug
 priority: medium
 labels: [server, lan]
@@ -11,16 +11,16 @@ source: agent
 assignee:
 agent:
 triaged: 2026-10-01
-cost_usd: 0
+cost_usd: 0.4149
 needs_human_reason:
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 worktree: todomd/task-0063
-ci_evidence: { head: d4ed896b22045f53d8f470dfde4b21ed7be21fd4, command: npm test, execution: local, passed_at: '2026-10-01T22:31:08.131Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: zinc-tenor
 ---
 
@@ -63,3 +63,7 @@ The LAN/mobile listener calls `lanAddress()`, which returns the first non-intern
 - 2026-10-01 22:03Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 22:18Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 22:31Z · CI attempt 2 · 236.7s · `npm test` passed
+- 2026-10-01 22:33Z · Verify attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 26.2K input, 0 cached, 3.4K output · $0.000 est · verdict: fail
+  - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
+- 2026-10-01 22:34Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 16 input, 180.3K cached, 6.5K output · $0.415 est · diagnosis complete
+- Base refreshed before Build admission.
