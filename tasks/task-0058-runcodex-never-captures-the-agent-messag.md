@@ -1,7 +1,7 @@
 ---
 id: task-0058
 title: runCodex never captures the agent message unless a jsonSchema is set — codex Builds report empty finalMessage
-status: CI
+status: Verify
 type: bug
 priority: high
 labels: [runner, codex]
@@ -20,7 +20,7 @@ needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: low
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 373224b23e99ca15c8af79a20f6805551906953b, command: npm test, execution: local, passed_at: '2026-10-01T03:47:29.227Z', clean: true }
 ci_remote: {  }
 recovery_stage:
 ---
@@ -85,3 +85,4 @@ M docs/providers.md
  M test/runner.test.js
 - 2026-10-01 03:16Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0058
 - 2026-10-01 03:27Z · Build attempt 1 · 9 turns · claude/claude-sonnet-5 · subscription CLI · 18 input, 1.36M cached, 2.5K output · $3.274 est · ok
+- 2026-10-01 03:47Z · CI attempt 1 · 335.0s · `npm test` passed
