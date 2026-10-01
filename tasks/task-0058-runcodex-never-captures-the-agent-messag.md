@@ -1,7 +1,7 @@
 ---
 id: task-0058
 title: runCodex never captures the agent message unless a jsonSchema is set — codex Builds report empty finalMessage
-status: Build
+status: Needs Human
 type: bug
 priority: high
 labels: [runner, codex]
@@ -11,17 +11,18 @@ source: ui
 assignee:
 agent:
 build_profile: standard
-session_id:
+session_id: d56adc6b-0151-4268-88cd-83fcfdf2f9df
 worktree: todomd/task-0058
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-09-30
-cost_usd: 0
-needs_human_reason:
+cost_usd: 1.4646
+needs_human_reason: uncommitted_build
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: low
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
+recovery_stage: Build
 ---
 
 ## Description
@@ -59,3 +60,10 @@ Existing card frontmatter validated successfully; no files edited. Single plan w
 - 2026-09-30 15:40Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 01:05Z · Review note (devin) · Confirmed live today on task-0057: four consecutive codex resumes produced real agent_message replies that the runner recorded as finalMessage "" → repeated blocked_build. Also observed: the resumed codex session reported itself read-only and could not commit. Unblocks every codex Build; recommend prioritising.
 - 2026-10-01 01:36Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 288.7K input, 232.2K cached, 2.5K output · $0.000 est · ok
+- 2026-10-01 01:53Z · Build attempt 1 · 65 turns · claude/claude-sonnet-5 · subscription CLI · 124 input, 4.47M cached, 25.8K output · $1.465 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M docs/providers.md
+ M src/runner.js
+ M test/fixtures/fake-codex.js
+ M test/pipeline.test.js
+ M test/runner.test.js
