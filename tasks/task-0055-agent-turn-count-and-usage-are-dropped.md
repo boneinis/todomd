@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: Verify
+status: Done
 type: bug
 priority: medium
 labels: []
@@ -12,14 +12,14 @@ assignee:
 agent:
 build_profile: standard
 session_id: a025e950-c01a-4e1f-b7e3-27e2e7749a73
-worktree: todomd/task-0055
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+worktree:
+verification: { attempts: 2, max_attempts: 3, last_verdict: pass }
 triaged: 2026-10-01
 cost_usd: 8.3086
 needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
-base_branch: main
+base_branch:
 ci_evidence: { head: 6c6d106572e1aad4662e1f349d5b2ad1f97422c6, command: npm test, execution: local, passed_at: '2026-10-01T05:47:58.199Z', clean: true }
 ci_remote: {  }
 recovery_stage:
@@ -97,3 +97,4 @@ M src/runner.js
 - Base refreshed before Build admission.
 - 2026-10-01 05:39Z · Build attempt 2 · 45 turns · claude/claude-sonnet-5 · subscription CLI · 90 input, 6.49M cached, 25.2K output · $3.840 est · ok
 - 2026-10-01 05:47Z · CI attempt 2 · 282.9s · `npm test` passed
+- 2026-10-01 05:51Z · Verify attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 253.7K input, 178.4K cached, 2.0K output · $0.000 est · verdict: pass
