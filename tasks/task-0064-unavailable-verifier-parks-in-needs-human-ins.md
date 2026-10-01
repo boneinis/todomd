@@ -1,7 +1,7 @@
 ---
 id: task-0064
 title: Unavailable verifier parks cards in Needs Human — should auto-retry with backoff
-status: Review
+status: Plan
 type: bug
 priority: high
 labels: [pipeline, verify]
@@ -12,6 +12,7 @@ assignee:
 agent:
 triaged: 2026-10-01
 cost_usd: 0
+needs_human_reason:
 ---
 
 ## Description
