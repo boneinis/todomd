@@ -1,7 +1,7 @@
 ---
 id: task-0062
 title: Build agent ends its slice waiting on its own background npm test — every build parks uncommitted_build
-status: Build
+status: Needs Human
 type: bug
 priority: high
 labels: [runner, pipeline]
@@ -12,7 +12,7 @@ assignee:
 agent:
 triaged: 2026-10-01
 cost_usd: 0
-needs_human_reason:
+needs_human_reason: agent_error
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
@@ -21,6 +21,8 @@ worktree: todomd/task-0062
 ci_evidence: {  }
 ci_remote: {  }
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+session_id: 94f7064a-10e0-40d5-b1c4-e28dfef66216
+recovery_stage: Build
 ---
 
 ## Description
@@ -47,3 +49,5 @@ Three consecutive Builds (task-0058, task-0055, task-0060 — claude/sonnet) eac
 - 2026-10-01 03:02Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 23:20Z · Root cause (devin) · The resume path at src/pipeline.js:3596 builds `buildOpts.prompt` as a bare "Continue the approved task…" template — it never calls stagePrompt(), so .todomd/local/<command>.md conventions and the command body never reach resumed builds. Reproduced 5×: task-0058 ×3, task-0055 ×2, task-0060 ×2. Orphan `node --test` children outlive dead sessions and inflate load.
 - 2026-10-01 11:15Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 229.3K input, 167.0K cached, 2.8K output · $0.000 est · ok
+- 2026-10-01 14:27Z · Build attempt 1 · 1 turns · claude/claude-sonnet-5 · subscription CLI · usage unavailable · $0.000 est · failed: agent
+  - agent_error: You've hit your session limit · resets 11:30am (America/New_York)
