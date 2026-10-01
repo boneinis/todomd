@@ -1,7 +1,7 @@
 ---
 id: task-0061
 title: Expose trustworthy physical build activity
-status: Queue
+status: Build
 type: bug
 priority: medium
 labels: []
@@ -14,8 +14,12 @@ agent:
 triaged: n/a (chunk 2/2 of task-0053)
 build_profile: standard
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0061
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+base_branch: main
+ci_evidence: {  }
+ci_remote: {  }
+build_limits: { max_slices: 3, budget_minutes: 60 }
 ---
 
 ## Description
