@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: CI
+status: Verify
 type: bug
 priority: medium
 labels: []
@@ -20,7 +20,7 @@ needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 6c6d106572e1aad4662e1f349d5b2ad1f97422c6, command: npm test, execution: local, passed_at: '2026-10-01T05:47:58.199Z', clean: true }
 ci_remote: {  }
 recovery_stage:
 ---
@@ -96,3 +96,4 @@ M src/runner.js
   - retrying with findings (attempt 2/3)
 - Base refreshed before Build admission.
 - 2026-10-01 05:39Z · Build attempt 2 · 45 turns · claude/claude-sonnet-5 · subscription CLI · 90 input, 6.49M cached, 25.2K output · $3.840 est · ok
+- 2026-10-01 05:47Z · CI attempt 2 · 282.9s · `npm test` passed
