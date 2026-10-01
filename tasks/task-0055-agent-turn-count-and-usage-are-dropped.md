@@ -14,7 +14,8 @@ build_profile: standard
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
-triaged:
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -50,3 +51,14 @@ plausible source of the drop.
 
 Unit coverage of the event parsing against a captured real result event, plus a
 board-level check that a completed run's recorded metrics are non-zero.
+
+## Triage
+
+- **Decision:** Actionable
+- **Rationale:** The issue identifies a specific event field parsing mismatch in the gemini provider result stream. Acceptance criteria and verification requirements are clearly defined and testable.
+- **Risks or questions:** none
+- **Next step:** Plan
+
+## Run Log
+
+- 2026-10-01 00:59Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
