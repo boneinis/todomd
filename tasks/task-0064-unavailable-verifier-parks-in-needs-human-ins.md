@@ -1,7 +1,7 @@
 ---
 id: task-0064
 title: Unavailable verifier parks cards in Needs Human — should auto-retry with backoff
-status: Plan
+status: Planned
 type: bug
 priority: high
 labels: [pipeline, verify]
@@ -13,6 +13,9 @@ agent:
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_profile: standard
+build_limits: {  }
+complexity: high
 ---
 
 ## Description
@@ -39,3 +42,4 @@ When the Verify provider CLI is unavailable or errors transiently, cards park in
 
 ## Run Log
 - 2026-10-01 11:13Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 14:41Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 348.5K input, 283.9K cached, 3.4K output · $0.000 est · ok
