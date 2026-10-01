@@ -10,6 +10,8 @@ created_date: 2026-10-01
 source: agent
 assignee:
 agent:
+triaged: 2026-10-01
+cost_usd: 0
 ---
 
 ## Description
@@ -27,4 +29,10 @@ Three consecutive Builds (task-0058, task-0055, task-0060 — claude/sonnet) eac
 
 ## Triage
 
+- **Decision:** Actionable
+- **Rationale:** Build agents are yielding early during long-running background test execution, causing unnecessary uncommitted_build stops. The issue is well-understood and can be resolved in the runner or build prompt instructions.
+- **Risks or questions:** Ensure that legitimate failures or exhausted attempts still correctly park the card for human review.
+- **Next step:** Plan
+
 ## Run Log
+- 2026-10-01 03:02Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
