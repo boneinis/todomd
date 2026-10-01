@@ -1,7 +1,7 @@
 ---
 id: task-0062
 title: Build agent ends its slice waiting on its own background npm test — every build parks uncommitted_build
-status: Plan
+status: Planned
 type: bug
 priority: high
 labels: [runner, pipeline]
@@ -13,6 +13,9 @@ agent:
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_profile: standard
+build_limits: {  }
+complexity: medium
 ---
 
 ## Description
@@ -38,3 +41,4 @@ Three consecutive Builds (task-0058, task-0055, task-0060 — claude/sonnet) eac
 ## Run Log
 - 2026-10-01 03:02Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 23:20Z · Root cause (devin) · The resume path at src/pipeline.js:3596 builds `buildOpts.prompt` as a bare "Continue the approved task…" template — it never calls stagePrompt(), so .todomd/local/<command>.md conventions and the command body never reach resumed builds. Reproduced 5×: task-0058 ×3, task-0055 ×2, task-0060 ×2. Orphan `node --test` children outlive dead sessions and inflate load.
+- 2026-10-01 11:15Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 229.3K input, 167.0K cached, 2.8K output · $0.000 est · ok
