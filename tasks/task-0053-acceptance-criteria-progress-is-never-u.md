@@ -1,7 +1,7 @@
 ---
 id: task-0053
 title: Acceptance-criteria progress is never updated, so the counter always reads zero
-status: Queue
+status: Done
 type: bug
 priority: medium
 labels: []
