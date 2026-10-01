@@ -1,7 +1,7 @@
 ---
 id: task-0064
 title: Unavailable verifier parks cards in Needs Human — should auto-retry with backoff
-status: Build
+status: CI
 type: bug
 priority: high
 labels: [pipeline, verify]
@@ -11,7 +11,7 @@ source: agent
 assignee:
 agent:
 triaged: 2026-10-01
-cost_usd: 0.3886
+cost_usd: 1.5324
 needs_human_reason:
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -21,7 +21,7 @@ worktree: todomd/task-0064
 ci_evidence: {  }
 ci_remote: {  }
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
-session_id: seen-furniture
+session_id: 85190555-31d8-4bb6-a498-ab1ef5643abe
 ---
 
 ## Description
@@ -60,3 +60,4 @@ When the Verify provider CLI is unavailable or errors transiently, cards park in
   - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
 - 2026-10-01 19:46Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 14 input, 168.3K cached, 3.5K output · $0.389 est · diagnosis complete
 - Base refreshed before Build admission.
+- 2026-10-01 20:31Z · Build attempt 3 · 41 turns · claude/claude-opus-5-5 · subscription CLI · 64 input, 1.66M cached, 18.8K output · $1.144 est · ok (escalation repair)
