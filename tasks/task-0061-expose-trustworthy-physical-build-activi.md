@@ -1,7 +1,7 @@
 ---
 id: task-0061
 title: Expose trustworthy physical build activity
-status: Build
+status: CI
 type: bug
 priority: medium
 labels: []
@@ -20,7 +20,7 @@ base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 7.9171
+cost_usd: 14.7324
 ---
 
 ## Description
@@ -49,3 +49,4 @@ Expose trustworthy physical build activity
 - 2026-10-01 04:29Z · CI attempt 1 · 188.2s · `npm test` passed
 - 2026-10-01 04:31Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 36.9K input, 0 cached, 2.2K output · $0.000 est · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
+- 2026-10-01 04:49Z · Build attempt 2 · 43 turns · claude/claude-sonnet-5 · subscription CLI · 86 input, 9.61M cached, 30.6K output · $6.815 est · ok
