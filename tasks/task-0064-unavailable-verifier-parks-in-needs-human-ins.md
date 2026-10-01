@@ -1,7 +1,7 @@
 ---
 id: task-0064
 title: Unavailable verifier parks cards in Needs Human — should auto-retry with backoff
-status: Verify
+status: Build
 type: bug
 priority: high
 labels: [pipeline, verify]
@@ -11,16 +11,16 @@ source: agent
 assignee:
 agent:
 triaged: 2026-10-01
-cost_usd: 0
+cost_usd: 0.3886
 needs_human_reason:
 build_profile: standard
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: high
 base_branch: main
 worktree: todomd/task-0064
-ci_evidence: { head: d2e115b64e16bede6fad87d49f8415c6a15c9ea4, command: npm test, execution: local, passed_at: '2026-10-01T19:05:53.134Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 session_id: seen-furniture
 ---
 
@@ -55,3 +55,8 @@ When the Verify provider CLI is unavailable or errors transiently, cards park in
   - retrying with findings (attempt 2/3)
 - 2026-10-01 18:36Z · Build attempt 2 · 70 turns · devin/swe-2-high · subscription CLI · 5.36M input, 5.13M cached, 35.1K output · $0.000 est · ok
 - 2026-10-01 19:05Z · CI attempt 2 · 249.1s · `npm test` passed
+- 2026-10-01 19:08Z · Verify attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 28.1K input, 0 cached, 3.1K output · $0.000 est · preliminary review complete; 1 focused check queued
+- 2026-10-01 19:45Z · Verify attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 180.7K input, 131.6K cached, 1.3K output · $0.000 est · verdict: fail
+  - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
+- 2026-10-01 19:46Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 14 input, 168.3K cached, 3.5K output · $0.389 est · diagnosis complete
+- Base refreshed before Build admission.
