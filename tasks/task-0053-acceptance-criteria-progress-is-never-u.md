@@ -1,7 +1,7 @@
 ---
 id: task-0053
 title: Acceptance-criteria progress is never updated, so the counter always reads zero
-status: Plan
+status: Planned
 type: bug
 priority: medium
 labels: []
@@ -10,13 +10,18 @@ created_date: 2026-09-08
 source: ui
 assignee:
 agent:
-build_profile: standard
+build_profile: split_required
 session_id:
 worktree:
 verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_limits: {  }
+complexity: medium
+epic: true
+epic_build_mode: chunks
+children: [task-0060, task-0061]
 ---
 
 ## Description
@@ -70,3 +75,5 @@ plus a board-level test following one card from build to done.
 
 - 2026-10-01 00:57Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
 - 2026-10-01 01:05Z · Decision (human, via devin review) · Review-time contract — criteria stay immutable for the verifier; implement the card as: stop presenting the counter as live progress and replace it with an honest physical signal (commits/files touched). Keeps the build agent's read-only board rule intact.
+- 2026-10-01 01:16Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 190.0K input, 146.7K cached, 2.9K output · $0.000 est · ok
+- 2026-10-01 01:16Z · Plan · split into 2 sequential chunks: task-0060 → task-0061
