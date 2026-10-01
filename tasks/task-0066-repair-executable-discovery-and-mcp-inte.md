@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -13,13 +13,14 @@ assignee:
 agent:
 triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
-session_id:
+session_id: shared-spandex
 worktree: todomd/task-0066
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
+cost_usd: 0
 ---
 
 ## Description
@@ -43,3 +44,4 @@ Repair executable discovery and MCP integration
 Risks: Authoritative installation and plugin/skill locations remain unconfirmed; client environment differences may require a reload. Do not invent an authorization command.
 
 ## Run Log
+- 2026-10-01 16:11Z · Build attempt 1 · 40 turns · devin/swe-2-high · subscription CLI · 2.54M input, 2.46M cached, 20.6K output · $0.000 est · ok
