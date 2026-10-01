@@ -1,7 +1,7 @@
 ---
 id: task-0056
 title: Plan mode is silently nullified for the gemini provider
-status: Review
+status: Done
 type: bug
 priority: medium
 labels: []
@@ -65,3 +65,4 @@ CLI emits no mode warning for any combination the runner produces.
 ## Run Log
 
 - 2026-10-01 00:58Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Review (devin) · Closed: already shipped in d7ba4ce — --disable-slash-commands is omitted whenever mode=plan, so agy plan mode is no longer nullified; today's triage run logs show clean stderr. Stale card.

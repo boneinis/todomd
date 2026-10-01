@@ -1,7 +1,7 @@
 ---
 id: task-0052
 title: List view with epics rolled up and expandable
-status: Review
+status: Done
 type: feature
 priority: medium
 labels: []
@@ -75,3 +75,4 @@ extended to render the list view and toggle it.
 ## Run Log
 
 - 2026-10-01 00:55Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Review (devin) · Closed: duplicate of task-0046 — the expandable list view shipped in 3dd9c28 (public/listview.js, renderList in app.js:611, persisted todomd-layout toggle) and its UI smoke test passes. Stale card.

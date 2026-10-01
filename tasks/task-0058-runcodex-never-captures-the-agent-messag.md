@@ -43,3 +43,4 @@ The codex stream emits agent_message items as {"type":"item.completed","item":{"
 
 ## Run Log
 - 2026-09-30 15:40Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Review note (devin) · Confirmed live today on task-0057: four consecutive codex resumes produced real agent_message replies that the runner recorded as finalMessage "" → repeated blocked_build. Also observed: the resumed codex session reported itself read-only and could not commit. Unblocks every codex Build; recommend prioritising.

@@ -62,3 +62,4 @@ board-level check that a completed run's recorded metrics are non-zero.
 ## Run Log
 
 - 2026-10-01 00:59Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Review note (devin) · Partially stale: num_turns is recorded now (today's triage shows '1 turns'), but usage is still dropped — the agy result event carries a full usage object yet runGemini's finish() never reads body.usage, so the run line still reports 'usage unavailable'. Remaining work is the usage half only.

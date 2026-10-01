@@ -1,7 +1,7 @@
 ---
 id: task-0054
 title: A stale index.lock silently discards a completed build's work
-status: Review
+status: Done
 type: bug
 priority: high
 labels: []
@@ -71,3 +71,4 @@ that a build completing during an active snapshot still lands its commit.
 ## Run Log
 
 - 2026-10-01 00:57Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Review (devin) · Closed: already shipped in 3dd9c28 — progressSnapshot uses --no-optional-locks and diff.autoRefreshIndex=false so snapshots cannot take index.lock; retryStagedCommit + isIndexLockFailure retry transient lock refusals and preserve staged paths (src/build-progress.js, src/pipeline.js:3645,3772); test/build-progress.test.js covers contention. Stale card.

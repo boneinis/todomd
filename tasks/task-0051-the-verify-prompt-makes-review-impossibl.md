@@ -1,7 +1,7 @@
 ---
 id: task-0051
 title: The Verify prompt makes review impossible for providers whose only file access is a shell
-status: Review
+status: Done
 type: bug
 priority: high
 labels: []
@@ -41,3 +41,4 @@ The Verify stage appends an instruction not to run tests, typecheck, builds, dat
 
 ## Run Log
 - 2026-10-01 00:56Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Review (devin) · Closed: already shipped in 3dd9c28 — the Verify append explicitly permits read-only shell inspection (pwd/ls/cat/rg/git diff/git show/git status, src/pipeline.js:3937-3945); fail without a named defect → bad_verdict, and setup_error → worktree_env → Needs Human, not a Build requeue (src/pipeline.js:4163-4178). Stale card.

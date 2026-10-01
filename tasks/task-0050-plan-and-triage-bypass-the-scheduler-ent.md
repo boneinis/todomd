@@ -1,7 +1,7 @@
 ---
 id: task-0050
 title: Plan and Triage bypass the scheduler entirely so nothing throttles them
-status: Review
+status: Done
 type: bug
 priority: high
 labels: []
@@ -41,3 +41,4 @@ scheduler.schedule is called for Build, CI, Verify, Chat and Recovery, but never
 
 ## Run Log
 - 2026-10-01 00:43Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 01:05Z · Review (devin) · Closed: already shipped in 3dd9c28 — Plan admissions route through scheduleTriggerStage → scheduler.schedule and Triage through scheduler.schedule (src/pipeline.js:2498, 4349); global/column/project caps plus governor deferral with deferredReason live in src/scheduler.js. Stale card.
