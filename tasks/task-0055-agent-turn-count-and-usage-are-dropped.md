@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: CI
+status: Verify
 type: bug
 priority: medium
 labels: []
@@ -20,7 +20,7 @@ needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 9c5d1f9de6960ccf39597e914955e01d51777b83, command: npm test, execution: local, passed_at: '2026-10-01T04:52:39.155Z', clean: true }
 ci_remote: {  }
 recovery_stage:
 ---
@@ -86,3 +86,8 @@ M src/runner.js
  M test/runner.test.js
 - 2026-10-01 02:49Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0055
 - 2026-10-01 03:17Z · Build attempt 1 · 11 turns · claude/claude-sonnet-5 · subscription CLI · 22 input, 1.21M cached, 2.2K output · $1.714 est · ok
+- 2026-10-01 03:29Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 03:49Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 04:21Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 04:31Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 04:52Z · CI attempt 1 · 201.8s · `npm test` passed
