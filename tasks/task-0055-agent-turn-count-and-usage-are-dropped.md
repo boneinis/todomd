@@ -1,7 +1,7 @@
 ---
 id: task-0055
 title: Turn count and usage are dropped for the gemini provider
-status: Verify
+status: Build
 type: bug
 priority: medium
 labels: []
@@ -13,14 +13,14 @@ agent:
 build_profile: standard
 session_id: a025e950-c01a-4e1f-b7e3-27e2e7749a73
 worktree: todomd/task-0055
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 triaged: 2026-10-01
 cost_usd: 4.469
 needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
-ci_evidence: { head: 9c5d1f9de6960ccf39597e914955e01d51777b83, command: npm test, execution: local, passed_at: '2026-10-01T04:52:39.155Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 recovery_stage:
 ---
@@ -91,3 +91,7 @@ M src/runner.js
 - 2026-10-01 04:21Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 04:31Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
 - 2026-10-01 04:52Z · CI attempt 1 · 201.8s · `npm test` passed
+- 2026-10-01 04:58Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 23.0K input, 0 cached, 1.7K output · $0.000 est · preliminary review complete; 3 focused checks queued
+- 2026-10-01 05:23Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 198.8K input, 144.3K cached, 1.8K output · $0.000 est · verdict: fail (unmet: 2)
+  - retrying with findings (attempt 2/3)
+- Base refreshed before Build admission.
