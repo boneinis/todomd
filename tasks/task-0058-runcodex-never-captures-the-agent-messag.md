@@ -1,7 +1,7 @@
 ---
 id: task-0058
 title: runCodex never captures the agent message unless a jsonSchema is set — codex Builds report empty finalMessage
-status: Verify
+status: Done
 type: bug
 priority: high
 labels: [runner, codex]
@@ -12,14 +12,14 @@ assignee:
 agent:
 build_profile: standard
 session_id: d56adc6b-0151-4268-88cd-83fcfdf2f9df
-worktree: todomd/task-0058
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+worktree:
+verification: { attempts: 1, max_attempts: 3, last_verdict: pass }
 triaged: 2026-09-30
 cost_usd: 9.2569
 needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: low
-base_branch: main
+base_branch:
 ci_evidence: { head: 373224b23e99ca15c8af79a20f6805551906953b, command: npm test, execution: local, passed_at: '2026-10-01T03:47:29.227Z', clean: true }
 ci_remote: {  }
 recovery_stage:
@@ -86,3 +86,4 @@ M docs/providers.md
 - 2026-10-01 03:16Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0058
 - 2026-10-01 03:27Z · Build attempt 1 · 9 turns · claude/claude-sonnet-5 · subscription CLI · 18 input, 1.36M cached, 2.5K output · $3.274 est · ok
 - 2026-10-01 03:47Z · CI attempt 1 · 335.0s · `npm test` passed
+- 2026-10-01 03:48Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 24.5K input, 0 cached, 950 output · $0.000 est · verdict: pass
