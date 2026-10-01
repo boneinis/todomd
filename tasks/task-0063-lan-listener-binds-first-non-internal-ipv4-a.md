@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: Plan
+status: Planned
 type: bug
 priority: medium
 labels: [server, lan]
@@ -13,6 +13,9 @@ agent:
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_profile: standard
+build_limits: {  }
+complexity: medium
 ---
 
 ## Description
@@ -39,3 +42,4 @@ The LAN/mobile listener calls `lanAddress()`, which returns the first non-intern
 
 ## Run Log
 - 2026-10-01 08:13Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-01 14:30Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 190.7K input, 150.5K cached, 3.0K output · $0.000 est · ok
