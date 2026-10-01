@@ -1,7 +1,7 @@
 ---
 id: task-0060
 title: Present acceptance criteria as a review contract
-status: Planned
+status: Queue
 type: bug
 priority: medium
 labels: []
