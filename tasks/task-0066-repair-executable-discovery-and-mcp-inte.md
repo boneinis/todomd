@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -13,14 +13,14 @@ assignee:
 agent:
 triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
-session_id: shared-spandex
+session_id: be8d9dbf-e7d3-4a19-ab01-32a5a924eabb
 worktree: todomd/task-0066
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 0.2058
+cost_usd: 0.8975
 ---
 
 ## Description
@@ -67,3 +67,4 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
   - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
 - 2026-10-01 23:30Z · Escalate attempt 2 · 8 turns · claude/claude-opus-5-5 · subscription CLI · 12 input, 134.8K cached, 4.0K output · $0.206 est · diagnosis complete
 - Base refreshed before Build admission.
+- 2026-10-01 23:47Z · Build attempt 3 · 26 turns · claude/claude-opus-5-5 · subscription CLI · 38 input, 807.5K cached, 13.2K output · $0.692 est · ok (escalation repair)
