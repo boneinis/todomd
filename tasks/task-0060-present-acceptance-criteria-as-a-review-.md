@@ -1,7 +1,7 @@
 ---
 id: task-0060
 title: Present acceptance criteria as a review contract
-status: Verify
+status: Done
 type: bug
 priority: medium
 labels: []
@@ -14,9 +14,9 @@ agent:
 triaged: n/a (chunk 1/2 of task-0053)
 build_profile: standard
 session_id: b26aa915-c3a6-4cdc-9cd4-2e849b09c2dc
-worktree: todomd/task-0060
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
-base_branch: main
+worktree:
+verification: { attempts: 1, max_attempts: 3, last_verdict: pass }
+base_branch:
 ci_evidence: { head: cd80afdb707d49b154dceae9f3eb1b30d38ddd2a, command: npm test, execution: local, passed_at: '2026-10-01T03:41:28.947Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -70,3 +70,4 @@ M public/app.js
 - 2026-10-01 03:04Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0060
 - 2026-10-01 03:20Z · Build attempt 1 · 13 turns · claude/claude-sonnet-5 · subscription CLI · 26 input, 1.61M cached, 2.4K output · $2.383 est · ok
 - 2026-10-01 03:41Z · CI attempt 1 · 184.7s · `npm test` passed
+- 2026-10-01 03:41Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 30.9K input, 0 cached, 475 output · $0.000 est · verdict: pass
