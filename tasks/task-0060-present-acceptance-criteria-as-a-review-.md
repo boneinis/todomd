@@ -1,7 +1,7 @@
 ---
 id: task-0060
 title: Present acceptance criteria as a review contract
-status: Build
+status: Needs Human
 type: bug
 priority: medium
 labels: []
@@ -20,9 +20,9 @@ base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 1.8143
-needs_human_reason:
-recovery_stage:
+cost_usd: 3.7972
+needs_human_reason: uncommitted_build
+recovery_stage: Build
 ---
 
 ## Description
@@ -56,3 +56,14 @@ M public/app.js
  M test/ui/ui-smoke.test.js
  M test/voice.test.js
 - 2026-10-01 02:34Z · Resume Build · continuing attempt 1 after uncommitted_build in preserved worktree todomd/task-0060
+- 2026-10-01 02:58Z · Build attempt 1 · 6 turns · claude/claude-sonnet-5 · subscription CLI · 12 input, 686.3K cached, 737 output · $1.983 est · incomplete: uncommitted candidate changes
+  - uncommitted_build: Build finished but left uncommitted changes. Resume Build and commit or intentionally discard them before CI:
+M public/app.js
+ M public/index.html
+ M public/style.css
+ M src/board.js
+ M src/server.js
+ M src/voice.js
+ M test/board.test.js
+ M test/ui/ui-smoke.test.js
+ M test/voice.test.js
