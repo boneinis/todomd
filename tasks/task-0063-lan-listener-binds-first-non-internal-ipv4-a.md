@@ -1,7 +1,7 @@
 ---
 id: task-0063
 title: LAN listener binds the first non-internal IPv4 (ZeroTier wins) — plain LAN access unreachable
-status: CI
+status: Verify
 type: bug
 priority: medium
 labels: [server, lan]
@@ -18,7 +18,7 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 worktree: todomd/task-0063
-ci_evidence: {  }
+ci_evidence: { head: d4ed896b22045f53d8f470dfde4b21ed7be21fd4, command: npm test, execution: local, passed_at: '2026-10-01T22:31:08.131Z', clean: true }
 ci_remote: {  }
 verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 session_id: zinc-tenor
@@ -54,3 +54,12 @@ The LAN/mobile listener calls `lanAddress()`, which returns the first non-intern
 - 2026-10-01 17:20Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 24.6K input, 0 cached, 1.9K output · $0.000 est · verdict: fail (unmet: 1)
   - retrying with findings (attempt 2/3)
 - 2026-10-01 18:09Z · Build attempt 2 · 44 turns · devin/swe-2-high · subscription CLI · 2.86M input, 2.69M cached, 38.9K output · $0.000 est · ok
+- 2026-10-01 18:38Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 19:09Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 19:48Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 20:40Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 21:03Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 21:37Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 22:03Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 22:18Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 22:31Z · CI attempt 2 · 236.7s · `npm test` passed
