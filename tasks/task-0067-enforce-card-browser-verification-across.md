@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -13,7 +13,7 @@ assignee:
 agent:
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
-session_id: joyous-cake
+session_id: 4a2172aa-8f57-4d75-b4b9-079f99ecfcca
 worktree: todomd/task-0067
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
@@ -21,8 +21,8 @@ ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
-needs_human_reason:
-recovery_stage:
+needs_human_reason: run_timeout
+recovery_stage: Build
 ---
 
 ## Description
@@ -65,3 +65,5 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
   - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
 - 2026-10-02 14:21Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 14 input, 172.5K cached, 6.8K output · $0.535 est · diagnosis complete
 - Base refreshed before Build admission.
+- 2026-10-02 15:19Z · Build attempt 3 · ? turns · claude/claude-opus-5-5 · subscription CLI · usage unavailable · $0.000 est · run timeout
+  - run_timeout: Build exceeded the 45m stage timeout
