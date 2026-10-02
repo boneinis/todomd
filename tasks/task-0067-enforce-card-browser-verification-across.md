@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -20,6 +20,9 @@ base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
+cost_usd: 0
+needs_human_reason: run_timeout
+recovery_stage: Build
 ---
 
 ## Description
@@ -44,3 +47,5 @@ Enforce card browser verification across completion paths
 Risks: Completion guards affect recovery and delivery workflows. Exemption classification and evidence submission must not create bypasses; unaffected projects must retain existing behavior.
 
 ## Run Log
+- 2026-10-02 04:11Z · Build attempt 1 · 0 turns · devin/swe-2-high · subscription CLI · usage unavailable · $0.000 est · run timeout
+  - run_timeout: Build exceeded the 45m stage timeout
