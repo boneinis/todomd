@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ session_id: equinox-marlin
 worktree: todomd/task-0067
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: f0d868e3d0fd6c58d5e5d674f95afc513bda40fa, command: npm test, execution: local, passed_at: '2026-10-02T16:17:20.384Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
@@ -71,3 +71,7 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - 2026-10-02 15:50Z · Build attempt 3 · terminated a background process group the finished slice left running
 - 2026-10-02 15:50Z · Build attempt 3 · 0 turns · devin/swe-2-high · subscription CLI · usage unavailable · $0.000 est · checkpoint 1/3 (standard): no worktree progress (4 changed paths)
 - 2026-10-02 15:55Z · Build attempt 3 · 12 turns · devin/swe-2-high · subscription CLI · 305.6K input, 283.4K cached, 2.7K output · $0.000 est · ok
+- 2026-10-02 15:56Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-02 16:03Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-02 16:08Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-02 16:17Z · CI attempt 3 · 191.0s · `npm test` passed
