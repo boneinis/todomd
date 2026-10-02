@@ -1,7 +1,7 @@
 ---
 id: task-0065
 title: Devin vendor must reject non-SWE model families — opus/gemini through devin is currently routable
-status: Verify
+status: Build
 type: bug
 priority: high
 labels: [runner, models]
@@ -18,9 +18,9 @@ build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
 base_branch: main
 worktree: todomd/task-0065
-ci_evidence: { head: 5ab8e79508992265238071af86707a3d9c6a5895, command: npm test, execution: local, passed_at: '2026-10-02T12:39:16.982Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 session_id: excessive-jaborosa
 ---
 
@@ -52,3 +52,6 @@ session_id: excessive-jaborosa
 - 2026-10-02 11:47Z · Build attempt 1 · 22 turns · devin/swe-2-high · subscription CLI · 758.7K input, 720.9K cached, 12.2K output · $0.000 est · ok
 - 2026-10-02 11:50Z · CI attempt 1 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 12:39Z · CI attempt 1 · 266.3s · `npm test` passed
+- 2026-10-02 12:40Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 18.9K input, 0 cached, 1.1K output · $0.000 est · preliminary review complete; 1 focused check queued
+- 2026-10-02 12:50Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 218.3K input, 170.5K cached, 1.6K output · $0.000 est · verdict: fail (unmet: 2)
+  - retrying with findings (attempt 2/3)
