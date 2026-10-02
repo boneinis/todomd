@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Verify
+status: Done
 type: feature
 priority: medium
 labels: []
@@ -14,9 +14,9 @@ agent:
 triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
 session_id: sharp-scilla
-worktree: todomd/task-0066
-verification: { attempts: 4, max_attempts: 4, last_verdict: fail }
-base_branch: main
+worktree:
+verification: { attempts: 4, max_attempts: 4, last_verdict: pass }
+base_branch:
 ci_evidence: { head: 20044537d7b0acd6388e0ebfec80ba1f28500bc8, command: npm test, execution: local, passed_at: '2026-10-02T03:19:04.076Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
@@ -83,3 +83,4 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 - 2026-10-02 02:54Z · CI attempt 4 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 03:10Z · CI attempt 4 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 03:19Z · CI attempt 4 · 175.5s · `npm test` passed
+- 2026-10-02 03:20Z · Verify attempt 4 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 39.4K input, 0 cached, 1.6K output · $0.000 est · verdict: pass
