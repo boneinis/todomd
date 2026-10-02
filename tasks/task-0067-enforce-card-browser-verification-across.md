@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -21,7 +21,7 @@ ci_evidence: { head: 54d6e07702659bf30da82fe455d1e4c4b6cf5b9c, command: npm test
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -109,3 +109,10 @@ ok 1159 - invalidateProject drops every pending proposal for a removed repositor
 - 2026-10-02 23:02Z · Return to Build · human approved repair attempt 5/5 with instruction: CI attempt 4: `npm test` FAILED — 1199/1202 pass, 3 failures (the card log truncated before the `not ok` lines). The attempt-4 freshness/finalization fixes (base_branch guard in finalizeCard, immutable fork-base scope capture, merged-HEAD p
 - 2026-10-02 23:42Z · Build attempt 5 · 73 turns · devin/swe-2-high · subscription CLI · 5.39M input, 5.27M cached, 41.7K output · $0.000 est · ok
 - 2026-10-02 23:45Z · CI attempt 5 · 210.0s · `npm test` passed
+- 2026-10-02 23:48Z · Verify attempt 5 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 43.3K input, 0 cached, 1.8K output · $0.000 est · preliminary review complete; 3 focused checks queued
+- 2026-10-02 23:55Z · Verify attempt 5 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 740.6K input, 640.5K cached, 3.4K output · $0.000 est · verdict: fail (unmet: 3)
+  - attempts_exhausted: Accepted trusted npm test evidence for the exact clean HEAD 54d6e07702659bf30da82fe455d1e4c4b6cf5b9c. Completed read-onl
+…
+nts completion through UI, API, MCP-accessible, automated, and delivery paths.
+- unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
+- unmet: Failed browser assertions return the card for correction and preserve evidence history.
