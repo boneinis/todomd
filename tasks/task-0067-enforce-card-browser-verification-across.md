@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Verify
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -15,12 +15,12 @@ triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
 session_id: joyous-cake
 worktree: todomd/task-0067
-verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: f91a7e425775b12ea739ff522c19bbaa9e51187f, command: npm test, execution: local, passed_at: '2026-10-02T14:05:27.308Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 0
+cost_usd: 0.5347
 needs_human_reason:
 recovery_stage:
 ---
@@ -60,3 +60,8 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - 2026-10-02 13:20Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 13:44Z · CI attempt 2 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 14:05Z · CI attempt 2 · 246.3s · `npm test` passed
+- 2026-10-02 14:06Z · Verify attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 41.9K input, 0 cached, 1.5K output · $0.000 est · preliminary review complete; 3 focused checks queued
+- 2026-10-02 14:20Z · Verify attempt 2 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 991.7K input, 889.5K cached, 4.9K output · $0.000 est · verdict: fail (unmet: 3)
+  - escalating after 2 failed reviews: Fable diagnosis → Fable repair → final Codex gate
+- 2026-10-02 14:21Z · Escalate attempt 2 · 9 turns · claude/claude-opus-5-5 · subscription CLI · 14 input, 172.5K cached, 6.8K output · $0.535 est · diagnosis complete
+- Base refreshed before Build admission.
