@@ -1,7 +1,7 @@
 ---
 id: task-0065
 title: Devin vendor must reject non-SWE model families — opus/gemini through devin is currently routable
-status: Plan
+status: Planned
 type: bug
 priority: high
 labels: [runner, models]
@@ -13,6 +13,9 @@ agent:
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_profile: standard
+build_limits: {  }
+complexity: medium
 ---
 
 ## Description
@@ -39,3 +42,4 @@ needs_human_reason:
 
 ## Run Log
 - 2026-10-01 15:54Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-02 02:39Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 171.7K input, 133.0K cached, 2.6K output · $0.000 est · ok
