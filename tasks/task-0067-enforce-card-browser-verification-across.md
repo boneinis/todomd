@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -13,11 +13,11 @@ assignee:
 agent:
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
-session_id: antique-ambulance
+session_id: shore-march
 worktree: todomd/task-0067
 verification: { attempts: 5, max_attempts: 5, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 54d6e07702659bf30da82fe455d1e4c4b6cf5b9c, command: npm test, execution: local, passed_at: '2026-10-02T23:45:43.509Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
@@ -107,3 +107,5 @@ ok 1159 - invalidateProject drops every pending proposal for a removed repositor
 # todo 0
 # duration_ms 150241.229125
 - 2026-10-02 23:02Z · Return to Build · human approved repair attempt 5/5 with instruction: CI attempt 4: `npm test` FAILED — 1199/1202 pass, 3 failures (the card log truncated before the `not ok` lines). The attempt-4 freshness/finalization fixes (base_branch guard in finalizeCard, immutable fork-base scope capture, merged-HEAD p
+- 2026-10-02 23:42Z · Build attempt 5 · 73 turns · devin/swe-2-high · subscription CLI · 5.39M input, 5.27M cached, 41.7K output · $0.000 est · ok
+- 2026-10-02 23:45Z · CI attempt 5 · 210.0s · `npm test` passed
