@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -54,3 +54,4 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - 2026-10-02 11:37Z · CI attempt 1 · 241.2s · `npm test` passed
 - 2026-10-02 11:49Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 555.8K input, 473.6K cached, 3.2K output · $0.000 est · verdict: fail (unmet: 3)
   - retrying with findings (attempt 2/3)
+- 2026-10-02 12:34Z · Build attempt 2 · 23 turns · devin/swe-2-high · subscription CLI · 2.12M input, 2.05M cached, 9.9K output · $0.000 est · ok
