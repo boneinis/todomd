@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Needs Human
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -21,8 +21,8 @@ ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
-needs_human_reason: run_timeout
-recovery_stage: Build
+needs_human_reason:
+recovery_stage:
 ---
 
 ## Description
@@ -67,3 +67,4 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - Base refreshed before Build admission.
 - 2026-10-02 15:19Z · Build attempt 3 · ? turns · claude/claude-opus-5-5 · subscription CLI · usage unavailable · $0.000 est · run timeout
   - run_timeout: Build exceeded the 45m stage timeout
+- 2026-10-02 15:50Z · Resume Build · continuing attempt 3 after run_timeout in preserved worktree todomd/task-0067
