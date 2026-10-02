@@ -1,7 +1,7 @@
 ---
 id: task-0071
 title: Resume Build replays stale session_id on a changed agent — cross-vendor resume fails agent_error
-status: Queue
+status: Build
 type: bug
 priority: high
 labels: [pipeline, build, routing]
@@ -12,13 +12,16 @@ assignee:
 agent:
 build_profile: standard
 session_id:
-worktree:
-verification: { attempts: 0, max_attempts: 3, last_verdict: }
+worktree: todomd/task-0071
+verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
-build_limits: {  }
+build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
+base_branch: main
+ci_evidence: {  }
+ci_remote: {  }
 ---
 
 ## Description
