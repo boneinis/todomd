@@ -1,7 +1,7 @@
 ---
 id: task-0071
 title: Resume Build replays stale session_id on a changed agent — cross-vendor resume fails agent_error
-status: Verify
+status: Done
 type: bug
 priority: high
 labels: [pipeline, build, routing]
@@ -12,14 +12,14 @@ assignee:
 agent:
 build_profile: standard
 session_id: vivid-plastic
-worktree: todomd/task-0071
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+worktree:
+verification: { attempts: 1, max_attempts: 3, last_verdict: pass }
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
 build_limits: { max_slices: 3, budget_minutes: 60 }
 complexity: medium
-base_branch: main
+base_branch:
 ci_evidence: { head: 4d8af30cb00f09f5d9cd8474256c230ffd1fd5b2, command: npm test, execution: local, passed_at: '2026-10-02T03:07:36.061Z', clean: true }
 ci_remote: {  }
 ---
@@ -61,3 +61,4 @@ Summary: Single implementation plan; no split.
 - 2026-10-02 00:36Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 204.8K input, 164.9K cached, 2.9K output · $0.000 est · ok
 - 2026-10-02 02:51Z · Build attempt 1 · 45 turns · devin/swe-2-high · subscription CLI · 4.76M input, 4.50M cached, 48.7K output · $0.000 est · ok
 - 2026-10-02 03:07Z · CI attempt 1 · 177.5s · `npm test` passed
+- 2026-10-02 03:08Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 32.4K input, 0 cached, 1.1K output · $0.000 est · verdict: pass
