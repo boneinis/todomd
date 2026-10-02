@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -21,6 +21,8 @@ ci_evidence: { head: 44576ba23dc10699fea45f2e5ac6034328e37442, command: npm test
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.8975
+needs_human_reason: attempts_exhausted
+recovery_stage:
 ---
 
 ## Description
@@ -72,3 +74,7 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 - 2026-10-01 23:58Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 00:08Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 00:19Z · CI attempt 3 · 273.9s · `npm test` passed
+- 2026-10-02 00:21Z · Verify attempt 3 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 341.2K input, 252.5K cached, 3.0K output · $0.000 est · verdict: fail
+  - attempts_exhausted: Trusted npm test passed for the exact clean candidate HEAD. Adversarial review found a credential leak in bin/todomd-mcp
+…
+, exposing the credential in captured client logs. Consume duplicate values without echoing them, or stop parsing with a generic duplicate-option error. Add a regression test asserting duplicate token arguments exit nonzero without including either token in stdout or stderr.
