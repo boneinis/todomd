@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -13,7 +13,7 @@ assignee:
 agent:
 triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
-session_id: be8d9dbf-e7d3-4a19-ab01-32a5a924eabb
+session_id: sharp-scilla
 worktree: todomd/task-0066
 verification: { attempts: 4, max_attempts: 4, last_verdict: fail }
 base_branch: main
@@ -79,3 +79,4 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 …
 , exposing the credential in captured client logs. Consume duplicate values without echoing them, or stop parsing with a generic duplicate-option error. Add a regression test asserting duplicate token arguments exit nonzero without including either token in stdout or stderr.
 - 2026-10-02 02:21Z · Return to Build · human approved repair attempt 4/4 with instruction: Verify attempt 3 finding (all acceptance criteria otherwise met): credential leak in bin/todomd-mcp.js ~lines 29-40 — duplicate `--token SECRET --token SECRET` leaves the second value unconsumed; the next iteration treats SECRET as an unrec
+- 2026-10-02 02:37Z · Build attempt 4 · 22 turns · devin/swe-2-high · subscription CLI · 662.8K input, 632.3K cached, 8.7K output · $0.000 est · ok
