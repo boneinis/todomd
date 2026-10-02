@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Planned
+status: Queue
 type: feature
 priority: medium
 labels: []
