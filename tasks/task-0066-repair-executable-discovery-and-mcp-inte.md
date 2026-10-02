@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ session_id: be8d9dbf-e7d3-4a19-ab01-32a5a924eabb
 worktree: todomd/task-0066
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 44576ba23dc10699fea45f2e5ac6034328e37442, command: npm test, execution: local, passed_at: '2026-10-02T00:19:10.517Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.8975
@@ -68,3 +68,7 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 - 2026-10-01 23:30Z · Escalate attempt 2 · 8 turns · claude/claude-opus-5-5 · subscription CLI · 12 input, 134.8K cached, 4.0K output · $0.206 est · diagnosis complete
 - Base refreshed before Build admission.
 - 2026-10-01 23:47Z · Build attempt 3 · 26 turns · claude/claude-opus-5-5 · subscription CLI · 38 input, 807.5K cached, 13.2K output · $0.692 est · ok (escalation repair)
+- 2026-10-01 23:49Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-01 23:58Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-02 00:08Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
+- 2026-10-02 00:19Z · CI attempt 3 · 273.9s · `npm test` passed
