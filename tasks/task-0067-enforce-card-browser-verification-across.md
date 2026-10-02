@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -21,7 +21,7 @@ ci_evidence: { head: f0d868e3d0fd6c58d5e5d674f95afc513bda40fa, command: npm test
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -75,3 +75,10 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - 2026-10-02 16:03Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 16:08Z · CI attempt 3 · cancelled (critical resource pressure) — requeued
 - 2026-10-02 16:17Z · CI attempt 3 · 191.0s · `npm test` passed
+- 2026-10-02 16:19Z · Verify attempt 3 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 42.6K input, 0 cached, 1.4K output · $0.000 est · preliminary review complete; 4 focused checks queued
+- 2026-10-02 16:23Z · Verify attempt 3 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 1.16M input, 1.04M cached, 4.6K output · $0.000 est · verdict: fail (unmet: 3)
+  - attempts_exhausted: Reviewed all 19 changed files and relevant callers/callees. Accepted trusted npm test evidence for clean HEAD f0d868e3d0
+…
+nts completion through UI, API, MCP-accessible, automated, and delivery paths.
+- unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
+- unmet: Failed browser assertions return the card for correction and preserve evidence history.
