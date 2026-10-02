@@ -1,7 +1,7 @@
 ---
 id: task-0071
 title: Resume Build replays stale session_id on a changed agent — cross-vendor resume fails agent_error
-status: Planned
+status: Queue
 type: bug
 priority: high
 labels: [pipeline, build, routing]
