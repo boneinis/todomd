@@ -1,7 +1,7 @@
 ---
 id: task-0065
 title: Devin vendor must reject non-SWE model families — opus/gemini through devin is currently routable
-status: Build
+status: CI
 type: bug
 priority: high
 labels: [runner, models]
@@ -55,3 +55,4 @@ session_id: excessive-jaborosa
 - 2026-10-02 12:40Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 18.9K input, 0 cached, 1.1K output · $0.000 est · preliminary review complete; 1 focused check queued
 - 2026-10-02 12:50Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 218.3K input, 170.5K cached, 1.6K output · $0.000 est · verdict: fail (unmet: 2)
   - retrying with findings (attempt 2/3)
+- 2026-10-02 13:17Z · Build attempt 2 · 44 turns · devin/swe-2-high · subscription CLI · 2.21M input, 2.10M cached, 17.8K output · $0.000 est · ok
