@@ -1,7 +1,7 @@
 ---
 id: task-0071
 title: Resume Build replays stale session_id on a changed agent — cross-vendor resume fails agent_error
-status: Plan
+status: Planned
 type: bug
 priority: high
 labels: [pipeline, build, routing]
@@ -17,6 +17,8 @@ verification: { attempts: 0, max_attempts: 3, last_verdict: }
 triaged: 2026-10-01
 cost_usd: 0
 needs_human_reason:
+build_limits: {  }
+complexity: medium
 ---
 
 ## Description
@@ -43,5 +45,14 @@ Operator workaround used: clear session_id in the card frontmatter, then POST /a
 
 ## Implementation Plan
 
+1. In src/pipeline.js, persist a normalized session_agent alongside session_id whenever spawnTracked observes a Build session and recordRun saves its final session. Use the actual launched vendor, never current routing. Keep other stages from overwriting either field, and clear both together when restarting Build or discarding a session.
+2. Carry the saved session owner through resumeBuildClaimed into recoveryBuilds. At Build launch, after resolving the actual vendor through existing routing, forward the saved session only when its normalized owner matches that vendor. Otherwise clear the saved session pair and use the existing fresh recovery prompt in the same worktree, branch, and attempt. Treat missing or invalid ownership on legacy cards as unknown and start fresh. Append a deterministic run-log explanation, such as 'session dropped: agent changed claude -> codex' or 'session dropped: owner unknown'. Check at launch so routing changes after admission are covered.
+3. Extend test/pipeline.test.js using its existing fake-agent and fake-codex infrastructure. Capture the receiving runner's arguments and prove that a claude session is never forwarded after Build routing changes to codex. Assert that partial work survives, the attempt stays unchanged, the card completes without a session-mismatch stop, and the run log records the drop. Cover matching ownership, normalized aliases, unknown legacy ownership, and routing changes between admission and launch. Update saved-session fixtures to include ownership where tests intentionally exercise resume or expired-session fallback. Assert ownership is persisted during Build initialization and completion and survives unrelated stages.
+4. Run node --test test/pipeline.test.js test/candidate-recovery.test.js, then npm run test:unit to check existing recovery and routing behavior.
+Risks: Legacy sessions without recorded ownership lose conversation context; the existing recovery prompt must preserve worktree progress and the authoritative task instructions. Session ID and owner must be persisted together using the existing frontmatter patch mechanism, including initialization before interruption.
+The existing card frontmatter was validated with js-yaml; no files were edited.
+Summary: Single implementation plan; no split.
+
 ## Run Log
 - 2026-10-01 17:41Z · Triage · 1 turns · gemini/gemini-3.7-flash-high · gateway · usage unavailable · $0.000 est · ok
+- 2026-10-02 00:36Z · Plan · 1 turns · codex/gpt-6.1-sol · subscription CLI · 204.8K input, 164.9K cached, 2.9K output · $0.000 est · ok
