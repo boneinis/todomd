@@ -1,7 +1,7 @@
 ---
 id: task-0065
 title: Devin vendor must reject non-SWE model families — opus/gemini through devin is currently routable
-status: Planned
+status: Queue
 type: bug
 priority: high
 labels: [runner, models]
