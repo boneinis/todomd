@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -17,7 +17,7 @@ session_id: sharp-scilla
 worktree: todomd/task-0066
 verification: { attempts: 4, max_attempts: 4, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 20044537d7b0acd6388e0ebfec80ba1f28500bc8, command: npm test, execution: local, passed_at: '2026-10-02T03:19:04.076Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.8975
@@ -80,3 +80,6 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
 , exposing the credential in captured client logs. Consume duplicate values without echoing them, or stop parsing with a generic duplicate-option error. Add a regression test asserting duplicate token arguments exit nonzero without including either token in stdout or stderr.
 - 2026-10-02 02:21Z · Return to Build · human approved repair attempt 4/4 with instruction: Verify attempt 3 finding (all acceptance criteria otherwise met): credential leak in bin/todomd-mcp.js ~lines 29-40 — duplicate `--token SECRET --token SECRET` leaves the second value unconsumed; the next iteration treats SECRET as an unrec
 - 2026-10-02 02:37Z · Build attempt 4 · 22 turns · devin/swe-2-high · subscription CLI · 662.8K input, 632.3K cached, 8.7K output · $0.000 est · ok
+- 2026-10-02 02:54Z · CI attempt 4 · cancelled (critical resource pressure) — requeued
+- 2026-10-02 03:10Z · CI attempt 4 · cancelled (critical resource pressure) — requeued
+- 2026-10-02 03:19Z · CI attempt 4 · 175.5s · `npm test` passed
