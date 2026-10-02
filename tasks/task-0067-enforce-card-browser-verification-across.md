@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Verify
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -15,9 +15,9 @@ triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
 session_id: joyous-cake
 worktree: todomd/task-0067
-verification: { attempts: 1, max_attempts: 3, last_verdict:  }
+verification: { attempts: 2, max_attempts: 3, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 84bf25eefd72057eb701ce8983c63274f59ad6e2, command: npm test, execution: local, passed_at: '2026-10-02T11:37:09.900Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0
@@ -52,3 +52,5 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - 2026-10-02 11:28Z · Resume Build · continuing attempt 1 after run_timeout in preserved worktree todomd/task-0067
 - 2026-10-02 11:33Z · Build attempt 1 · 15 turns · devin/swe-2-high · subscription CLI · 416.3K input, 387.2K cached, 2.7K output · $0.000 est · ok
 - 2026-10-02 11:37Z · CI attempt 1 · 241.2s · `npm test` passed
+- 2026-10-02 11:49Z · Verify attempt 1 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 555.8K input, 473.6K cached, 3.2K output · $0.000 est · verdict: fail (unmet: 3)
+  - retrying with findings (attempt 2/3)
