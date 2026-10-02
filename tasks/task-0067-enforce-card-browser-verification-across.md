@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Needs Human
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -15,13 +15,13 @@ triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
 session_id: equinox-marlin
 worktree: todomd/task-0067
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 4, max_attempts: 4, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: f0d868e3d0fd6c58d5e5d674f95afc513bda40fa, command: npm test, execution: local, passed_at: '2026-10-02T16:17:20.384Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
@@ -82,3 +82,6 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 - unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
 - unmet: Failed browser assertions return the card for correction and preserve evidence history.
+- 2026-10-02 21:58Z · Return to Build · human approved repair attempt 4/4 with instruction: Verify attempt 3 found 3 defects in evidence freshness/finalization — fix exactly these, preserving prior work in the preserved worktree:
+
+1. src/board.js ~694-737 finalizeCard never checks base_branch against the checked-out branch — a can
