@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -13,7 +13,7 @@ assignee:
 agent:
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
-session_id: 4a2172aa-8f57-4d75-b4b9-079f99ecfcca
+session_id: equinox-marlin
 worktree: todomd/task-0067
 verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
 base_branch: main
@@ -68,3 +68,6 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - 2026-10-02 15:19Z · Build attempt 3 · ? turns · claude/claude-opus-5-5 · subscription CLI · usage unavailable · $0.000 est · run timeout
   - run_timeout: Build exceeded the 45m stage timeout
 - 2026-10-02 15:50Z · Resume Build · continuing attempt 3 after run_timeout in preserved worktree todomd/task-0067
+- 2026-10-02 15:50Z · Build attempt 3 · terminated a background process group the finished slice left running
+- 2026-10-02 15:50Z · Build attempt 3 · 0 turns · devin/swe-2-high · subscription CLI · usage unavailable · $0.000 est · checkpoint 1/3 (standard): no worktree progress (4 changed paths)
+- 2026-10-02 15:55Z · Build attempt 3 · 12 turns · devin/swe-2-high · subscription CLI · 305.6K input, 283.4K cached, 2.7K output · $0.000 est · ok
