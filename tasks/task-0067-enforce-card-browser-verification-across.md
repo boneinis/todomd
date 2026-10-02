@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -13,7 +13,7 @@ assignee:
 agent:
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
-session_id:
+session_id: joyous-cake
 worktree: todomd/task-0067
 verification: { attempts: 1, max_attempts: 3, last_verdict:  }
 base_branch: main
@@ -50,3 +50,4 @@ Risks: Completion guards affect recovery and delivery workflows. Exemption class
 - 2026-10-02 04:11Z · Build attempt 1 · 0 turns · devin/swe-2-high · subscription CLI · usage unavailable · $0.000 est · run timeout
   - run_timeout: Build exceeded the 45m stage timeout
 - 2026-10-02 11:28Z · Resume Build · continuing attempt 1 after run_timeout in preserved worktree todomd/task-0067
+- 2026-10-02 11:33Z · Build attempt 1 · 15 turns · devin/swe-2-high · subscription CLI · 416.3K input, 387.2K cached, 2.7K output · $0.000 est · ok
