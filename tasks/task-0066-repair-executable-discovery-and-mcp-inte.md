@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Queue
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -15,9 +15,9 @@ triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
 session_id: be8d9dbf-e7d3-4a19-ab01-32a5a924eabb
 worktree: todomd/task-0066
-verification: { attempts: 3, max_attempts: 4, last_verdict: fail }
+verification: { attempts: 4, max_attempts: 4, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 44576ba23dc10699fea45f2e5ac6034328e37442, command: npm test, execution: local, passed_at: '2026-10-02T00:19:10.517Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.8975
