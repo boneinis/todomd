@@ -1,7 +1,7 @@
 ---
 id: task-0066
 title: Repair executable discovery and MCP integration
-status: Needs Human
+status: Queue
 type: feature
 priority: medium
 labels: []
@@ -15,13 +15,13 @@ triaged: n/a (chunk 1/5 of task-0059)
 build_profile: standard
 session_id: be8d9dbf-e7d3-4a19-ab01-32a5a924eabb
 worktree: todomd/task-0066
-verification: { attempts: 3, max_attempts: 3, last_verdict: fail }
+verification: { attempts: 3, max_attempts: 4, last_verdict: fail }
 base_branch: main
 ci_evidence: { head: 44576ba23dc10699fea45f2e5ac6034328e37442, command: npm test, execution: local, passed_at: '2026-10-02T00:19:10.517Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.8975
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
@@ -78,3 +78,4 @@ Risks: Authoritative installation and plugin/skill locations remain unconfirmed;
   - attempts_exhausted: Trusted npm test passed for the exact clean candidate HEAD. Adversarial review found a credential leak in bin/todomd-mcp
 …
 , exposing the credential in captured client logs. Consume duplicate values without echoing them, or stop parsing with a generic duplicate-option error. Add a regression test asserting duplicate token arguments exit nonzero without including either token in stdout or stderr.
+- 2026-10-02 02:21Z · Return to Build · human approved repair attempt 4/4 with instruction: Verify attempt 3 finding (all acceptance criteria otherwise met): credential leak in bin/todomd-mcp.js ~lines 29-40 — duplicate `--token SECRET --token SECRET` leaves the second value unconsumed; the next iteration treats SECRET as an unrec
