@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: CI
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -21,8 +21,8 @@ ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
-needs_human_reason:
-recovery_stage:
+needs_human_reason: ci_attempts_exhausted
+recovery_stage: CI
 ---
 
 ## Description
@@ -86,3 +86,24 @@ nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 
 1. src/board.js ~694-737 finalizeCard never checks base_branch against the checked-out branch — a can
 - 2026-10-02 22:18Z · Build attempt 4 · 34 turns · devin/swe-2-high · subscription CLI · 2.78M input, 2.66M cached, 45.5K output · $0.000 est · ok
+- 2026-10-02 22:20Z · CI attempt 4 · 150.4s · `npm test` failed
+  - ci_attempts_exhausted: `npm test` exited 1
+er-controlled card text
+ok 1152 - voice summaries and card status sanitize and bound user-controlled
+…
+r a removed repository
+ok 1159 - invalidateProject drops every pending proposal for a removed repository
+  ---
+  duration_ms: 192.468375
+  type: 'test'
+  ...
+1..1159
+# tests 1202
+# suites 10
+# pass 1199
+# fail 3
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 150241.229125
+
