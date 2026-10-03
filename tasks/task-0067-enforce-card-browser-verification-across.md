@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -22,7 +22,7 @@ ci_evidence: { head: 6d0a86277f38b2ef6198beab8b09f4ceba51f058, command: npm test
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 4.9315
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -160,3 +160,10 @@ e/ci_evidence updates.
 - 2026-10-03 02:56Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
 - 2026-10-03 03:03Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
 - 2026-10-03 03:10Z · CI attempt 8 · 199.4s · `npm test` passed
+- 2026-10-03 03:13Z · Verify attempt 8 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 45.0K input, 0 cached, 1.4K output · $0.000 est · preliminary review complete; 3 focused checks queued
+- 2026-10-03 03:21Z · Verify attempt 8 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 1.20M input, 1.08M cached, 4.1K output · $0.000 est · verdict: fail (unmet: 2)
+  - attempts_exhausted: Trusted npm test evidence accepted for clean HEAD 6d0a86277f38b2ef6198beab8b09f4ceba51f058. All 20 changed files reviewe
+…
+ith uncommitted edits.
+- unmet: Missing, failed, stale, and capability-blocked verification prevents completion through UI, API, MCP-accessible, automated, and delivery paths.
+- unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
