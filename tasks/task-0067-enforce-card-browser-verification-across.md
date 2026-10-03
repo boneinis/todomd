@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -14,14 +14,14 @@ agent: claude
 model: claude-opus-5-5
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
-session_id: 17b11e6b-1d12-4ddd-8a95-9b134a3f4be4
+session_id: 95b09633-ef7d-4ee2-bb4f-acd4e2522738
 worktree: todomd/task-0067
 verification: { attempts: 9, max_attempts: 9, last_verdict: fail }
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 4.9315
+cost_usd: 7.8285
 needs_human_reason:
 recovery_stage:
 ---
@@ -170,3 +170,4 @@ ith uncommitted edits.
 - 2026-10-03 13:57Z · Return to Build · human approved repair attempt 9/9 with instruction: Verify attempt 8 — 3 completion-integrity defects (prior rounds' findings fixed; HEAD 6d0a862):
 
 1. Evidence survives card deletion + ID reuse: deleteCard (src/board.js:915) leaves .todomd/verification/<id>.json; createCard (:1024) realloca
+- 2026-10-03 14:11Z · Build attempt 9 · 68 turns · claude/claude-opus-5-5 · subscription CLI · 92 input, 4.66M cached, 47.6K output · $2.897 est · ok
