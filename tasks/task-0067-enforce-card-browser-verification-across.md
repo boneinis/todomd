@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 17b11e6b-1d12-4ddd-8a95-9b134a3f4be4
 worktree: todomd/task-0067
 verification: { attempts: 8, max_attempts: 8, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 6d0a86277f38b2ef6198beab8b09f4ceba51f058, command: npm test, execution: local, passed_at: '2026-10-03T03:10:32.044Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 4.9315
@@ -149,3 +149,14 @@ e/ci_evidence updates.
 
 1. src/board.js:703-773 + src/browser-verification.js:354-356: finalizeCard merges the card's named branch, but completionTarget prioritizes an unmerged commit chec
 - 2026-10-03 02:04Z · Build attempt 8 · 24 turns · claude/claude-opus-5-5 · subscription CLI · 36 input, 1.06M cached, 17.5K output · $1.105 est · ok
+- 2026-10-03 02:05Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:12Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:19Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:27Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:33Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:38Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:45Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:51Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 02:56Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 03:03Z · CI attempt 8 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 03:10Z · CI attempt 8 · 199.4s · `npm test` passed
