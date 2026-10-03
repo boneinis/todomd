@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 699ff518-f3c7-4763-bfbc-7d43871f6050
 worktree: todomd/task-0067
 verification: { attempts: 7, max_attempts: 7, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: 99b5a8518988bb412180c7535dd6ed1255ed7594, command: npm test, execution: local, passed_at: '2026-10-03T01:38:31.089Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 3.8264
@@ -134,3 +134,7 @@ nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 
 1. Delivery completes against the wrong browser-verified revision: src/server.js:247 evaluates evidence independently of ev
 - 2026-10-03 01:10Z · Build attempt 7 · 52 turns · claude/claude-opus-5-5 · subscription CLI · 78 input, 3.16M cached, 37.3K output · $2.140 est · ok
+- 2026-10-03 01:12Z · CI attempt 7 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 01:22Z · CI attempt 7 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 01:28Z · CI attempt 7 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 01:38Z · CI attempt 7 · 288.7s · `npm test` passed
