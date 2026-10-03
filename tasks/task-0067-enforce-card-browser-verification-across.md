@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Needs Human
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -10,18 +10,19 @@ parent: task-0059
 created_date: 2026-10-01
 source: chunk
 assignee:
-agent:
+agent: claude
+model: claude-opus-5-5
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
 session_id: shore-march
 worktree: todomd/task-0067
-verification: { attempts: 5, max_attempts: 5, last_verdict: fail }
+verification: { attempts: 6, max_attempts: 6, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 54d6e07702659bf30da82fe455d1e4c4b6cf5b9c, command: npm test, execution: local, passed_at: '2026-10-02T23:45:43.509Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 0.5347
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
@@ -116,3 +117,6 @@ ok 1159 - invalidateProject drops every pending proposal for a removed repositor
 nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 - unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
 - unmet: Failed browser assertions return the card for correction and preserve evidence history.
+- 2026-10-02 23:59Z · Return to Build · human approved repair attempt 6/6 with instruction: Verify attempt 5 (all prior findings now fixed; 2 remaining defects, both in the evidence-integrity path):
+
+1. src/browser-verification.js:188 — sourceFingerprint trims complete git tree entries including filenames. A rename src/calc.js -> 
