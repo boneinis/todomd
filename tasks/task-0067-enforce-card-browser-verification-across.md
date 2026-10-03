@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Verify
+status: Needs Human
 type: feature
 priority: medium
 labels: []
@@ -22,7 +22,7 @@ ci_evidence: { head: d339e94c5d24119b052c84d1df9d5a135bf55fb3, command: npm test
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 1.6859
-needs_human_reason:
+needs_human_reason: attempts_exhausted
 recovery_stage:
 ---
 
@@ -123,3 +123,10 @@ nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 - 2026-10-03 00:12Z · Build attempt 6 · 39 turns · claude/claude-opus-5-5 · subscription CLI · 62 input, 1.65M cached, 16.3K output · $1.151 est · ok
 - 2026-10-03 00:14Z · CI attempt 6 · cancelled (critical resource pressure) — requeued
 - 2026-10-03 00:24Z · CI attempt 6 · 283.0s · `npm test` passed
+- 2026-10-03 00:27Z · Verify attempt 6 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 43.8K input, 0 cached, 1.2K output · $0.000 est · preliminary review complete; 4 focused checks queued
+- 2026-10-03 00:32Z · Verify attempt 6 · 1 turns · codex/gpt-6.1-sol · subscription CLI · 1.67M input, 1.53M cached, 4.4K output · $0.000 est · verdict: fail (unmet: 3)
+  - attempts_exhausted: Trusted npm test evidence accepted for clean HEAD d339e94c5d24119b052c84d1df9d5a135bf55fb3. Full diff and relevant calle
+…
+, API, MCP-accessible, automated, and delivery paths.
+- unmet: Fresh browser evidence permits completion; backend-only exemptions require rationale and passing relevant tests.
+- unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
