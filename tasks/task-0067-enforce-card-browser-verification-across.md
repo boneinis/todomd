@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: CI
+status: Verify
 type: feature
 priority: medium
 labels: []
@@ -18,7 +18,7 @@ session_id: 90e9eb89-b7cb-4305-9e6b-29648784ae7d
 worktree: todomd/task-0067
 verification: { attempts: 6, max_attempts: 6, last_verdict: fail }
 base_branch: main
-ci_evidence: {  }
+ci_evidence: { head: d339e94c5d24119b052c84d1df9d5a135bf55fb3, command: npm test, execution: local, passed_at: '2026-10-03T00:24:25.217Z', clean: true }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 1.6859
@@ -121,3 +121,5 @@ nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 
 1. src/browser-verification.js:188 — sourceFingerprint trims complete git tree entries including filenames. A rename src/calc.js -> 
 - 2026-10-03 00:12Z · Build attempt 6 · 39 turns · claude/claude-opus-5-5 · subscription CLI · 62 input, 1.65M cached, 16.3K output · $1.151 est · ok
+- 2026-10-03 00:14Z · CI attempt 6 · cancelled (critical resource pressure) — requeued
+- 2026-10-03 00:24Z · CI attempt 6 · 283.0s · `npm test` passed
