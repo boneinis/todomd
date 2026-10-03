@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Needs Human
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -16,13 +16,13 @@ triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
 session_id: 90e9eb89-b7cb-4305-9e6b-29648784ae7d
 worktree: todomd/task-0067
-verification: { attempts: 6, max_attempts: 6, last_verdict: fail }
+verification: { attempts: 7, max_attempts: 7, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: d339e94c5d24119b052c84d1df9d5a135bf55fb3, command: npm test, execution: local, passed_at: '2026-10-03T00:24:25.217Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 1.6859
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
@@ -130,3 +130,6 @@ nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 , API, MCP-accessible, automated, and delivery paths.
 - unmet: Fresh browser evidence permits completion; backend-only exemptions require rationale and passing relevant tests.
 - unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
+- 2026-10-03 00:58Z · Return to Build · human approved repair attempt 7/7 with instruction: Verify attempt 6 — prior findings fixed, 2 new defects in evidence binding (all in the worktree's current changes):
+
+1. Delivery completes against the wrong browser-verified revision: src/server.js:247 evaluates evidence independently of ev
