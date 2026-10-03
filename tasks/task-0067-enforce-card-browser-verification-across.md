@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Needs Human
+status: Build
 type: feature
 priority: medium
 labels: []
@@ -16,13 +16,13 @@ triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
 session_id: 17b11e6b-1d12-4ddd-8a95-9b134a3f4be4
 worktree: todomd/task-0067
-verification: { attempts: 8, max_attempts: 8, last_verdict: fail }
+verification: { attempts: 9, max_attempts: 9, last_verdict: fail }
 base_branch: main
-ci_evidence: { head: 6d0a86277f38b2ef6198beab8b09f4ceba51f058, command: npm test, execution: local, passed_at: '2026-10-03T03:10:32.044Z', clean: true }
+ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
 cost_usd: 4.9315
-needs_human_reason: attempts_exhausted
+needs_human_reason:
 recovery_stage:
 ---
 
@@ -167,3 +167,6 @@ e/ci_evidence updates.
 ith uncommitted edits.
 - unmet: Missing, failed, stale, and capability-blocked verification prevents completion through UI, API, MCP-accessible, automated, and delivery paths.
 - unmet: Relevant subsequent changes invalidate verification, while unrelated bookkeeping does not.
+- 2026-10-03 13:57Z · Return to Build · human approved repair attempt 9/9 with instruction: Verify attempt 8 — 3 completion-integrity defects (prior rounds' findings fixed; HEAD 6d0a862):
+
+1. Evidence survives card deletion + ID reuse: deleteCard (src/board.js:915) leaves .todomd/verification/<id>.json; createCard (:1024) realloca
