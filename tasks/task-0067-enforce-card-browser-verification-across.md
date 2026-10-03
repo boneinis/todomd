@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -14,14 +14,14 @@ agent: claude
 model: claude-opus-5-5
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
-session_id: 90e9eb89-b7cb-4305-9e6b-29648784ae7d
+session_id: 699ff518-f3c7-4763-bfbc-7d43871f6050
 worktree: todomd/task-0067
 verification: { attempts: 7, max_attempts: 7, last_verdict: fail }
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 1.6859
+cost_usd: 3.8264
 needs_human_reason:
 recovery_stage:
 ---
@@ -133,3 +133,4 @@ nts completion through UI, API, MCP-accessible, automated, and delivery paths.
 - 2026-10-03 00:58Z · Return to Build · human approved repair attempt 7/7 with instruction: Verify attempt 6 — prior findings fixed, 2 new defects in evidence binding (all in the worktree's current changes):
 
 1. Delivery completes against the wrong browser-verified revision: src/server.js:247 evaluates evidence independently of ev
+- 2026-10-03 01:10Z · Build attempt 7 · 52 turns · claude/claude-opus-5-5 · subscription CLI · 78 input, 3.16M cached, 37.3K output · $2.140 est · ok
