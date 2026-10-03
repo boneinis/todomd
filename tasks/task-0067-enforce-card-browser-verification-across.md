@@ -1,7 +1,7 @@
 ---
 id: task-0067
 title: Enforce card browser verification across completion paths
-status: Build
+status: CI
 type: feature
 priority: medium
 labels: []
@@ -14,14 +14,14 @@ agent: claude
 model: claude-opus-5-5
 triaged: n/a (chunk 2/5 of task-0059)
 build_profile: standard
-session_id: 699ff518-f3c7-4763-bfbc-7d43871f6050
+session_id: 17b11e6b-1d12-4ddd-8a95-9b134a3f4be4
 worktree: todomd/task-0067
 verification: { attempts: 8, max_attempts: 8, last_verdict: fail }
 base_branch: main
 ci_evidence: {  }
 ci_remote: {  }
 build_limits: { max_slices: 3, budget_minutes: 60 }
-cost_usd: 3.8264
+cost_usd: 4.9315
 needs_human_reason:
 recovery_stage:
 ---
@@ -148,3 +148,4 @@ e/ci_evidence updates.
 - 2026-10-03 01:50Z · Return to Build · human approved repair attempt 8/8 with instruction: Verify attempt 7 — 3/5 criteria now pass; 2 remaining completion bypasses:
 
 1. src/board.js:703-773 + src/browser-verification.js:354-356: finalizeCard merges the card's named branch, but completionTarget prioritizes an unmerged commit chec
+- 2026-10-03 02:04Z · Build attempt 8 · 24 turns · claude/claude-opus-5-5 · subscription CLI · 36 input, 1.06M cached, 17.5K output · $1.105 est · ok
